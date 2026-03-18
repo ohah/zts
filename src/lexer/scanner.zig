@@ -53,6 +53,14 @@ pub const Scanner = struct {
     /// line 0은 항상 offset 0이므로 초기값 포함.
     line_offsets: std.ArrayList(u32),
 
+    /// 템플릿 리터럴 중첩 깊이 스택.
+    /// 템플릿 안의 `${` 마다 brace depth를 push하고, 대응하는 `}`에서 pop한다.
+    /// 스택이 비어있지 않으면 `}`를 만났을 때 템플릿 중간/끝으로 스캔해야 한다.
+    template_depth_stack: std.ArrayList(u32),
+
+    /// 현재 brace depth. `{`이면 +1, `}`이면 -1.
+    brace_depth: u32 = 0,
+
     /// 소스를 UTF-8로 읽고 Scanner를 초기화한다.
     /// BOM이 있으면 스킵한다 (D019).
     pub fn init(allocator: std.mem.Allocator, source: []const u8) Scanner {
@@ -66,6 +74,7 @@ pub const Scanner = struct {
         var scanner = Scanner{
             .source = source,
             .line_offsets = line_offsets,
+            .template_depth_stack = std.ArrayList(u32).init(allocator),
         };
 
         // UTF-8 BOM 스킵 (0xEF 0xBB 0xBF)
@@ -82,6 +91,7 @@ pub const Scanner = struct {
 
     pub fn deinit(self: *Scanner) void {
         self.line_offsets.deinit();
+        self.template_depth_stack.deinit();
     }
 
     // ====================================================================
@@ -264,8 +274,21 @@ pub const Scanner = struct {
                 ')' => .r_paren,
                 '[' => .l_bracket,
                 ']' => .r_bracket,
-                '{' => .l_curly,
-                '}' => .r_curly,
+                '{' => blk: {
+                    self.brace_depth += 1;
+                    break :blk .l_curly;
+                },
+                '}' => blk: {
+                    // brace depth 감소
+                    if (self.brace_depth > 0) self.brace_depth -= 1;
+                    // 감소 후 스택 top과 비교: 템플릿 리터럴 안의 `}` 인지 확인
+                    if (self.template_depth_stack.items.len > 0 and
+                        self.brace_depth == self.template_depth_stack.items[self.template_depth_stack.items.len - 1])
+                    {
+                        break :blk self.scanTemplateContinuation();
+                    }
+                    break :blk .r_curly;
+                },
                 ';' => .semicolon,
                 ',' => .comma,
                 '~' => .tilde,
@@ -292,11 +315,7 @@ pub const Scanner = struct {
                 // 리터럴 — 추후 PR에서 세부 구현
                 '0'...'9' => self.scanNumericLiteral(c),
                 '\'', '"' => self.scanStringLiteral(c),
-                '`' => blk: {
-                    // TODO: 템플릿 리터럴 세부 파싱
-                    self.scanTemplateLiteral();
-                    break :blk .no_substitution_template;
-                },
+                '`' => self.scanTemplateLiteral(),
 
                 '#' => blk: {
                     // hashbang (파일 시작) 또는 private identifier
@@ -871,13 +890,72 @@ pub const Scanner = struct {
         }
     }
 
-    fn scanTemplateLiteral(self: *Scanner) void {
-        // TODO: ${} interpolation, template head/middle/tail
+    /// 템플릿 리터럴을 스캔한다 (opening backtick은 이미 소비됨).
+    ///
+    /// 반환:
+    /// - no_substitution_template: `string` (보간 없음)
+    /// - template_head: `text${ (보간 시작)
+    /// - syntax_error: 닫히지 않은 템플릿
+    fn scanTemplateLiteral(self: *Scanner) Kind {
+        return self.scanTemplateContent(.no_substitution_template, .template_head);
+    }
+
+    /// 템플릿 중간/끝을 스캔한다 (}에서 호출).
+    ///
+    /// 반환:
+    /// - template_middle: }text${ (보간 계속)
+    /// - template_tail: }text` (템플릿 끝)
+    /// - syntax_error: 닫히지 않은 템플릿
+    fn scanTemplateContinuation(self: *Scanner) Kind {
+        // 스택에서 현재 템플릿 depth를 pop
+        _ = self.template_depth_stack.pop();
+        return self.scanTemplateContent(.template_tail, .template_middle);
+    }
+
+    /// 템플릿 내용을 스캔하는 공통 로직.
+    /// backtick을 만나면 complete_kind, ${를 만나면 interpolation_kind를 반환.
+    fn scanTemplateContent(self: *Scanner, complete_kind: Kind, interpolation_kind: Kind) Kind {
         while (!self.isAtEnd()) {
-            const c = self.advance();
-            if (c == '`') return;
-            if (c == '\\') _ = self.advance();
+            const c = self.peek();
+
+            if (c == '`') {
+                self.current += 1;
+                return complete_kind;
+            }
+
+            if (c == '$' and self.peekAt(1) == '{') {
+                self.current += 2; // skip ${
+                // 현재 brace depth를 스택에 push (나중에 }에서 매칭)
+                self.template_depth_stack.append(self.brace_depth) catch {};
+                self.brace_depth += 1;
+                return interpolation_kind;
+            }
+
+            if (c == '\\') {
+                self.current += 1; // skip '\'
+                if (!self.isAtEnd()) {
+                    // 줄바꿈 이스케이프 처리 (템플릿에서는 유효)
+                    if (self.peek() == '\n' or self.peek() == '\r') {
+                        _ = self.handleNewline();
+                    } else {
+                        self.current += 1; // skip escaped char
+                    }
+                }
+                continue;
+            }
+
+            // 줄바꿈: 템플릿 리터럴에서는 허용됨 (일반 문자열과 다름)
+            if (c == '\n' or c == '\r') {
+                _ = self.handleNewline();
+                self.token.has_newline_before = true;
+                continue;
+            }
+
+            self.current += 1;
         }
+
+        // EOF까지 닫히지 않은 템플릿
+        return .syntax_error;
     }
 
     fn scanHashbang(self: *Scanner) void {
@@ -1546,4 +1624,142 @@ test "Scanner: consecutive strings" {
     try std.testing.expectEqualStrings("\"b\"", scanner.tokenText());
     scanner.next();
     try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
+}
+
+// ============================================================
+// Template literal tests
+// ============================================================
+
+test "Scanner: no substitution template" {
+    const source = "`hello world`";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.no_substitution_template, scanner.token.kind);
+    try std.testing.expectEqualStrings("`hello world`", scanner.tokenText());
+}
+
+test "Scanner: template with interpolation" {
+    // `hello ${name}!`
+    const source = "`hello ${name}!`";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.template_head, scanner.token.kind);
+    try std.testing.expectEqualStrings("`hello ${", scanner.tokenText());
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+    try std.testing.expectEqualStrings("name", scanner.tokenText());
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.template_tail, scanner.token.kind);
+    try std.testing.expectEqualStrings("}!`", scanner.tokenText());
+}
+
+test "Scanner: template with multiple interpolations" {
+    // `${a} + ${b} = ${c}`
+    const source = "`${a} + ${b} = ${c}`";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.template_head, scanner.token.kind);
+
+    scanner.next(); // a
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+
+    scanner.next(); // } + ${
+    try std.testing.expectEqual(Kind.template_middle, scanner.token.kind);
+
+    scanner.next(); // b
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+
+    scanner.next(); // } = ${
+    try std.testing.expectEqual(Kind.template_middle, scanner.token.kind);
+
+    scanner.next(); // c
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+
+    scanner.next(); // }`
+    try std.testing.expectEqual(Kind.template_tail, scanner.token.kind);
+}
+
+test "Scanner: nested template literals" {
+    // `a${`b${c}d`}e`
+    const source = "`a${`b${c}d`}e`";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next(); // `a${
+    try std.testing.expectEqual(Kind.template_head, scanner.token.kind);
+
+    scanner.next(); // `b${
+    try std.testing.expectEqual(Kind.template_head, scanner.token.kind);
+
+    scanner.next(); // c
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+
+    scanner.next(); // }d`
+    try std.testing.expectEqual(Kind.template_tail, scanner.token.kind);
+
+    scanner.next(); // }e`
+    try std.testing.expectEqual(Kind.template_tail, scanner.token.kind);
+}
+
+test "Scanner: template with object literal inside" {
+    // `${{a: 1}}`
+    const source = "`${{a: 1}}`";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next(); // `${
+    try std.testing.expectEqual(Kind.template_head, scanner.token.kind);
+
+    scanner.next(); // {
+    try std.testing.expectEqual(Kind.l_curly, scanner.token.kind);
+
+    scanner.next(); // a
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+
+    scanner.next(); // :
+    try std.testing.expectEqual(Kind.colon, scanner.token.kind);
+
+    scanner.next(); // 1
+    try std.testing.expectEqual(Kind.decimal, scanner.token.kind);
+
+    scanner.next(); // }
+    try std.testing.expectEqual(Kind.r_curly, scanner.token.kind);
+
+    scanner.next(); // }`
+    try std.testing.expectEqual(Kind.template_tail, scanner.token.kind);
+}
+
+test "Scanner: empty template" {
+    const source = "``";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.no_substitution_template, scanner.token.kind);
+}
+
+test "Scanner: template with newline" {
+    const source = "`line1\nline2`";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.no_substitution_template, scanner.token.kind);
+}
+
+test "Scanner: unterminated template" {
+    const source = "`hello";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.syntax_error, scanner.token.kind);
 }
