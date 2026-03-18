@@ -620,16 +620,67 @@ pub const Parser = struct {
     }
 
     fn parseAssignmentExpression(self: *Parser) !NodeIndex {
+        // 단일 식별자 + => → arrow function (간단한 형태: x => x + 1)
+        if (self.current() == .identifier) {
+            const id_span = self.currentSpan();
+            const saved_pos = self.scanner.current;
+            const saved_start = self.scanner.start;
+            const saved_token = self.scanner.token;
+
+            self.advance(); // skip identifier
+            if (self.current() == .arrow) {
+                // identifier => body
+                self.advance(); // skip =>
+                const param = try self.ast.addNode(.{
+                    .tag = .binding_identifier,
+                    .span = id_span,
+                    .data = .{ .string_ref = id_span },
+                });
+                const body = if (self.current() == .l_curly)
+                    try self.parseBlockStatement()
+                else
+                    try self.parseAssignmentExpression();
+
+                return try self.ast.addNode(.{
+                    .tag = .arrow_function_expression,
+                    .span = .{ .start = id_span.start, .end = self.currentSpan().start },
+                    .data = .{ .binary = .{ .left = param, .right = body } },
+                });
+            }
+
+            // arrow가 아님 → 되돌리기
+            self.scanner.current = saved_pos;
+            self.scanner.start = saved_start;
+            self.scanner.token = saved_token;
+        }
+
         const left = try self.parseConditionalExpression();
 
+        // => 를 만나면 arrow function (괄호 형태)
+        // left가 parenthesized_expression이면 파라미터 리스트로 취급
+        if (self.current() == .arrow) {
+            const left_start = self.ast.getNode(left).span.start;
+            self.advance(); // skip =>
+            const body = if (self.current() == .l_curly)
+                try self.parseBlockStatement()
+            else
+                try self.parseAssignmentExpression();
+
+            return try self.ast.addNode(.{
+                .tag = .arrow_function_expression,
+                .span = .{ .start = left_start, .end = self.currentSpan().start },
+                .data = .{ .binary = .{ .left = left, .right = body } },
+            });
+        }
+
         if (self.current().isAssignment()) {
-            const op_span = self.currentSpan();
+            const left_start = self.ast.getNode(left).span.start;
             const flags: u16 = @intFromEnum(self.current());
             self.advance();
             const right = try self.parseAssignmentExpression();
             return try self.ast.addNode(.{
                 .tag = .assignment_expression,
-                .span = .{ .start = op_span.start, .end = self.currentSpan().start },
+                .span = .{ .start = left_start, .end = self.currentSpan().start },
                 .data = .{ .binary = .{ .left = left, .right = right, .flags = flags } },
             });
         }
@@ -751,7 +802,7 @@ pub const Parser = struct {
                     self.advance();
                     const scratch_top = self.saveScratch();
                     while (self.current() != .r_paren and self.current() != .eof) {
-                        const arg = try self.parseAssignmentExpression();
+                        const arg = try self.parseSpreadOrAssignment();
                         try self.scratch.append(arg);
                         if (!self.eat(.comma)) break;
                     }
@@ -890,7 +941,7 @@ pub const Parser = struct {
                 self.advance();
                 continue;
             }
-            const elem = try self.parseAssignmentExpression();
+            const elem = try self.parseSpreadOrAssignment();
             try elements.append(elem);
             if (!self.eat(.comma)) break;
         }
@@ -979,6 +1030,21 @@ pub const Parser = struct {
 
     /// 객체 프로퍼티 키를 파싱한다.
     /// 허용: identifier, string literal, numeric literal, computed [expr].
+    /// ...expr または assignment expression を파싱. spread가 있으면 spread_element로 감싼다.
+    fn parseSpreadOrAssignment(self: *Parser) !NodeIndex {
+        if (self.current() == .dot3) {
+            const start = self.currentSpan().start;
+            self.advance(); // skip ...
+            const arg = try self.parseAssignmentExpression();
+            return try self.ast.addNode(.{
+                .tag = .spread_element,
+                .span = .{ .start = start, .end = self.currentSpan().start },
+                .data = .{ .unary = .{ .operand = arg } },
+            });
+        }
+        return self.parseAssignmentExpression();
+    }
+
     fn parsePropertyKey(self: *Parser) !NodeIndex {
         const span = self.currentSpan();
         switch (self.current()) {
@@ -1290,6 +1356,56 @@ test "Parser: try without catch or finally is error" {
 
 test "Parser: optional catch binding (ES2019)" {
     var scanner = Scanner.init(std.testing.allocator, "try { foo(); } catch { bar(); }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: arrow function (simple)" {
+    var scanner = Scanner.init(std.testing.allocator, "const f = x => x + 1;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: arrow function (parenthesized)" {
+    var scanner = Scanner.init(std.testing.allocator, "const f = (a, b) => a + b;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: arrow function with block body" {
+    var scanner = Scanner.init(std.testing.allocator, "const f = (x) => { return x * 2; };");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: spread in array" {
+    var scanner = Scanner.init(std.testing.allocator, "[1, ...arr, 2];");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: spread in call" {
+    var scanner = Scanner.init(std.testing.allocator, "foo(...args);");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
