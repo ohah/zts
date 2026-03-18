@@ -136,24 +136,25 @@ main ← feature/lexer-token-enum
 14. ✅ /simplify 리뷰 수정 + Test262 개선 — PR #14
 15. ⬜ SIMD 최적화 — 프로파일링 후 (BACKLOG)
 
-### 파서 구현 순서 (PR 단위) — Phase 2 진행 중
+### 파서 구현 순서 (PR 단위) — Phase 2 핵심 완료, 후반 작업 남음
 1. ✅ Phase 2 의사결정 (D037-D040) — PR #16
 2. ✅ AST 노드 정의 (~200개 Tag, 24B 고정) — PR #17
 3. ✅ 파서 기본 (statement + expression + precedence climbing) — PR #18
-4. ✅ 리뷰 미반영 수정 (variable_declaration extra_data, property key 제한) — PR #19
-5. ⬜ for-in/for-of + do-while + switch/case
-6. ⬜ try/catch/finally + throw
-7. ⬜ arrow function + rest/spread
-8. ⬜ class (body, method, property, static, accessor)
-9. ⬜ destructuring (array/object pattern, default value)
-10. ⬜ import/export (ESM)
-11. ⬜ async/await + generator (yield)
-12. ⬜ TS 타입 어노테이션 (type annotation, generic, as/satisfies)
-13. ⬜ TS 선언 (interface, type alias, enum, namespace)
-14. ⬜ TS 변환 대상 (parameter property, decorator)
-15. ⬜ JSX 파싱 (element, fragment, expression container)
-16. ⬜ 에러 복구 강화 + Test262 파서 통과율
-17. ⬜ semantic analysis (스코프/심볼, 별도 패스, D038)
+4. ✅ 리뷰 수정 (variable_declaration, property key) — PR #19
+5. ✅ for-in/for-of + do-while + switch/case — PR #21
+6. ✅ try/catch/finally — PR #22
+7. ✅ arrow function + spread — PR #23
+8. ✅ class (extends, static, getter/setter, static block) — PR #24
+9. ✅ destructuring (array/object, nested, rest, default) — PR #25
+10. ✅ import/export (ESM 전체) — PR #26
+11. ✅ async/await + generator (yield, yield*) — PR #27
+12. ✅ BACKLOG (#private, import.meta, elision) — PR #28-#29
+13. ✅ TS 타입 어노테이션 (union, intersection, array, tuple, generic, typeof, keyof, as, satisfies, !) — PR #30
+14. ✅ TS 선언 (interface, type alias, enum, namespace, declare, abstract) — PR #31
+15. ✅ TS 변환 대상 (parameter property, decorator, implements, class generics) — PR #32
+16. ✅ JSX 파싱 (element, fragment, attributes, expression, text) — PR #33
+17. ⬜ 에러 복구 강화 + Test262 파서 통과율 — Phase 2 후반
+18. ⬜ semantic analysis (스코프/심볼, 별도 패스, D038) — Phase 2 후반
 
 ## References
 - Bun JS Parser: github.com/oven-sh/bun (src/js_parser.zig, src/js_lexer.zig)

@@ -55,17 +55,29 @@ JS/TS 소스 코드를 토큰으로 분리.
 
 ---
 
-## Phase 2: Parser (파서) — 진행 중
-토큰 스트림을 AST로 변환.
+## Phase 2: Parser (파서) — 핵심 기능 완료, 후반 작업 남음
+토큰 스트림을 AST로 변환. PR #16-#33.
 
 ### 구현 완료
 - [x] AST 노드 타입 정의 (~200개 Tag, 24바이트 고정) — PR #17
 - [x] 인덱스 기반 노드 참조 (NodeIndex u32, D004) — PR #17
-- [x] 재귀 하강 파서 기본 (statement + expression) — PR #18
-- [x] Precedence climbing (11단계 이항 연산자) — PR #18
+- [x] 재귀 하강 파서 + Precedence climbing — PR #18
 - [x] 에러 복구 (다중 에러 수집, D039) — PR #18
+- [x] 모든 JS statement (if, for, for-in/of, while, do-while, switch, try/catch, break, continue, return, throw, debugger) — PR #21-#22
+- [x] 함수 (선언, 표현식, arrow, async, generator) — PR #23, #27
+- [x] 클래스 (extends, implements, static, #private, decorator, generics) — PR #24, #28, #32
+- [x] 구조분해 (array, object, nested, rest, default) — PR #25
+- [x] import/export (ESM 전체 + dynamic import + import.meta) — PR #26, #29
+- [x] TS 타입 (keyword, union, intersection, array, tuple, object literal, reference, generic, typeof, keyof, as, satisfies, non-null, indexed access) — PR #30
+- [x] TS 선언 (interface, type alias, enum, namespace, declare, abstract) — PR #31
+- [x] TS 변환 대상 (parameter property, decorator, implements) — PR #32
+- [x] JSX (element, fragment, attributes, expression, text) — PR #33
+- [x] spread/rest 연산자 — PR #23
 
-### 구현 예정 (PR 순서)
+### 미구현 (Phase 2 후반 또는 Phase 3)
+- [ ] 에러 복구 강화 + Test262 파서 통과율
+- [ ] semantic analysis (스코프/심볼, 별도 패스, D038)
+- [ ] BACKLOG #47-#58 (TS 타입 시스템 고급 기능)
 
 ### ECMAScript 구문 (ES2024)
 - [ ] 리터럴 (string, number, boolean, null, undefined, regex, template)
