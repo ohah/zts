@@ -5,54 +5,53 @@ Zig로 작성된 고성능 JS/TS 트랜스파일러. SWC/oxc 수준의 품질과
 
 ---
 
-## Phase 1: Lexer (렉서)
+## Phase 1: Lexer (렉서) ✅ 완료
 JS/TS 소스 코드를 토큰으로 분리.
 
-### 목표
-- [ ] 기본 토큰 타입 정의 (키워드, 연산자, 리터럴, 식별자)
-- [ ] 숫자 리터럴 (정수, 소수, hex, octal, binary, bigint, numeric separator `_`)
-- [ ] 문자열 리터럴 (single/double quote, escape sequence)
-- [ ] 템플릿 리터럴 (backtick, `${expr}` 중첩)
-- [ ] 정규식 리터럴 (`/` 나눗셈과 구분)
-- [ ] 주석 (single-line, multi-line, hashbang `#!`)
-- [ ] 자동 세미콜론 삽입 (ASI) 규칙
-- [ ] 소스 위치 추적 (start+end byte offset, D015)
-- [ ] line offset 테이블 (line/column은 lazy 계산)
-- [ ] SIMD 최적화 (공백 스킵, 식별자 스캔)
-- [ ] 유니코드 식별자 지원 (`\uXXXX`, `\u{XXXX}` 정규화)
-- [ ] BOM(Byte Order Mark) 스킵
-- [ ] 줄 끝 문자 전부 인식 (`\n`, `\r\n`, `\r`, U+2028, U+2029)
-- [ ] import attributes 토큰 (`with`, `assert`)
-- [ ] `@__PURE__` / `@__NO_SIDE_EFFECTS__` 주석 추적 (D025)
-- [ ] JSX pragma 주석 감지 (`@jsx`, `@jsxFrag`, `@jsxRuntime`, `@jsxImportSource`) (D026)
+### 구현 완료 (PR #1-#14)
+- [x] 토큰 enum (~130개, u8, oxc 방식 세분화) — PR #1
+- [x] Scanner 구조체 (next(), 공백/줄바꿈 스킵, BOM, 연산자 51종) — PR #3
+- [x] 주석 (single-line, multi-line, hashbang, @__PURE__ 감지) — PR #4
+- [x] 숫자 리터럴 (decimal, hex, octal, binary, bigint, float, exponential, separator 유효성) — PR #5, #13
+- [x] 문자열 리터럴 (escape sequence, \xHH, \uHHHH, \u{}, 줄 연속, 에러 감지) — PR #6
+- [x] 템플릿 리터럴 (head/middle/tail, ${} 중첩, brace depth 스택) — PR #7
+- [x] 정규식 리터럴 (character class, escape, flags, prev_token 컨텍스트) — PR #8
+- [x] 유니코드 식별자 (UTF-8 디코딩, ID_Start/ID_Continue, \u 이스케이프) — PR #9
+- [x] JSX 모드 (JSXText, JSXIdentifier 하이픈, JSX 속성 문자열) — PR #10
+- [x] JSX pragma 감지 (@jsx, @jsxFrag, @jsxRuntime, @jsxImportSource) — PR #11
+- [x] Test262 러너 + CLI (--test262, --tokenize) — PR #12
+- [x] 소스 위치 추적 (start+end byte offset, line offset 테이블, getLineColumn) — PR #3
+- [x] 줄 끝 문자 전부 인식 (\n, \r\n, \r, U+2028, U+2029) — PR #3, #14
+- [x] BOM 스킵 — PR #3
+- [x] /simplify 리뷰 2회 (PR #1, #3 이후) + 전체 리뷰 1회 (PR #14)
 
-### Test262 러너
-렉서/파서 구현과 동시에 Test262로 검증.
+### 미구현 (Phase 2 이후 또는 최적화 PR)
+- [ ] SIMD 최적화 (공백 스킵, 식별자 스캔) — 프로파일링 후
+- [ ] import attributes 토큰 (`with`, `assert`) — Phase 2 파서에서 키워드로 처리
+- [ ] 자동 세미콜론 삽입 (ASI) — Phase 2 파서에서 구현 (렉서는 has_newline_before 플래그 제공)
 
-- [ ] Test262 메타데이터 파서 (YAML frontmatter: negative, flags, features 등)
-- [ ] 테스트 실행기 (pass/fail 판정)
-  - `negative.phase: parse` → 파서가 에러를 던져야 통과
-  - `negative` 없음 → 파서가 에러 없이 파싱해야 통과
-  - `flags: [module]` → ESM 모드로 파싱
-  - `flags: [noStrict]` / `flags: [onlyStrict]` → strict mode 제어
-- [ ] 카테고리별 실행 (`--test262 test/language/literals/`)
-- [ ] 통과율 리포트 (총 N개 중 M개 통과, X% pass rate)
-- [ ] CI 연동 (test262.yml 워크플로우 활성화)
-- [ ] 실패 테스트 목록 출력 (디버깅용)
+### Test262 통과율 (렉서 단독, 2026-03-18 기준)
+| Category | Pass Rate | 남은 실패 원인 |
+|----------|-----------|---------------|
+| numeric | 81.5% | strict mode (파서 필요) |
+| line-terminators | 78.0% | 파서 수준 검증 |
+| white-space | 70.1% | 일부 유니코드 공백 |
+| comments | 69.2% | hashbang negative test |
+| null | 66.7% | escaped keyword (파서) |
+| string | 63.0% | strict mode legacy octal |
+| bigint | 62.7% | strict mode |
+| boolean | 50.0% | escaped keyword (파서) |
+| regexp | 26.5% | 대부분 파서 수준 |
 
-#### Phase 1에서 검증할 Test262 카테고리
-```
-test/language/literals/numeric/     ← 숫자 리터럴
-test/language/literals/string/      ← 문자열 리터럴
-test/language/literals/bigint/      ← BigInt
-test/language/literals/boolean/     ← boolean
-test/language/literals/null/        ← null
-test/language/literals/regexp/      ← 정규식
-test/language/comments/             ← 주석
-test/language/keywords/             ← 키워드
-test/language/line-terminators/     ← 줄바꿈
-test/language/asi/                  ← 자동 세미콜론 삽입
-```
+> 남은 실패 대부분은 파서가 있어야 판정 가능한 테스트. 파서 구현 후 통과율 대폭 상승 예상.
+
+### Test262 러너 ✅ 완료
+- [x] Test262 메타데이터 파서 (YAML frontmatter: negative, flags, features)
+- [x] 테스트 실행기 (pass/fail/skip 판정)
+- [x] 카테고리별 실행 (`--test262 test/language/literals/`)
+- [x] 통과율 리포트 (총 N개 중 M개 통과, X% pass rate)
+- [x] 실패 테스트 목록 출력 (디버깅용)
+- [x] CI 연동 (test262.yml 워크플로우)
 
 ---
 
