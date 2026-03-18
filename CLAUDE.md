@@ -171,10 +171,10 @@ main ← feature/lexer-token-enum
 7. ✅ namespace → IIFE — PR #41
 8. ✅ JSX → React.createElement — PR #42
 9. ✅ ESM → CJS 모듈 변환 — PR #43
-10. ⬜ parameter property 변환 (파서 수정 필요)
-11. ⬜ decorator 변환
-12. ⬜ CJS export const 수정 (segfault)
-13. ⬜ 파서 테스트 6개 수정
+10. ✅ 파서 테스트 6개 수정 — PR #44
+11. ✅ parameter property 변환 — PR #45
+12. ✅ CJS export const segfault 수정 — PR #46
+13. ⬜ decorator 변환
 
 ## References
 - Bun JS Parser: github.com/oven-sh/bun (src/js_parser.zig, src/js_lexer.zig)
