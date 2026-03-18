@@ -170,6 +170,8 @@ pub const Parser = struct {
             .kw_debugger => self.parseSimpleStatement(.debugger_statement),
             .kw_function => self.parseFunctionDeclaration(),
             .kw_class => self.parseClassDeclaration(),
+            .kw_import => self.parseImportDeclaration(),
+            .kw_export => self.parseExportDeclaration(),
             else => self.parseExpressionStatement(),
         };
     }
@@ -820,6 +822,267 @@ pub const Parser = struct {
         self.scanner.template_depth_stack.shrinkRetainingCapacity(saved_template_len);
 
         return next_kind;
+    }
+
+    // ================================================================
+    // Import / Export 파싱
+    // ================================================================
+
+    fn parseImportDeclaration(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+        self.advance(); // skip 'import'
+
+        // import "module" — side-effect import
+        if (self.current() == .string_literal) {
+            const source_node = try self.parseModuleSource();
+            _ = self.eat(.semicolon);
+            return try self.ast.addNode(.{
+                .tag = .import_declaration,
+                .span = .{ .start = start, .end = self.currentSpan().start },
+                .data = .{ .unary = .{ .operand = source_node } },
+            });
+        }
+
+        // import(...) — dynamic import expression (expression statement로 처리)
+        if (self.current() == .l_paren) {
+            const arg_start = self.currentSpan().start;
+            self.advance(); // skip (
+            const arg = try self.parseAssignmentExpression();
+            self.expect(.r_paren);
+            const import_expr = try self.ast.addNode(.{
+                .tag = .import_expression,
+                .span = .{ .start = start, .end = self.currentSpan().start },
+                .data = .{ .unary = .{ .operand = arg } },
+            });
+            _ = arg_start;
+            _ = self.eat(.semicolon);
+            return try self.ast.addNode(.{
+                .tag = .expression_statement,
+                .span = .{ .start = start, .end = self.currentSpan().start },
+                .data = .{ .unary = .{ .operand = import_expr } },
+            });
+        }
+
+        // 스펙ifier 파싱
+        const scratch_top = self.saveScratch();
+
+        // default import: import foo from "module"
+        var has_default = false;
+        if (self.current() == .identifier) {
+            const next = self.peekNextKind();
+            if (next == .comma or next == .kw_from) {
+                const spec_span = self.currentSpan();
+                self.advance();
+                const spec = try self.ast.addNode(.{
+                    .tag = .import_default_specifier,
+                    .span = spec_span,
+                    .data = .{ .string_ref = spec_span },
+                });
+                try self.scratch.append(spec);
+                has_default = true;
+
+                if (self.eat(.comma)) {
+                    // import default, { ... } from "module"
+                    // import default, * as ns from "module"
+                } else {
+                    // import default from "module"
+                    self.expect(.kw_from);
+                    const source_node = try self.parseModuleSource();
+                    _ = self.eat(.semicolon);
+
+                    const specifiers = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+                    self.restoreScratch(scratch_top);
+                    const extra_start = try self.ast.addExtra(specifiers.start);
+                    _ = try self.ast.addExtra(specifiers.len);
+                    _ = try self.ast.addExtra(@intFromEnum(source_node));
+
+                    return try self.ast.addNode(.{
+                        .tag = .import_declaration,
+                        .span = .{ .start = start, .end = self.currentSpan().start },
+                        .data = .{ .extra = extra_start },
+                    });
+                }
+            }
+        }
+
+        // namespace import: import * as ns from "module"
+        if (self.current() == .star) {
+            self.advance(); // skip *
+            self.expect(.kw_as);
+            const local_span = self.currentSpan();
+            self.expect(.identifier);
+            const spec = try self.ast.addNode(.{
+                .tag = .import_namespace_specifier,
+                .span = local_span,
+                .data = .{ .string_ref = local_span },
+            });
+            try self.scratch.append(spec);
+        }
+
+        // named imports: import { a, b as c } from "module"
+        if (self.current() == .l_curly) {
+            self.advance(); // skip {
+            while (self.current() != .r_curly and self.current() != .eof) {
+                const spec = try self.parseImportSpecifier();
+                try self.scratch.append(spec);
+                if (!self.eat(.comma)) break;
+            }
+            self.expect(.r_curly);
+        }
+
+        self.expect(.kw_from);
+        const source_node = try self.parseModuleSource();
+        _ = self.eat(.semicolon);
+
+        const specifiers = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        self.restoreScratch(scratch_top);
+        const extra_start = try self.ast.addExtra(specifiers.start);
+        _ = try self.ast.addExtra(specifiers.len);
+        _ = try self.ast.addExtra(@intFromEnum(source_node));
+
+        return try self.ast.addNode(.{
+            .tag = .import_declaration,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .extra = extra_start },
+        });
+    }
+
+    fn parseImportSpecifier(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+        const imported_span = self.currentSpan();
+        self.advance(); // imported name
+
+        // as local
+        var local_span = imported_span;
+        if (self.eat(.kw_as)) {
+            local_span = self.currentSpan();
+            self.advance(); // local name
+        }
+
+        return try self.ast.addNode(.{
+            .tag = .import_specifier,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .binary = .{ .left = @enumFromInt(imported_span.start), .right = @enumFromInt(local_span.start) } },
+        });
+    }
+
+    fn parseExportDeclaration(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+        self.advance(); // skip 'export'
+
+        // export default
+        if (self.eat(.kw_default)) {
+            const decl = switch (self.current()) {
+                .kw_function => try self.parseFunctionDeclaration(),
+                .kw_class => try self.parseClassDeclaration(),
+                else => blk: {
+                    const expr = try self.parseAssignmentExpression();
+                    _ = self.eat(.semicolon);
+                    break :blk expr;
+                },
+            };
+            return try self.ast.addNode(.{
+                .tag = .export_default_declaration,
+                .span = .{ .start = start, .end = self.currentSpan().start },
+                .data = .{ .unary = .{ .operand = decl } },
+            });
+        }
+
+        // export * from "module" / export * as ns from "module"
+        if (self.current() == .star) {
+            self.advance(); // skip *
+            var exported_name = NodeIndex.none;
+            if (self.eat(.kw_as)) {
+                const name_span = self.currentSpan();
+                self.advance();
+                exported_name = try self.ast.addNode(.{
+                    .tag = .identifier_reference,
+                    .span = name_span,
+                    .data = .{ .string_ref = name_span },
+                });
+            }
+            self.expect(.kw_from);
+            const source_node = try self.parseModuleSource();
+            _ = self.eat(.semicolon);
+
+            return try self.ast.addNode(.{
+                .tag = .export_all_declaration,
+                .span = .{ .start = start, .end = self.currentSpan().start },
+                .data = .{ .binary = .{ .left = exported_name, .right = source_node } },
+            });
+        }
+
+        // export { a, b } / export { a } from "module"
+        if (self.current() == .l_curly) {
+            self.advance(); // skip {
+
+            const scratch_top = self.saveScratch();
+            while (self.current() != .r_curly and self.current() != .eof) {
+                const spec = try self.parseExportSpecifier();
+                try self.scratch.append(spec);
+                if (!self.eat(.comma)) break;
+            }
+            self.expect(.r_curly);
+
+            // re-export: export { a } from "module"
+            var source_node = NodeIndex.none;
+            if (self.eat(.kw_from)) {
+                source_node = try self.parseModuleSource();
+            }
+            _ = self.eat(.semicolon);
+
+            const specifiers = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+            self.restoreScratch(scratch_top);
+            const extra_start = try self.ast.addExtra(specifiers.start);
+            _ = try self.ast.addExtra(specifiers.len);
+            _ = try self.ast.addExtra(@intFromEnum(source_node));
+
+            return try self.ast.addNode(.{
+                .tag = .export_named_declaration,
+                .span = .{ .start = start, .end = self.currentSpan().start },
+                .data = .{ .extra = extra_start },
+            });
+        }
+
+        // export var/let/const/function/class
+        const decl = try self.parseStatement();
+        return try self.ast.addNode(.{
+            .tag = .export_named_declaration,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .unary = .{ .operand = decl } },
+        });
+    }
+
+    fn parseExportSpecifier(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+        const local_span = self.currentSpan();
+        self.advance(); // local name
+
+        var exported_span = local_span;
+        if (self.eat(.kw_as)) {
+            exported_span = self.currentSpan();
+            self.advance(); // exported name
+        }
+
+        return try self.ast.addNode(.{
+            .tag = .export_specifier,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .binary = .{ .left = @enumFromInt(local_span.start), .right = @enumFromInt(exported_span.start) } },
+        });
+    }
+
+    fn parseModuleSource(self: *Parser) !NodeIndex {
+        const span = self.currentSpan();
+        if (self.current() == .string_literal) {
+            self.advance();
+            return try self.ast.addNode(.{
+                .tag = .string_literal,
+                .span = span,
+                .data = .{ .string_ref = span },
+            });
+        }
+        self.addError(span, "module source string expected");
+        return NodeIndex.none;
     }
 
     // ================================================================
@@ -1916,6 +2179,120 @@ test "Parser: destructuring with rest" {
 
 test "Parser: function with destructuring params" {
     var scanner = Scanner.init(std.testing.allocator, "function foo({ x, y }, [a, b]) { }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+// ============================================================
+// Import / Export tests
+// ============================================================
+
+test "Parser: import side-effect" {
+    var scanner = Scanner.init(std.testing.allocator, "import 'module';");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: import default" {
+    var scanner = Scanner.init(std.testing.allocator, "import foo from 'module';");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: import named" {
+    var scanner = Scanner.init(std.testing.allocator, "import { a, b as c } from 'module';");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: import namespace" {
+    var scanner = Scanner.init(std.testing.allocator, "import * as ns from 'module';");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: import default + named" {
+    var scanner = Scanner.init(std.testing.allocator, "import React, { useState } from 'react';");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: export default" {
+    var scanner = Scanner.init(std.testing.allocator, "export default 42;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: export named" {
+    var scanner = Scanner.init(std.testing.allocator, "export { a, b as c };");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: export declaration" {
+    var scanner = Scanner.init(std.testing.allocator, "export const x = 1;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: export all re-export" {
+    var scanner = Scanner.init(std.testing.allocator, "export * from 'module';");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: export named re-export" {
+    var scanner = Scanner.init(std.testing.allocator, "export { foo } from 'module';");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: export default function" {
+    var scanner = Scanner.init(std.testing.allocator, "export default function foo() { }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
