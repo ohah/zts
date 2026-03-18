@@ -431,6 +431,17 @@ pub const Ast = struct {
         return .{ .start = start, .len = len };
     }
 
+    /// extra_data에 여러 u32 값을 한 번에 추가하고 시작 인덱스를 반환한다.
+    /// 한 번의 capacity check로 전체를 추가 (개별 addExtra N번보다 효율적).
+    pub fn addExtras(self: *Ast, values: []const u32) !u32 {
+        const start: u32 = @intCast(self.extra_data.items.len);
+        try self.extra_data.ensureUnusedCapacity(values.len);
+        for (values) |v| {
+            self.extra_data.appendAssumeCapacity(v);
+        }
+        return start;
+    }
+
     /// span이 가리키는 소스 텍스트를 반환한다.
     pub fn getSourceText(self: *const Ast, span: Span) []const u8 {
         return self.source[span.start..span.end];

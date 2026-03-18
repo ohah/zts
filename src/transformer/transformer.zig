@@ -191,19 +191,20 @@ pub const Transformer = struct {
             .switch_case => self.visitSwitchCase(node),
             .call_expression => self.visitCallExpression(node),
             .new_expression => self.visitNewExpression(node),
-            .tagged_template_expression => self.visitTaggedTemplate(node),
+            .tagged_template_expression => self.visitBinaryNode(node),
             .method_definition => self.visitMethodDefinition(node),
             .property_definition => self.visitPropertyDefinition(node),
             .object_property => self.visitObjectProperty(node),
             .formal_parameter => self.visitFormalParameter(node),
             .import_declaration => self.visitImportDeclaration(node),
             .export_named_declaration => self.visitExportNamedDeclaration(node),
-            .export_default_declaration => self.visitExportDefaultDeclaration(node),
-            .export_all_declaration => self.visitExportAllDeclaration(node),
-            .catch_clause => self.visitCatchClause(node),
-            .binding_property => self.visitBindingProperty(node),
-            .assignment_pattern => self.visitAssignmentPattern(node),
-            .accessor_property => self.visitAccessorProperty(node),
+            .export_default_declaration => self.visitUnaryNode(node),
+            .export_all_declaration,
+            .catch_clause,
+            .binding_property,
+            .assignment_pattern,
+            .accessor_property,
+            => self.visitBinaryNode(node),
 
             // === 리프 노드: 그대로 복사 (자식 없음) ===
             .boolean_literal,
@@ -256,83 +257,11 @@ pub const Transformer = struct {
             .binding_rest_element => self.visitUnaryNode(node),
             .assignment_target_with_default => self.visitBinaryNode(node),
 
-            // === TS 선언 노드: 통째로 삭제 ===
-            // (isTypeOnlyNode에서 이미 걸러지지만, 혹시 모를 누락 방지)
-            .ts_type_alias_declaration,
-            .ts_interface_declaration,
-            .ts_interface_body,
-            .ts_property_signature,
-            .ts_method_signature,
-            .ts_call_signature,
-            .ts_construct_signature,
-            .ts_index_signature,
-            .ts_getter_signature,
-            .ts_setter_signature,
-            .ts_module_declaration,
-            .ts_module_block,
-            .ts_namespace_export_declaration,
-            .ts_type_parameter,
-            .ts_type_parameter_declaration,
-            .ts_type_parameter_instantiation,
-            .ts_this_parameter,
-            .ts_class_implements,
-            .ts_export_assignment,
-            .ts_import_equals_declaration,
-            .ts_external_module_reference,
-            => if (self.options.strip_types) .none else self.copyNodeDirect(node),
-
-            // === TS enum/const enum: 향후 IIFE 변환. 지금은 삭제 ===
-            .ts_enum_declaration,
-            .ts_enum_body,
-            .ts_enum_member,
-            => if (self.options.strip_types) .none else self.copyNodeDirect(node),
-
-            // === 모든 TS 타입 노드: 삭제 (isTypeOnlyNode에서 처리됨) ===
-            // 여기에 도달하면 strip_types=false인 경우
-            .ts_any_keyword,
-            .ts_string_keyword,
-            .ts_boolean_keyword,
-            .ts_number_keyword,
-            .ts_never_keyword,
-            .ts_unknown_keyword,
-            .ts_null_keyword,
-            .ts_undefined_keyword,
-            .ts_void_keyword,
-            .ts_symbol_keyword,
-            .ts_object_keyword,
-            .ts_bigint_keyword,
-            .ts_this_type,
-            .ts_intrinsic_keyword,
-            .ts_type_reference,
-            .ts_qualified_name,
-            .ts_array_type,
-            .ts_tuple_type,
-            .ts_named_tuple_member,
-            .ts_union_type,
-            .ts_intersection_type,
-            .ts_conditional_type,
-            .ts_type_operator,
-            .ts_optional_type,
-            .ts_rest_type,
-            .ts_indexed_access_type,
-            .ts_type_literal,
-            .ts_function_type,
-            .ts_constructor_type,
-            .ts_mapped_type,
-            .ts_template_literal_type,
-            .ts_infer_type,
-            .ts_parenthesized_type,
-            .ts_import_type,
-            .ts_type_query,
-            .ts_literal_type,
-            .ts_type_predicate,
-            => self.copyNodeDirect(node),
-
-            // === 나머지: invalid 등 ===
+            // === 나머지: invalid + TS 타입 전용 노드 ===
+            // TS 타입 노드는 isTypeOnlyNode 검사(위)에서 이미 .none으로 반환됨.
+            // 여기 도달하면 strip_types=false인 경우 → 그대로 복사.
             .invalid => .none,
-
-            // 누락된 태그가 있으면 컴파일 에러
-            // (새 태그 추가 시 여기서 잡힘)
+            else => self.copyNodeDirect(node),
         };
     }
 
@@ -383,31 +312,32 @@ pub const Transformer = struct {
     }
 
     /// 리스트 노드: 각 자식을 방문, .none이 아닌 것만 새 리스트로 수집.
-    ///
-    /// TS 타입 노드가 리스트 안에 있으면 자연스럽게 제거된다.
-    /// 예: program의 statement 중 `type Foo = ...` 같은 것은 visitNode에서
-    ///     .none을 반환하므로 새 리스트에서 빠진다.
     fn visitListNode(self: *Transformer, node: Node) Error!NodeIndex {
-        const old_list = node.data.list;
-        const old_indices = self.old_ast.extra_data.items[old_list.start .. old_list.start + old_list.len];
-
-        const scratch_top = self.scratch.items.len;
-        defer self.scratch.shrinkRetainingCapacity(scratch_top);
-
-        for (old_indices) |raw_idx| {
-            const child_idx: NodeIndex = @enumFromInt(raw_idx);
-            const new_child = try self.visitNode(child_idx);
-            if (!new_child.isNone()) {
-                try self.scratch.append(new_child);
-            }
-        }
-
-        const new_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+        const new_list = try self.visitExtraList(node.data.list.start, node.data.list.len);
         return self.new_ast.addNode(.{
             .tag = node.tag,
             .span = node.span,
             .data = .{ .list = new_list },
         });
+    }
+
+    /// extra_data의 노드 리스트를 방문하여 새 AST에 복사.
+    /// .none이 된 자식은 자동으로 제거된다.
+    /// scratch 버퍼를 사용하며, 중첩 호출에 안전 (save/restore 패턴).
+    fn visitExtraList(self: *Transformer, start: u32, len: u32) Error!NodeList {
+        const old_indices = self.old_ast.extra_data.items[start .. start + len];
+
+        const scratch_top = self.scratch.items.len;
+        defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+        for (old_indices) |raw_idx| {
+            const new_child = try self.visitNode(@enumFromInt(raw_idx));
+            if (!new_child.isNone()) {
+                try self.scratch.append(new_child);
+            }
+        }
+
+        return self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
     }
 
     // ================================================================
@@ -432,510 +362,181 @@ pub const Transformer = struct {
     // Extra 기반 노드 변환
     // ================================================================
 
+    /// extra_data에서 연속된 필드를 슬라이스로 읽기.
+    fn readExtras(self: *const Transformer, start: u32, len: u32) []const u32 {
+        return self.old_ast.extra_data.items[start .. start + len];
+    }
+
+    /// extra 인덱스로 NodeIndex 읽기.
+    fn readNodeIdx(self: *const Transformer, extra_start: u32, offset: u32) NodeIndex {
+        return @enumFromInt(self.old_ast.extra_data.items[extra_start + offset]);
+    }
+
+    /// extra 인덱스로 u32 읽기.
+    fn readU32(self: *const Transformer, extra_start: u32, offset: u32) u32 {
+        return self.old_ast.extra_data.items[extra_start + offset];
+    }
+
+    /// 노드를 extra_data로 만들어 새 AST에 추가.
+    fn addExtraNode(self: *Transformer, tag: Tag, span: Span, extras: []const u32) Error!NodeIndex {
+        const new_extra = try self.new_ast.addExtras(extras);
+        return self.new_ast.addNode(.{ .tag = tag, .span = span, .data = .{ .extra = new_extra } });
+    }
+
+    // ================================================================
+    // Extra 기반 노드 변환
+    // ================================================================
+
     /// variable_declaration: extra_data = [kind_flags, list.start, list.len]
     fn visitVariableDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
-        const extra_start = node.data.extra;
-        const kind_flags = self.old_ast.extra_data.items[extra_start];
-        const list_start = self.old_ast.extra_data.items[extra_start + 1];
-        const list_len = self.old_ast.extra_data.items[extra_start + 2];
-
-        const old_indices = self.old_ast.extra_data.items[list_start .. list_start + list_len];
-
-        const scratch_top = self.scratch.items.len;
-        defer self.scratch.shrinkRetainingCapacity(scratch_top);
-
-        for (old_indices) |raw_idx| {
-            const new_child = try self.visitNode(@enumFromInt(raw_idx));
-            if (!new_child.isNone()) {
-                try self.scratch.append(new_child);
-            }
-        }
-
-        const new_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-        const new_extra = try self.new_ast.addExtra(kind_flags);
-        _ = try self.new_ast.addExtra(new_list.start);
-        _ = try self.new_ast.addExtra(new_list.len);
-
-        return self.new_ast.addNode(.{
-            .tag = .variable_declaration,
-            .span = node.span,
-            .data = .{ .extra = new_extra },
-        });
+        const e = node.data.extra;
+        const new_list = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
+        return self.addExtraNode(.variable_declaration, node.span, &.{ self.readU32(e, 0), new_list.start, new_list.len });
     }
 
     /// variable_declarator: extra_data = [name, type_ann, init]
-    /// type_ann은 TS에서만 사용 → 제거.
     fn visitVariableDeclarator(self: *Transformer, node: Node) Error!NodeIndex {
-        const extra_start = node.data.extra;
-        const name_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[extra_start]);
-        // type_ann (extra_start + 1)은 스킵
-        const init_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[extra_start + 2]);
-
-        const new_name = try self.visitNode(name_idx);
-        const new_init = try self.visitNode(init_idx);
-
-        const new_extra = try self.new_ast.addExtra(@intFromEnum(new_name));
-        _ = try self.new_ast.addExtra(@intFromEnum(NodeIndex.none)); // type_ann 제거
-        _ = try self.new_ast.addExtra(@intFromEnum(new_init));
-
-        return self.new_ast.addNode(.{
-            .tag = .variable_declarator,
-            .span = node.span,
-            .data = .{ .extra = new_extra },
-        });
+        const e = node.data.extra;
+        const new_name = try self.visitNode(self.readNodeIdx(e, 0));
+        const new_init = try self.visitNode(self.readNodeIdx(e, 2));
+        const none = @intFromEnum(NodeIndex.none);
+        return self.addExtraNode(.variable_declarator, node.span, &.{ @intFromEnum(new_name), none, @intFromEnum(new_init) });
     }
 
     /// function/function_declaration/function_expression/arrow_function_expression
     /// extra_data = [name, params_start, params_len, body, flags, return_type]
     fn visitFunction(self: *Transformer, node: Node) Error!NodeIndex {
-        const extra_start = node.data.extra;
-        const name_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[extra_start]);
-        const params_start = self.old_ast.extra_data.items[extra_start + 1];
-        const params_len = self.old_ast.extra_data.items[extra_start + 2];
-        const body_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[extra_start + 3]);
-        const flags = self.old_ast.extra_data.items[extra_start + 4];
-        // return_type (extra_start + 5)는 TS 전용 → 스킵
-
-        // 이름 방문
-        const new_name = try self.visitNode(name_idx);
-
-        // 파라미터 방문 (ts_this_parameter는 visitNode에서 .none으로 필터됨)
-        const old_params = self.old_ast.extra_data.items[params_start .. params_start + params_len];
-        const scratch_top = self.scratch.items.len;
-        defer self.scratch.shrinkRetainingCapacity(scratch_top);
-
-        for (old_params) |raw_idx| {
-            const new_param = try self.visitNode(@enumFromInt(raw_idx));
-            if (!new_param.isNone()) {
-                try self.scratch.append(new_param);
-            }
-        }
-
-        // 바디 방문
-        const new_body = try self.visitNode(body_idx);
-
-        const new_params = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-        const new_extra = try self.new_ast.addExtra(@intFromEnum(new_name));
-        _ = try self.new_ast.addExtra(new_params.start);
-        _ = try self.new_ast.addExtra(new_params.len);
-        _ = try self.new_ast.addExtra(@intFromEnum(new_body));
-        _ = try self.new_ast.addExtra(flags);
-        _ = try self.new_ast.addExtra(@intFromEnum(NodeIndex.none)); // return_type 제거
-
-        return self.new_ast.addNode(.{
-            .tag = node.tag,
-            .span = node.span,
-            .data = .{ .extra = new_extra },
+        const e = node.data.extra;
+        const new_name = try self.visitNode(self.readNodeIdx(e, 0));
+        const new_params = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
+        const new_body = try self.visitNode(self.readNodeIdx(e, 3));
+        const none = @intFromEnum(NodeIndex.none);
+        return self.addExtraNode(node.tag, node.span, &.{
+            @intFromEnum(new_name), new_params.start, new_params.len,
+            @intFromEnum(new_body), self.readU32(e, 4), none, // return_type 제거
         });
     }
 
     /// class_declaration / class_expression
     /// extra_data = [name, super_class, body, type_params, implements_start, implements_len]
     fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
-        const extra_start = node.data.extra;
-        const name_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[extra_start]);
-        const super_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[extra_start + 1]);
-        const body_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[extra_start + 2]);
-        // type_params (extra_start + 3)은 TS → 스킵
-        // implements (extra_start + 4, +5)은 TS → 스킵
-
-        const new_name = try self.visitNode(name_idx);
-        const new_super = try self.visitNode(super_idx);
-        const new_body = try self.visitNode(body_idx);
-
-        const new_extra = try self.new_ast.addExtra(@intFromEnum(new_name));
-        _ = try self.new_ast.addExtra(@intFromEnum(new_super));
-        _ = try self.new_ast.addExtra(@intFromEnum(new_body));
-        _ = try self.new_ast.addExtra(@intFromEnum(NodeIndex.none)); // type_params 제거
-        _ = try self.new_ast.addExtra(0); // implements_start = 0
-        _ = try self.new_ast.addExtra(0); // implements_len = 0
-
-        return self.new_ast.addNode(.{
-            .tag = node.tag,
-            .span = node.span,
-            .data = .{ .extra = new_extra },
+        const e = node.data.extra;
+        const new_name = try self.visitNode(self.readNodeIdx(e, 0));
+        const new_super = try self.visitNode(self.readNodeIdx(e, 1));
+        const new_body = try self.visitNode(self.readNodeIdx(e, 2));
+        const none = @intFromEnum(NodeIndex.none);
+        return self.addExtraNode(node.tag, node.span, &.{
+            @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
+            none, 0, 0, // type_params, implements 제거
         });
     }
 
     /// for_statement: extra_data = [init, test, update, body]
     fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
-        const extra_start = node.data.extra;
-        const init_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[extra_start]);
-        const test_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[extra_start + 1]);
-        const update_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[extra_start + 2]);
-        const body_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[extra_start + 3]);
-
-        const new_init = try self.visitNode(init_idx);
-        const new_test = try self.visitNode(test_idx);
-        const new_update = try self.visitNode(update_idx);
-        const new_body = try self.visitNode(body_idx);
-
-        const new_extra = try self.new_ast.addExtra(@intFromEnum(new_init));
-        _ = try self.new_ast.addExtra(@intFromEnum(new_test));
-        _ = try self.new_ast.addExtra(@intFromEnum(new_update));
-        _ = try self.new_ast.addExtra(@intFromEnum(new_body));
-
-        return self.new_ast.addNode(.{
-            .tag = .for_statement,
-            .span = node.span,
-            .data = .{ .extra = new_extra },
+        const e = node.data.extra;
+        const new_init = try self.visitNode(self.readNodeIdx(e, 0));
+        const new_test = try self.visitNode(self.readNodeIdx(e, 1));
+        const new_update = try self.visitNode(self.readNodeIdx(e, 2));
+        const new_body = try self.visitNode(self.readNodeIdx(e, 3));
+        return self.addExtraNode(.for_statement, node.span, &.{
+            @intFromEnum(new_init), @intFromEnum(new_test), @intFromEnum(new_update), @intFromEnum(new_body),
         });
     }
 
     /// switch_case: extra_data = [test, stmts_start, stmts_len]
     fn visitSwitchCase(self: *Transformer, node: Node) Error!NodeIndex {
-        const extra_start = node.data.extra;
-        const test_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[extra_start]);
-        const stmts_start = self.old_ast.extra_data.items[extra_start + 1];
-        const stmts_len = self.old_ast.extra_data.items[extra_start + 2];
-
-        const new_test = try self.visitNode(test_idx);
-
-        const old_stmts = self.old_ast.extra_data.items[stmts_start .. stmts_start + stmts_len];
-        const scratch_top = self.scratch.items.len;
-        defer self.scratch.shrinkRetainingCapacity(scratch_top);
-
-        for (old_stmts) |raw_idx| {
-            const new_stmt = try self.visitNode(@enumFromInt(raw_idx));
-            if (!new_stmt.isNone()) {
-                try self.scratch.append(new_stmt);
-            }
-        }
-
-        const new_stmts = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-        const new_extra = try self.new_ast.addExtra(@intFromEnum(new_test));
-        _ = try self.new_ast.addExtra(new_stmts.start);
-        _ = try self.new_ast.addExtra(new_stmts.len);
-
-        return self.new_ast.addNode(.{
-            .tag = .switch_case,
-            .span = node.span,
-            .data = .{ .extra = new_extra },
-        });
+        const e = node.data.extra;
+        const new_test = try self.visitNode(self.readNodeIdx(e, 0));
+        const new_stmts = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
+        return self.addExtraNode(.switch_case, node.span, &.{ @intFromEnum(new_test), new_stmts.start, new_stmts.len });
     }
 
     /// call_expression: extra_data = [callee, args_start, args_len, optional_chain_flag]
     fn visitCallExpression(self: *Transformer, node: Node) Error!NodeIndex {
-        const extra_start = node.data.extra;
-        const callee_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[extra_start]);
-        const args_start = self.old_ast.extra_data.items[extra_start + 1];
-        const args_len = self.old_ast.extra_data.items[extra_start + 2];
-        const opt_chain = self.old_ast.extra_data.items[extra_start + 3];
-
-        const new_callee = try self.visitNode(callee_idx);
-
-        const old_args = self.old_ast.extra_data.items[args_start .. args_start + args_len];
-        const scratch_top = self.scratch.items.len;
-        defer self.scratch.shrinkRetainingCapacity(scratch_top);
-
-        for (old_args) |raw_idx| {
-            const new_arg = try self.visitNode(@enumFromInt(raw_idx));
-            if (!new_arg.isNone()) {
-                try self.scratch.append(new_arg);
-            }
-        }
-
-        const new_args = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-        const new_extra = try self.new_ast.addExtra(@intFromEnum(new_callee));
-        _ = try self.new_ast.addExtra(new_args.start);
-        _ = try self.new_ast.addExtra(new_args.len);
-        _ = try self.new_ast.addExtra(opt_chain);
-
-        return self.new_ast.addNode(.{
-            .tag = .call_expression,
-            .span = node.span,
-            .data = .{ .extra = new_extra },
+        const e = node.data.extra;
+        const new_callee = try self.visitNode(self.readNodeIdx(e, 0));
+        const new_args = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
+        return self.addExtraNode(.call_expression, node.span, &.{
+            @intFromEnum(new_callee), new_args.start, new_args.len, self.readU32(e, 3),
         });
     }
 
     /// new_expression: extra_data = [callee, args_start, args_len]
     fn visitNewExpression(self: *Transformer, node: Node) Error!NodeIndex {
-        const extra_start = node.data.extra;
-        const callee_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[extra_start]);
-        const args_start = self.old_ast.extra_data.items[extra_start + 1];
-        const args_len = self.old_ast.extra_data.items[extra_start + 2];
-
-        const new_callee = try self.visitNode(callee_idx);
-
-        const old_args = self.old_ast.extra_data.items[args_start .. args_start + args_len];
-        const scratch_top = self.scratch.items.len;
-        defer self.scratch.shrinkRetainingCapacity(scratch_top);
-
-        for (old_args) |raw_idx| {
-            const new_arg = try self.visitNode(@enumFromInt(raw_idx));
-            if (!new_arg.isNone()) {
-                try self.scratch.append(new_arg);
-            }
-        }
-
-        const new_args = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-        const new_extra = try self.new_ast.addExtra(@intFromEnum(new_callee));
-        _ = try self.new_ast.addExtra(new_args.start);
-        _ = try self.new_ast.addExtra(new_args.len);
-
-        return self.new_ast.addNode(.{
-            .tag = .new_expression,
-            .span = node.span,
-            .data = .{ .extra = new_extra },
-        });
-    }
-
-    /// tagged_template_expression: binary = { left=tag, right=template }
-    fn visitTaggedTemplate(self: *Transformer, node: Node) Error!NodeIndex {
-        return self.visitBinaryNode(node);
+        const e = node.data.extra;
+        const new_callee = try self.visitNode(self.readNodeIdx(e, 0));
+        const new_args = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
+        return self.addExtraNode(.new_expression, node.span, &.{ @intFromEnum(new_callee), new_args.start, new_args.len });
     }
 
     /// method_definition: extra_data = [key, value, flags, decorators_start, decorators_len]
     fn visitMethodDefinition(self: *Transformer, node: Node) Error!NodeIndex {
-        const extra_start = node.data.extra;
-        const key_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[extra_start]);
-        const value_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[extra_start + 1]);
-        const flags = self.old_ast.extra_data.items[extra_start + 2];
-        const deco_start = self.old_ast.extra_data.items[extra_start + 3];
-        const deco_len = self.old_ast.extra_data.items[extra_start + 4];
-
-        const new_key = try self.visitNode(key_idx);
-        const new_value = try self.visitNode(value_idx);
-
-        // decorator 리스트 방문
-        const old_decos = self.old_ast.extra_data.items[deco_start .. deco_start + deco_len];
-        const scratch_top = self.scratch.items.len;
-        defer self.scratch.shrinkRetainingCapacity(scratch_top);
-
-        for (old_decos) |raw_idx| {
-            const new_deco = try self.visitNode(@enumFromInt(raw_idx));
-            if (!new_deco.isNone()) {
-                try self.scratch.append(new_deco);
-            }
-        }
-
-        const new_decos = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-        const new_extra = try self.new_ast.addExtra(@intFromEnum(new_key));
-        _ = try self.new_ast.addExtra(@intFromEnum(new_value));
-        _ = try self.new_ast.addExtra(flags);
-        _ = try self.new_ast.addExtra(new_decos.start);
-        _ = try self.new_ast.addExtra(new_decos.len);
-
-        return self.new_ast.addNode(.{
-            .tag = .method_definition,
-            .span = node.span,
-            .data = .{ .extra = new_extra },
+        const e = node.data.extra;
+        const new_key = try self.visitNode(self.readNodeIdx(e, 0));
+        const new_value = try self.visitNode(self.readNodeIdx(e, 1));
+        const new_decos = try self.visitExtraList(self.readU32(e, 3), self.readU32(e, 4));
+        return self.addExtraNode(.method_definition, node.span, &.{
+            @intFromEnum(new_key), @intFromEnum(new_value), self.readU32(e, 2), new_decos.start, new_decos.len,
         });
     }
 
     /// property_definition: extra_data = [key, value, flags, type_ann, decorators_start, decorators_len]
     fn visitPropertyDefinition(self: *Transformer, node: Node) Error!NodeIndex {
-        const extra_start = node.data.extra;
-        const key_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[extra_start]);
-        const value_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[extra_start + 1]);
-        const flags = self.old_ast.extra_data.items[extra_start + 2];
-        // type_ann (extra_start + 3)은 TS → 스킵
-        const deco_start = self.old_ast.extra_data.items[extra_start + 4];
-        const deco_len = self.old_ast.extra_data.items[extra_start + 5];
-
-        const new_key = try self.visitNode(key_idx);
-        const new_value = try self.visitNode(value_idx);
-
-        // decorator 리스트 방문
-        const old_decos = self.old_ast.extra_data.items[deco_start .. deco_start + deco_len];
-        const scratch_top = self.scratch.items.len;
-        defer self.scratch.shrinkRetainingCapacity(scratch_top);
-
-        for (old_decos) |raw_idx| {
-            const new_deco = try self.visitNode(@enumFromInt(raw_idx));
-            if (!new_deco.isNone()) {
-                try self.scratch.append(new_deco);
-            }
-        }
-
-        const new_decos = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-        const new_extra = try self.new_ast.addExtra(@intFromEnum(new_key));
-        _ = try self.new_ast.addExtra(@intFromEnum(new_value));
-        _ = try self.new_ast.addExtra(flags);
-        _ = try self.new_ast.addExtra(@intFromEnum(NodeIndex.none)); // type_ann 제거
-        _ = try self.new_ast.addExtra(new_decos.start);
-        _ = try self.new_ast.addExtra(new_decos.len);
-
-        return self.new_ast.addNode(.{
-            .tag = .property_definition,
-            .span = node.span,
-            .data = .{ .extra = new_extra },
+        const e = node.data.extra;
+        const new_key = try self.visitNode(self.readNodeIdx(e, 0));
+        const new_value = try self.visitNode(self.readNodeIdx(e, 1));
+        const new_decos = try self.visitExtraList(self.readU32(e, 4), self.readU32(e, 5));
+        const none = @intFromEnum(NodeIndex.none);
+        return self.addExtraNode(.property_definition, node.span, &.{
+            @intFromEnum(new_key), @intFromEnum(new_value), self.readU32(e, 2),
+            none, // type_ann 제거
+            new_decos.start, new_decos.len,
         });
     }
 
     /// object_property: extra_data = [key, value, flags]
     fn visitObjectProperty(self: *Transformer, node: Node) Error!NodeIndex {
-        const extra_start = node.data.extra;
-        const key_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[extra_start]);
-        const value_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[extra_start + 1]);
-        const flags = self.old_ast.extra_data.items[extra_start + 2];
-
-        const new_key = try self.visitNode(key_idx);
-        const new_value = try self.visitNode(value_idx);
-
-        const new_extra = try self.new_ast.addExtra(@intFromEnum(new_key));
-        _ = try self.new_ast.addExtra(@intFromEnum(new_value));
-        _ = try self.new_ast.addExtra(flags);
-
-        return self.new_ast.addNode(.{
-            .tag = .object_property,
-            .span = node.span,
-            .data = .{ .extra = new_extra },
+        const e = node.data.extra;
+        const new_key = try self.visitNode(self.readNodeIdx(e, 0));
+        const new_value = try self.visitNode(self.readNodeIdx(e, 1));
+        return self.addExtraNode(.object_property, node.span, &.{
+            @intFromEnum(new_key), @intFromEnum(new_value), self.readU32(e, 2),
         });
     }
 
     /// formal_parameter: extra_data = [pattern, type_ann, default_value, decorators_start, decorators_len]
     fn visitFormalParameter(self: *Transformer, node: Node) Error!NodeIndex {
-        const extra_start = node.data.extra;
-        const pattern_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[extra_start]);
-        // type_ann (extra_start + 1)은 TS → 스킵
-        const default_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[extra_start + 2]);
-        const deco_start = self.old_ast.extra_data.items[extra_start + 3];
-        const deco_len = self.old_ast.extra_data.items[extra_start + 4];
-
-        const new_pattern = try self.visitNode(pattern_idx);
-        const new_default = try self.visitNode(default_idx);
-
-        // decorator 리스트 방문
-        const old_decos = self.old_ast.extra_data.items[deco_start .. deco_start + deco_len];
-        const scratch_top = self.scratch.items.len;
-        defer self.scratch.shrinkRetainingCapacity(scratch_top);
-
-        for (old_decos) |raw_idx| {
-            const new_deco = try self.visitNode(@enumFromInt(raw_idx));
-            if (!new_deco.isNone()) {
-                try self.scratch.append(new_deco);
-            }
-        }
-
-        const new_decos = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-        const new_extra = try self.new_ast.addExtra(@intFromEnum(new_pattern));
-        _ = try self.new_ast.addExtra(@intFromEnum(NodeIndex.none)); // type_ann 제거
-        _ = try self.new_ast.addExtra(@intFromEnum(new_default));
-        _ = try self.new_ast.addExtra(new_decos.start);
-        _ = try self.new_ast.addExtra(new_decos.len);
-
-        return self.new_ast.addNode(.{
-            .tag = .formal_parameter,
-            .span = node.span,
-            .data = .{ .extra = new_extra },
+        const e = node.data.extra;
+        const new_pattern = try self.visitNode(self.readNodeIdx(e, 0));
+        const new_default = try self.visitNode(self.readNodeIdx(e, 2));
+        const new_decos = try self.visitExtraList(self.readU32(e, 3), self.readU32(e, 4));
+        const none = @intFromEnum(NodeIndex.none);
+        return self.addExtraNode(.formal_parameter, node.span, &.{
+            @intFromEnum(new_pattern), none, @intFromEnum(new_default), // type_ann 제거
+            new_decos.start, new_decos.len,
         });
     }
 
     /// import_declaration: extra_data = [source, specifiers_start, specifiers_len, attributes_start, attributes_len]
     fn visitImportDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
-        const extra_start = node.data.extra;
-        const source_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[extra_start]);
-        const specs_start = self.old_ast.extra_data.items[extra_start + 1];
-        const specs_len = self.old_ast.extra_data.items[extra_start + 2];
-        const attrs_start = self.old_ast.extra_data.items[extra_start + 3];
-        const attrs_len = self.old_ast.extra_data.items[extra_start + 4];
-
-        const new_source = try self.visitNode(source_idx);
-
-        // specifiers 복사
-        const old_specs = self.old_ast.extra_data.items[specs_start .. specs_start + specs_len];
-        const scratch_top = self.scratch.items.len;
-
-        for (old_specs) |raw_idx| {
-            const new_spec = try self.visitNode(@enumFromInt(raw_idx));
-            if (!new_spec.isNone()) {
-                try self.scratch.append(new_spec);
-            }
-        }
-        const new_specs = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-        self.scratch.shrinkRetainingCapacity(scratch_top);
-
-        // attributes 복사
-        const old_attrs = self.old_ast.extra_data.items[attrs_start .. attrs_start + attrs_len];
-        const scratch_top2 = self.scratch.items.len;
-
-        for (old_attrs) |raw_idx| {
-            const new_attr = try self.visitNode(@enumFromInt(raw_idx));
-            if (!new_attr.isNone()) {
-                try self.scratch.append(new_attr);
-            }
-        }
-        const new_attrs = try self.new_ast.addNodeList(self.scratch.items[scratch_top2..]);
-        self.scratch.shrinkRetainingCapacity(scratch_top2);
-
-        const new_extra = try self.new_ast.addExtra(@intFromEnum(new_source));
-        _ = try self.new_ast.addExtra(new_specs.start);
-        _ = try self.new_ast.addExtra(new_specs.len);
-        _ = try self.new_ast.addExtra(new_attrs.start);
-        _ = try self.new_ast.addExtra(new_attrs.len);
-
-        return self.new_ast.addNode(.{
-            .tag = .import_declaration,
-            .span = node.span,
-            .data = .{ .extra = new_extra },
+        const e = node.data.extra;
+        const new_source = try self.visitNode(self.readNodeIdx(e, 0));
+        const new_specs = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
+        const new_attrs = try self.visitExtraList(self.readU32(e, 3), self.readU32(e, 4));
+        return self.addExtraNode(.import_declaration, node.span, &.{
+            @intFromEnum(new_source), new_specs.start, new_specs.len, new_attrs.start, new_attrs.len,
         });
     }
 
     /// export_named_declaration: extra_data = [declaration, specifiers_start, specifiers_len, source]
     fn visitExportNamedDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
-        const extra_start = node.data.extra;
-        const decl_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[extra_start]);
-        const specs_start = self.old_ast.extra_data.items[extra_start + 1];
-        const specs_len = self.old_ast.extra_data.items[extra_start + 2];
-        const source_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[extra_start + 3]);
-
-        const new_decl = try self.visitNode(decl_idx);
-        const new_source = try self.visitNode(source_idx);
-
-        // specifiers 복사
-        const old_specs = self.old_ast.extra_data.items[specs_start .. specs_start + specs_len];
-        const scratch_top = self.scratch.items.len;
-        defer self.scratch.shrinkRetainingCapacity(scratch_top);
-
-        for (old_specs) |raw_idx| {
-            const new_spec = try self.visitNode(@enumFromInt(raw_idx));
-            if (!new_spec.isNone()) {
-                try self.scratch.append(new_spec);
-            }
-        }
-        const new_specs = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-
-        const new_extra = try self.new_ast.addExtra(@intFromEnum(new_decl));
-        _ = try self.new_ast.addExtra(new_specs.start);
-        _ = try self.new_ast.addExtra(new_specs.len);
-        _ = try self.new_ast.addExtra(@intFromEnum(new_source));
-
-        return self.new_ast.addNode(.{
-            .tag = .export_named_declaration,
-            .span = node.span,
-            .data = .{ .extra = new_extra },
+        const e = node.data.extra;
+        const new_decl = try self.visitNode(self.readNodeIdx(e, 0));
+        const new_specs = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
+        const new_source = try self.visitNode(self.readNodeIdx(e, 3));
+        return self.addExtraNode(.export_named_declaration, node.span, &.{
+            @intFromEnum(new_decl), new_specs.start, new_specs.len, @intFromEnum(new_source),
         });
-    }
-
-    /// export_default_declaration: unary = { operand = declaration }
-    fn visitExportDefaultDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
-        return self.visitUnaryNode(node);
-    }
-
-    /// export_all_declaration: binary = { left = source, right = exported_name }
-    fn visitExportAllDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
-        return self.visitBinaryNode(node);
-    }
-
-    /// catch_clause: binary = { left = param, right = body }
-    fn visitCatchClause(self: *Transformer, node: Node) Error!NodeIndex {
-        return self.visitBinaryNode(node);
-    }
-
-    /// binding_property: binary = { left = key, right = value }
-    fn visitBindingProperty(self: *Transformer, node: Node) Error!NodeIndex {
-        return self.visitBinaryNode(node);
-    }
-
-    /// assignment_pattern: binary = { left = target, right = default_value }
-    fn visitAssignmentPattern(self: *Transformer, node: Node) Error!NodeIndex {
-        return self.visitBinaryNode(node);
-    }
-
-    /// accessor_property: extra_data와 유사, 지금은 binary 처리
-    fn visitAccessorProperty(self: *Transformer, node: Node) Error!NodeIndex {
-        return self.visitBinaryNode(node);
     }
 
     // ================================================================
