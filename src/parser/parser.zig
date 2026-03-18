@@ -202,7 +202,7 @@ pub const Parser = struct {
 
     fn parseVariableDeclaration(self: *Parser) !NodeIndex {
         const start = self.currentSpan().start;
-        const kind_flags: u16 = switch (self.current()) {
+        const kind_flags: u32 = switch (self.current()) {
             .kw_var => 0,
             .kw_let => 1,
             .kw_const => 2,
@@ -210,23 +210,26 @@ pub const Parser = struct {
         };
         self.advance(); // skip var/let/const
 
-        var declarators = std.ArrayList(NodeIndex).init(self.allocator);
-        defer declarators.deinit();
-
+        self.scratch.clearRetainingCapacity();
         while (true) {
             const decl = try self.parseVariableDeclarator();
-            try declarators.append(decl);
+            try self.scratch.append(decl);
             if (!self.eat(.comma)) break;
         }
 
         const end = self.currentSpan().end;
         _ = self.eat(.semicolon);
 
-        const list = try self.ast.addNodeList(declarators.items);
+        const list = try self.ast.addNodeList(self.scratch.items);
+        // extra_data: [kind_flags, list.start, list.len]
+        const extra_start = try self.ast.addExtra(kind_flags);
+        _ = try self.ast.addExtra(list.start);
+        _ = try self.ast.addExtra(list.len);
+
         return try self.ast.addNode(.{
             .tag = .variable_declaration,
             .span = .{ .start = start, .end = end },
-            .data = .{ .binary = .{ .left = @enumFromInt(list.start), .right = @enumFromInt(list.len), .flags = kind_flags } },
+            .data = .{ .extra = extra_start },
         });
     }
 
@@ -725,7 +728,9 @@ pub const Parser = struct {
 
     fn parseObjectProperty(self: *Parser) !NodeIndex {
         const start = self.currentSpan().start;
-        const key = try self.parsePrimaryExpression(); // 간단히 expression으로 키 파싱
+
+        // 키: identifier, string, number, 또는 computed [expr]
+        const key = try self.parsePropertyKey();
 
         var value = NodeIndex.none;
         if (self.eat(.colon)) {
@@ -766,6 +771,64 @@ pub const Parser = struct {
         self.addError(span, "identifier expected");
         self.advance();
         return try self.ast.addNode(.{ .tag = .invalid, .span = span, .data = .{ .none = {} } });
+    }
+
+    /// 객체 프로퍼티 키를 파싱한다.
+    /// 허용: identifier, string literal, numeric literal, computed [expr].
+    fn parsePropertyKey(self: *Parser) !NodeIndex {
+        const span = self.currentSpan();
+        switch (self.current()) {
+            .identifier, .kw_get, .kw_set, .kw_async, .kw_static => {
+                // 키워드도 프로퍼티 키로 사용 가능 (get, set 등)
+                self.advance();
+                return try self.ast.addNode(.{
+                    .tag = .identifier_reference,
+                    .span = span,
+                    .data = .{ .string_ref = span },
+                });
+            },
+            .string_literal => {
+                self.advance();
+                return try self.ast.addNode(.{
+                    .tag = .string_literal,
+                    .span = span,
+                    .data = .{ .string_ref = span },
+                });
+            },
+            .decimal, .float, .hex, .octal, .binary, .positive_exponential, .negative_exponential => {
+                self.advance();
+                return try self.ast.addNode(.{
+                    .tag = .numeric_literal,
+                    .span = span,
+                    .data = .{ .none = {} },
+                });
+            },
+            .l_bracket => {
+                // computed property: [expr]
+                self.advance();
+                const expr = try self.parseAssignmentExpression();
+                self.expect(.r_bracket);
+                return try self.ast.addNode(.{
+                    .tag = .computed_property_key,
+                    .span = .{ .start = span.start, .end = self.currentSpan().start },
+                    .data = .{ .unary = .{ .operand = expr } },
+                });
+            },
+            else => {
+                // 다른 키워드도 프로퍼티 키로 허용 (class, return 등)
+                if (self.current().isKeyword()) {
+                    self.advance();
+                    return try self.ast.addNode(.{
+                        .tag = .identifier_reference,
+                        .span = span,
+                        .data = .{ .string_ref = span },
+                    });
+                }
+                self.addError(span, "property key expected");
+                self.advance();
+                return try self.ast.addNode(.{ .tag = .invalid, .span = span, .data = .{ .none = {} } });
+            },
+        }
     }
 
     // ================================================================

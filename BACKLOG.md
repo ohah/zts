@@ -57,6 +57,16 @@
 | 27 | /= vs regex 순서 (= /=test/ 케이스) | esbuild/Bun 동일 동작 | 문서화 완료, 수정 불필요 |
 | 28 | runner.zig failed_list 메모리 누수 (에러 경로) | arena allocator로 교체 | Phase 2 |
 
+### PR #18: feat(parser): base parser
+
+| # | 항목 | 이유 | 해결 시점 |
+|---|------|------|----------|
+| 29 | for-in/for-of 파싱 미구현 | 현재 for(;;)만 지원 | Phase 2 다음 PR |
+| 30 | 에러 메시지에 컨텍스트 부족 (`"("` → `"expected '(' after 'for'"`) | UX | Phase 5 (CLI) |
+| 31 | 나머지 parseXxx에서 scratch ArrayList 미적용 (block, array, object, function params) | 성능 | 최적화 PR |
+| 32 | shorthand property (`{x}` = `{x: x}`) 미지원 | 문법 | Phase 2 다음 PR |
+| 33 | spread in array/object (`...x`) 미지원 | 문법 | Phase 2 다음 PR |
+
 ---
 
 ## 추후 개선
