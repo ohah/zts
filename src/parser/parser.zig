@@ -587,11 +587,10 @@ pub const Parser = struct {
 
         // 파라미터
         self.expect(.l_paren);
-        var params = std.ArrayList(NodeIndex).init(self.allocator);
-        defer params.deinit();
+        const scratch_top = self.saveScratch();
         while (self.current() != .r_paren and self.current() != .eof) {
             const param = try self.parseBindingIdentifier();
-            try params.append(param);
+            try self.scratch.append(param);
             if (!self.eat(.comma)) break;
         }
         self.expect(.r_paren);
@@ -599,7 +598,8 @@ pub const Parser = struct {
         // 본문
         const body = try self.parseBlockStatement();
 
-        const param_list = try self.ast.addNodeList(params.items);
+        const param_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        self.restoreScratch(scratch_top);
         const extra_start = try self.ast.addExtra(@intFromEnum(name));
         _ = try self.ast.addExtra(param_list.start);
         _ = try self.ast.addExtra(param_list.len);
@@ -718,10 +718,13 @@ pub const Parser = struct {
         const start = self.currentSpan().start;
 
         // static 키워드 (선택)
+        // static은 멤버 이름으로도 사용 가능: class C { static() {} }
+        // static 뒤에 {, (, = 가 오면 이름으로 취급
         var flags: u16 = 0;
         if (self.current() == .kw_static) {
-            // static { } — static block
-            if (self.peekNextKind() == .l_curly) {
+            const next = self.peekNextKind();
+            if (next == .l_curly) {
+                // static { } — static block
                 self.advance(); // skip 'static'
                 const body = try self.parseBlockStatement();
                 return try self.ast.addNode(.{
@@ -730,8 +733,11 @@ pub const Parser = struct {
                     .data = .{ .unary = .{ .operand = body } },
                 });
             }
-            flags |= 0x01; // static flag
-            self.advance();
+            // static 뒤에 (나 = 가 오면 static은 메서드/프로퍼티 이름
+            if (next != .l_paren and next != .eq and next != .semicolon) {
+                flags |= 0x01; // static modifier
+                self.advance();
+            }
         }
 
         // get/set (선택)
@@ -766,10 +772,12 @@ pub const Parser = struct {
             _ = try self.ast.addExtra(param_list.len);
             _ = try self.ast.addExtra(@intFromEnum(body));
 
+            _ = try self.ast.addExtra(flags);
+
             return try self.ast.addNode(.{
                 .tag = .method_definition,
                 .span = .{ .start = start, .end = self.currentSpan().start },
-                .data = .{ .binary = .{ .left = @enumFromInt(extra_start), .right = NodeIndex.none, .flags = flags } },
+                .data = .{ .extra = extra_start },
             });
         }
 
@@ -795,6 +803,9 @@ pub const Parser = struct {
         const saved_token = self.scanner.token;
         const saved_line = self.scanner.line;
         const saved_line_start = self.scanner.line_start;
+        const saved_brace_depth = self.scanner.brace_depth;
+        const saved_prev_token = self.scanner.prev_token_kind;
+        const saved_template_len = self.scanner.template_depth_stack.items.len;
 
         self.scanner.next();
         const next_kind = self.scanner.token.kind;
@@ -804,6 +815,9 @@ pub const Parser = struct {
         self.scanner.token = saved_token;
         self.scanner.line = saved_line;
         self.scanner.line_start = saved_line_start;
+        self.scanner.brace_depth = saved_brace_depth;
+        self.scanner.prev_token_kind = saved_prev_token;
+        self.scanner.template_depth_stack.shrinkRetainingCapacity(saved_template_len);
 
         return next_kind;
     }
