@@ -626,6 +626,8 @@ pub const Parser = struct {
             const saved_pos = self.scanner.current;
             const saved_start = self.scanner.start;
             const saved_token = self.scanner.token;
+            const saved_line = self.scanner.line;
+            const saved_line_start = self.scanner.line_start;
 
             self.advance(); // skip identifier
             if (self.current() == .arrow) {
@@ -652,6 +654,8 @@ pub const Parser = struct {
             self.scanner.current = saved_pos;
             self.scanner.start = saved_start;
             self.scanner.token = saved_token;
+            self.scanner.line = saved_line;
+            self.scanner.line_start = saved_line_start;
         }
 
         const left = try self.parseConditionalExpression();
@@ -1030,7 +1034,7 @@ pub const Parser = struct {
 
     /// 객체 프로퍼티 키를 파싱한다.
     /// 허용: identifier, string literal, numeric literal, computed [expr].
-    /// ...expr または assignment expression を파싱. spread가 있으면 spread_element로 감싼다.
+    /// spread (...expr) 또는 assignment expression을 파싱. ...가 있으면 spread_element로 감싼다.
     fn parseSpreadOrAssignment(self: *Parser) !NodeIndex {
         if (self.current() == .dot3) {
             const start = self.currentSpan().start;
