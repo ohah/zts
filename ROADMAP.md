@@ -55,13 +55,17 @@ JS/TS 소스 코드를 토큰으로 분리.
 
 ---
 
-## Phase 2: Parser (파서)
+## Phase 2: Parser (파서) — 진행 중
 토큰 스트림을 AST로 변환.
 
-### 목표
-- [ ] AST 노드 타입 정의 (24바이트 고정 크기)
-- [ ] Arena allocator 기반 AST 메모리 관리
-- [ ] 인덱스 기반 노드 참조 (포인터 대신)
+### 구현 완료
+- [x] AST 노드 타입 정의 (~200개 Tag, 24바이트 고정) — PR #17
+- [x] 인덱스 기반 노드 참조 (NodeIndex u32, D004) — PR #17
+- [x] 재귀 하강 파서 기본 (statement + expression) — PR #18
+- [x] Precedence climbing (11단계 이항 연산자) — PR #18
+- [x] 에러 복구 (다중 에러 수집, D039) — PR #18
+
+### 구현 예정 (PR 순서)
 
 ### ECMAScript 구문 (ES2024)
 - [ ] 리터럴 (string, number, boolean, null, undefined, regex, template)
