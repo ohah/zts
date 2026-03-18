@@ -562,15 +562,19 @@ pub const Transformer = struct {
 
     /// class_declaration / class_expression
     /// extra_data = [name, super_class, body, type_params, implements_start, implements_len]
+    /// class: extra = [name, super, body, type_params, impl_start, impl_len, deco_start, deco_len]
     fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
         const new_name = try self.visitNode(self.readNodeIdx(e, 0));
         const new_super = try self.visitNode(self.readNodeIdx(e, 1));
         const new_body = try self.visitNode(self.readNodeIdx(e, 2));
+        // decorator 리스트 복사
+        const new_decos = try self.visitExtraList(self.readU32(e, 6), self.readU32(e, 7));
         const none = @intFromEnum(NodeIndex.none);
         return self.addExtraNode(node.tag, node.span, &.{
             @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
             none, 0, 0, // type_params, implements 제거
+            new_decos.start, new_decos.len,
         });
     }
 

@@ -18,6 +18,7 @@ const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
 const Tag = Node.Tag;
 const NodeIndex = ast_mod.NodeIndex;
+const NodeList = ast_mod.NodeList;
 
 /// 파서 에러 하나.
 pub const ParseError = struct {
@@ -705,15 +706,16 @@ pub const Parser = struct {
     }
 
     fn parseClassDeclaration(self: *Parser) ParseError2!NodeIndex {
-        return self.parseClass(.class_declaration);
+        return self.parseClassWithDecorators(.class_declaration, .{ .start = 0, .len = 0 });
     }
 
     fn parseClassExpression(self: *Parser) ParseError2!NodeIndex {
-        return self.parseClass(.class_expression);
+        return self.parseClassWithDecorators(.class_expression, .{ .start = 0, .len = 0 });
     }
 
     /// class 선언/표현식을 파싱한다.
-    fn parseClass(self: *Parser, tag: Tag) ParseError2!NodeIndex {
+    /// extra = [name, super_class, body, type_params, implements_start, implements_len, deco_start, deco_len]
+    fn parseClassWithDecorators(self: *Parser, tag: Tag, decorators: NodeList) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'class'
 
@@ -737,7 +739,6 @@ pub const Parser = struct {
 
         // TS implements 절 (선택): class Foo implements Bar, Baz
         if (self.eat(.kw_implements)) {
-            // implements 타입 리스트 파싱 (AST에는 저장하지 않고 스킵 — 스트리핑 대상)
             _ = try self.parseType();
             while (self.eat(.comma)) {
                 _ = try self.parseType();
@@ -747,9 +748,17 @@ pub const Parser = struct {
         // 클래스 본문
         const body = try self.parseClassBody();
 
-        const extra_start = try self.ast.addExtra(@intFromEnum(name));
-        _ = try self.ast.addExtra(@intFromEnum(super_class));
-        _ = try self.ast.addExtra(@intFromEnum(body));
+        const none = @intFromEnum(NodeIndex.none);
+        const extra_start = try self.ast.addExtras(&.{
+            @intFromEnum(name),
+            @intFromEnum(super_class),
+            @intFromEnum(body),
+            @intFromEnum(type_params),
+            0, 0, // implements (스트리핑 대상이므로 빈 리스트)
+            decorators.start,
+            decorators.len,
+        });
+        _ = none;
 
         return try self.ast.addNode(.{
             .tag = tag,
@@ -2542,11 +2551,9 @@ pub const Parser = struct {
         }
         const decorators = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
         self.restoreScratch(scratch_top);
-        _ = decorators; // TODO: 데코레이터를 클래스 노드에 연결 (BACKLOG)
-
         // 데코레이터 뒤에 올 수 있는 것: class, export, abstract
         return switch (self.current()) {
-            .kw_class => self.parseClassDeclaration(),
+            .kw_class => self.parseClassWithDecorators(.class_declaration, decorators),
             .kw_export => self.parseExportDeclaration(),
             .kw_abstract => self.parseTsAbstractClass(),
             else => {
