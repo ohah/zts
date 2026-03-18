@@ -197,7 +197,7 @@ AST를 변환하여 JS로 출력 가능한 형태로 만듦.
 스펙 안정화 및 리소스 확보 후 진행.
 
 - [ ] Stage 3 (TC39) decorator — 스펙이 Stage 4 도달 또는 안정화 후 구현
-- [ ] ES 다운레벨링 (ES2024→ES2016 점진적, ES2015는 그 이후, ES5 미지원)
+- [ ] ES 다운레벨링 (ES2024→ES2016 점진적, ES2015는 그 이후, ES5는 미정)
 - [ ] loose 모드 (비표준이지만 빠른 다운레벨링)
 - [ ] 미니파이어
 - [ ] 번들러 (paths/baseUrl/moduleResolution 활성화, UMD 출력)
