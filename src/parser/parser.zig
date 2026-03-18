@@ -1447,8 +1447,19 @@ pub const Parser = struct {
             .kw_class => return self.parseClassExpression(),
             .kw_function => return self.parseFunctionExpression(),
             .kw_import => {
-                // dynamic import: import("module")
                 self.advance(); // skip 'import'
+                if (self.current() == .dot) {
+                    // import.meta
+                    self.advance(); // skip '.'
+                    const meta_span = self.currentSpan();
+                    self.expect(.kw_meta);
+                    return try self.ast.addNode(.{
+                        .tag = .meta_property,
+                        .span = .{ .start = span.start, .end = meta_span.end },
+                        .data = .{ .none = {} },
+                    });
+                }
+                // dynamic import: import("module")
                 self.expect(.l_paren);
                 const arg = try self.parseAssignmentExpression();
                 self.expect(.r_paren);
@@ -1489,6 +1500,12 @@ pub const Parser = struct {
         while (self.current() != .r_bracket and self.current() != .eof) {
             if (self.current() == .comma) {
                 // elision (빈 슬롯)
+                const hole_span = self.currentSpan();
+                try elements.append(try self.ast.addNode(.{
+                    .tag = .elision,
+                    .span = hole_span,
+                    .data = .{ .none = {} },
+                }));
                 self.advance();
                 continue;
             }
@@ -1606,7 +1623,7 @@ pub const Parser = struct {
                 // elision (빈 슬롯) — placeholder 노드 추가
                 const hole_span = self.currentSpan();
                 try self.scratch.append(try self.ast.addNode(.{
-                    .tag = .empty_statement, // 빈 슬롯 표현용
+                    .tag = .elision,
                     .span = hole_span,
                     .data = .{ .none = {} },
                 }));
@@ -2479,6 +2496,26 @@ test "Parser: assignment destructuring (array)" {
 
 test "Parser: assignment destructuring (object)" {
     var scanner = Scanner.init(std.testing.allocator, "({ x, y } = obj);");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: import.meta" {
+    var scanner = Scanner.init(std.testing.allocator, "const url = import.meta.url;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: array elision [, , x]" {
+    var scanner = Scanner.init(std.testing.allocator, "const [, , x] = arr;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
