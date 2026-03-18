@@ -36,6 +36,8 @@ pub const Codegen = struct {
 
     /// AST를 JS 문자열로 출력한다.
     pub fn generate(self: *Codegen, root: NodeIndex) ![]const u8 {
+        // 출력 크기는 보통 소스 크기와 비슷 → 사전 할당
+        try self.buf.ensureTotalCapacity(self.ast.source.len);
         try self.emitNode(root);
         return self.buf.items;
     }
@@ -137,7 +139,7 @@ pub const Codegen = struct {
             .private_field_expression => try self.emitStaticMember(node),
             .call_expression => try self.emitCall(node),
             .new_expression => try self.emitNew(node),
-            .template_literal => try self.emitTemplateLiteral(node),
+            .template_literal => try self.writeNodeSpan(node),
             .template_element => try self.writeNodeSpan(node),
             .tagged_template_expression => try self.emitTaggedTemplate(node),
             .import_expression => try self.emitImportExpr(node),
@@ -166,14 +168,15 @@ pub const Codegen = struct {
 
             // Import/Export
             .import_declaration => try self.emitImport(node),
-            .import_specifier => try self.emitImportSpec(node),
-            .import_default_specifier => try self.emitImportDefault(node),
-            .import_namespace_specifier => try self.emitImportNamespace(node),
-            .import_attribute => try self.writeNodeSpan(node),
+            .import_specifier,
+            .import_default_specifier,
+            .import_namespace_specifier,
+            .import_attribute,
+            => try self.writeNodeSpan(node),
             .export_named_declaration => try self.emitExportNamed(node),
             .export_default_declaration => try self.emitExportDefault(node),
             .export_all_declaration => try self.emitExportAll(node),
-            .export_specifier => try self.emitExportSpec(node),
+            .export_specifier => try self.writeNodeSpan(node),
 
             // Formal parameters
             .formal_parameters, .function_body => try self.emitList(node, ", "),
@@ -199,6 +202,11 @@ pub const Codegen = struct {
     }
 
     fn emitBlock(self: *Codegen, node: Node) !void {
+        try self.emitBracedList(node);
+    }
+
+    /// { item1 item2 ... } — 블록과 클래스 바디 공통
+    fn emitBracedList(self: *Codegen, node: Node) !void {
         try self.writeByte('{');
         const list = node.data.list;
         const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
@@ -484,10 +492,6 @@ pub const Codegen = struct {
         try self.writeByte(')');
     }
 
-    fn emitTemplateLiteral(self: *Codegen, node: Node) !void {
-        try self.writeNodeSpan(node);
-    }
-
     fn emitTaggedTemplate(self: *Codegen, node: Node) !void {
         try self.emitNode(node.data.binary.left);
         try self.emitNode(node.data.binary.right);
@@ -560,13 +564,7 @@ pub const Codegen = struct {
     }
 
     fn emitClassBody(self: *Codegen, node: Node) !void {
-        try self.writeByte('{');
-        const list = node.data.list;
-        const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
-        for (indices) |raw_idx| {
-            try self.emitNode(@enumFromInt(raw_idx));
-        }
-        try self.writeByte('}');
+        try self.emitBracedList(node);
     }
 
     fn emitMethodDef(self: *Codegen, node: Node) !void {
@@ -695,17 +693,6 @@ pub const Codegen = struct {
         try self.writeByte(';');
     }
 
-    fn emitImportSpec(self: *Codegen, node: Node) !void {
-        try self.writeNodeSpan(node);
-    }
-
-    fn emitImportDefault(self: *Codegen, node: Node) !void {
-        try self.writeNodeSpan(node);
-    }
-
-    fn emitImportNamespace(self: *Codegen, node: Node) !void {
-        try self.writeNodeSpan(node);
-    }
 
     fn emitExportNamed(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
@@ -740,10 +727,6 @@ pub const Codegen = struct {
         try self.write("export * from ");
         try self.emitNode(node.data.binary.left);
         try self.writeByte(';');
-    }
-
-    fn emitExportSpec(self: *Codegen, node: Node) !void {
-        try self.writeNodeSpan(node);
     }
 
     // ================================================================
