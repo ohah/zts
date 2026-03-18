@@ -571,12 +571,23 @@ pub const Codegen = struct {
         try self.emitNode(body);
     }
 
+    /// class: extra = [name, super, body, type_params, impl_start, impl_len, deco_start, deco_len]
     fn emitClass(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
-        const extras = self.ast.extra_data.items[e .. e + 6];
-        const name: NodeIndex = @enumFromInt(extras[0]);
-        const super_class: NodeIndex = @enumFromInt(extras[1]);
-        const body: NodeIndex = @enumFromInt(extras[2]);
+        const name: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+        const super_class: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
+        const body: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
+        const deco_start = self.ast.extra_data.items[e + 6];
+        const deco_len = self.ast.extra_data.items[e + 7];
+
+        // decorator 출력: @log\n@validate\nclass Foo {}
+        if (deco_len > 0) {
+            const deco_indices = self.ast.extra_data.items[deco_start .. deco_start + deco_len];
+            for (deco_indices) |raw_idx| {
+                try self.emitNode(@enumFromInt(raw_idx));
+                try self.writeByte('\n');
+            }
+        }
 
         try self.write("class");
         if (!name.isNone()) {
