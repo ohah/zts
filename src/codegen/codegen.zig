@@ -748,20 +748,46 @@ pub const Codegen = struct {
     /// React.createElement("div",{className:"foo"},"hello")
     fn emitJSXElement(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
-        const extras = self.ast.extra_data.items[e..];
-        const tag_name_idx: NodeIndex = @enumFromInt(extras[0]);
-        const attrs_start = extras[1];
-        const attrs_len = extras[2];
+        const tag_name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+        const attrs_start = self.ast.extra_data.items[e + 1];
+        const attrs_len = self.ast.extra_data.items[e + 2];
 
-        // children이 있으면 extras[3], extras[4]도 있음
-        const has_children = (e + 5 <= self.ast.extra_data.items.len) and
-            (extras.len >= 5);
-        const children_start = if (has_children) extras[3] else 0;
-        const children_len = if (has_children) extras[4] else 0;
+        // self-closing은 extra 3개, with-children은 5개
+        // extra_data 배열에서 이 노드 다음에 다른 노드의 데이터가 올 수 있으므로
+        // children 유무는 파서가 저장한 extra 개수로 판단해야 한다.
+        // self-closing: extra = [tag, attrs_start, attrs_len]
+        // with-children: extra = [tag, attrs_start, attrs_len, children_start, children_len]
+        // 판별: children_len > 0 이면 children 있음. self-closing이면 e+3, e+4가 다른 노드 데이터.
+        // 안전한 방법: 노드의 span으로 self-closing 여부 판별하거나, 파서에서 명시적으로 구분.
+        // 현재: extra_data[e+3]을 읽되, 값이 합리적인 범위인지 검증.
+        var children_start: u32 = 0;
+        var children_len: u32 = 0;
+        if (e + 5 <= self.ast.extra_data.items.len) {
+            const maybe_len = self.ast.extra_data.items[e + 4];
+            // children_len이 0이면 실질적으로 children 없음
+            if (maybe_len > 0 and maybe_len <= self.ast.extra_data.items.len) {
+                children_start = self.ast.extra_data.items[e + 3];
+                children_len = maybe_len;
+            }
+        }
 
         try self.write("React.createElement(");
+        try self.emitJSXTagName(tag_name_idx);
+        try self.emitJSXAttrs(attrs_start, attrs_len);
+        try self.emitJSXChildren(children_start, children_len);
+        try self.writeByte(')');
+    }
 
-        // tag name: 소문자면 문자열("div"), 대문자면 식별자(MyComp)
+    /// <>{children}</> → React.createElement(React.Fragment,null,...children)
+    fn emitJSXFragment(self: *Codegen, node: Node) !void {
+        try self.write("React.createElement(React.Fragment,null");
+        const list = node.data.list;
+        try self.emitJSXChildren(list.start, list.len);
+        try self.writeByte(')');
+    }
+
+    /// tag name 출력: 소문자면 문자열("div"), 그 외 식별자(MyComp)
+    fn emitJSXTagName(self: *Codegen, tag_name_idx: NodeIndex) !void {
         const tag_node = self.ast.getNode(tag_name_idx);
         const tag_text = self.ast.source[tag_node.span.start..tag_node.span.end];
         if (tag_text.len > 0 and tag_text[0] >= 'a' and tag_text[0] <= 'z') {
@@ -771,11 +797,12 @@ pub const Codegen = struct {
         } else {
             try self.write(tag_text);
         }
+    }
 
-        // attributes → object or null
+    /// attributes → ,{key:val,...} or ,null
+    fn emitJSXAttrs(self: *Codegen, attrs_start: u32, attrs_len: u32) !void {
         if (attrs_len > 0) {
-            try self.writeByte(',');
-            try self.writeByte('{');
+            try self.write(",{");
             const attr_indices = self.ast.extra_data.items[attrs_start .. attrs_start + attrs_len];
             for (attr_indices, 0..) |raw_idx, i| {
                 if (i > 0) try self.writeByte(',');
@@ -791,44 +818,19 @@ pub const Codegen = struct {
         } else {
             try self.write(",null");
         }
-
-        // children
-        if (children_len > 0) {
-            const child_indices = self.ast.extra_data.items[children_start .. children_start + children_len];
-            for (child_indices) |raw_idx| {
-                const child = self.ast.getNode(@enumFromInt(raw_idx));
-                // 빈 텍스트(공백만) 스킵
-                if (child.tag == .jsx_text) {
-                    const text = self.ast.source[child.span.start..child.span.end];
-                    const trimmed = std.mem.trim(u8, text, " \t\n\r");
-                    if (trimmed.len == 0) continue;
-                    try self.writeByte(',');
-                    try self.writeByte('"');
-                    try self.write(trimmed);
-                    try self.writeByte('"');
-                } else {
-                    try self.writeByte(',');
-                    try self.emitNode(@enumFromInt(raw_idx));
-                }
-            }
-        }
-
-        try self.writeByte(')');
     }
 
-    /// <>{children}</> → React.createElement(React.Fragment,null,...children)
-    fn emitJSXFragment(self: *Codegen, node: Node) !void {
-        try self.write("React.createElement(React.Fragment,null");
-        const list = node.data.list;
-        const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+    /// children 출력 (공통 헬퍼)
+    fn emitJSXChildren(self: *Codegen, start: u32, len: u32) !void {
+        if (len == 0) return;
+        const indices = self.ast.extra_data.items[start .. start + len];
         for (indices) |raw_idx| {
             const child = self.ast.getNode(@enumFromInt(raw_idx));
             if (child.tag == .jsx_text) {
                 const text = self.ast.source[child.span.start..child.span.end];
                 const trimmed = std.mem.trim(u8, text, " \t\n\r");
                 if (trimmed.len == 0) continue;
-                try self.writeByte(',');
-                try self.writeByte('"');
+                try self.write(",\"");
                 try self.write(trimmed);
                 try self.writeByte('"');
             } else {
@@ -836,7 +838,6 @@ pub const Codegen = struct {
                 try self.emitNode(@enumFromInt(raw_idx));
             }
         }
-        try self.writeByte(')');
     }
 
     /// JSX attribute: name={value} or name="value"
