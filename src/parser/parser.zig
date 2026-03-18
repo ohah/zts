@@ -1278,6 +1278,16 @@ test "Parser: try-catch-finally" {
     try std.testing.expect(parser.errors.items.len == 0);
 }
 
+test "Parser: try without catch or finally is error" {
+    var scanner = Scanner.init(std.testing.allocator, "try { foo(); }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
 test "Parser: optional catch binding (ES2019)" {
     var scanner = Scanner.init(std.testing.allocator, "try { foo(); } catch { bar(); }");
     defer scanner.deinit();
