@@ -115,17 +115,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_exe_unit_tests.step);
 
     // Test262 러너 테스트
-    // test262.zig 내의 unit test를 실행한다.
-    // `zig build test262` 로 실행 가능.
-    const test262_mod = b.createModule(.{
-        .root_source_file = b.path("src/test262/runner.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const test262_unit_tests = b.addTest(.{
-        .root_module = test262_mod,
-    });
-    const run_test262_unit_tests = b.addRunArtifact(test262_unit_tests);
+    // lib_mod에 이미 test262가 포함되어 있으므로 같은 모듈로 테스트.
+    // `zig build test262` = `zig build test` 와 동일하지만 명시적 스텝.
     const test262_step = b.step("test262", "Run Test262 runner tests");
-    test262_step.dependOn(&run_test262_unit_tests.step);
+    test262_step.dependOn(&run_lib_unit_tests.step);
 }
