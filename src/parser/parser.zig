@@ -262,6 +262,9 @@ pub const Parser = struct {
         // 바인딩 패턴 (identifier, [array], {object} destructuring)
         const name = try self.parseBindingIdentifier();
 
+        // TS 타입 어노테이션 (: Type)
+        _ = try self.tryParseTypeAnnotation();
+
         // 이니셜라이저
         var init_expr = NodeIndex.none;
         if (self.eat(.eq)) {
@@ -607,6 +610,9 @@ pub const Parser = struct {
             if (!self.eat(.comma)) break;
         }
         self.expect(.r_paren);
+
+        // TS 리턴 타입 어노테이션
+        _ = try self.tryParseReturnType();
 
         // 본문
         const body = try self.parseBlockStatement();
@@ -1325,6 +1331,38 @@ pub const Parser = struct {
             });
         }
 
+        // TS: non-null assertion (expr!)
+        if (self.current() == .bang and !self.scanner.token.has_newline_before) {
+            const expr_start = self.ast.getNode(expr).span.start;
+            self.advance();
+            expr = try self.ast.addNode(.{
+                .tag = .ts_non_null_expression,
+                .span = .{ .start = expr_start, .end = self.currentSpan().start },
+                .data = .{ .unary = .{ .operand = expr } },
+            });
+        }
+
+        // TS: as Type / satisfies Type
+        if (self.current() == .kw_as) {
+            const expr_start = self.ast.getNode(expr).span.start;
+            self.advance();
+            const ty = try self.parseType();
+            expr = try self.ast.addNode(.{
+                .tag = .ts_as_expression,
+                .span = .{ .start = expr_start, .end = self.currentSpan().start },
+                .data = .{ .binary = .{ .left = expr, .right = ty } },
+            });
+        } else if (self.current() == .kw_satisfies) {
+            const expr_start = self.ast.getNode(expr).span.start;
+            self.advance();
+            const ty = try self.parseType();
+            expr = try self.ast.addNode(.{
+                .tag = .ts_satisfies_expression,
+                .span = .{ .start = expr_start, .end = self.currentSpan().start },
+                .data = .{ .binary = .{ .left = expr, .right = ty } },
+            });
+        }
+
         return expr;
     }
 
@@ -1578,6 +1616,9 @@ pub const Parser = struct {
                     .span = span,
                     .data = .{ .string_ref = span },
                 });
+                // TS: optional (?) + type annotation
+                _ = self.eat(.question); // optional parameter
+                _ = try self.tryParseTypeAnnotation();
                 // default value: pattern = expr
                 if (self.eat(.eq)) {
                     const default_val = try self.parseAssignmentExpression();
@@ -1878,6 +1919,357 @@ pub const Parser = struct {
             .star2 => 11, // ** (우결합)
             else => 0, // 이항 연산자 아님
         };
+    }
+
+    // ================================================================
+    // TypeScript Type 파싱
+    // ================================================================
+
+    /// `: Type` 어노테이션이 있으면 파싱하고 노드 반환. 없으면 none.
+    fn tryParseTypeAnnotation(self: *Parser) !NodeIndex {
+        if (self.current() != .colon) return NodeIndex.none;
+        // 타입 어노테이션이 아닌 colon인 경우 구분 필요:
+        // object literal `{ key: value }`, ternary `? : `, switch `case:` 등
+        // 여기서는 binding pattern/variable declarator 컨텍스트에서만 호출되므로 안전
+        self.advance(); // skip ':'
+        return self.parseType();
+    }
+
+    /// 리턴 타입 어노테이션 (`: Type`). 함수 선언에서 사용.
+    fn tryParseReturnType(self: *Parser) !NodeIndex {
+        if (self.current() != .colon) return NodeIndex.none;
+        self.advance();
+        return self.parseType();
+    }
+
+    /// TS 타입을 파싱한다. 유니온/인터섹션을 포함.
+    fn parseType(self: *Parser) !NodeIndex {
+        var left = try self.parseIntersectionType();
+
+        // 유니온: A | B | C
+        while (self.current() == .pipe) {
+            const start = self.ast.getNode(left).span.start;
+            self.advance(); // skip |
+            const right = try self.parseIntersectionType();
+            left = try self.ast.addNode(.{
+                .tag = .ts_union_type,
+                .span = .{ .start = start, .end = self.currentSpan().start },
+                .data = .{ .binary = .{ .left = left, .right = right } },
+            });
+        }
+
+        return left;
+    }
+
+    fn parseIntersectionType(self: *Parser) !NodeIndex {
+        var left = try self.parsePostfixType();
+
+        // 인터섹션: A & B & C
+        while (self.current() == .amp) {
+            const start = self.ast.getNode(left).span.start;
+            self.advance(); // skip &
+            const right = try self.parsePostfixType();
+            left = try self.ast.addNode(.{
+                .tag = .ts_intersection_type,
+                .span = .{ .start = start, .end = self.currentSpan().start },
+                .data = .{ .binary = .{ .left = left, .right = right } },
+            });
+        }
+
+        return left;
+    }
+
+    fn parsePostfixType(self: *Parser) !NodeIndex {
+        var base = try self.parsePrimaryType();
+
+        // 배열 타입: T[] , T[][]
+        while (self.current() == .l_bracket and self.peekNextKind() == .r_bracket) {
+            const start = self.ast.getNode(base).span.start;
+            self.advance(); // [
+            self.advance(); // ]
+            base = try self.ast.addNode(.{
+                .tag = .ts_array_type,
+                .span = .{ .start = start, .end = self.currentSpan().start },
+                .data = .{ .unary = .{ .operand = base } },
+            });
+        }
+
+        return base;
+    }
+
+    fn parsePrimaryType(self: *Parser) !NodeIndex {
+        const span = self.currentSpan();
+
+        // TS 키워드 타입
+        if (self.current().isTypeScriptKeyword()) {
+            const tag: Tag = switch (self.current()) {
+                .kw_any => .ts_any_keyword,
+                .kw_string => .ts_string_keyword,
+                .kw_number => .ts_number_keyword,
+                .kw_boolean => .ts_boolean_keyword,
+                .kw_bigint => .ts_bigint_keyword,
+                .kw_symbol => .ts_symbol_keyword,
+                .kw_object => .ts_object_keyword,
+                .kw_never => .ts_never_keyword,
+                .kw_unknown => .ts_unknown_keyword,
+                .kw_undefined => .ts_undefined_keyword,
+                else => .ts_type_reference, // 다른 TS 키워드는 타입 참조로
+            };
+            if (tag != .ts_type_reference) {
+                self.advance();
+                return try self.ast.addNode(.{
+                    .tag = tag,
+                    .span = span,
+                    .data = .{ .none = {} },
+                });
+            }
+        }
+
+        switch (self.current()) {
+            // void
+            .kw_void => {
+                self.advance();
+                return try self.ast.addNode(.{
+                    .tag = .ts_void_keyword,
+                    .span = span,
+                    .data = .{ .none = {} },
+                });
+            },
+            // null
+            .kw_null => {
+                self.advance();
+                return try self.ast.addNode(.{
+                    .tag = .ts_null_keyword,
+                    .span = span,
+                    .data = .{ .none = {} },
+                });
+            },
+            // this
+            .kw_this => {
+                self.advance();
+                return try self.ast.addNode(.{
+                    .tag = .ts_this_type,
+                    .span = span,
+                    .data = .{ .none = {} },
+                });
+            },
+            // 리터럴 타입 (true, false, 숫자, 문자열)
+            .kw_true, .kw_false => {
+                self.advance();
+                return try self.ast.addNode(.{
+                    .tag = .ts_literal_type,
+                    .span = span,
+                    .data = .{ .none = {} },
+                });
+            },
+            .decimal, .float, .hex, .string_literal => {
+                self.advance();
+                return try self.ast.addNode(.{
+                    .tag = .ts_literal_type,
+                    .span = span,
+                    .data = .{ .string_ref = span },
+                });
+            },
+            // 타입 참조: Foo, Foo.Bar, Foo<T>
+            .identifier => return self.parseTypeReference(),
+            // 괄호 타입: (Type) 또는 함수 타입: (a: T) => R
+            .l_paren => return self.parseParenOrFunctionType(),
+            // 객체 타입 리터럴: { x: number, y: string }
+            .l_curly => return self.parseObjectType(),
+            // 튜플 타입: [T, U]
+            .l_bracket => return self.parseTupleType(),
+            // typeof T
+            .kw_typeof => {
+                self.advance();
+                const operand = try self.parseType();
+                return try self.ast.addNode(.{
+                    .tag = .ts_type_query,
+                    .span = .{ .start = span.start, .end = self.currentSpan().start },
+                    .data = .{ .unary = .{ .operand = operand } },
+                });
+            },
+            // keyof T
+            .kw_keyof => {
+                self.advance();
+                const operand = try self.parseType();
+                return try self.ast.addNode(.{
+                    .tag = .ts_type_operator,
+                    .span = .{ .start = span.start, .end = self.currentSpan().start },
+                    .data = .{ .unary = .{ .operand = operand } },
+                });
+            },
+            else => {
+                // 다른 TS 키워드가 타입 위치에 온 경우 타입 참조로 처리
+                if (self.current().isKeyword()) {
+                    return self.parseTypeReference();
+                }
+                self.addError(span, "type expected");
+                self.advance();
+                return try self.ast.addNode(.{ .tag = .invalid, .span = span, .data = .{ .none = {} } });
+            },
+        }
+    }
+
+    fn parseTypeReference(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+        const name_span = self.currentSpan();
+        self.advance(); // type name
+
+        // Foo.Bar 형태
+        var name_end = name_span.end;
+        while (self.eat(.dot)) {
+            name_end = self.currentSpan().end;
+            self.advance(); // Bar
+        }
+
+        // 제네릭: Foo<T, U>
+        var type_args = NodeIndex.none;
+        if (self.current() == .l_angle) {
+            type_args = try self.parseTypeArguments();
+        }
+
+        const extra_start = try self.ast.addExtra(name_span.start);
+        _ = try self.ast.addExtra(name_end);
+        _ = try self.ast.addExtra(@intFromEnum(type_args));
+
+        return try self.ast.addNode(.{
+            .tag = .ts_type_reference,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .extra = extra_start },
+        });
+    }
+
+    fn parseTypeArguments(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+        self.advance(); // skip <
+
+        const scratch_top = self.saveScratch();
+        while (self.current() != .r_angle and self.current() != .eof) {
+            const ty = try self.parseType();
+            try self.scratch.append(ty);
+            if (!self.eat(.comma)) break;
+        }
+        self.expect(.r_angle);
+
+        const types = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        self.restoreScratch(scratch_top);
+
+        return try self.ast.addNode(.{
+            .tag = .ts_type_parameter_instantiation,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .list = types },
+        });
+    }
+
+    fn parseParenOrFunctionType(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+        self.advance(); // skip (
+
+        // 빈 괄호 + => → 함수 타입 () => R
+        if (self.current() == .r_paren) {
+            self.advance();
+            if (self.current() == .arrow) {
+                self.advance();
+                const return_type = try self.parseType();
+                return try self.ast.addNode(.{
+                    .tag = .ts_function_type,
+                    .span = .{ .start = start, .end = self.currentSpan().start },
+                    .data = .{ .unary = .{ .operand = return_type } },
+                });
+            }
+            // 빈 괄호 — 에러 또는 void
+            return try self.ast.addNode(.{ .tag = .ts_void_keyword, .span = .{ .start = start, .end = self.currentSpan().start }, .data = .{ .none = {} } });
+        }
+
+        // 파라미터가 있는 경우 — 단순히 첫 번째 타입을 파싱하고 ) 뒤에 =>가 있으면 함수 타입
+        const inner = try self.parseType();
+        if (self.current() == .r_paren) {
+            self.advance();
+            if (self.current() == .arrow) {
+                self.advance();
+                const return_type = try self.parseType();
+                return try self.ast.addNode(.{
+                    .tag = .ts_function_type,
+                    .span = .{ .start = start, .end = self.currentSpan().start },
+                    .data = .{ .binary = .{ .left = inner, .right = return_type } },
+                });
+            }
+        } else {
+            self.expect(.r_paren);
+        }
+
+        // 괄호 타입: (Type)
+        return try self.ast.addNode(.{
+            .tag = .ts_parenthesized_type,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .unary = .{ .operand = inner } },
+        });
+    }
+
+    fn parseObjectType(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+        self.advance(); // skip {
+
+        const scratch_top = self.saveScratch();
+        while (self.current() != .r_curly and self.current() != .eof) {
+            const member = try self.parseTypeMember();
+            try self.scratch.append(member);
+            // ; 또는 , 로 구분
+            if (!self.eat(.semicolon) and !self.eat(.comma)) {
+                if (self.current() != .r_curly) break;
+            }
+        }
+
+        const end = self.currentSpan().end;
+        self.expect(.r_curly);
+
+        const members = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        self.restoreScratch(scratch_top);
+
+        return try self.ast.addNode(.{
+            .tag = .ts_type_literal,
+            .span = .{ .start = start, .end = end },
+            .data = .{ .list = members },
+        });
+    }
+
+    fn parseTypeMember(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+        // 간단: key: Type 또는 key?: Type
+        const key = try self.parsePropertyKey();
+        _ = self.eat(.question); // optional
+        self.expect(.colon);
+        const value_type = try self.parseType();
+
+        return try self.ast.addNode(.{
+            .tag = .ts_property_signature,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .binary = .{ .left = key, .right = value_type } },
+        });
+    }
+
+    fn parseTupleType(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+        self.advance(); // skip [
+
+        const scratch_top = self.saveScratch();
+        while (self.current() != .r_bracket and self.current() != .eof) {
+            const ty = try self.parseType();
+            try self.scratch.append(ty);
+            if (!self.eat(.comma)) break;
+        }
+
+        const end = self.currentSpan().end;
+        self.expect(.r_bracket);
+
+        const types = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        self.restoreScratch(scratch_top);
+
+        return try self.ast.addNode(.{
+            .tag = .ts_tuple_type,
+            .span = .{ .start = start, .end = end },
+            .data = .{ .list = types },
+        });
     }
 };
 
@@ -2516,6 +2908,110 @@ test "Parser: import.meta" {
 
 test "Parser: array elision [, , x]" {
     var scanner = Scanner.init(std.testing.allocator, "const [, , x] = arr;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+// ============================================================
+// TypeScript type tests
+// ============================================================
+
+test "Parser: TS variable with type annotation" {
+    var scanner = Scanner.init(std.testing.allocator, "const x: number = 1;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: TS function with typed params and return" {
+    var scanner = Scanner.init(std.testing.allocator, "function add(a: number, b: number): number { return a + b; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: TS union type" {
+    var scanner = Scanner.init(std.testing.allocator, "const x: string | number = 1;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: TS array type" {
+    var scanner = Scanner.init(std.testing.allocator, "const arr: number[] = [];");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: TS generic type" {
+    var scanner = Scanner.init(std.testing.allocator, "const arr: Array<string> = [];");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: TS as expression" {
+    var scanner = Scanner.init(std.testing.allocator, "const x = value as string;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: TS non-null assertion" {
+    var scanner = Scanner.init(std.testing.allocator, "const x = value!;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: TS object type literal" {
+    var scanner = Scanner.init(std.testing.allocator, "const obj: { x: number; y: string } = { x: 1, y: 'a' };");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: TS tuple type" {
+    var scanner = Scanner.init(std.testing.allocator, "const t: [string, number] = ['a', 1];");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: TS typeof and keyof" {
+    var scanner = Scanner.init(std.testing.allocator, "const k: keyof typeof obj = 'x';");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
