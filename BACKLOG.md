@@ -117,6 +117,17 @@
 | 45 | export default async function | async PR에서 처리 | Phase 2 #11 |
 | 46 | import() statement에서 .then() 체이닝 미처리 | expression 경로로 이동함 | 최적화 PR |
 
+### PR #30: feat(parser): TS type annotations
+
+| # | 항목 | 이유 | 해결 시점 |
+|---|------|------|----------|
+| 47 | multi-param function type `(a: T, b: U) => R` | 현재 단일 파라미터만 | Phase 2 TS PR |
+| 48 | parseTypeMember: method/index/call/readonly signature | 현재 property만 | Phase 2 TS PR |
+| 49 | conditional type `T extends U ? X : Y` | TS 타입 시스템 | Phase 2 TS PR |
+| 50 | mapped type `{ [K in keyof T]: V }` | TS 타입 시스템 | Phase 2 TS PR |
+| 51 | infer type `infer T` | TS 타입 시스템 | Phase 2 TS PR |
+| 52 | template literal type `` `hello ${string}` `` | TS 타입 시스템 | Phase 2 TS PR |
+
 ---
 
 ## 추후 개선
