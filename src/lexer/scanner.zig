@@ -380,6 +380,132 @@ pub const Scanner = struct {
     }
 
     // ====================================================================
+    // JSX 모드 스캔 (파서가 JSX 컨텍스트에서 호출)
+    // ====================================================================
+
+    /// JSX 태그 내부의 다음 토큰을 스캔한다.
+    /// JSX 태그 안에서는 식별자에 하이픈(-)을 허용하고 (data-value),
+    /// 속성 값 문자열은 이스케이프를 처리하지 않는다.
+    /// 파서가 `<` 뒤에서 이 함수를 호출한다.
+    pub fn nextInsideJSXElement(self: *Scanner) void {
+        self.token.has_newline_before = false;
+        self.skipWhitespace();
+        self.start = self.current;
+
+        if (self.isAtEnd()) {
+            self.token.kind = .eof;
+            self.token.span = .{ .start = self.start, .end = self.current };
+            return;
+        }
+
+        const c = self.advance();
+        self.token.kind = switch (c) {
+            '>' => .r_angle,
+            '/' => blk: {
+                if (self.peek() == '>') {
+                    self.current += 1;
+                    break :blk .slash; // /> — 파서가 slash + r_angle로 해석
+                }
+                break :blk .slash;
+            },
+            '=' => .eq,
+            '{' => blk: {
+                self.brace_depth += 1;
+                break :blk .l_curly;
+            },
+            '\'', '"' => self.scanJSXStringLiteral(c),
+            '.' => .dot,
+            ':' => .colon,
+            else => blk: {
+                // JSX 식별자: 하이픈 허용 (data-value, aria-label)
+                if (isAsciiIdentStart(c) or c >= 0x80) {
+                    self.scanJSXIdentifierTail();
+                    break :blk .jsx_identifier;
+                }
+                break :blk .syntax_error;
+            },
+        };
+
+        self.token.span = .{ .start = self.start, .end = self.current };
+        self.prev_token_kind = self.token.kind;
+    }
+
+    /// JSX 자식 위치에서 다음 토큰을 스캔한다 (태그 사이의 텍스트).
+    /// `<` 또는 `{`를 만날 때까지 텍스트를 소비한다.
+    pub fn nextJSXChild(self: *Scanner) void {
+        self.token.has_newline_before = false;
+        self.start = self.current;
+
+        if (self.isAtEnd()) {
+            self.token.kind = .eof;
+            self.token.span = .{ .start = self.start, .end = self.current };
+            return;
+        }
+
+        const c = self.peek();
+        if (c == '<') {
+            self.current += 1;
+            self.token.kind = .l_angle;
+        } else if (c == '{') {
+            self.current += 1;
+            self.brace_depth += 1;
+            self.token.kind = .l_curly;
+        } else {
+            // JSX 텍스트: < 또는 { 또는 EOF 전까지 전부 소비
+            self.scanJSXText();
+            self.token.kind = .jsx_text;
+        }
+
+        self.token.span = .{ .start = self.start, .end = self.current };
+        self.prev_token_kind = self.token.kind;
+    }
+
+    /// JSX 텍스트를 스캔한다. `<`, `{`, `}` 전까지 소비.
+    fn scanJSXText(self: *Scanner) void {
+        while (!self.isAtEnd()) {
+            const c = self.peek();
+            if (c == '<' or c == '{' or c == '}') break;
+            if (c == '\n' or c == '\r') {
+                _ = self.handleNewline();
+                self.token.has_newline_before = true;
+            } else {
+                self.current += 1;
+            }
+        }
+    }
+
+    /// JSX 식별자의 나머지를 스캔한다.
+    /// 일반 식별자와 달리 하이픈(-)을 허용한다 (data-value, aria-label).
+    fn scanJSXIdentifierTail(self: *Scanner) void {
+        while (!self.isAtEnd()) {
+            const c = self.peek();
+            if (isAsciiIdentContinue(c) or c == '-') {
+                self.current += 1;
+            } else if (c >= 0x80) {
+                const remaining = self.source[self.current..];
+                const decoded = unicode.decodeUtf8(remaining);
+                if (decoded.len == 0) break;
+                if (unicode.isIdentifierContinue(decoded.codepoint)) {
+                    self.current += decoded.len;
+                } else break;
+            } else break;
+        }
+    }
+
+    /// JSX 속성 문자열을 스캔한다.
+    /// JS 문자열과 달리 이스케이프 시퀀스를 처리하지 않는다 (\ 는 리터럴).
+    fn scanJSXStringLiteral(self: *Scanner, quote: u8) Kind {
+        while (!self.isAtEnd()) {
+            if (self.peek() == quote) {
+                self.current += 1;
+                return .string_literal;
+            }
+            self.current += 1;
+        }
+        return .syntax_error;
+    }
+
+    // ====================================================================
     // 복합 연산자 스캔
     // ====================================================================
 
@@ -2050,4 +2176,89 @@ test "Scanner: mixed ASCII and unicode in identifier" {
     scanner.next();
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
     try std.testing.expectEqualStrings("test\xEB\xB3\x80\xEC\x88\x98", scanner.tokenText());
+}
+
+// ============================================================
+// JSX mode tests
+// ============================================================
+
+test "Scanner: JSX element identifier with hyphen" {
+    const source = "data-testid";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.nextInsideJSXElement();
+    try std.testing.expectEqual(Kind.jsx_identifier, scanner.token.kind);
+    try std.testing.expectEqualStrings("data-testid", scanner.tokenText());
+}
+
+test "Scanner: JSX element tokens" {
+    // <div className="hello">
+    const source = "div className=\"hello\">";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.nextInsideJSXElement(); // div
+    try std.testing.expectEqual(Kind.jsx_identifier, scanner.token.kind);
+    try std.testing.expectEqualStrings("div", scanner.tokenText());
+
+    scanner.nextInsideJSXElement(); // className
+    try std.testing.expectEqual(Kind.jsx_identifier, scanner.token.kind);
+
+    scanner.nextInsideJSXElement(); // =
+    try std.testing.expectEqual(Kind.eq, scanner.token.kind);
+
+    scanner.nextInsideJSXElement(); // "hello"
+    try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
+
+    scanner.nextInsideJSXElement(); // >
+    try std.testing.expectEqual(Kind.r_angle, scanner.token.kind);
+}
+
+test "Scanner: JSX text content" {
+    const source = "Hello World<";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.nextJSXChild(); // "Hello World"
+    try std.testing.expectEqual(Kind.jsx_text, scanner.token.kind);
+    try std.testing.expectEqualStrings("Hello World", scanner.tokenText());
+
+    scanner.nextJSXChild(); // <
+    try std.testing.expectEqual(Kind.l_angle, scanner.token.kind);
+}
+
+test "Scanner: JSX text with expression" {
+    const source = "text{expr}more";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.nextJSXChild(); // "text"
+    try std.testing.expectEqual(Kind.jsx_text, scanner.token.kind);
+    try std.testing.expectEqualStrings("text", scanner.tokenText());
+
+    scanner.nextJSXChild(); // {
+    try std.testing.expectEqual(Kind.l_curly, scanner.token.kind);
+}
+
+test "Scanner: JSX self-closing tag" {
+    const source = "/>";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.nextInsideJSXElement();
+    try std.testing.expectEqual(Kind.slash, scanner.token.kind);
+    // 파서가 slash + r_angle을 자체 닫힘 태그로 조합
+}
+
+test "Scanner: JSX string without escape" {
+    // JSX 속성 문자열은 이스케이프를 처리하지 않음
+    const source = "\"hello\\nworld\"";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.nextInsideJSXElement();
+    try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
+    // 전체 텍스트가 토큰에 포함됨 (이스케이프 안 함)
+    try std.testing.expectEqualStrings("\"hello\\nworld\"", scanner.tokenText());
 }
