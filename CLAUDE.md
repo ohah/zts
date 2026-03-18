@@ -81,6 +81,54 @@ zig build test     # 유닛 테스트
 zig build test262  # Test262 러너 테스트
 ```
 
+## Development Workflow
+
+### 구현 규칙
+1. **작업 단위를 최대한 작게 나눈다** — 하나의 PR이 하나의 기능/토큰 그룹을 담당
+2. **서브에이전트로 병렬 구현** — 독립적인 작업은 서브에이전트를 활용해 병렬 진행
+3. **PR 단위로 올린다** — main에 직접 push하지 않고 feature branch → PR → merge
+4. **`/simplify` 리뷰** — PR 올린 후 반드시 `/simplify`로 코드 품질 점검
+   - 코드 재사용, 품질, 효율성 검토
+   - 발견된 이슈 수정 후 merge
+5. **테스트 먼저** — 구현 전에 해당 Test262 카테고리 또는 유닛 테스트 작성
+6. **Zig 초보자에게 자세히 설명** — 모든 코드 작성 시 왜 이렇게 하는지 설명
+
+### PR 네이밍 규칙
+```
+feat(lexer): add numeric literal tokenization
+feat(lexer): add string literal and escape sequences
+feat(lexer): add SIMD whitespace skipping
+feat(parser): add expression parsing
+fix(lexer): handle edge case in template literal nesting
+```
+
+### 브랜치 전략
+```
+main ← feature/lexer-token-enum
+     ← feature/lexer-numeric-literals
+     ← feature/lexer-string-literals
+     ← feature/lexer-comments
+     ← feature/lexer-simd
+     ...
+```
+
+### 렉서 구현 순서 (PR 단위)
+1. 토큰 enum 정의 (~208개)
+2. 기본 렉서 구조 (Lexer struct, next(), 소스 위치 추적)
+3. 공백/줄바꿈 스킵 + BOM 처리
+4. 주석 (single-line, multi-line, hashbang)
+5. 식별자 + 키워드 매핑
+6. 숫자 리터럴 (decimal, hex, octal, binary, bigint, separator)
+7. 문자열 리터럴 (escape sequence, legacy octal)
+8. 템플릿 리터럴 (head, middle, tail, 중첩)
+9. 정규식 리터럴 (파서 컨텍스트 연동)
+10. 연산자/구두점 (복합 연산자 포함)
+11. JSX 모드 (JSXText, JSXIdentifier)
+12. 유니코드 식별자 정규화
+13. SIMD 최적화 (공백, 식별자, 문자열 스캔)
+14. `@__PURE__` / JSX pragma 주석 추적
+15. Test262 렉서 통과율 보고
+
 ## References
 - Bun JS Parser: github.com/oven-sh/bun (src/js_parser.zig, src/js_lexer.zig)
 - oxc: github.com/oxc-project/oxc (crates/oxc_parser/src/lexer/kind.rs — 토큰 enum 참고)
