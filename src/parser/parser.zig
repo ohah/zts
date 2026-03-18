@@ -1747,6 +1747,14 @@ pub const Parser = struct {
                 .data = .{ .string_ref = span },
             });
         }
+        if (self.current() == .private_identifier) {
+            self.advance();
+            return try self.ast.addNode(.{
+                .tag = .private_identifier,
+                .span = span,
+                .data = .{ .string_ref = span },
+            });
+        }
         self.addError(span, "identifier expected");
         self.advance();
         return try self.ast.addNode(.{ .tag = .invalid, .span = span, .data = .{ .none = {} } });
@@ -1773,10 +1781,18 @@ pub const Parser = struct {
         const span = self.currentSpan();
         switch (self.current()) {
             .identifier, .kw_get, .kw_set, .kw_async, .kw_static => {
-                // 키워드도 프로퍼티 키로 사용 가능 (get, set 등)
                 self.advance();
                 return try self.ast.addNode(.{
                     .tag = .identifier_reference,
+                    .span = span,
+                    .data = .{ .string_ref = span },
+                });
+            },
+            .private_identifier => {
+                // #private 필드/메서드
+                self.advance();
+                return try self.ast.addNode(.{
+                    .tag = .private_identifier,
                     .span = span,
                     .data = .{ .string_ref = span },
                 });
@@ -2421,4 +2437,52 @@ test "Parser: async arrow function" {
     _ = try parser.parse();
     // async arrow는 현재 async가 expression statement로 파싱됨
     // 완전한 async arrow는 추후 구현 (BACKLOG #35)
+}
+
+test "Parser: class with private field and method" {
+    var scanner = Scanner.init(std.testing.allocator,
+        \\class Counter {
+        \\  #count = 0;
+        \\  #increment() { this.#count++; }
+        \\  get value() { return this.#count; }
+        \\}
+    );
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: private field access" {
+    var scanner = Scanner.init(std.testing.allocator, "this.#name;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: assignment destructuring (array)" {
+    // 배열 대입 구조분해 — 현재 array_expression + assignment로 파싱됨
+    // semantic analysis에서 assignment target으로 변환 예정
+    var scanner = Scanner.init(std.testing.allocator, "[a, b] = [1, 2];");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: assignment destructuring (object)" {
+    var scanner = Scanner.init(std.testing.allocator, "({ x, y } = obj);");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
 }

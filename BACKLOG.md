@@ -103,6 +103,8 @@
 | 29 | for-in/for-of 미구현 | PR #21 |
 | 32 | shorthand property | PR #25 (object pattern) |
 | 33 | spread in array/object | PR #23 |
+| 38 | #private 필드/메서드 | PR #28 |
+| 42 | assignment destructuring — 파서에서는 expression으로 파싱, semantic에서 변환 | PR #28 (문서화) |
 
 ### PR #26: feat(parser): import/export
 
