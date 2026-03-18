@@ -74,8 +74,34 @@ JS/TS 소스 코드를 토큰으로 분리.
 - [x] JSX (element, fragment, attributes, expression, text) — PR #33
 - [x] spread/rest 연산자 — PR #23
 
+### Test262 파서 통과율 (2026-03-19 기준)
+| Category | Tests | Pass Rate |
+|----------|-------|-----------|
+| destructuring | - | **100%** |
+| computed-property-names | - | **100%** |
+| function-code | - | **100%** |
+| import | 135 | **92.6%** |
+| statements | - | **81.6%** |
+| numeric | 157 | **81.5%** |
+| expressions | - | **80.0%** |
+| line-terminators | 41 | **78.0%** |
+| module-code | 698 | **76.2%** |
+| white-space | 67 | 70.1% |
+| comments | 52 | 69.2% |
+| null | 3 | 66.7% |
+| asi | - | 65.7% |
+| string | 73 | 63.0% |
+| bigint | 59 | 62.7% |
+| boolean | 4 | 50.0% |
+| identifiers | 260 | 33.1% |
+| block-scope | - | 29.7% |
+| regexp | 238 | 26.5% |
+| keywords | 25 | 0% |
+
+> 3개 카테고리 100%, 5개 카테고리 80%+. keywords/identifiers 실패는 대부분 negative test (에러가 나야 통과) — semantic analysis 필요.
+
 ### 미구현 (Phase 2 후반 또는 Phase 3)
-- [ ] 에러 복구 강화 + Test262 파서 통과율
+- [ ] 에러 복구 강화 (negative test 통과율 ↑)
 - [ ] semantic analysis (스코프/심볼, 별도 패스, D038)
 - [ ] BACKLOG #47-#58 (TS 타입 시스템 고급 기능)
 
