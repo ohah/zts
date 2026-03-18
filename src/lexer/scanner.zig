@@ -956,15 +956,15 @@ pub const Scanner = struct {
             }
         }
 
-        // 10진수 정수부 소비
-        self.scanDecimalDigits();
+        // 10진수 정수부 소비 (first_char가 이미 숫자 하나를 제공)
+        if (self.scanDecimalDigitsEx(true)) return .syntax_error;
 
         // 소수점
         if (self.peek() == '.') {
             // 1..toString() 같은 경우 방지: '..' 이면 소수점이 아님
             if (self.peekAt(1) != '.') {
                 self.current += 1;
-                self.scanDecimalDigits();
+                if (self.scanDecimalDigits()) return .syntax_error;
                 return self.scanExponentPart(.float);
             }
         }
@@ -976,24 +976,41 @@ pub const Scanner = struct {
     /// 소수점 이후를 스캔한다 (.5, .123e10 등).
     /// '.'은 이미 소비된 상태. ('.' 자체는 scanDot에서 감지)
     fn scanDecimalAfterDot(self: *Scanner) Kind {
-        self.scanDecimalDigits();
+        if (self.scanDecimalDigits()) return .syntax_error;
         return self.scanExponentPart(.float);
     }
 
+    /// scanDecimalDigitsEx의 wrapper. 선행 숫자 없음.
+    fn scanDecimalDigits(self: *Scanner) bool {
+        return self.scanDecimalDigitsEx(false);
+    }
+
     /// 10진수 숫자 시퀀스를 소비한다 (separator '_' 포함).
-    fn scanDecimalDigits(self: *Scanner) void {
+    /// 숫자가 하나도 없거나 separator가 잘못된 위치면 true를 반환 (에러).
+    /// has_preceding_digit: 호출 전에 이미 숫자가 소비되었으면 true.
+    fn scanDecimalDigitsEx(self: *Scanner, has_preceding_digit: bool) bool {
+        var has_digits = has_preceding_digit;
+        var prev_was_separator = false;
         while (!self.isAtEnd()) {
             const c = self.peek();
             if (c >= '0' and c <= '9') {
                 self.current += 1;
+                has_digits = true;
+                prev_was_separator = false;
             } else if (c == '_') {
-                // numeric separator: 다음 문자가 숫자여야 유효
-                // (유효성 검사는 추후 에러 리포팅에서)
+                if (!has_digits or prev_was_separator) {
+                    // 선행 _ 또는 연속 __ → 에러
+                    return true;
+                }
                 self.current += 1;
+                prev_was_separator = true;
             } else {
                 break;
             }
         }
+        // 후행 _ → 에러
+        if (prev_was_separator) return true;
+        return false;
     }
 
     /// 지수부(e/E)를 스캔하고, BigInt suffix(n)도 확인한다.
@@ -1007,7 +1024,8 @@ pub const Scanner = struct {
             if (sign == '+' or sign == '-') {
                 self.current += 1;
             }
-            self.scanDecimalDigits();
+            if (self.scanDecimalDigits()) return .syntax_error;
+            // 지수 뒤에 숫자가 없으면 에러 (1e → error)
             return if (is_negative) .negative_exponential else .positive_exponential;
         }
 
@@ -1026,7 +1044,7 @@ pub const Scanner = struct {
 
     /// 16진수 리터럴을 스캔한다 (0x 이후).
     fn scanHexLiteral(self: *Scanner) Kind {
-        self.scanHexDigits();
+        if (self.scanHexDigits()) return .syntax_error;
         if (self.peek() == 'n') {
             self.current += 1;
             return .hex_bigint;
@@ -1036,7 +1054,7 @@ pub const Scanner = struct {
 
     /// 8진수 리터럴을 스캔한다 (0o 이후).
     fn scanOctalLiteral(self: *Scanner) Kind {
-        self.scanOctalDigits();
+        if (self.scanOctalDigits()) return .syntax_error;
         if (self.peek() == 'n') {
             self.current += 1;
             return .octal_bigint;
@@ -1046,7 +1064,7 @@ pub const Scanner = struct {
 
     /// 2진수 리터럴을 스캔한다 (0b 이후).
     fn scanBinaryLiteral(self: *Scanner) Kind {
-        self.scanBinaryDigits();
+        if (self.scanBinaryDigits()) return .syntax_error;
         if (self.peek() == 'n') {
             self.current += 1;
             return .binary_bigint;
@@ -1054,31 +1072,64 @@ pub const Scanner = struct {
         return .binary;
     }
 
-    fn scanHexDigits(self: *Scanner) void {
+    /// 16진수 숫자를 스캔. 숫자가 없거나 separator 오류면 true 반환.
+    fn scanHexDigits(self: *Scanner) bool {
+        var has_digits = false;
+        var prev_was_separator = false;
         while (!self.isAtEnd()) {
             const c = self.peek();
-            if ((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F') or c == '_') {
+            if ((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F')) {
                 self.current += 1;
+                has_digits = true;
+                prev_was_separator = false;
+            } else if (c == '_') {
+                if (!has_digits or prev_was_separator) return true;
+                self.current += 1;
+                prev_was_separator = true;
             } else break;
         }
+        if (prev_was_separator) return true;
+        return !has_digits; // 숫자가 없으면 에러 (0x; → error)
     }
 
-    fn scanOctalDigits(self: *Scanner) void {
+    /// 8진수 숫자를 스캔. 숫자가 없거나 separator 오류면 true 반환.
+    fn scanOctalDigits(self: *Scanner) bool {
+        var has_digits = false;
+        var prev_was_separator = false;
         while (!self.isAtEnd()) {
             const c = self.peek();
-            if ((c >= '0' and c <= '7') or c == '_') {
+            if (c >= '0' and c <= '7') {
                 self.current += 1;
+                has_digits = true;
+                prev_was_separator = false;
+            } else if (c == '_') {
+                if (!has_digits or prev_was_separator) return true;
+                self.current += 1;
+                prev_was_separator = true;
             } else break;
         }
+        if (prev_was_separator) return true;
+        return !has_digits;
     }
 
-    fn scanBinaryDigits(self: *Scanner) void {
+    /// 2진수 숫자를 스캔. 숫자가 없거나 separator 오류면 true 반환.
+    fn scanBinaryDigits(self: *Scanner) bool {
+        var has_digits = false;
+        var prev_was_separator = false;
         while (!self.isAtEnd()) {
             const c = self.peek();
-            if (c == '0' or c == '1' or c == '_') {
+            if (c == '0' or c == '1') {
                 self.current += 1;
+                has_digits = true;
+                prev_was_separator = false;
+            } else if (c == '_') {
+                if (!has_digits or prev_was_separator) return true;
+                self.current += 1;
+                prev_was_separator = true;
             } else break;
         }
+        if (prev_was_separator) return true;
+        return !has_digits;
     }
 
     /// 문자열 리터럴을 스캔한다 (opening quote는 이미 소비됨).
