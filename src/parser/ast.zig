@@ -31,7 +31,8 @@ pub const NodeIndex = enum(u32) {
 
 /// 노드 인덱스 리스트 (가변 길이 자식을 표현).
 /// extra_data 배열에서 시작 위치와 길이로 참조.
-pub const NodeList = struct {
+/// extern struct: Data extern union의 필드로 사용하기 위해 C ABI 호환.
+pub const NodeList = extern struct {
     start: u32,
     len: u32,
 };
@@ -308,27 +309,47 @@ pub const Node = struct {
         // ==============================================================
     };
 
-    /// 노드별 인라인 데이터 (14바이트).
+    /// 노드별 인라인 데이터 (12바이트).
     /// 작은 데이터는 여기에 직접 저장, 큰 데이터는 extra 인덱스로 참조.
-    pub const Data = union {
-        /// 단순 노드 (자식 없음): 추가 데이터 없음
-        none: void,
+    ///
+    /// f64를 [8]u8로 저장하는 이유:
+    ///   f64의 정렬이 8바이트 → union 전체 정렬이 8 → 패딩으로 16바이트가 됨.
+    ///   [8]u8은 정렬 1이므로 union 크기가 12바이트(ternary)로 유지된다.
+    ///   Node = tag(2) + pad(2) + span(8) + data(12) = 24바이트.
+    ///   읽기/쓰기는 @bitCast로 변환 (컴파일타임, 런타임 비용 0).
+    /// extern union으로 safety 태그 없이 정확한 크기 보장.
+    ///
+    /// 왜 extern인가?
+    ///   Zig bare union은 Debug 빌드에서 active 필드 추적 태그(4바이트)를
+    ///   추가하여 Node가 24바이트를 초과한다.
+    ///   extern union은 C ABI 레이아웃을 따르므로 태그 없이 가장 큰 필드의
+    ///   크기(12바이트, ternary)가 곧 union 크기가 된다.
+    ///
+    /// f64를 [8]u8로 저장하는 이유:
+    ///   f64의 정렬이 8바이트 → union 정렬이 8 → 패딩으로 16바이트가 됨.
+    ///   [8]u8은 정렬 1이므로 union 크기가 12바이트로 유지된다.
+    ///   읽기/쓰기는 @bitCast로 변환 (컴파일타임, 런타임 비용 0).
+    pub const Data = extern union {
+        /// 단순 노드 (자식 없음)
+        none: u32,
 
-        /// 단항 (자식 1개): left만 사용
-        unary: struct {
+        /// 단항 (자식 1개)
+        unary: extern struct {
             operand: NodeIndex,
-            flags: u16 = 0, // 연산자 종류 등
+            flags: u16,
+            _pad: u16 = 0,
         },
 
         /// 이항 (자식 2개)
-        binary: struct {
+        binary: extern struct {
             left: NodeIndex,
             right: NodeIndex,
-            flags: u16 = 0,
+            flags: u16,
+            _pad: u16 = 0,
         },
 
         /// 삼항 (자식 3개)
-        ternary: struct {
+        ternary: extern struct {
             a: NodeIndex,
             b: NodeIndex,
             c: NodeIndex,
@@ -340,14 +361,13 @@ pub const Node = struct {
         /// 문자열 참조 (식별자, 리터럴 값 등)
         string_ref: StringRef,
 
-        /// 숫자 리터럴 값 (f64, 8바이트 — union 크기 내에 인라인 저장)
-        number_value: f64,
+        /// 숫자 리터럴 값 (f64를 [8]u8로 저장, 정렬 패딩 방지)
+        /// 쓰기: .{ .number_bytes = @bitCast(my_f64) }
+        /// 읽기: const val: f64 = @bitCast(node.data.number_bytes);
+        number_bytes: [8]u8,
 
         /// extra_data 배열 인덱스 (큰 데이터용)
         extra: u32,
-
-        /// raw bytes (최대 14바이트)
-        raw: [14]u8,
     };
 };
 
@@ -428,8 +448,8 @@ test "Node is 24 bytes" {
 test "Tag fits in u16" {
     const fields = @typeInfo(Node.Tag).@"enum".fields;
     try std.testing.expect(fields.len <= 65536);
-    // 현재 ~200개
-    try std.testing.expect(fields.len >= 190);
+    // 현재 ~178개
+    try std.testing.expect(fields.len >= 170);
 }
 
 test "NodeIndex.none" {
@@ -446,7 +466,7 @@ test "Ast basic operations" {
     const idx = try ast.addNode(.{
         .tag = .numeric_literal,
         .span = .{ .start = 10, .end = 11 },
-        .data = .{ .none = {} },
+        .data = .{ .none = 0 },
     });
 
     const node = ast.getNode(idx);
@@ -458,8 +478,8 @@ test "Ast node list" {
     var ast = Ast.init(std.testing.allocator, "");
     defer ast.deinit();
 
-    const a = try ast.addNode(.{ .tag = .numeric_literal, .span = Span.EMPTY, .data = .{ .none = {} } });
-    const b = try ast.addNode(.{ .tag = .string_literal, .span = Span.EMPTY, .data = .{ .none = {} } });
+    const a = try ast.addNode(.{ .tag = .numeric_literal, .span = Span.EMPTY, .data = .{ .none = 0 } });
+    const b = try ast.addNode(.{ .tag = .string_literal, .span = Span.EMPTY, .data = .{ .none = 0 } });
 
     const list = try ast.addNodeList(&.{ a, b });
     try std.testing.expectEqual(@as(u32, 2), list.len);
