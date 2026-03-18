@@ -1,0 +1,19 @@
+# Zig
+zig-out/
+zig-cache/
+.zig-cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Build artifacts
+*.o
+*.so
+*.dylib
+*.dll
+*.wasm
