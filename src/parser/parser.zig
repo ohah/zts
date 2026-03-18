@@ -256,7 +256,7 @@ pub const Parser = struct {
     fn parseVariableDeclarator(self: *Parser) !NodeIndex {
         const start = self.currentSpan().start;
 
-        // 바인딩 패턴 (간단히 식별자만 우선 지원)
+        // 바인딩 패턴 (identifier, [array], {object} destructuring)
         const name = try self.parseBindingIdentifier();
 
         // 이니셜라이저
@@ -1269,7 +1269,13 @@ pub const Parser = struct {
         const scratch_top = self.saveScratch();
         while (self.current() != .r_bracket and self.current() != .eof) {
             if (self.current() == .comma) {
-                // elision (빈 슬롯)
+                // elision (빈 슬롯) — placeholder 노드 추가
+                const hole_span = self.currentSpan();
+                try self.scratch.append(try self.ast.addNode(.{
+                    .tag = .empty_statement, // 빈 슬롯 표현용
+                    .span = hole_span,
+                    .data = .{ .none = {} },
+                }));
                 self.advance();
                 continue;
             }
@@ -1375,10 +1381,20 @@ pub const Parser = struct {
             }
         }
 
-        // key: pattern
+        // key: pattern = default
         const key = try self.parsePropertyKey();
         self.expect(.colon);
-        const value = try self.parseBindingPattern();
+        var value = try self.parseBindingPattern();
+
+        // { x: pattern = defaultValue } 형태
+        if (self.eat(.eq)) {
+            const default_val = try self.parseAssignmentExpression();
+            value = try self.ast.addNode(.{
+                .tag = .assignment_pattern,
+                .span = .{ .start = self.ast.getNode(value).span.start, .end = self.currentSpan().start },
+                .data = .{ .binary = .{ .left = value, .right = default_val } },
+            });
+        }
 
         return try self.ast.addNode(.{
             .tag = .binding_property,
