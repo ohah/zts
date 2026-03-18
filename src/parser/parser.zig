@@ -843,10 +843,11 @@ pub const Parser = struct {
             });
         }
 
-        // import(...) — dynamic import expression (expression statement로 처리)
+        // import(...) — dynamic import는 expression. expression statement로 파싱.
         if (self.current() == .l_paren) {
-            const arg_start = self.currentSpan().start;
-            self.advance(); // skip (
+            // import 키워드는 이미 advance()됨. parsePrimaryExpression에 위임하기 위해
+            // 수동으로 import expression 생성.
+            self.expect(.l_paren);
             const arg = try self.parseAssignmentExpression();
             self.expect(.r_paren);
             const import_expr = try self.ast.addNode(.{
@@ -854,7 +855,7 @@ pub const Parser = struct {
                 .span = .{ .start = start, .end = self.currentSpan().start },
                 .data = .{ .unary = .{ .operand = arg } },
             });
-            _ = arg_start;
+            // 후속 .then() 등의 member/call 체이닝 처리
             _ = self.eat(.semicolon);
             return try self.ast.addNode(.{
                 .tag = .expression_statement,
@@ -949,20 +950,20 @@ pub const Parser = struct {
 
     fn parseImportSpecifier(self: *Parser) !NodeIndex {
         const start = self.currentSpan().start;
-        const imported_span = self.currentSpan();
-        self.advance(); // imported name
+
+        // imported name
+        const imported = try self.parseIdentifierName();
 
         // as local
-        var local_span = imported_span;
+        var local = imported;
         if (self.eat(.kw_as)) {
-            local_span = self.currentSpan();
-            self.advance(); // local name
+            local = try self.parseIdentifierName();
         }
 
         return try self.ast.addNode(.{
             .tag = .import_specifier,
             .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = @enumFromInt(imported_span.start), .right = @enumFromInt(local_span.start) } },
+            .data = .{ .binary = .{ .left = imported, .right = local } },
         });
     }
 
@@ -1055,19 +1056,18 @@ pub const Parser = struct {
 
     fn parseExportSpecifier(self: *Parser) !NodeIndex {
         const start = self.currentSpan().start;
-        const local_span = self.currentSpan();
-        self.advance(); // local name
 
-        var exported_span = local_span;
+        const local = try self.parseIdentifierName();
+
+        var exported = local;
         if (self.eat(.kw_as)) {
-            exported_span = self.currentSpan();
-            self.advance(); // exported name
+            exported = try self.parseIdentifierName();
         }
 
         return try self.ast.addNode(.{
             .tag = .export_specifier,
             .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = @enumFromInt(local_span.start), .right = @enumFromInt(exported_span.start) } },
+            .data = .{ .binary = .{ .left = local, .right = exported } },
         });
     }
 
@@ -1387,6 +1387,18 @@ pub const Parser = struct {
             },
             .kw_class => return self.parseClassExpression(),
             .kw_function => return self.parseFunctionExpression(),
+            .kw_import => {
+                // dynamic import: import("module")
+                self.advance(); // skip 'import'
+                self.expect(.l_paren);
+                const arg = try self.parseAssignmentExpression();
+                self.expect(.r_paren);
+                return try self.ast.addNode(.{
+                    .tag = .import_expression,
+                    .span = .{ .start = span.start, .end = self.currentSpan().start },
+                    .data = .{ .unary = .{ .operand = arg } },
+                });
+            },
             .l_bracket => {
                 // 배열 리터럴
                 return self.parseArrayExpression();
@@ -2293,6 +2305,16 @@ test "Parser: export named re-export" {
 
 test "Parser: export default function" {
     var scanner = Scanner.init(std.testing.allocator, "export default function foo() { }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: dynamic import expression" {
+    var scanner = Scanner.init(std.testing.allocator, "const m = import('module');");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();

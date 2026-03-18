@@ -104,6 +104,15 @@
 | 32 | shorthand property | PR #25 (object pattern) |
 | 33 | spread in array/object | PR #23 |
 
+### PR #26: feat(parser): import/export
+
+| # | 항목 | 이유 | 해결 시점 |
+|---|------|------|----------|
+| 43 | import.meta 미지원 | 문법 | Phase 2 다음 PR |
+| 44 | string literal import specifier name (ES2022) | edge case | Phase 2 후반 |
+| 45 | export default async function | async PR에서 처리 | Phase 2 #11 |
+| 46 | import() statement에서 .then() 체이닝 미처리 | expression 경로로 이동함 | 최적화 PR |
+
 ---
 
 ## 추후 개선
