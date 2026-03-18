@@ -167,12 +167,14 @@ main ← feature/lexer-token-enum
 3. ✅ 타입 스트리핑 + 통합 테스트 — PR #38
 4. ✅ TS expression 변환 (as, satisfies, !) — PR #37에서 구현
 5. ✅ 기본 codegen (AST→JS 문자열) — PR #39
-6. ⬜ enum → IIFE
-7. ⬜ namespace → IIFE
-8. ⬜ parameter property 변환
-9. ⬜ JSX 변환 (Classic + Automatic)
-10. ⬜ ESM → CJS 모듈 변환
+6. ✅ enum → IIFE — PR #40
+7. ✅ namespace → IIFE — PR #41
+8. ✅ JSX → React.createElement — PR #42
+9. ✅ ESM → CJS 모듈 변환 — PR #43
+10. ⬜ parameter property 변환 (파서 수정 필요)
 11. ⬜ decorator 변환
+12. ⬜ CJS export const 수정 (segfault)
+13. ⬜ 파서 테스트 6개 수정
 
 ## References
 - Bun JS Parser: github.com/oven-sh/bun (src/js_parser.zig, src/js_lexer.zig)
