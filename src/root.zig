@@ -13,5 +13,6 @@ pub const test262 = @import("test262/mod.zig");
 test {
     _ = lexer;
     _ = transformer;
+    _ = codegen;
     _ = test262;
 }
