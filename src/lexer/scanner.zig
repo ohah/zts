@@ -290,11 +290,7 @@ pub const Scanner = struct {
                 '?' => self.scanQuestion(),
 
                 // 리터럴 — 추후 PR에서 세부 구현
-                '0'...'9' => blk: {
-                    // TODO: 숫자 리터럴 세부 파싱 (hex, octal, binary, bigint, float, exponential)
-                    self.scanNumericLiteral();
-                    break :blk .decimal;
-                },
+                '0'...'9' => self.scanNumericLiteral(c),
                 '\'', '"' => blk: {
                     // TODO: 문자열 리터럴 세부 파싱 (escape sequence)
                     self.scanStringLiteral(c);
@@ -348,7 +344,11 @@ pub const Scanner = struct {
             self.current += 2;
             return .dot3;
         }
-        // .5 같은 숫자는 추후 숫자 리터럴 PR에서 처리
+        // .5 같은 숫자 리터럴
+        const next_char = self.peek();
+        if (next_char >= '0' and next_char <= '9') {
+            return self.scanDecimalAfterDot();
+        }
         return .dot;
     }
 
@@ -618,17 +618,161 @@ pub const Scanner = struct {
     // 리터럴 스캔 (placeholder — 추후 PR에서 세부 구현)
     // ====================================================================
 
-    fn scanNumericLiteral(self: *Scanner) void {
-        // TODO: hex, octal, binary, bigint, float, exponential, separator
+    /// 숫자 리터럴을 스캔한다.
+    /// 첫 번째 숫자 문자(c)는 이미 advance()로 소비된 상태.
+    ///
+    /// 처리하는 형식:
+    /// - 10진수: 123, 1_000_000
+    /// - 소수: 1.5, .5
+    /// - 지수: 1e10, 1e+10, 1e-10
+    /// - 16진수: 0xFF, 0XFF
+    /// - 8진수: 0o77, 0O77
+    /// - 2진수: 0b1010, 0B1010
+    /// - BigInt: 123n, 0xFFn, 0o77n, 0b1010n
+    /// - 숫자 구분자: 1_000, 0xFF_FF
+    fn scanNumericLiteral(self: *Scanner, first_char: u8) Kind {
+        // 0으로 시작하면 접두사 확인
+        if (first_char == '0') {
+            const prefix = self.peek();
+            switch (prefix) {
+                'x', 'X' => {
+                    self.current += 1;
+                    return self.scanHexLiteral();
+                },
+                'o', 'O' => {
+                    self.current += 1;
+                    return self.scanOctalLiteral();
+                },
+                'b', 'B' => {
+                    self.current += 1;
+                    return self.scanBinaryLiteral();
+                },
+                else => {},
+            }
+        }
+
+        // 10진수 정수부 소비
+        self.scanDecimalDigits();
+
+        // 소수점
+        if (self.peek() == '.') {
+            // 1..toString() 같은 경우 방지: '..' 이면 소수점이 아님
+            if (self.peekAt(1) != '.') {
+                self.current += 1;
+                self.scanDecimalDigits();
+                return self.scanExponentPart(.float);
+            }
+        }
+
+        // 지수
+        return self.scanExponentPart(.decimal);
+    }
+
+    /// 소수점 이후를 스캔한다 (.5, .123e10 등).
+    /// '.'은 이미 소비된 상태. ('.' 자체는 scanDot에서 감지)
+    fn scanDecimalAfterDot(self: *Scanner) Kind {
+        self.scanDecimalDigits();
+        return self.scanExponentPart(.float);
+    }
+
+    /// 10진수 숫자 시퀀스를 소비한다 (separator '_' 포함).
+    fn scanDecimalDigits(self: *Scanner) void {
         while (!self.isAtEnd()) {
             const c = self.peek();
             if (c >= '0' and c <= '9') {
                 self.current += 1;
-            } else if (c == '.') {
+            } else if (c == '_') {
+                // numeric separator: 다음 문자가 숫자여야 유효
+                // (유효성 검사는 추후 에러 리포팅에서)
                 self.current += 1;
             } else {
                 break;
             }
+        }
+    }
+
+    /// 지수부(e/E)를 스캔하고, BigInt suffix(n)도 확인한다.
+    /// base_kind: 지수가 없을 때의 기본 Kind (.decimal 또는 .float)
+    fn scanExponentPart(self: *Scanner, base_kind: Kind) Kind {
+        const c = self.peek();
+        if (c == 'e' or c == 'E') {
+            self.current += 1;
+            const sign = self.peek();
+            const is_negative = sign == '-';
+            if (sign == '+' or sign == '-') {
+                self.current += 1;
+            }
+            self.scanDecimalDigits();
+            return if (is_negative) .negative_exponential else .positive_exponential;
+        }
+
+        // BigInt suffix 'n'
+        if (c == 'n') {
+            self.current += 1;
+            return switch (base_kind) {
+                .decimal => .decimal_bigint,
+                // float에 n은 JS에서 invalid이지만 렉서는 파싱하고 파서에서 에러
+                else => .decimal_bigint,
+            };
+        }
+
+        return base_kind;
+    }
+
+    /// 16진수 리터럴을 스캔한다 (0x 이후).
+    fn scanHexLiteral(self: *Scanner) Kind {
+        self.scanHexDigits();
+        if (self.peek() == 'n') {
+            self.current += 1;
+            return .hex_bigint;
+        }
+        return .hex;
+    }
+
+    /// 8진수 리터럴을 스캔한다 (0o 이후).
+    fn scanOctalLiteral(self: *Scanner) Kind {
+        self.scanOctalDigits();
+        if (self.peek() == 'n') {
+            self.current += 1;
+            return .octal_bigint;
+        }
+        return .octal;
+    }
+
+    /// 2진수 리터럴을 스캔한다 (0b 이후).
+    fn scanBinaryLiteral(self: *Scanner) Kind {
+        self.scanBinaryDigits();
+        if (self.peek() == 'n') {
+            self.current += 1;
+            return .binary_bigint;
+        }
+        return .binary;
+    }
+
+    fn scanHexDigits(self: *Scanner) void {
+        while (!self.isAtEnd()) {
+            const c = self.peek();
+            if ((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F') or c == '_') {
+                self.current += 1;
+            } else break;
+        }
+    }
+
+    fn scanOctalDigits(self: *Scanner) void {
+        while (!self.isAtEnd()) {
+            const c = self.peek();
+            if ((c >= '0' and c <= '7') or c == '_') {
+                self.current += 1;
+            } else break;
+        }
+    }
+
+    fn scanBinaryDigits(self: *Scanner) void {
+        while (!self.isAtEnd()) {
+            const c = self.peek();
+            if (c == '0' or c == '1' or c == '_') {
+                self.current += 1;
+            } else break;
         }
     }
 
@@ -1077,4 +1221,141 @@ test "Scanner: slash after comment is not confused" {
     try std.testing.expectEqual(Kind.slash, scanner.token.kind);
     scanner.next(); // b
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+}
+
+// ============================================================
+// Numeric literal tests
+// ============================================================
+
+test "Scanner: decimal integer" {
+    const source = "123 0 42";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.decimal, scanner.token.kind);
+    try std.testing.expectEqualStrings("123", scanner.tokenText());
+    scanner.next();
+    try std.testing.expectEqual(Kind.decimal, scanner.token.kind);
+    try std.testing.expectEqualStrings("0", scanner.tokenText());
+    scanner.next();
+    try std.testing.expectEqual(Kind.decimal, scanner.token.kind);
+}
+
+test "Scanner: hex literal" {
+    const source = "0xFF 0X1A";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.hex, scanner.token.kind);
+    try std.testing.expectEqualStrings("0xFF", scanner.tokenText());
+    scanner.next();
+    try std.testing.expectEqual(Kind.hex, scanner.token.kind);
+}
+
+test "Scanner: octal literal" {
+    const source = "0o77 0O10";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.octal, scanner.token.kind);
+    scanner.next();
+    try std.testing.expectEqual(Kind.octal, scanner.token.kind);
+}
+
+test "Scanner: binary literal" {
+    const source = "0b1010 0B11";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.binary, scanner.token.kind);
+    scanner.next();
+    try std.testing.expectEqual(Kind.binary, scanner.token.kind);
+}
+
+test "Scanner: float literal" {
+    const source = "1.5 0.1 .5";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.float, scanner.token.kind);
+    try std.testing.expectEqualStrings("1.5", scanner.tokenText());
+    scanner.next();
+    try std.testing.expectEqual(Kind.float, scanner.token.kind);
+    scanner.next();
+    try std.testing.expectEqual(Kind.float, scanner.token.kind);
+    try std.testing.expectEqualStrings(".5", scanner.tokenText());
+}
+
+test "Scanner: exponential literal" {
+    const source = "1e10 1E10 1e+10 1e-10";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.positive_exponential, scanner.token.kind);
+    scanner.next();
+    try std.testing.expectEqual(Kind.positive_exponential, scanner.token.kind);
+    scanner.next();
+    try std.testing.expectEqual(Kind.positive_exponential, scanner.token.kind);
+    scanner.next();
+    try std.testing.expectEqual(Kind.negative_exponential, scanner.token.kind);
+}
+
+test "Scanner: bigint literal" {
+    const source = "123n 0xFFn 0o77n 0b1010n";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.decimal_bigint, scanner.token.kind);
+    scanner.next();
+    try std.testing.expectEqual(Kind.hex_bigint, scanner.token.kind);
+    scanner.next();
+    try std.testing.expectEqual(Kind.octal_bigint, scanner.token.kind);
+    scanner.next();
+    try std.testing.expectEqual(Kind.binary_bigint, scanner.token.kind);
+}
+
+test "Scanner: numeric separator" {
+    const source = "1_000_000 0xFF_FF 0b1010_0001";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.decimal, scanner.token.kind);
+    try std.testing.expectEqualStrings("1_000_000", scanner.tokenText());
+    scanner.next();
+    try std.testing.expectEqual(Kind.hex, scanner.token.kind);
+    scanner.next();
+    try std.testing.expectEqual(Kind.binary, scanner.token.kind);
+}
+
+test "Scanner: 1..toString is not float" {
+    // 1..toString() → decimal(1) dot dot identifier(toString) ...
+    const source = "1..toString";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.decimal, scanner.token.kind);
+    try std.testing.expectEqualStrings("1", scanner.tokenText());
+    scanner.next();
+    try std.testing.expectEqual(Kind.dot, scanner.token.kind);
+    scanner.next();
+    try std.testing.expectEqual(Kind.dot, scanner.token.kind);
+}
+
+test "Scanner: float with exponent" {
+    const source = "1.5e10";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.positive_exponential, scanner.token.kind);
+    try std.testing.expectEqualStrings("1.5e10", scanner.tokenText());
 }
