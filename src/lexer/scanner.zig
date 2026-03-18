@@ -65,6 +65,16 @@ pub const Scanner = struct {
     /// 이전 토큰의 종류. regex vs division 판별에 사용 (slashIsRegex).
     prev_token_kind: Kind = .eof,
 
+    /// JSX pragma (D026): 파일 상단 주석에서 감지.
+    /// `@jsx h` → jsx_pragma = "h"
+    jsx_pragma: ?[]const u8 = null,
+    /// `@jsxFrag Fragment` → jsx_frag_pragma = "Fragment"
+    jsx_frag_pragma: ?[]const u8 = null,
+    /// `@jsxRuntime automatic` → jsx_runtime_pragma = "automatic"
+    jsx_runtime_pragma: ?[]const u8 = null,
+    /// `@jsxImportSource preact` → jsx_import_source_pragma = "preact"
+    jsx_import_source_pragma: ?[]const u8 = null,
+
     /// 소스를 UTF-8로 읽고 Scanner를 초기화한다.
     /// BOM이 있으면 스킵한다 (D019).
     pub fn init(allocator: std.mem.Allocator, source: []const u8) Scanner {
@@ -715,6 +725,62 @@ pub const Scanner = struct {
         {
             self.token.has_pure_comment_before = true;
         }
+
+        // JSX pragma 감지 (D026)
+        self.checkJSXPragma(comment_text);
+    }
+
+    /// 주석에서 JSX pragma 디렉티브를 감지한다 (D026).
+    /// `@jsx`, `@jsxFrag`, `@jsxRuntime`, `@jsxImportSource` 뒤의 값을 추출.
+    fn checkJSXPragma(self: *Scanner, comment_text: []const u8) void {
+        // @jsxImportSource 먼저 (더 긴 접두사를 먼저 체크)
+        if (extractPragmaValue(comment_text, "@jsxImportSource")) |val| {
+            self.jsx_import_source_pragma = val;
+        }
+        if (extractPragmaValue(comment_text, "@jsxRuntime")) |val| {
+            self.jsx_runtime_pragma = val;
+        }
+        if (extractPragmaValue(comment_text, "@jsxFrag")) |val| {
+            self.jsx_frag_pragma = val;
+        }
+        // @jsx는 @jsxFrag 등과 겹치지 않도록 마지막에 체크
+        if (extractPragmaValue(comment_text, "@jsx")) |val| {
+            // @jsxFrag, @jsxRuntime, @jsxImportSource가 아닌 경우만
+            if (!std.mem.startsWith(u8, val, "Frag") and
+                !std.mem.startsWith(u8, val, "Runtime") and
+                !std.mem.startsWith(u8, val, "ImportSource"))
+            {
+                self.jsx_pragma = val;
+            }
+        }
+    }
+
+    /// 주석 텍스트에서 `@directive value` 형태의 값을 추출한다.
+    /// 공백으로 구분된 첫 번째 단어를 반환.
+    fn extractPragmaValue(comment_text: []const u8, directive: []const u8) ?[]const u8 {
+        const idx = std.mem.indexOf(u8, comment_text, directive) orelse return null;
+        const after = comment_text[idx + directive.len ..];
+
+        // directive 바로 뒤에 공백이 있어야 함
+        if (after.len == 0 or (after[0] != ' ' and after[0] != '\t')) return null;
+
+        // 공백 스킵
+        var start: usize = 0;
+        while (start < after.len and (after[start] == ' ' or after[start] == '\t')) {
+            start += 1;
+        }
+        if (start >= after.len) return null;
+
+        // 값 끝 찾기 (공백, *, / 에서 멈춤)
+        var end = start;
+        while (end < after.len and after[end] != ' ' and after[end] != '\t' and
+            after[end] != '*' and after[end] != '/' and after[end] != '\n' and after[end] != '\r')
+        {
+            end += 1;
+        }
+
+        if (end == start) return null;
+        return after[start..end];
     }
 
     fn scanPercent(self: *Scanner) Kind {
@@ -2261,4 +2327,79 @@ test "Scanner: JSX string without escape" {
     try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
     // 전체 텍스트가 토큰에 포함됨 (이스케이프 안 함)
     try std.testing.expectEqualStrings("\"hello\\nworld\"", scanner.tokenText());
+}
+
+// ============================================================
+// JSX pragma tests (D026)
+// ============================================================
+
+test "Scanner: @jsx pragma in single-line comment" {
+    const source = "// @jsx h\nconst x = 1;";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next(); // const (comment is skipped)
+    try std.testing.expectEqual(Kind.kw_const, scanner.token.kind);
+    try std.testing.expectEqualStrings("h", scanner.jsx_pragma.?);
+}
+
+test "Scanner: @jsx pragma in multi-line comment" {
+    const source = "/** @jsx h */\nconst x = 1;";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqualStrings("h", scanner.jsx_pragma.?);
+}
+
+test "Scanner: @jsxFrag pragma" {
+    const source = "/** @jsxFrag Fragment */";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next(); // eof (comment only)
+    try std.testing.expectEqualStrings("Fragment", scanner.jsx_frag_pragma.?);
+}
+
+test "Scanner: @jsxRuntime pragma" {
+    const source = "// @jsxRuntime automatic";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqualStrings("automatic", scanner.jsx_runtime_pragma.?);
+}
+
+test "Scanner: @jsxImportSource pragma" {
+    const source = "/** @jsxImportSource preact */";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqualStrings("preact", scanner.jsx_import_source_pragma.?);
+}
+
+test "Scanner: multiple pragmas in one file" {
+    const source = "/** @jsx h */\n// @jsxFrag Fragment\nconst x = 1;";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    // 전체 스캔
+    while (true) {
+        scanner.next();
+        if (scanner.token.kind == .eof) break;
+    }
+
+    try std.testing.expectEqualStrings("h", scanner.jsx_pragma.?);
+    try std.testing.expectEqualStrings("Fragment", scanner.jsx_frag_pragma.?);
+}
+
+test "Scanner: no pragma in normal comment" {
+    const source = "/* just a comment */ x";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expect(scanner.jsx_pragma == null);
+    try std.testing.expect(scanner.jsx_frag_pragma == null);
 }
