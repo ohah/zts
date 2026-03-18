@@ -37,6 +37,9 @@ pub const Parser = struct {
     /// 수집된 에러 목록 (D039: 다중 에러)
     errors: std.ArrayList(ParseError),
 
+    /// 재사용 가능한 임시 버퍼 (리스트 수집용). 매 사용 시 clearRetainingCapacity.
+    scratch: std.ArrayList(NodeIndex),
+
     /// 메모리 할당자
     allocator: std.mem.Allocator,
 
@@ -45,6 +48,7 @@ pub const Parser = struct {
             .scanner = scanner,
             .ast = Ast.init(allocator, scanner.source),
             .errors = std.ArrayList(ParseError).init(allocator),
+            .scratch = std.ArrayList(NodeIndex).init(allocator),
             .allocator = allocator,
         };
     }
@@ -52,6 +56,7 @@ pub const Parser = struct {
     pub fn deinit(self: *Parser) void {
         self.ast.deinit();
         self.errors.deinit();
+        self.scratch.deinit();
     }
 
     // ================================================================
@@ -94,7 +99,7 @@ pub const Parser = struct {
         self.errors.append(.{
             .span = span,
             .message = expected,
-        }) catch {};
+        }) catch @panic("OOM: parser error list");
     }
 
     /// 현재 토큰의 소스 텍스트.
@@ -141,10 +146,10 @@ pub const Parser = struct {
             .kw_if => self.parseIfStatement(),
             .kw_while => self.parseWhileStatement(),
             .kw_for => self.parseForStatement(),
-            .kw_break => self.parseBreakStatement(),
-            .kw_continue => self.parseContinueStatement(),
+            .kw_break => self.parseSimpleStatement(.break_statement),
+            .kw_continue => self.parseSimpleStatement(.continue_statement),
             .kw_throw => self.parseThrowStatement(),
-            .kw_debugger => self.parseDebuggerStatement(),
+            .kw_debugger => self.parseSimpleStatement(.debugger_statement),
             .kw_function => self.parseFunctionDeclaration(),
             else => self.parseExpressionStatement(),
         };
@@ -345,18 +350,12 @@ pub const Parser = struct {
         });
     }
 
-    fn parseBreakStatement(self: *Parser) !NodeIndex {
+    /// break, continue, debugger 등 키워드 + 세미콜론만으로 구성된 단순 문.
+    fn parseSimpleStatement(self: *Parser, tag: Tag) !NodeIndex {
         const span = self.currentSpan();
         self.advance();
         _ = self.eat(.semicolon);
-        return try self.ast.addNode(.{ .tag = .break_statement, .span = span, .data = .{ .none = {} } });
-    }
-
-    fn parseContinueStatement(self: *Parser) !NodeIndex {
-        const span = self.currentSpan();
-        self.advance();
-        _ = self.eat(.semicolon);
-        return try self.ast.addNode(.{ .tag = .continue_statement, .span = span, .data = .{ .none = {} } });
+        return try self.ast.addNode(.{ .tag = tag, .span = span, .data = .{ .none = {} } });
     }
 
     fn parseThrowStatement(self: *Parser) !NodeIndex {
@@ -370,13 +369,6 @@ pub const Parser = struct {
             .span = .{ .start = start, .end = end },
             .data = .{ .unary = .{ .operand = arg } },
         });
-    }
-
-    fn parseDebuggerStatement(self: *Parser) !NodeIndex {
-        const span = self.currentSpan();
-        self.advance();
-        _ = self.eat(.semicolon);
-        return try self.ast.addNode(.{ .tag = .debugger_statement, .span = span, .data = .{ .none = {} } });
     }
 
     fn parseFunctionDeclaration(self: *Parser) !NodeIndex {
@@ -443,12 +435,13 @@ pub const Parser = struct {
         const expr = try self.parseBinaryExpression(0);
 
         if (self.eat(.question)) {
+            const expr_start = self.ast.getNode(expr).span.start;
             const consequent = try self.parseAssignmentExpression();
             self.expect(.colon);
             const alternate = try self.parseAssignmentExpression();
             return try self.ast.addNode(.{
                 .tag = .conditional_expression,
-                .span = .{ .start = 0, .end = self.currentSpan().start },
+                .span = .{ .start = expr_start, .end = self.currentSpan().start },
                 .data = .{ .ternary = .{ .a = expr, .b = consequent, .c = alternate } },
             });
         }
@@ -464,16 +457,19 @@ pub const Parser = struct {
             const prec = getBinaryPrecedence(self.current());
             if (prec == 0 or prec <= min_prec) break;
 
+            const left_start = self.ast.getNode(left).span.start;
             const op_kind = self.current();
             const is_logical = (op_kind == .amp2 or op_kind == .pipe2 or op_kind == .question2);
             self.advance();
 
-            const right = try self.parseBinaryExpression(prec);
+            // ** (star2)는 우결합: prec - 1로 재귀하여 같은 우선순위를 오른쪽에 허용
+            const next_prec = if (op_kind == .star2) prec - 1 else prec;
+            const right = try self.parseBinaryExpression(next_prec);
             const tag: Tag = if (is_logical) .logical_expression else .binary_expression;
 
             left = try self.ast.addNode(.{
                 .tag = tag,
-                .span = .{ .start = 0, .end = self.currentSpan().start },
+                .span = .{ .start = left_start, .end = self.currentSpan().start },
                 .data = .{ .binary = .{ .left = left, .right = right, .flags = @intFromEnum(op_kind) } },
             });
         }
@@ -525,11 +521,12 @@ pub const Parser = struct {
         if ((self.current() == .plus2 or self.current() == .minus2) and
             !self.scanner.token.has_newline_before)
         {
+            const expr_start = self.ast.getNode(expr).span.start;
             const kind = self.current();
             self.advance();
             expr = try self.ast.addNode(.{
                 .tag = .update_expression,
-                .span = .{ .start = 0, .end = self.currentSpan().start },
+                .span = .{ .start = expr_start, .end = self.currentSpan().start },
                 .data = .{ .unary = .{ .operand = expr, .flags = @intFromEnum(kind) | 0x100 } }, // 0x100 = postfix
             });
         }
@@ -541,23 +538,23 @@ pub const Parser = struct {
         var expr = try self.parsePrimaryExpression();
 
         while (true) {
+            const expr_start = self.ast.getNode(expr).span.start;
             switch (self.current()) {
                 .l_paren => {
                     // 함수 호출
                     self.advance();
-                    var args = std.ArrayList(NodeIndex).init(self.allocator);
-                    defer args.deinit();
+                    self.scratch.clearRetainingCapacity();
                     while (self.current() != .r_paren and self.current() != .eof) {
                         const arg = try self.parseAssignmentExpression();
-                        try args.append(arg);
+                        try self.scratch.append(arg);
                         if (!self.eat(.comma)) break;
                     }
                     self.expect(.r_paren);
 
-                    const arg_list = try self.ast.addNodeList(args.items);
+                    const arg_list = try self.ast.addNodeList(self.scratch.items);
                     expr = try self.ast.addNode(.{
                         .tag = .call_expression,
-                        .span = .{ .start = 0, .end = self.currentSpan().start },
+                        .span = .{ .start = expr_start, .end = self.currentSpan().start },
                         .data = .{ .binary = .{ .left = expr, .right = @enumFromInt(arg_list.start), .flags = @intCast(arg_list.len) } },
                     });
                 },
@@ -567,7 +564,7 @@ pub const Parser = struct {
                     const prop = try self.parseIdentifierName();
                     expr = try self.ast.addNode(.{
                         .tag = .static_member_expression,
-                        .span = .{ .start = 0, .end = self.currentSpan().start },
+                        .span = .{ .start = expr_start, .end = self.currentSpan().start },
                         .data = .{ .binary = .{ .left = expr, .right = prop } },
                     });
                 },
@@ -578,7 +575,7 @@ pub const Parser = struct {
                     self.expect(.r_bracket);
                     expr = try self.ast.addNode(.{
                         .tag = .computed_member_expression,
-                        .span = .{ .start = 0, .end = self.currentSpan().start },
+                        .span = .{ .start = expr_start, .end = self.currentSpan().start },
                         .data = .{ .binary = .{ .left = expr, .right = prop } },
                     });
                 },
