@@ -940,6 +940,30 @@ pub const Parser = struct {
         return self.peekNext().kind;
     }
 
+    /// JSX element 모드에서 다음 토큰의 Kind를 미리 본다 (현재 토큰을 소비하지 않음).
+    /// JSX children 파싱 중 '<' 다음이 '/'인지 판별할 때 사용.
+    /// normal 모드에서는 '/'가 regex로 해석될 수 있으므로 JSX 전용 peek이 필요하다.
+    fn peekNextKindJSX(self: *Parser) Kind {
+        const saved_pos = self.scanner.current;
+        const saved_start = self.scanner.start;
+        const saved_token = self.scanner.token;
+        const saved_line = self.scanner.line;
+        const saved_line_start = self.scanner.line_start;
+        const saved_prev = self.scanner.prev_token_kind;
+
+        self.scanner.nextInsideJSXElement();
+        const peek_kind = self.scanner.token.kind;
+
+        self.scanner.current = saved_pos;
+        self.scanner.start = saved_start;
+        self.scanner.token = saved_token;
+        self.scanner.line = saved_line;
+        self.scanner.line_start = saved_line_start;
+        self.scanner.prev_token_kind = saved_prev;
+
+        return peek_kind;
+    }
+
     // ================================================================
     // Import / Export 파싱
     // ================================================================
@@ -1205,8 +1229,31 @@ pub const Parser = struct {
     // Expression 파싱 (Pratt parser / precedence climbing)
     // ================================================================
 
+    /// 콤마 연산자(sequence expression)를 포함한 최상위 표현식 파싱.
+    /// ECMAScript: Expression = AssignmentExpression (',' AssignmentExpression)*
+    /// 콤마가 없으면 단일 AssignmentExpression을 그대로 반환하고,
+    /// 콤마가 있으면 sequence_expression 노드로 감싼다.
     fn parseExpression(self: *Parser) ParseError2!NodeIndex {
-        return self.parseAssignmentExpression();
+        const first = try self.parseAssignmentExpression();
+
+        // 콤마가 없으면 단순 표현식
+        if (self.current() != .comma) return first;
+
+        // 콤마 연산자 → sequence expression
+        const scratch_top = self.saveScratch();
+        try self.scratch.append(first);
+        while (self.eat(.comma)) {
+            const elem = try self.parseAssignmentExpression();
+            try self.scratch.append(elem);
+        }
+        const first_span = self.ast.getNode(first).span;
+        const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        self.restoreScratch(scratch_top);
+        return try self.ast.addNode(.{
+            .tag = .sequence_expression,
+            .span = .{ .start = first_span.start, .end = self.currentSpan().start },
+            .data = .{ .list = list },
+        });
     }
 
     fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
@@ -1539,9 +1586,11 @@ pub const Parser = struct {
                 });
             },
             .l_paren => {
-                // 괄호 표현식 또는 arrow function 파라미터 리스트
-                // (a, b) => ... 같은 경우 콤마 구분된 표현식을 파싱해야 함
-                self.advance();
+                // 괄호 표현식 또는 arrow function 파라미터 리스트.
+                // parseExpression()이 콤마 연산자를 sequence_expression으로 처리하므로,
+                // 여기서는 단순히 parseExpression() 호출 후 parenthesized_expression으로 감싼다.
+                // arrow function 감지는 호출자(parseAssignmentExpression)에서 => 토큰으로 판별.
+                self.advance(); // skip (
 
                 // 빈 괄호: () → arrow function의 빈 파라미터 리스트
                 if (self.current() == .r_paren) {
@@ -1553,64 +1602,12 @@ pub const Parser = struct {
                     });
                 }
 
-                // 첫 번째 표현식 또는 rest (...x)
-                if (self.current() == .dot3) {
-                    // rest parameter: (...args)
-                    const rest_start = self.currentSpan().start;
-                    self.advance(); // skip ...
-                    const rest_arg = try self.parseBindingPattern();
-                    const rest = try self.ast.addNode(.{
-                        .tag = .rest_element,
-                        .span = .{ .start = rest_start, .end = self.currentSpan().start },
-                        .data = .{ .unary = .{ .operand = rest_arg, .flags = 0 } },
-                    });
-                    self.expect(.r_paren);
-                    return try self.ast.addNode(.{
-                        .tag = .parenthesized_expression,
-                        .span = .{ .start = span.start, .end = self.currentSpan().start },
-                        .data = .{ .unary = .{ .operand = rest, .flags = 0 } },
-                    });
-                }
-
-                const first = try self.parseAssignmentExpression();
-
-                // 콤마가 없으면 단순 괄호 표현식
-                if (!self.eat(.comma)) {
-                    self.expect(.r_paren);
-                    return try self.ast.addNode(.{
-                        .tag = .parenthesized_expression,
-                        .span = .{ .start = span.start, .end = self.currentSpan().start },
-                        .data = .{ .unary = .{ .operand = first, .flags = 0 } },
-                    });
-                }
-
-                // 콤마 구분 리스트 → sequence expression (arrow function params로 변환 가능)
-                const scratch_top = self.saveScratch();
-                try self.scratch.append(first);
-                while (self.current() != .r_paren and self.current() != .eof) {
-                    if (self.current() == .dot3) {
-                        const rest_start = self.currentSpan().start;
-                        self.advance(); // skip ...
-                        const rest_arg = try self.parseBindingPattern();
-                        try self.scratch.append(try self.ast.addNode(.{
-                            .tag = .rest_element,
-                            .span = .{ .start = rest_start, .end = self.currentSpan().start },
-                            .data = .{ .unary = .{ .operand = rest_arg, .flags = 0 } },
-                        }));
-                        break; // rest는 마지막
-                    }
-                    const elem = try self.parseAssignmentExpression();
-                    try self.scratch.append(elem);
-                    if (!self.eat(.comma)) break;
-                }
+                const expr = try self.parseExpression();
                 self.expect(.r_paren);
-
-                const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-                self.restoreScratch(scratch_top);
                 return try self.ast.addNode(.{
-                    .tag = .sequence_expression,
+                    .tag = .parenthesized_expression,
                     .span = .{ .start = span.start, .end = self.currentSpan().start },
-                    .data = .{ .list = list },
+                    .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
                 });
             },
             .kw_class => return self.parseClassExpression(),
@@ -2139,22 +2136,7 @@ pub const Parser = struct {
         while (self.current() != .eof) {
             if (self.current() == .l_angle) {
                 // 다음 토큰이 / 이면 닫는 태그 (JSX 모드로 peek)
-                const saved_pos = self.scanner.current;
-                const saved_start = self.scanner.start;
-                const saved_token = self.scanner.token;
-                const saved_line = self.scanner.line;
-                const saved_line_start = self.scanner.line_start;
-                const saved_prev = self.scanner.prev_token_kind;
-                self.scanner.nextInsideJSXElement();
-                const peek_kind = self.scanner.token.kind;
-                self.scanner.current = saved_pos;
-                self.scanner.start = saved_start;
-                self.scanner.token = saved_token;
-                self.scanner.line = saved_line;
-                self.scanner.line_start = saved_line_start;
-                self.scanner.prev_token_kind = saved_prev;
-
-                if (peek_kind == .slash) break;
+                if (self.peekNextKindJSX() == .slash) break;
                 // 중첩 JSX element
                 const child = try self.parseJSXElement();
                 try self.scratch.append(child);
@@ -2214,22 +2196,7 @@ pub const Parser = struct {
         while (self.current() != .eof) {
             if (self.current() == .l_angle) {
                 // JSX 모드로 peek (normal 모드에서는 /가 regex로 해석될 수 있음)
-                const saved_pos = self.scanner.current;
-                const saved_start = self.scanner.start;
-                const saved_token = self.scanner.token;
-                const saved_line = self.scanner.line;
-                const saved_line_start = self.scanner.line_start;
-                const saved_prev = self.scanner.prev_token_kind;
-                self.scanner.nextInsideJSXElement();
-                const peek_kind = self.scanner.token.kind;
-                self.scanner.current = saved_pos;
-                self.scanner.start = saved_start;
-                self.scanner.token = saved_token;
-                self.scanner.line = saved_line;
-                self.scanner.line_start = saved_line_start;
-                self.scanner.prev_token_kind = saved_prev;
-
-                if (peek_kind == .slash) break;
+                if (self.peekNextKindJSX() == .slash) break;
                 const child = try self.parseJSXElement();
                 try self.scratch.append(child);
             } else if (self.current() == .l_curly) {
