@@ -14,11 +14,15 @@ JS/TS 소스 코드를 토큰으로 분리.
 - [ ] 문자열 리터럴 (single/double quote, escape sequence)
 - [ ] 템플릿 리터럴 (backtick, `${expr}` 중첩)
 - [ ] 정규식 리터럴 (`/` 나눗셈과 구분)
-- [ ] 주석 (single-line, multi-line, hashbang)
+- [ ] 주석 (single-line, multi-line, hashbang `#!`)
 - [ ] 자동 세미콜론 삽입 (ASI) 규칙
-- [ ] 소스 위치 추적 (line, column, offset)
+- [ ] 소스 위치 추적 (start+end byte offset, D015)
+- [ ] line offset 테이블 (line/column은 lazy 계산)
 - [ ] SIMD 최적화 (공백 스킵, 식별자 스캔)
-- [ ] 유니코드 식별자 지원
+- [ ] 유니코드 식별자 지원 (`\uXXXX`, `\u{XXXX}` 정규화)
+- [ ] BOM(Byte Order Mark) 스킵
+- [ ] 줄 끝 문자 전부 인식 (`\n`, `\r\n`, `\r`, U+2028, U+2029)
+- [ ] import attributes 토큰 (`with`, `assert`)
 
 ### Test262 러너
 렉서/파서 구현과 동시에 Test262로 검증.
@@ -150,7 +154,12 @@ AST를 변환하여 JS로 출력 가능한 형태로 만듦.
 - [ ] legacy decorator 변환
 - [ ] emitDecoratorMetadata
 - [ ] accessor 변환
-- [ ] JSX 변환
+- [ ] JSX 변환 (Classic + Automatic)
+- [ ] define (전역 치환: `process.env.NODE_ENV` → `"production"` 등)
+- [ ] import.meta CJS 변환 (`import.meta.url` → `pathToFileURL(__filename).href`)
+- [ ] ESM → CJS 모듈 변환 (import→require, export→module.exports)
+- [ ] direct eval 감지 → 해당 스코프 최적화 비활성화
+- [ ] 헬퍼 함수 전략 (인라인 기본, 외부 tslib 옵션)
 
 ---
 
@@ -159,9 +168,11 @@ AST를 변환하여 JS로 출력 가능한 형태로 만듦.
 
 ### 목표
 - [ ] AST → JS 문자열 출력
-- [ ] 소스맵 생성 (v3)
+- [ ] 소스맵 생성 (v3, inline + external + hidden)
 - [ ] 출력 포맷 옵션 (minify 기초)
 - [ ] 줄바꿈, 들여쓰기 보존
+- [ ] Legal 코멘트 처리 (`@license`, `@preserve` — none/inline/eof/external)
+- [ ] `"use strict"` 삽입 (CJS + alwaysStrict)
 
 ---
 
@@ -170,10 +181,14 @@ AST를 변환하여 JS로 출력 가능한 형태로 만듦.
 
 ### 목표
 - [ ] CLI 인터페이스 (`zts src/index.ts`)
-- [ ] 설정 파일 지원 (tsconfig.json 읽기)
+- [ ] 설정 파일 지원 (tsconfig.json 전체 파싱, extends 상속)
 - [ ] 파일 단위 병렬 파싱 (ThreadPool)
-- [ ] 디렉토리 재귀 처리
-- [ ] watch 모드
+- [ ] 디렉토리 재귀 처리 (rootDir → outDir 미러링)
+- [ ] watch 모드 (fsevents/inotify)
+- [ ] stdin/stdout 모드 (에디터 연동)
+- [ ] `--platform` 옵션 (browser/node/neutral)
+- [ ] `--format` 옵션 (esm/cjs)
+- [ ] .d.ts 생성 (isolatedDeclarations, TS 5.5+)
 - [ ] WASM 빌드 타겟
 
 ---
@@ -182,9 +197,12 @@ AST를 변환하여 JS로 출력 가능한 형태로 만듦.
 스펙 안정화 및 리소스 확보 후 진행.
 
 - [ ] Stage 3 (TC39) decorator — 스펙이 Stage 4 도달 또는 안정화 후 구현
-- [ ] ES 다운레벨링 (ES2024 → ES5/ES2015 등)
+- [ ] ES 다운레벨링 (ES2024→ES2016 점진적, ES2015는 그 이후, ES5 미지원)
+- [ ] loose 모드 (비표준이지만 빠른 다운레벨링)
 - [ ] 미니파이어
-- [ ] 번들러
+- [ ] 번들러 (paths/baseUrl/moduleResolution 활성화, UMD 출력)
+- [ ] WASM 플러그인 시스템
+- [ ] WASM 공개 AST API
 - [ ] import defer (TS 5.9)
 - [ ] 증분 파싱 (에디터 LSP 연동)
 
