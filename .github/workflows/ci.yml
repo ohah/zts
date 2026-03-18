@@ -32,6 +32,9 @@ jobs:
       - name: Run Tests
         run: zig build test
 
+      - name: Run Test262 Runner Tests
+        run: zig build test262
+
       - name: Build (ReleaseSafe)
         run: zig build -Doptimize=ReleaseSafe
 

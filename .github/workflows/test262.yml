@@ -12,9 +12,28 @@ on:
   workflow_dispatch:
 
 jobs:
-  test262:
-    name: Test262 Pass Rate
+  test262-unit:
+    name: Test262 Runner Unit Tests
     runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.0
+
+      - name: Run Test262 runner unit tests
+        run: zig build test262
+
+  test262-lexer:
+    name: Test262 Lexer Conformance
+    runs-on: ubuntu-latest
+    needs: test262-unit
 
     steps:
       - name: Checkout
@@ -30,13 +49,68 @@ jobs:
       - name: Build (ReleaseFast)
         run: zig build -Doptimize=ReleaseFast
 
-      - name: Run Test262 (language/)
-        run: |
-          # 추후 Test262 러너 구현 시 활성화
-          # zig build run -- --test262 tests/test262/test/language/
-          echo "Test262 runner placeholder - will be implemented with parser"
+      - name: Test262 — literals/numeric
+        run: zig build run -- --test262 tests/test262/test/language/literals/numeric/ || true
 
-      # 추후: 통과율을 뱃지로 표시
-      # - name: Update badge
-      #   run: |
-      #     echo "Pass rate: $PASS_RATE%"
+      - name: Test262 — literals/string
+        run: zig build run -- --test262 tests/test262/test/language/literals/string/ || true
+
+      - name: Test262 — literals/bigint
+        run: zig build run -- --test262 tests/test262/test/language/literals/bigint/ || true
+
+      - name: Test262 — literals/regexp
+        run: zig build run -- --test262 tests/test262/test/language/literals/regexp/ || true
+
+      - name: Test262 — literals/boolean
+        run: zig build run -- --test262 tests/test262/test/language/literals/boolean/ || true
+
+      - name: Test262 — literals/null
+        run: zig build run -- --test262 tests/test262/test/language/literals/null/ || true
+
+      - name: Test262 — comments
+        run: zig build run -- --test262 tests/test262/test/language/comments/ || true
+
+      - name: Test262 — white-space
+        run: zig build run -- --test262 tests/test262/test/language/white-space/ || true
+
+      - name: Test262 — line-terminators
+        run: zig build run -- --test262 tests/test262/test/language/line-terminators/ || true
+
+      - name: Test262 — template-literal
+        run: zig build run -- --test262 tests/test262/test/language/expressions/template-literal/ || true
+
+      # 렉서+파서 경계 (파서 구현 후 활성화)
+      # - name: Test262 — identifiers
+      #   run: zig build run -- --test262 tests/test262/test/language/identifiers/ || true
+      # - name: Test262 — keywords
+      #   run: zig build run -- --test262 tests/test262/test/language/keywords/ || true
+      # - name: Test262 — future-reserved-words
+      #   run: zig build run -- --test262 tests/test262/test/language/future-reserved-words/ || true
+      # - name: Test262 — asi
+      #   run: zig build run -- --test262 tests/test262/test/language/asi/ || true
+
+  test262-parser:
+    name: Test262 Parser Conformance
+    runs-on: ubuntu-latest
+    needs: test262-unit
+    if: false  # 파서 구현 후 활성화
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.0
+
+      - name: Build (ReleaseFast)
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Test262 — full language/
+        run: zig build run -- --test262 tests/test262/test/language/
+
+      - name: Summary
+        run: echo "Full parser conformance results above"
