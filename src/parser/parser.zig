@@ -25,6 +25,11 @@ pub const ParseError = struct {
     message: []const u8,
 };
 
+/// 재귀 함수용 명시적 에러 타입.
+/// Zig는 재귀 함수에서 `!T` (inferred error set)를 사용할 수 없다.
+/// 파서의 모든 에러는 메모리 할당 실패뿐이므로 Allocator.Error로 충분하다.
+const ParseError2 = std.mem.Allocator.Error;
+
 /// 재귀 하강 파서.
 /// Scanner에서 토큰을 하나씩 읽어 AST를 구축한다.
 pub const Parser = struct {
@@ -152,7 +157,7 @@ pub const Parser = struct {
     // Statement 파싱
     // ================================================================
 
-    fn parseStatement(self: *Parser) !NodeIndex {
+    fn parseStatement(self: *Parser) ParseError2!NodeIndex {
         return switch (self.current()) {
             .l_curly => self.parseBlockStatement(),
             .semicolon => self.parseEmptyStatement(),
@@ -186,7 +191,7 @@ pub const Parser = struct {
         };
     }
 
-    fn parseBlockStatement(self: *Parser) !NodeIndex {
+    fn parseBlockStatement(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.expect(.l_curly);
 
@@ -209,7 +214,7 @@ pub const Parser = struct {
         });
     }
 
-    fn parseEmptyStatement(self: *Parser) !NodeIndex {
+    fn parseEmptyStatement(self: *Parser) ParseError2!NodeIndex {
         const span = self.currentSpan();
         self.advance(); // skip ;
         return try self.ast.addNode(.{
@@ -219,7 +224,7 @@ pub const Parser = struct {
         });
     }
 
-    fn parseExpressionStatement(self: *Parser) !NodeIndex {
+    fn parseExpressionStatement(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         const expr = try self.parseExpression();
         const end = self.currentSpan().end;
@@ -227,11 +232,11 @@ pub const Parser = struct {
         return try self.ast.addNode(.{
             .tag = .expression_statement,
             .span = .{ .start = start, .end = end },
-            .data = .{ .unary = .{ .operand = expr } },
+            .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
         });
     }
 
-    fn parseVariableDeclaration(self: *Parser) !NodeIndex {
+    fn parseVariableDeclaration(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         const kind_flags: u32 = switch (self.current()) {
             .kw_var => 0,
@@ -265,7 +270,7 @@ pub const Parser = struct {
         });
     }
 
-    fn parseVariableDeclarator(self: *Parser) !NodeIndex {
+    fn parseVariableDeclarator(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
 
         // 바인딩 패턴 (identifier, [array], {object} destructuring)
@@ -292,7 +297,7 @@ pub const Parser = struct {
         });
     }
 
-    fn parseReturnStatement(self: *Parser) !NodeIndex {
+    fn parseReturnStatement(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'return'
 
@@ -309,11 +314,11 @@ pub const Parser = struct {
         return try self.ast.addNode(.{
             .tag = .return_statement,
             .span = .{ .start = start, .end = end },
-            .data = .{ .unary = .{ .operand = arg } },
+            .data = .{ .unary = .{ .operand = arg, .flags = 0 } },
         });
     }
 
-    fn parseIfStatement(self: *Parser) !NodeIndex {
+    fn parseIfStatement(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'if'
         self.expect(.l_paren);
@@ -333,7 +338,7 @@ pub const Parser = struct {
         });
     }
 
-    fn parseWhileStatement(self: *Parser) !NodeIndex {
+    fn parseWhileStatement(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'while'
         self.expect(.l_paren);
@@ -344,11 +349,11 @@ pub const Parser = struct {
         return try self.ast.addNode(.{
             .tag = .while_statement,
             .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = test_expr, .right = body } },
+            .data = .{ .binary = .{ .left = test_expr, .right = body, .flags = 0 } },
         });
     }
 
-    fn parseDoWhileStatement(self: *Parser) !NodeIndex {
+    fn parseDoWhileStatement(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'do'
         const body = try self.parseStatement();
@@ -361,11 +366,11 @@ pub const Parser = struct {
         return try self.ast.addNode(.{
             .tag = .do_while_statement,
             .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = test_expr, .right = body } },
+            .data = .{ .binary = .{ .left = test_expr, .right = body, .flags = 0 } },
         });
     }
 
-    fn parseForStatement(self: *Parser) !NodeIndex {
+    fn parseForStatement(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'for'
         self.expect(.l_paren);
@@ -404,7 +409,7 @@ pub const Parser = struct {
     }
 
     /// for(init; test; update) body — 나머지 파싱
-    fn parseForRest(self: *Parser, start: u32, init_expr: NodeIndex) !NodeIndex {
+    fn parseForRest(self: *Parser, start: u32, init_expr: NodeIndex) ParseError2!NodeIndex {
         var test_expr = NodeIndex.none;
         if (self.current() != .semicolon) {
             test_expr = try self.parseExpression();
@@ -432,7 +437,7 @@ pub const Parser = struct {
     }
 
     /// for(left in right) body
-    fn parseForIn(self: *Parser, start: u32, left: NodeIndex) !NodeIndex {
+    fn parseForIn(self: *Parser, start: u32, left: NodeIndex) ParseError2!NodeIndex {
         self.advance(); // skip 'in'
         const right = try self.parseExpression();
         self.expect(.r_paren);
@@ -446,7 +451,7 @@ pub const Parser = struct {
     }
 
     /// for(left of right) body
-    fn parseForOf(self: *Parser, start: u32, left: NodeIndex) !NodeIndex {
+    fn parseForOf(self: *Parser, start: u32, left: NodeIndex) ParseError2!NodeIndex {
         self.advance(); // skip 'of'
         const right = try self.parseAssignmentExpression();
         self.expect(.r_paren);
@@ -460,14 +465,14 @@ pub const Parser = struct {
     }
 
     /// break, continue, debugger 등 키워드 + 세미콜론만으로 구성된 단순 문.
-    fn parseSimpleStatement(self: *Parser, tag: Tag) !NodeIndex {
+    fn parseSimpleStatement(self: *Parser, tag: Tag) ParseError2!NodeIndex {
         const span = self.currentSpan();
         self.advance();
         _ = self.eat(.semicolon);
         return try self.ast.addNode(.{ .tag = tag, .span = span, .data = .{ .none = 0 } });
     }
 
-    fn parseSwitchStatement(self: *Parser) !NodeIndex {
+    fn parseSwitchStatement(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'switch'
         self.expect(.l_paren);
@@ -497,7 +502,7 @@ pub const Parser = struct {
         });
     }
 
-    fn parseSwitchCase(self: *Parser) !NodeIndex {
+    fn parseSwitchCase(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
 
         var test_expr = NodeIndex.none;
@@ -535,7 +540,7 @@ pub const Parser = struct {
         });
     }
 
-    fn parseThrowStatement(self: *Parser) !NodeIndex {
+    fn parseThrowStatement(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'throw'
         const arg = try self.parseExpression();
@@ -544,11 +549,11 @@ pub const Parser = struct {
         return try self.ast.addNode(.{
             .tag = .throw_statement,
             .span = .{ .start = start, .end = end },
-            .data = .{ .unary = .{ .operand = arg } },
+            .data = .{ .unary = .{ .operand = arg, .flags = 0 } },
         });
     }
 
-    fn parseTryStatement(self: *Parser) !NodeIndex {
+    fn parseTryStatement(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'try'
 
@@ -578,7 +583,7 @@ pub const Parser = struct {
         });
     }
 
-    fn parseCatchClause(self: *Parser) !NodeIndex {
+    fn parseCatchClause(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'catch'
 
@@ -594,15 +599,15 @@ pub const Parser = struct {
         return try self.ast.addNode(.{
             .tag = .catch_clause,
             .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = param, .right = body } },
+            .data = .{ .binary = .{ .left = param, .right = body, .flags = 0 } },
         });
     }
 
-    fn parseFunctionDeclaration(self: *Parser) !NodeIndex {
+    fn parseFunctionDeclaration(self: *Parser) ParseError2!NodeIndex {
         return self.parseFunctionDeclarationWithFlags(0);
     }
 
-    fn parseFunctionDeclarationWithFlags(self: *Parser, extra_flags: u32) !NodeIndex {
+    fn parseFunctionDeclarationWithFlags(self: *Parser, extra_flags: u32) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'function'
 
@@ -650,7 +655,7 @@ pub const Parser = struct {
     /// async function / async arrow를 파싱한다.
     /// async 뒤에 function이 오면 async function declaration,
     /// 그 외는 expression statement로 처리.
-    fn parseAsyncStatement(self: *Parser) !NodeIndex {
+    fn parseAsyncStatement(self: *Parser) ParseError2!NodeIndex {
         const peek = self.peekNext();
         // async [no LineTerminator here] function → async function declaration
         if (peek.kind == .kw_function and !peek.has_newline_before) {
@@ -661,7 +666,7 @@ pub const Parser = struct {
         return self.parseExpressionStatement();
     }
 
-    fn parseFunctionExpression(self: *Parser) !NodeIndex {
+    fn parseFunctionExpression(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'function'
 
@@ -696,16 +701,16 @@ pub const Parser = struct {
         });
     }
 
-    fn parseClassDeclaration(self: *Parser) !NodeIndex {
+    fn parseClassDeclaration(self: *Parser) ParseError2!NodeIndex {
         return self.parseClass(.class_declaration);
     }
 
-    fn parseClassExpression(self: *Parser) !NodeIndex {
+    fn parseClassExpression(self: *Parser) ParseError2!NodeIndex {
         return self.parseClass(.class_expression);
     }
 
     /// class 선언/표현식을 파싱한다.
-    fn parseClass(self: *Parser, tag: Tag) !NodeIndex {
+    fn parseClass(self: *Parser, tag: Tag) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'class'
 
@@ -750,7 +755,7 @@ pub const Parser = struct {
         });
     }
 
-    fn parseClassBody(self: *Parser) !NodeIndex {
+    fn parseClassBody(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.expect(.l_curly);
 
@@ -778,7 +783,7 @@ pub const Parser = struct {
         });
     }
 
-    fn parseClassMember(self: *Parser) !NodeIndex {
+    fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
 
         // 데코레이터 (class member 앞)
@@ -808,7 +813,7 @@ pub const Parser = struct {
                 return try self.ast.addNode(.{
                     .tag = .static_block,
                     .span = .{ .start = start, .end = self.currentSpan().start },
-                    .data = .{ .unary = .{ .operand = body } },
+                    .data = .{ .unary = .{ .operand = body, .flags = 0 } },
                 });
             }
             // static 뒤에 (나 = 가 오면 static은 메서드/프로퍼티 이름
@@ -922,7 +927,7 @@ pub const Parser = struct {
     // Import / Export 파싱
     // ================================================================
 
-    fn parseImportDeclaration(self: *Parser) !NodeIndex {
+    fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'import'
 
@@ -933,7 +938,7 @@ pub const Parser = struct {
             return try self.ast.addNode(.{
                 .tag = .import_declaration,
                 .span = .{ .start = start, .end = self.currentSpan().start },
-                .data = .{ .unary = .{ .operand = source_node } },
+                .data = .{ .unary = .{ .operand = source_node, .flags = 0 } },
             });
         }
 
@@ -947,14 +952,14 @@ pub const Parser = struct {
             const import_expr = try self.ast.addNode(.{
                 .tag = .import_expression,
                 .span = .{ .start = start, .end = self.currentSpan().start },
-                .data = .{ .unary = .{ .operand = arg } },
+                .data = .{ .unary = .{ .operand = arg, .flags = 0 } },
             });
             // 후속 .then() 등의 member/call 체이닝 처리
             _ = self.eat(.semicolon);
             return try self.ast.addNode(.{
                 .tag = .expression_statement,
                 .span = .{ .start = start, .end = self.currentSpan().start },
-                .data = .{ .unary = .{ .operand = import_expr } },
+                .data = .{ .unary = .{ .operand = import_expr, .flags = 0 } },
             });
         }
 
@@ -1042,7 +1047,7 @@ pub const Parser = struct {
         });
     }
 
-    fn parseImportSpecifier(self: *Parser) !NodeIndex {
+    fn parseImportSpecifier(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
 
         // imported name
@@ -1057,11 +1062,11 @@ pub const Parser = struct {
         return try self.ast.addNode(.{
             .tag = .import_specifier,
             .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = imported, .right = local } },
+            .data = .{ .binary = .{ .left = imported, .right = local, .flags = 0 } },
         });
     }
 
-    fn parseExportDeclaration(self: *Parser) !NodeIndex {
+    fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'export'
 
@@ -1079,7 +1084,7 @@ pub const Parser = struct {
             return try self.ast.addNode(.{
                 .tag = .export_default_declaration,
                 .span = .{ .start = start, .end = self.currentSpan().start },
-                .data = .{ .unary = .{ .operand = decl } },
+                .data = .{ .unary = .{ .operand = decl, .flags = 0 } },
             });
         }
 
@@ -1103,7 +1108,7 @@ pub const Parser = struct {
             return try self.ast.addNode(.{
                 .tag = .export_all_declaration,
                 .span = .{ .start = start, .end = self.currentSpan().start },
-                .data = .{ .binary = .{ .left = exported_name, .right = source_node } },
+                .data = .{ .binary = .{ .left = exported_name, .right = source_node, .flags = 0 } },
             });
         }
 
@@ -1144,11 +1149,11 @@ pub const Parser = struct {
         return try self.ast.addNode(.{
             .tag = .export_named_declaration,
             .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .unary = .{ .operand = decl } },
+            .data = .{ .unary = .{ .operand = decl, .flags = 0 } },
         });
     }
 
-    fn parseExportSpecifier(self: *Parser) !NodeIndex {
+    fn parseExportSpecifier(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
 
         const local = try self.parseIdentifierName();
@@ -1161,11 +1166,11 @@ pub const Parser = struct {
         return try self.ast.addNode(.{
             .tag = .export_specifier,
             .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = local, .right = exported } },
+            .data = .{ .binary = .{ .left = local, .right = exported, .flags = 0 } },
         });
     }
 
-    fn parseModuleSource(self: *Parser) !NodeIndex {
+    fn parseModuleSource(self: *Parser) ParseError2!NodeIndex {
         const span = self.currentSpan();
         if (self.current() == .string_literal) {
             self.advance();
@@ -1183,11 +1188,11 @@ pub const Parser = struct {
     // Expression 파싱 (Pratt parser / precedence climbing)
     // ================================================================
 
-    fn parseExpression(self: *Parser) !NodeIndex {
+    fn parseExpression(self: *Parser) ParseError2!NodeIndex {
         return self.parseAssignmentExpression();
     }
 
-    fn parseAssignmentExpression(self: *Parser) !NodeIndex {
+    fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
         // 단일 식별자 + => → arrow function (간단한 형태: x => x + 1)
         if (self.current() == .identifier) {
             const id_span = self.currentSpan();
@@ -1214,7 +1219,7 @@ pub const Parser = struct {
                 return try self.ast.addNode(.{
                     .tag = .arrow_function_expression,
                     .span = .{ .start = id_span.start, .end = self.currentSpan().start },
-                    .data = .{ .binary = .{ .left = param, .right = body } },
+                    .data = .{ .binary = .{ .left = param, .right = body, .flags = 0 } },
                 });
             }
 
@@ -1241,7 +1246,7 @@ pub const Parser = struct {
             return try self.ast.addNode(.{
                 .tag = .arrow_function_expression,
                 .span = .{ .start = left_start, .end = self.currentSpan().start },
-                .data = .{ .binary = .{ .left = left, .right = body } },
+                .data = .{ .binary = .{ .left = left, .right = body, .flags = 0 } },
             });
         }
 
@@ -1260,7 +1265,7 @@ pub const Parser = struct {
         return left;
     }
 
-    fn parseConditionalExpression(self: *Parser) !NodeIndex {
+    fn parseConditionalExpression(self: *Parser) ParseError2!NodeIndex {
         const expr = try self.parseBinaryExpression(0);
 
         if (self.eat(.question)) {
@@ -1279,7 +1284,7 @@ pub const Parser = struct {
     }
 
     /// 이항 연산자를 precedence climbing으로 파싱.
-    fn parseBinaryExpression(self: *Parser, min_prec: u8) !NodeIndex {
+    fn parseBinaryExpression(self: *Parser, min_prec: u8) ParseError2!NodeIndex {
         var left = try self.parseUnaryExpression();
 
         while (true) {
@@ -1306,7 +1311,7 @@ pub const Parser = struct {
         return left;
     }
 
-    fn parseUnaryExpression(self: *Parser) !NodeIndex {
+    fn parseUnaryExpression(self: *Parser) ParseError2!NodeIndex {
         const kind = self.current();
         switch (kind) {
             .bang, .tilde, .minus, .plus, .kw_typeof, .kw_void, .kw_delete => {
@@ -1336,7 +1341,7 @@ pub const Parser = struct {
                 return try self.ast.addNode(.{
                     .tag = .await_expression,
                     .span = .{ .start = start, .end = self.currentSpan().start },
-                    .data = .{ .unary = .{ .operand = operand } },
+                    .data = .{ .unary = .{ .operand = operand, .flags = 0 } },
                 });
             },
             .kw_yield => {
@@ -1367,7 +1372,7 @@ pub const Parser = struct {
         }
     }
 
-    fn parsePostfixExpression(self: *Parser) !NodeIndex {
+    fn parsePostfixExpression(self: *Parser) ParseError2!NodeIndex {
         var expr = try self.parseCallExpression();
 
         // 후위 ++/--
@@ -1380,7 +1385,7 @@ pub const Parser = struct {
             expr = try self.ast.addNode(.{
                 .tag = .update_expression,
                 .span = .{ .start = expr_start, .end = self.currentSpan().start },
-                .data = .{ .unary = .{ .operand = expr, .flags = @intFromEnum(kind) | 0x100 } }, // 0x100 = postfix
+                .data = .{ .unary = .{ .operand = expr, .flags = @as(u16, @intFromEnum(kind)) | 0x100 } }, // 0x100 = postfix
             });
         }
 
@@ -1391,7 +1396,7 @@ pub const Parser = struct {
             expr = try self.ast.addNode(.{
                 .tag = .ts_non_null_expression,
                 .span = .{ .start = expr_start, .end = self.currentSpan().start },
-                .data = .{ .unary = .{ .operand = expr } },
+                .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
             });
         }
 
@@ -1404,14 +1409,14 @@ pub const Parser = struct {
             expr = try self.ast.addNode(.{
                 .tag = if (is_satisfies) .ts_satisfies_expression else .ts_as_expression,
                 .span = .{ .start = expr_start, .end = self.currentSpan().start },
-                .data = .{ .binary = .{ .left = expr, .right = ty } },
+                .data = .{ .binary = .{ .left = expr, .right = ty, .flags = 0 } },
             });
         }
 
         return expr;
     }
 
-    fn parseCallExpression(self: *Parser) !NodeIndex {
+    fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
         var expr = try self.parsePrimaryExpression();
 
         while (true) {
@@ -1443,7 +1448,7 @@ pub const Parser = struct {
                     expr = try self.ast.addNode(.{
                         .tag = .static_member_expression,
                         .span = .{ .start = expr_start, .end = self.currentSpan().start },
-                        .data = .{ .binary = .{ .left = expr, .right = prop } },
+                        .data = .{ .binary = .{ .left = expr, .right = prop, .flags = 0 } },
                     });
                 },
                 .l_bracket => {
@@ -1454,7 +1459,7 @@ pub const Parser = struct {
                     expr = try self.ast.addNode(.{
                         .tag = .computed_member_expression,
                         .span = .{ .start = expr_start, .end = self.currentSpan().start },
-                        .data = .{ .binary = .{ .left = expr, .right = prop } },
+                        .data = .{ .binary = .{ .left = expr, .right = prop, .flags = 0 } },
                     });
                 },
                 else => break,
@@ -1464,7 +1469,7 @@ pub const Parser = struct {
         return expr;
     }
 
-    fn parsePrimaryExpression(self: *Parser) !NodeIndex {
+    fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
         const span = self.currentSpan();
 
         switch (self.current()) {
@@ -1524,7 +1529,7 @@ pub const Parser = struct {
                 return try self.ast.addNode(.{
                     .tag = .parenthesized_expression,
                     .span = .{ .start = span.start, .end = self.currentSpan().start },
-                    .data = .{ .unary = .{ .operand = expr } },
+                    .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
                 });
             },
             .kw_class => return self.parseClassExpression(),
@@ -1550,7 +1555,7 @@ pub const Parser = struct {
                 return try self.ast.addNode(.{
                     .tag = .import_expression,
                     .span = .{ .start = span.start, .end = self.currentSpan().start },
-                    .data = .{ .unary = .{ .operand = arg } },
+                    .data = .{ .unary = .{ .operand = arg, .flags = 0 } },
                 });
             },
             .l_bracket => {
@@ -1574,7 +1579,7 @@ pub const Parser = struct {
         }
     }
 
-    fn parseArrayExpression(self: *Parser) !NodeIndex {
+    fn parseArrayExpression(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip [
 
@@ -1609,7 +1614,7 @@ pub const Parser = struct {
         });
     }
 
-    fn parseObjectExpression(self: *Parser) !NodeIndex {
+    fn parseObjectExpression(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip {
 
@@ -1633,7 +1638,7 @@ pub const Parser = struct {
         });
     }
 
-    fn parseObjectProperty(self: *Parser) !NodeIndex {
+    fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
 
         // 키: identifier, string, number, 또는 computed [expr]
@@ -1647,12 +1652,12 @@ pub const Parser = struct {
         return try self.ast.addNode(.{
             .tag = .object_property,
             .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = key, .right = value } },
+            .data = .{ .binary = .{ .left = key, .right = value, .flags = 0 } },
         });
     }
 
     /// 바인딩 패턴을 파싱한다: identifier, [destructuring], {destructuring}
-    fn parseBindingPattern(self: *Parser) !NodeIndex {
+    fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
         // TS parameter property: public x, private x, protected x, readonly x
         if (self.current() == .kw_public or self.current() == .kw_private or
             self.current() == .kw_protected or self.current() == .kw_readonly)
@@ -1666,7 +1671,7 @@ pub const Parser = struct {
                 return try self.ast.addNode(.{
                     .tag = .formal_parameter,
                     .span = .{ .start = modifier_span.start, .end = self.currentSpan().start },
-                    .data = .{ .unary = .{ .operand = inner } },
+                    .data = .{ .unary = .{ .operand = inner, .flags = 0 } },
                 });
             }
         }
@@ -1689,7 +1694,7 @@ pub const Parser = struct {
                     return try self.ast.addNode(.{
                         .tag = .assignment_pattern,
                         .span = .{ .start = span.start, .end = self.currentSpan().start },
-                        .data = .{ .binary = .{ .left = node, .right = default_val } },
+                        .data = .{ .binary = .{ .left = node, .right = default_val, .flags = 0 } },
                     });
                 }
                 return node;
@@ -1714,11 +1719,11 @@ pub const Parser = struct {
     }
 
     /// 하위 호환: 식별자만 필요한 곳에서 호출
-    fn parseBindingIdentifier(self: *Parser) !NodeIndex {
+    fn parseBindingIdentifier(self: *Parser) ParseError2!NodeIndex {
         return self.parseBindingPattern();
     }
 
-    fn parseArrayPattern(self: *Parser) !NodeIndex {
+    fn parseArrayPattern(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip [
 
@@ -1743,7 +1748,7 @@ pub const Parser = struct {
                 const rest = try self.ast.addNode(.{
                     .tag = .rest_element,
                     .span = .{ .start = rest_start, .end = self.currentSpan().start },
-                    .data = .{ .unary = .{ .operand = rest_arg } },
+                    .data = .{ .unary = .{ .operand = rest_arg, .flags = 0 } },
                 });
                 try self.scratch.append(rest);
                 break; // rest는 항상 마지막
@@ -1766,7 +1771,7 @@ pub const Parser = struct {
         });
     }
 
-    fn parseObjectPattern(self: *Parser) !NodeIndex {
+    fn parseObjectPattern(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip {
 
@@ -1780,7 +1785,7 @@ pub const Parser = struct {
                 const rest = try self.ast.addNode(.{
                     .tag = .rest_element,
                     .span = .{ .start = rest_start, .end = self.currentSpan().start },
-                    .data = .{ .unary = .{ .operand = rest_arg } },
+                    .data = .{ .unary = .{ .operand = rest_arg, .flags = 0 } },
                 });
                 try self.scratch.append(rest);
                 break;
@@ -1804,7 +1809,7 @@ pub const Parser = struct {
         });
     }
 
-    fn parseBindingProperty(self: *Parser) !NodeIndex {
+    fn parseBindingProperty(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
 
         // shorthand: { x } = { x: x } 또는 { x = defaultVal }
@@ -1826,13 +1831,13 @@ pub const Parser = struct {
                     value = try self.ast.addNode(.{
                         .tag = .assignment_pattern,
                         .span = .{ .start = id_span.start, .end = self.currentSpan().start },
-                        .data = .{ .binary = .{ .left = key, .right = default_val } },
+                        .data = .{ .binary = .{ .left = key, .right = default_val, .flags = 0 } },
                     });
                 }
                 return try self.ast.addNode(.{
                     .tag = .binding_property,
                     .span = .{ .start = start, .end = self.currentSpan().start },
-                    .data = .{ .binary = .{ .left = key, .right = value } },
+                    .data = .{ .binary = .{ .left = key, .right = value, .flags = 0 } },
                 });
             }
         }
@@ -1848,18 +1853,18 @@ pub const Parser = struct {
             value = try self.ast.addNode(.{
                 .tag = .assignment_pattern,
                 .span = .{ .start = self.ast.getNode(value).span.start, .end = self.currentSpan().start },
-                .data = .{ .binary = .{ .left = value, .right = default_val } },
+                .data = .{ .binary = .{ .left = value, .right = default_val, .flags = 0 } },
             });
         }
 
         return try self.ast.addNode(.{
             .tag = .binding_property,
             .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = key, .right = value } },
+            .data = .{ .binary = .{ .left = key, .right = value, .flags = 0 } },
         });
     }
 
-    fn parseIdentifierName(self: *Parser) !NodeIndex {
+    fn parseIdentifierName(self: *Parser) ParseError2!NodeIndex {
         const span = self.currentSpan();
         if (self.current() == .identifier or self.current().isKeyword()) {
             self.advance();
@@ -1885,7 +1890,7 @@ pub const Parser = struct {
     /// 객체 프로퍼티 키를 파싱한다.
     /// 허용: identifier, string literal, numeric literal, computed [expr].
     /// spread (...expr) 또는 assignment expression을 파싱. ...가 있으면 spread_element로 감싼다.
-    fn parseSpreadOrAssignment(self: *Parser) !NodeIndex {
+    fn parseSpreadOrAssignment(self: *Parser) ParseError2!NodeIndex {
         if (self.current() == .dot3) {
             const start = self.currentSpan().start;
             self.advance(); // skip ...
@@ -1893,13 +1898,13 @@ pub const Parser = struct {
             return try self.ast.addNode(.{
                 .tag = .spread_element,
                 .span = .{ .start = start, .end = self.currentSpan().start },
-                .data = .{ .unary = .{ .operand = arg } },
+                .data = .{ .unary = .{ .operand = arg, .flags = 0 } },
             });
         }
         return self.parseAssignmentExpression();
     }
 
-    fn parsePropertyKey(self: *Parser) !NodeIndex {
+    fn parsePropertyKey(self: *Parser) ParseError2!NodeIndex {
         const span = self.currentSpan();
         switch (self.current()) {
             .identifier, .kw_get, .kw_set, .kw_async, .kw_static => {
@@ -1943,7 +1948,7 @@ pub const Parser = struct {
                 return try self.ast.addNode(.{
                     .tag = .computed_property_key,
                     .span = .{ .start = span.start, .end = self.currentSpan().start },
-                    .data = .{ .unary = .{ .operand = expr } },
+                    .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
                 });
             },
             else => {
@@ -1990,7 +1995,7 @@ pub const Parser = struct {
     // ================================================================
 
     /// <Tag ...>children</Tag> 또는 <Tag ... /> 또는 <>...</>
-    fn parseJSXElement(self: *Parser) !NodeIndex {
+    fn parseJSXElement(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.scanner.nextInsideJSXElement(); // '<' 이후 JSX 모드
 
@@ -2050,7 +2055,7 @@ pub const Parser = struct {
                 const container = try self.ast.addNode(.{
                     .tag = .jsx_expression_container,
                     .span = .{ .start = 0, .end = self.currentSpan().start },
-                    .data = .{ .unary = .{ .operand = expr } },
+                    .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
                 });
                 try self.scratch.append(container);
                 self.scanner.nextJSXChild(); // '{expr}' 이후 다시 children 모드
@@ -2092,7 +2097,7 @@ pub const Parser = struct {
         });
     }
 
-    fn parseJSXFragment(self: *Parser, start: u32) !NodeIndex {
+    fn parseJSXFragment(self: *Parser, start: u32) ParseError2!NodeIndex {
         // Children
         const children_top = self.saveScratch();
         while (self.current() != .eof) {
@@ -2108,7 +2113,7 @@ pub const Parser = struct {
                 const container = try self.ast.addNode(.{
                     .tag = .jsx_expression_container,
                     .span = .{ .start = 0, .end = self.currentSpan().start },
-                    .data = .{ .unary = .{ .operand = expr } },
+                    .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
                 });
                 try self.scratch.append(container);
                 self.scanner.nextJSXChild();
@@ -2139,7 +2144,7 @@ pub const Parser = struct {
         });
     }
 
-    fn parseJSXTagName(self: *Parser) !NodeIndex {
+    fn parseJSXTagName(self: *Parser) ParseError2!NodeIndex {
         const span = self.currentSpan();
         if (self.current() == .jsx_identifier or self.current() == .identifier) {
             self.scanner.nextInsideJSXElement();
@@ -2153,7 +2158,7 @@ pub const Parser = struct {
         return NodeIndex.none;
     }
 
-    fn parseJSXAttribute(self: *Parser) !NodeIndex {
+    fn parseJSXAttribute(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
 
         // spread attribute: {...expr}
@@ -2166,7 +2171,7 @@ pub const Parser = struct {
                 return try self.ast.addNode(.{
                     .tag = .jsx_spread_attribute,
                     .span = .{ .start = start, .end = self.currentSpan().start },
-                    .data = .{ .unary = .{ .operand = expr } },
+                    .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
                 });
             }
             self.addError(self.currentSpan(), "spread expected");
@@ -2204,7 +2209,7 @@ pub const Parser = struct {
         return try self.ast.addNode(.{
             .tag = .jsx_attribute,
             .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = name, .right = value } },
+            .data = .{ .binary = .{ .left = name, .right = value, .flags = 0 } },
         });
     }
 
@@ -2213,7 +2218,7 @@ pub const Parser = struct {
     // ================================================================
 
     /// type Foo = Type;
-    fn parseTsTypeAliasDeclaration(self: *Parser) !NodeIndex {
+    fn parseTsTypeAliasDeclaration(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'type'
 
@@ -2241,7 +2246,7 @@ pub const Parser = struct {
     }
 
     /// interface Foo { ... }
-    fn parseTsInterfaceDeclaration(self: *Parser) !NodeIndex {
+    fn parseTsInterfaceDeclaration(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'interface'
 
@@ -2280,7 +2285,7 @@ pub const Parser = struct {
     }
 
     /// enum Foo { A, B, C }
-    fn parseTsEnumDeclaration(self: *Parser) !NodeIndex {
+    fn parseTsEnumDeclaration(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'enum'
 
@@ -2311,7 +2316,7 @@ pub const Parser = struct {
         });
     }
 
-    fn parseTsEnumMember(self: *Parser) !NodeIndex {
+    fn parseTsEnumMember(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         const name = try self.parsePropertyKey();
 
@@ -2323,19 +2328,19 @@ pub const Parser = struct {
         return try self.ast.addNode(.{
             .tag = .ts_enum_member,
             .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = name, .right = init_val } },
+            .data = .{ .binary = .{ .left = name, .right = init_val, .flags = 0 } },
         });
     }
 
     /// namespace Foo { ... } / module "name" { ... }
-    fn parseTsModuleDeclaration(self: *Parser) !NodeIndex {
+    fn parseTsModuleDeclaration(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'namespace' or 'module'
         return self.parseTsModuleBody(start);
     }
 
     /// namespace body (재귀: A.B.C 중첩 처리). keyword는 이미 소비된 상태.
-    fn parseTsModuleBody(self: *Parser, start: u32) !NodeIndex {
+    fn parseTsModuleBody(self: *Parser, start: u32) ParseError2!NodeIndex {
         const name = try self.parseBindingIdentifier();
 
         // 중첩: namespace A.B.C { }
@@ -2344,7 +2349,7 @@ pub const Parser = struct {
             return try self.ast.addNode(.{
                 .tag = .ts_module_declaration,
                 .span = .{ .start = start, .end = self.currentSpan().start },
-                .data = .{ .binary = .{ .left = name, .right = inner } },
+                .data = .{ .binary = .{ .left = name, .right = inner, .flags = 0 } },
             });
         }
 
@@ -2353,25 +2358,25 @@ pub const Parser = struct {
         return try self.ast.addNode(.{
             .tag = .ts_module_declaration,
             .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = name, .right = body } },
+            .data = .{ .binary = .{ .left = name, .right = body, .flags = 0 } },
         });
     }
 
     /// declare var/let/const/function/class/...
-    fn parseTsDeclareStatement(self: *Parser) !NodeIndex {
+    fn parseTsDeclareStatement(self: *Parser) ParseError2!NodeIndex {
         self.advance(); // skip 'declare'
         // declare 뒤의 선언을 파싱 (런타임 코드 없음)
         return self.parseStatement();
     }
 
     /// abstract class Foo { }
-    fn parseTsAbstractClass(self: *Parser) !NodeIndex {
+    fn parseTsAbstractClass(self: *Parser) ParseError2!NodeIndex {
         self.advance(); // skip 'abstract'
         return self.parseClassDeclaration();
     }
 
     /// @decorator 파싱 후 class/export 문을 파싱
-    fn parseDecoratedStatement(self: *Parser) !NodeIndex {
+    fn parseDecoratedStatement(self: *Parser) ParseError2!NodeIndex {
         // 데코레이터 수집
         const scratch_top = self.saveScratch();
         while (self.current() == .at) {
@@ -2395,7 +2400,7 @@ pub const Parser = struct {
     }
 
     /// @expr — 단일 데코레이터 파싱
-    fn parseDecorator(self: *Parser) !NodeIndex {
+    fn parseDecorator(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip @
         const expr = try self.parseCallExpression();
@@ -2403,12 +2408,12 @@ pub const Parser = struct {
         return try self.ast.addNode(.{
             .tag = .decorator,
             .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .unary = .{ .operand = expr } },
+            .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
         });
     }
 
     /// <T, U extends V = W>
-    fn parseTsTypeParameterDeclaration(self: *Parser) !NodeIndex {
+    fn parseTsTypeParameterDeclaration(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip <
 
@@ -2430,7 +2435,7 @@ pub const Parser = struct {
         });
     }
 
-    fn parseTsTypeParameter(self: *Parser) !NodeIndex {
+    fn parseTsTypeParameter(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         const name = try self.parseBindingIdentifier();
 
@@ -2462,7 +2467,7 @@ pub const Parser = struct {
     // ================================================================
 
     /// `: Type` 어노테이션이 있으면 파싱하고 노드 반환. 없으면 none.
-    fn tryParseTypeAnnotation(self: *Parser) !NodeIndex {
+    fn tryParseTypeAnnotation(self: *Parser) ParseError2!NodeIndex {
         if (self.current() != .colon) return NodeIndex.none;
         // 타입 어노테이션이 아닌 colon인 경우 구분 필요:
         // object literal `{ key: value }`, ternary `? : `, switch `case:` 등
@@ -2472,14 +2477,14 @@ pub const Parser = struct {
     }
 
     /// 리턴 타입 어노테이션 (`: Type`). 함수 선언에서 사용.
-    fn tryParseReturnType(self: *Parser) !NodeIndex {
+    fn tryParseReturnType(self: *Parser) ParseError2!NodeIndex {
         if (self.current() != .colon) return NodeIndex.none;
         self.advance();
         return self.parseType();
     }
 
     /// TS 타입을 파싱한다. 유니온/인터섹션을 포함.
-    fn parseType(self: *Parser) !NodeIndex {
+    fn parseType(self: *Parser) ParseError2!NodeIndex {
         var left = try self.parseIntersectionType();
 
         // 유니온: A | B | C
@@ -2490,14 +2495,14 @@ pub const Parser = struct {
             left = try self.ast.addNode(.{
                 .tag = .ts_union_type,
                 .span = .{ .start = start, .end = self.currentSpan().start },
-                .data = .{ .binary = .{ .left = left, .right = right } },
+                .data = .{ .binary = .{ .left = left, .right = right, .flags = 0 } },
             });
         }
 
         return left;
     }
 
-    fn parseIntersectionType(self: *Parser) !NodeIndex {
+    fn parseIntersectionType(self: *Parser) ParseError2!NodeIndex {
         var left = try self.parsePostfixType();
 
         // 인터섹션: A & B & C
@@ -2508,14 +2513,14 @@ pub const Parser = struct {
             left = try self.ast.addNode(.{
                 .tag = .ts_intersection_type,
                 .span = .{ .start = start, .end = self.currentSpan().start },
-                .data = .{ .binary = .{ .left = left, .right = right } },
+                .data = .{ .binary = .{ .left = left, .right = right, .flags = 0 } },
             });
         }
 
         return left;
     }
 
-    fn parsePostfixType(self: *Parser) !NodeIndex {
+    fn parsePostfixType(self: *Parser) ParseError2!NodeIndex {
         var base = try self.parsePrimaryType();
 
         while (self.current() == .l_bracket) {
@@ -2527,7 +2532,7 @@ pub const Parser = struct {
                 base = try self.ast.addNode(.{
                     .tag = .ts_array_type,
                     .span = .{ .start = start, .end = self.currentSpan().start },
-                    .data = .{ .unary = .{ .operand = base } },
+                    .data = .{ .unary = .{ .operand = base, .flags = 0 } },
                 });
             } else {
                 // 인덱스 접근 타입: T[K]
@@ -2537,7 +2542,7 @@ pub const Parser = struct {
                 base = try self.ast.addNode(.{
                     .tag = .ts_indexed_access_type,
                     .span = .{ .start = start, .end = self.currentSpan().start },
-                    .data = .{ .binary = .{ .left = base, .right = index_type } },
+                    .data = .{ .binary = .{ .left = base, .right = index_type, .flags = 0 } },
                 });
             }
         }
@@ -2545,7 +2550,7 @@ pub const Parser = struct {
         return base;
     }
 
-    fn parsePrimaryType(self: *Parser) !NodeIndex {
+    fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
         const span = self.currentSpan();
 
         // TS 키워드 타입
@@ -2633,7 +2638,7 @@ pub const Parser = struct {
                 return try self.ast.addNode(.{
                     .tag = .ts_type_query,
                     .span = .{ .start = span.start, .end = self.currentSpan().start },
-                    .data = .{ .unary = .{ .operand = operand } },
+                    .data = .{ .unary = .{ .operand = operand, .flags = 0 } },
                 });
             },
             // keyof T
@@ -2643,7 +2648,7 @@ pub const Parser = struct {
                 return try self.ast.addNode(.{
                     .tag = .ts_type_operator,
                     .span = .{ .start = span.start, .end = self.currentSpan().start },
-                    .data = .{ .unary = .{ .operand = operand } },
+                    .data = .{ .unary = .{ .operand = operand, .flags = 0 } },
                 });
             },
             else => {
@@ -2658,7 +2663,7 @@ pub const Parser = struct {
         }
     }
 
-    fn parseTypeReference(self: *Parser) !NodeIndex {
+    fn parseTypeReference(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         const name_span = self.currentSpan();
         self.advance(); // type name
@@ -2687,7 +2692,7 @@ pub const Parser = struct {
         });
     }
 
-    fn parseTypeArguments(self: *Parser) !NodeIndex {
+    fn parseTypeArguments(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip <
 
@@ -2709,7 +2714,7 @@ pub const Parser = struct {
         });
     }
 
-    fn parseParenOrFunctionType(self: *Parser) !NodeIndex {
+    fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip (
 
@@ -2722,7 +2727,7 @@ pub const Parser = struct {
                 return try self.ast.addNode(.{
                     .tag = .ts_function_type,
                     .span = .{ .start = start, .end = self.currentSpan().start },
-                    .data = .{ .unary = .{ .operand = return_type } },
+                    .data = .{ .unary = .{ .operand = return_type, .flags = 0 } },
                 });
             }
             // 빈 괄호 — 에러 또는 void
@@ -2739,7 +2744,7 @@ pub const Parser = struct {
                 return try self.ast.addNode(.{
                     .tag = .ts_function_type,
                     .span = .{ .start = start, .end = self.currentSpan().start },
-                    .data = .{ .binary = .{ .left = inner, .right = return_type } },
+                    .data = .{ .binary = .{ .left = inner, .right = return_type, .flags = 0 } },
                 });
             }
         } else {
@@ -2750,11 +2755,11 @@ pub const Parser = struct {
         return try self.ast.addNode(.{
             .tag = .ts_parenthesized_type,
             .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .unary = .{ .operand = inner } },
+            .data = .{ .unary = .{ .operand = inner, .flags = 0 } },
         });
     }
 
-    fn parseObjectType(self: *Parser) !NodeIndex {
+    fn parseObjectType(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip {
 
@@ -2781,7 +2786,7 @@ pub const Parser = struct {
         });
     }
 
-    fn parseTypeMember(self: *Parser) !NodeIndex {
+    fn parseTypeMember(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         // 간단: key: Type 또는 key?: Type
         const key = try self.parsePropertyKey();
@@ -2792,11 +2797,11 @@ pub const Parser = struct {
         return try self.ast.addNode(.{
             .tag = .ts_property_signature,
             .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = key, .right = value_type } },
+            .data = .{ .binary = .{ .left = key, .right = value_type, .flags = 0 } },
         });
     }
 
-    fn parseTupleType(self: *Parser) !NodeIndex {
+    fn parseTupleType(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip [
 
