@@ -4,12 +4,15 @@
 //! 파서가 렉서를 호출하는 방식으로 연동 (D036).
 
 pub const token = @import("token.zig");
+pub const scanner = @import("scanner.zig");
 
 pub const Token = token.Token;
 pub const Kind = token.Kind;
 pub const Span = token.Span;
+pub const Scanner = scanner.Scanner;
 pub const keywords = token.keywords;
 
 test {
     _ = token;
+    _ = scanner;
 }
