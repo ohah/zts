@@ -210,10 +210,24 @@
 - **결정**: 2패스 (parse → visit, Bun 방식)
 - **이유**: 각 패스가 한 가지 일만 해서 유지보수 쉬움. 새 변환 추가 시 visit에만 추가하면 됨. 속도 차이 20-30%이지만 Bun이 2패스로도 esbuild보다 빠름. 나중에 성능이 필요하면 패스 합치기 가능 (반대 방향은 재작성)
 
-### Phase 3 (트랜스포머) 시작 시
-- visitor 패턴 (enter/exit? fold? comptime 생성?)
-- 변환 순서 (단일 패스 vs 멀티 패스)
-- 변환 간 의존성 관리 (decorator → class 등)
+### Phase 3 (트랜스포머) — 결정 완료
+
+### D041: Transformer 전략
+- **결정**: 새 AST 생성 + 별도 Codegen (oxc/SWC 방식)
+- **이유**: Phase 6에서 .d.ts 생성, 미니파이어, 번들러가 변환된 AST를 재사용해야 함. 24B 고정 노드 + ArrayList 구조에서 in-place 변환(노드 수 증가)은 매우 어려움. arena allocator로 원본 AST를 변환 후 한 번에 해제하면 메모리 2배 문제 완화
+- **비교**: esbuild는 변환+출력 합침(빠르지만 확장 어려움), in-place 수정은 노드 증가 변환에 부적합
+- **참고**: oxc(Visit+Traverse 분리), SWC(Fold+VisitMut) 모두 이 방식
+
+### D042: Visitor 패턴
+- **결정**: Switch 기반 + comptime 보조 (esbuild/Bun 방식)
+- **이유**: 큰 switch문이 가장 단순하고 유지보수 쉬움. 새 변환 = case 추가. 점프 테이블 성능은 comptime 인라인과 실측 차이 미미 (노드당 3-5사이클, 초대형 파일에서 ~0.4ms). oxc를 이기는 핵심은 visitor 패턴이 아니라 메모리 레이아웃과 할당 최적화. comptime은 타입 삭제 대상 그룹 판별 등 반복적인 부분에만 보조 사용
+- **비교**: comptime visitor(A)는 ~190개 인라인 함수로 icache 압박 위험. enter/exit 콜백(C)은 Zig에서 함수 포인터 간접 호출 오버헤드 + 과설계
+- **참고**: esbuild(순수 switch), Bun(switch+comptime), oxc(trait visitor 코드생성), SWC(trait Fold/VisitMut)
+
+### D043: 변환 순서 및 패스 전략
+- **결정**: 단일 패스, 변환 우선순위로 순서 제어
+- **이유**: 대부분의 변환이 독립적 (타입 스트리핑, JSX, 모듈). 의존성이 있는 경우(decorator→class) switch 내에서 순서 제어. 멀티 패스는 AST를 여러 번 순회하므로 성능 손해
+- **변환 우선순위**: (1) 타입 스트리핑 (2) TS expression (as/satisfies/!) (3) enum→IIFE (4) namespace→IIFE (5) parameter property (6) JSX (7) ESM→CJS (8) decorator
 
 ### Phase 4 (코드젠) 시작 시
 - 들여쓰기 방식 (탭 vs 스페이스, 기본값)

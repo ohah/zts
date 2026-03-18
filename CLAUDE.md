@@ -72,6 +72,11 @@ references/                 # 레퍼런스 프로젝트 (.gitignore, 로컬만)
 - 소스맵 inline + external + hidden 전부
 - 에러 출력: 코드 프레임 + JSON
 
+### Transformer Design (D041-D043)
+- 새 AST 생성 + 별도 Codegen (oxc/SWC 방식). in-place 변환 대신 변환된 AST를 새로 빌드
+- Switch 기반 visitor + comptime 보조 (esbuild/Bun 방식). 성능 핵심은 메모리 레이아웃
+- 단일 패스, 변환 우선순위로 순서 제어
+
 ### Advanced Features (Phase 6)
 - ES 다운레벨링: ES2024→ES2016 점진적, ES2015는 그 이후, ES5는 미정
 - WASM 플러그인, WASM 공개 AST API
@@ -155,6 +160,18 @@ main ← feature/lexer-token-enum
 16. ✅ JSX 파싱 (element, fragment, attributes, expression, text) — PR #33
 17. ⬜ 에러 복구 강화 + Test262 파서 통과율 — Phase 2 후반
 18. ⬜ semantic analysis (스코프/심볼, 별도 패스, D038) — Phase 2 후반
+
+### 트랜스포머 구현 순서 (PR 단위) — Phase 3 진행 중
+1. ⬜ Phase 3 의사결정 (D041-D043) — PR #34
+2. ⬜ Visitor/순회 인프라 + 새 AST 빌더 — PR #35
+3. ⬜ 타입 스트리핑 — PR #36
+4. ⬜ TS expression 변환 (as, satisfies, !) — PR #37
+5. ⬜ enum → IIFE — PR #38
+6. ⬜ namespace → IIFE — PR #39
+7. ⬜ parameter property 변환 — PR #40
+8. ⬜ JSX 변환 (Classic + Automatic) — PR #41
+9. ⬜ ESM → CJS 모듈 변환 — PR #42
+10. ⬜ decorator 변환 — PR #43
 
 ## References
 - Bun JS Parser: github.com/oven-sh/bun (src/js_parser.zig, src/js_lexer.zig)
