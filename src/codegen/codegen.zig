@@ -19,14 +19,30 @@ const Ast = ast_mod.Ast;
 const Span = @import("../lexer/token.zig").Span;
 const Kind = @import("../lexer/token.zig").Kind;
 
+/// 모듈 출력 형식
+pub const ModuleFormat = enum {
+    esm, // ESM (import/export 그대로)
+    cjs, // CommonJS (require/exports 변환)
+};
+
+pub const CodegenOptions = struct {
+    module_format: ModuleFormat = .esm,
+};
+
 pub const Codegen = struct {
     ast: *const Ast,
     buf: std.ArrayList(u8),
+    options: CodegenOptions,
 
     pub fn init(allocator: std.mem.Allocator, ast: *const Ast) Codegen {
+        return initWithOptions(allocator, ast, .{});
+    }
+
+    pub fn initWithOptions(allocator: std.mem.Allocator, ast: *const Ast, options: CodegenOptions) Codegen {
         return .{
             .ast = ast,
             .buf = std.ArrayList(u8).init(allocator),
+            .options = options,
         };
     }
 
@@ -695,6 +711,10 @@ pub const Codegen = struct {
         const specs_start = extras[1];
         const specs_len = extras[2];
 
+        if (self.options.module_format == .cjs) {
+            return self.emitImportCJS(source, specs_start, specs_len);
+        }
+
         try self.write("import ");
         if (specs_len > 0) {
             try self.emitNodeList(specs_start, specs_len, ",");
@@ -704,6 +724,79 @@ pub const Codegen = struct {
         try self.writeByte(';');
     }
 
+    /// CJS: import { foo } from './bar' → const {foo}=require('./bar');
+    /// CJS: import bar from './bar' → const bar=require('./bar').default;
+    /// CJS: import * as bar from './bar' → const bar=require('./bar');
+    fn emitImportCJS(self: *Codegen, source: NodeIndex, specs_start: u32, specs_len: u32) !void {
+        if (specs_len == 0) {
+            // side-effect import: import './bar' → require('./bar');
+            try self.write("require(");
+            try self.emitNode(source);
+            try self.write(");");
+            return;
+        }
+
+        try self.write("const ");
+
+        // specifier 유형 분석
+        const spec_indices = self.ast.extra_data.items[specs_start .. specs_start + specs_len];
+        var has_default = false;
+        var has_namespace = false;
+        var named_count: u32 = 0;
+
+        for (spec_indices) |raw_idx| {
+            const spec = self.ast.getNode(@enumFromInt(raw_idx));
+            switch (spec.tag) {
+                .import_default_specifier => has_default = true,
+                .import_namespace_specifier => has_namespace = true,
+                .import_specifier => named_count += 1,
+                else => {},
+            }
+        }
+
+        if (has_namespace) {
+            // import * as bar from './bar' → const bar=require('./bar');
+            for (spec_indices) |raw_idx| {
+                const spec = self.ast.getNode(@enumFromInt(raw_idx));
+                if (spec.tag == .import_namespace_specifier) {
+                    try self.writeNodeSpan(spec);
+                    break;
+                }
+            }
+        } else if (has_default and named_count == 0) {
+            // import bar from './bar' → const bar=require('./bar').default;
+            for (spec_indices) |raw_idx| {
+                const spec = self.ast.getNode(@enumFromInt(raw_idx));
+                if (spec.tag == .import_default_specifier) {
+                    try self.writeNodeSpan(spec);
+                    break;
+                }
+            }
+        } else if (named_count > 0) {
+            // import { foo, bar } from './bar' → const {foo,bar}=require('./bar');
+            try self.writeByte('{');
+            var first = true;
+            for (spec_indices) |raw_idx| {
+                const spec = self.ast.getNode(@enumFromInt(raw_idx));
+                if (spec.tag == .import_specifier) {
+                    if (!first) try self.writeByte(',');
+                    try self.writeNodeSpan(spec);
+                    first = false;
+                }
+            }
+            try self.writeByte('}');
+        }
+
+        try self.write("=require(");
+        try self.emitNode(source);
+        try self.writeByte(')');
+
+        if (has_default and !has_namespace and named_count == 0) {
+            try self.write(".default");
+        }
+
+        try self.writeByte(';');
+    }
 
     fn emitExportNamed(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
@@ -712,6 +805,10 @@ pub const Codegen = struct {
         const specs_start = extras[1];
         const specs_len = extras[2];
         const source: NodeIndex = @enumFromInt(extras[3]);
+
+        if (self.options.module_format == .cjs) {
+            return self.emitExportNamedCJS(decl, specs_start, specs_len, source);
+        }
 
         try self.write("export ");
         if (!decl.isNone()) {
@@ -728,13 +825,89 @@ pub const Codegen = struct {
         }
     }
 
+    /// CJS: export const x = 1 → const x=1;exports.x=x;
+    fn emitExportNamedCJS(self: *Codegen, decl: NodeIndex, specs_start: u32, specs_len: u32, source: NodeIndex) !void {
+        if (!decl.isNone()) {
+            // export const x = 1 → const x=1; + exports.x=x;
+            try self.emitNode(decl);
+            // 선언에서 이름 추출하여 exports.name = name
+            try self.emitCJSExportBinding(decl);
+        } else {
+            // export { foo, bar } → exports.foo=foo;exports.bar=bar;
+            _ = source;
+            const spec_indices = self.ast.extra_data.items[specs_start .. specs_start + specs_len];
+            for (spec_indices) |raw_idx| {
+                const spec = self.ast.getNode(@enumFromInt(raw_idx));
+                const spec_text = self.ast.source[spec.span.start..spec.span.end];
+                try self.write("exports.");
+                try self.write(spec_text);
+                try self.writeByte('=');
+                try self.write(spec_text);
+                try self.writeByte(';');
+            }
+        }
+    }
+
+    /// 변수/함수/클래스 선언에서 이름을 추출하여 exports.name=name; 출력
+    fn emitCJSExportBinding(self: *Codegen, decl_idx: NodeIndex) !void {
+        const decl = self.ast.getNode(decl_idx);
+        switch (decl.tag) {
+            .variable_declaration => {
+                const e = decl.data.extra;
+                const extras = self.ast.extra_data.items[e .. e + 3];
+                const list_start = extras[1];
+                const list_len = extras[2];
+                const declarators = self.ast.extra_data.items[list_start .. list_start + list_len];
+                for (declarators) |raw_idx| {
+                    const declarator = self.ast.getNode(@enumFromInt(raw_idx));
+                    const de = declarator.data.extra;
+                    const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[de]);
+                    const name_node = self.ast.getNode(name_idx);
+                    const name = self.ast.source[name_node.span.start..name_node.span.end];
+                    try self.write("exports.");
+                    try self.write(name);
+                    try self.writeByte('=');
+                    try self.write(name);
+                    try self.writeByte(';');
+                }
+            },
+            .function_declaration, .class_declaration => {
+                const e = decl.data.extra;
+                const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+                if (!name_idx.isNone()) {
+                    const name_node = self.ast.getNode(name_idx);
+                    const name = self.ast.source[name_node.span.start..name_node.span.end];
+                    try self.write("exports.");
+                    try self.write(name);
+                    try self.writeByte('=');
+                    try self.write(name);
+                    try self.writeByte(';');
+                }
+            },
+            else => {},
+        }
+    }
+
     fn emitExportDefault(self: *Codegen, node: Node) !void {
+        if (self.options.module_format == .cjs) {
+            try self.write("module.exports=");
+            try self.emitNode(node.data.unary.operand);
+            try self.writeByte(';');
+            return;
+        }
         try self.write("export default ");
         try self.emitNode(node.data.unary.operand);
         try self.writeByte(';');
     }
 
     fn emitExportAll(self: *Codegen, node: Node) !void {
+        if (self.options.module_format == .cjs) {
+            // export * from './bar' → Object.assign(exports,require('./bar'));
+            try self.write("Object.assign(exports,require(");
+            try self.emitNode(node.data.binary.left);
+            try self.write("));");
+            return;
+        }
         try self.write("export * from ");
         try self.emitNode(node.data.binary.left);
         try self.writeByte(';');
@@ -1144,13 +1317,35 @@ const TestResult = struct {
 };
 
 fn e2e(allocator: std.mem.Allocator, source: []const u8) !TestResult {
-    const result = try generateJS(allocator, source);
+    return e2eWithOptions(allocator, source, .{});
+}
+
+fn e2eCJS(allocator: std.mem.Allocator, source: []const u8) !TestResult {
+    return e2eWithOptions(allocator, source, .{ .module_format = .cjs });
+}
+
+fn e2eWithOptions(allocator: std.mem.Allocator, source: []const u8, cg_options: CodegenOptions) !TestResult {
+    const scanner_ptr = try allocator.create(Scanner);
+    scanner_ptr.* = Scanner.init(allocator, source);
+
+    const parser_ptr = try allocator.create(Parser);
+    parser_ptr.* = Parser.init(allocator, scanner_ptr);
+    _ = try parser_ptr.parse();
+
+    var t = Transformer.init(allocator, &parser_ptr.ast, .{});
+    const root = try t.transform();
+    t.scratch.deinit();
+
+    const cg = try allocator.create(Codegen);
+    cg.* = Codegen.initWithOptions(allocator, &t.new_ast, cg_options);
+
+    const output = try cg.generate(root);
     return .{
-        .output = result.output,
-        .scanner = result.scanner,
-        .parser = result.parser,
-        .codegen_inst = result.codegen_inst,
-        .transformed_ast = result.transformed_ast,
+        .output = output,
+        .scanner = scanner_ptr,
+        .parser = parser_ptr,
+        .codegen_inst = cg,
+        .transformed_ast = t.new_ast,
         .allocator = allocator,
     };
 }
@@ -1202,6 +1397,12 @@ test "Codegen: namespace IIFE" {
         "var Foo;(function(Foo){const x=1;})(Foo||(Foo={}));",
         r.output,
     );
+}
+
+test "Codegen CJS: export default" {
+    var r = try e2eCJS(std.testing.allocator, "export default 42;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("module.exports=42;", r.output);
 }
 
 test "Codegen: enum with initializer" {
