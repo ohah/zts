@@ -169,6 +169,27 @@ pub const Scanner = struct {
     // 줄바꿈 처리
     // ====================================================================
 
+    /// 현재 위치가 U+2028 (LS) 또는 U+2029 (PS)인지 확인한다.
+    /// UTF-8: E2 80 A8 또는 E2 80 A9.
+    fn isLineSeparator(self: *const Scanner) bool {
+        return self.current + 2 < self.source.len and
+            self.source[self.current] == 0xE2 and
+            self.source[self.current + 1] == 0x80 and
+            (self.source[self.current + 2] == 0xA8 or self.source[self.current + 2] == 0xA9);
+    }
+
+    /// 현재 바이트가 줄바꿈의 시작 바이트인지 (빠른 체크).
+    fn isNewlineStart(c: u8) bool {
+        return c == '\n' or c == '\r' or c == 0xE2;
+    }
+
+    /// 줄 offset 테이블에 새 줄을 기록한다.
+    fn recordNewline(self: *Scanner) void {
+        self.line += 1;
+        self.line_start = self.current;
+        self.line_offsets.append(self.current) catch @panic("OOM: line_offsets");
+    }
+
     /// 줄바꿈 문자를 처리한다.
     /// \n, \r\n, \r, U+2028 (LS), U+2029 (PS) 전부 인식 (D019).
     /// 줄바꿈이면 true를 반환하고 current를 전진시킨다.
@@ -176,33 +197,19 @@ pub const Scanner = struct {
         const c = self.peek();
         if (c == '\n') {
             self.current += 1;
-            self.line += 1;
-            self.line_start = self.current;
-            self.line_offsets.append(self.current) catch {};
+            self.recordNewline();
             return true;
         }
         if (c == '\r') {
             self.current += 1;
-            // \r\n은 하나의 줄바꿈으로 처리
-            if (self.peek() == '\n') {
-                self.current += 1;
-            }
-            self.line += 1;
-            self.line_start = self.current;
-            self.line_offsets.append(self.current) catch {};
+            if (self.peek() == '\n') self.current += 1;
+            self.recordNewline();
             return true;
         }
-        // U+2028 (LS) = E2 80 A8, U+2029 (PS) = E2 80 A9
-        if (c == 0xE2 and self.current + 2 < self.source.len) {
-            if (self.source[self.current + 1] == 0x80 and
-                (self.source[self.current + 2] == 0xA8 or self.source[self.current + 2] == 0xA9))
-            {
-                self.current += 3;
-                self.line += 1;
-                self.line_start = self.current;
-                self.line_offsets.append(self.current) catch {};
-                return true;
-            }
+        if (self.isLineSeparator()) {
+            self.current += 3;
+            self.recordNewline();
+            return true;
         }
         return false;
     }
@@ -475,9 +482,12 @@ pub const Scanner = struct {
         while (!self.isAtEnd()) {
             const c = self.peek();
             if (c == '<' or c == '{' or c == '}') break;
-            if (c == '\n' or c == '\r') {
-                _ = self.handleNewline();
-                self.token.has_newline_before = true;
+            if (isNewlineStart(c)) {
+                if (self.handleNewline()) {
+                    self.token.has_newline_before = true;
+                } else {
+                    self.current += 1; // 0xE2이지만 줄바꿈이 아닌 경우
+                }
             } else {
                 self.current += 1;
             }
@@ -579,7 +589,7 @@ pub const Scanner = struct {
             return .undetermined;
         }
         if (next_char == '*') {
-            self.scanMultiLineComment();
+            if (self.scanMultiLineComment()) return .syntax_error; // 미닫힌 주석
             return .undetermined;
         }
 
@@ -638,8 +648,8 @@ pub const Scanner = struct {
                 return .regexp;
             }
 
-            // 줄바꿈은 정규식 안에서 불허
-            if (c == '\n' or c == '\r') {
+            // 줄바꿈은 정규식 안에서 불허 (U+2028/U+2029 포함)
+            if (c == '\n' or c == '\r' or self.isLineSeparator()) {
                 return .syntax_error;
             }
 
@@ -688,7 +698,8 @@ pub const Scanner = struct {
     /// multi-line comment를 스캔한다 (/* ... */).
     /// @__PURE__ / @__NO_SIDE_EFFECTS__ 주석을 감지한다 (D025).
     /// @license / @preserve 주석도 감지한다 (D022, 추후 코드젠에서 활용).
-    fn scanMultiLineComment(self: *Scanner) void {
+    /// 미닫힌 주석이면 true(에러)를 반환.
+    fn scanMultiLineComment(self: *Scanner) bool {
         self.current += 1; // skip '*'
 
         const comment_start = self.current;
@@ -699,18 +710,21 @@ pub const Scanner = struct {
                 const comment_text = self.source[comment_start..self.current];
                 self.current += 2; // skip */
                 self.checkPureComment(comment_text);
-                return;
+                return false; // 정상 종료
             }
             // 줄바꿈 추적 (소스맵 정확성)
-            if (c == '\n' or c == '\r') {
-                _ = self.handleNewline();
-                self.token.has_newline_before = true;
+            if (isNewlineStart(c)) {
+                if (self.handleNewline()) {
+                    self.token.has_newline_before = true;
+                } else {
+                    self.current += 1;
+                }
             } else {
                 self.current += 1;
             }
         }
-        // EOF까지 닫히지 않은 주석 — 에러지만 여기서는 조용히 종료
-        // (에러 리포팅은 추후 에러 처리 PR에서)
+        // EOF까지 닫히지 않은 주석
+        return true;
     }
 
     /// 주석 내용에서 @__PURE__ / #__PURE__ / @__NO_SIDE_EFFECTS__ 어노테이션을 확인한다.
@@ -1199,16 +1213,9 @@ pub const Scanner = struct {
                 continue;
             }
 
-            // 줄바꿈은 문자열 안에서 불허 (JS 스펙)
+            // \n, \r은 문자열 안에서 불허 (줄바꿈 = 미닫힌 문자열)
+            // 단, U+2028/U+2029는 ES2019부터 문자열 안에서 허용
             if (c == '\n' or c == '\r') {
-                // 에러: 닫히지 않은 문자열. 줄바꿈을 소비하지 않고 종료.
-                return .syntax_error;
-            }
-            // U+2028, U+2029도 줄바꿈
-            if (c == 0xE2 and self.current + 2 < self.source.len and
-                self.source[self.current + 1] == 0x80 and
-                (self.source[self.current + 2] == 0xA8 or self.source[self.current + 2] == 0xA9))
-            {
                 return .syntax_error;
             }
 
@@ -1267,7 +1274,7 @@ pub const Scanner = struct {
             if (c == '$' and self.peekAt(1) == '{') {
                 self.current += 2; // skip ${
                 // 현재 brace depth를 스택에 push (나중에 }에서 매칭)
-                self.template_depth_stack.append(self.brace_depth) catch {};
+                self.template_depth_stack.append(self.brace_depth) catch @panic("OOM: template_depth_stack");
                 self.brace_depth += 1;
                 return interpolation_kind;
             }
@@ -1305,6 +1312,7 @@ pub const Scanner = struct {
         while (!self.isAtEnd()) {
             const c = self.peek();
             if (c == '\n' or c == '\r') break;
+            if (self.isLineSeparator()) break;
             self.current += 1;
         }
     }
@@ -1370,15 +1378,6 @@ pub const Scanner = struct {
     /// ASCII 식별자 계속 문자인지.
     fn isAsciiIdentContinue(c: u8) bool {
         return isAsciiIdentStart(c) or (c >= '0' and c <= '9');
-    }
-
-    /// 바이트가 식별자 시작 문자인지 (ASCII + non-ASCII).
-    fn isIdentifierStartByte(self: *Scanner, c: u8) bool {
-        if (c < 0x80) return isAsciiIdentStart(c);
-        // Non-ASCII: UTF-8 디코딩
-        const remaining = self.source[self.current - 1 ..];
-        const decoded = unicode.decodeUtf8(remaining);
-        return unicode.isIdentifierStart(decoded.codepoint);
     }
 };
 
