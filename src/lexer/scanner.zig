@@ -241,95 +241,102 @@ pub const Scanner = struct {
         self.token.has_newline_before = false;
         self.token.has_pure_comment_before = false;
 
-        // 공백 스킵 (줄바꿈 추적 포함)
-        self.skipWhitespace();
+        // 주석을 만나면 스킵하고 다시 스캔해야 하므로 루프
+        while (true) {
+            // 공백 스킵 (줄바꿈 추적 포함)
+            self.skipWhitespace();
 
-        // 토큰 시작 위치 기록
-        self.start = self.current;
+            // 토큰 시작 위치 기록
+            self.start = self.current;
 
-        // 소스 끝 도달
-        if (self.isAtEnd()) {
-            self.token.kind = .eof;
-            self.token.span = .{ .start = self.start, .end = self.current };
-            return;
-        }
+            // 소스 끝 도달
+            if (self.isAtEnd()) {
+                self.token.kind = .eof;
+                self.token.span = .{ .start = self.start, .end = self.current };
+                return;
+            }
 
-        const c = self.advance();
+            const c = self.advance();
 
-        self.token.kind = switch (c) {
-            // 단일 문자 토큰
-            '(' => .l_paren,
-            ')' => .r_paren,
-            '[' => .l_bracket,
-            ']' => .r_bracket,
-            '{' => .l_curly,
-            '}' => .r_curly,
-            ';' => .semicolon,
-            ',' => .comma,
-            '~' => .tilde,
-            '@' => .at,
-            ':' => .colon,
+            self.token.kind = switch (c) {
+                // 단일 문자 토큰
+                '(' => .l_paren,
+                ')' => .r_paren,
+                '[' => .l_bracket,
+                ']' => .r_bracket,
+                '{' => .l_curly,
+                '}' => .r_curly,
+                ';' => .semicolon,
+                ',' => .comma,
+                '~' => .tilde,
+                '@' => .at,
+                ':' => .colon,
 
-            // 후속 문자에 따라 분기하는 토큰 — 추후 PR에서 구현
-            // 현재는 단일 문자만 처리
-            '.' => self.scanDot(),
-            '+' => self.scanPlus(),
-            '-' => self.scanMinus(),
-            '*' => self.scanStar(),
-            '/' => self.scanSlash(),
-            '%' => self.scanPercent(),
-            '<' => self.scanLAngle(),
-            '>' => self.scanRAngle(),
-            '=' => self.scanEquals(),
-            '!' => self.scanBang(),
-            '&' => self.scanAmp(),
-            '|' => self.scanPipe(),
-            '^' => self.scanCaret(),
-            '?' => self.scanQuestion(),
+                // 후속 문자에 따라 분기하는 토큰 — 추후 PR에서 구현
+                // 현재는 단일 문자만 처리
+                '.' => self.scanDot(),
+                '+' => self.scanPlus(),
+                '-' => self.scanMinus(),
+                '*' => self.scanStar(),
+                '/' => self.scanSlash(),
+                '%' => self.scanPercent(),
+                '<' => self.scanLAngle(),
+                '>' => self.scanRAngle(),
+                '=' => self.scanEquals(),
+                '!' => self.scanBang(),
+                '&' => self.scanAmp(),
+                '|' => self.scanPipe(),
+                '^' => self.scanCaret(),
+                '?' => self.scanQuestion(),
 
-            // 리터럴 — 추후 PR에서 세부 구현
-            '0'...'9' => blk: {
-                // TODO: 숫자 리터럴 세부 파싱 (hex, octal, binary, bigint, float, exponential)
-                self.scanNumericLiteral();
-                break :blk .decimal;
-            },
-            '\'', '"' => blk: {
-                // TODO: 문자열 리터럴 세부 파싱 (escape sequence)
-                self.scanStringLiteral(c);
-                break :blk .string_literal;
-            },
-            '`' => blk: {
-                // TODO: 템플릿 리터럴 세부 파싱
-                self.scanTemplateLiteral();
-                break :blk .no_substitution_template;
-            },
+                // 리터럴 — 추후 PR에서 세부 구현
+                '0'...'9' => blk: {
+                    // TODO: 숫자 리터럴 세부 파싱 (hex, octal, binary, bigint, float, exponential)
+                    self.scanNumericLiteral();
+                    break :blk .decimal;
+                },
+                '\'', '"' => blk: {
+                    // TODO: 문자열 리터럴 세부 파싱 (escape sequence)
+                    self.scanStringLiteral(c);
+                    break :blk .string_literal;
+                },
+                '`' => blk: {
+                    // TODO: 템플릿 리터럴 세부 파싱
+                    self.scanTemplateLiteral();
+                    break :blk .no_substitution_template;
+                },
 
-            '#' => blk: {
-                // hashbang (파일 시작) 또는 private identifier
-                if (self.start == 0 or (self.start == 3 and std.mem.startsWith(u8, self.source, "\xEF\xBB\xBF"))) {
-                    if (self.peek() == '!') {
-                        self.scanHashbang();
-                        break :blk .hashbang_comment;
+                '#' => blk: {
+                    // hashbang (파일 시작) 또는 private identifier
+                    if (self.start == 0 or (self.start == 3 and std.mem.startsWith(u8, self.source, "\xEF\xBB\xBF"))) {
+                        if (self.peek() == '!') {
+                            self.scanHashbang();
+                            break :blk .hashbang_comment;
+                        }
                     }
-                }
-                // private identifier
-                self.scanIdentifierTail();
-                break :blk .private_identifier;
-            },
-
-            else => blk: {
-                // 식별자 시작 문자인지 확인
-                if (isIdentifierStart(c)) {
+                    // private identifier
                     self.scanIdentifierTail();
-                    // 키워드 확인
-                    const text = self.tokenText();
-                    break :blk token.keywords.get(text) orelse .identifier;
-                }
-                break :blk .syntax_error;
-            },
-        };
+                    break :blk .private_identifier;
+                },
 
-        self.token.span = .{ .start = self.start, .end = self.current };
+                else => blk: {
+                    // 식별자 시작 문자인지 확인
+                    if (isIdentifierStart(c)) {
+                        self.scanIdentifierTail();
+                        // 키워드 확인
+                        const text = self.tokenText();
+                        break :blk token.keywords.get(text) orelse .identifier;
+                    }
+                    break :blk .syntax_error;
+                },
+            };
+
+            // 주석(undetermined)이면 루프를 돌아 다음 토큰 스캔
+            if (self.token.kind != .undetermined) {
+                self.token.span = .{ .start = self.start, .end = self.current };
+                return;
+            }
+        }
     }
 
     // ====================================================================
@@ -386,12 +393,89 @@ pub const Scanner = struct {
     }
 
     fn scanSlash(self: *Scanner) Kind {
-        // TODO: 주석 (// /* */ ) 처리는 다음 PR
-        if (self.peek() == '=') {
+        const next_char = self.peek();
+        if (next_char == '/') {
+            // single-line comment: // ... \n
+            self.scanSingleLineComment();
+            return .undetermined; // 주석은 토큰으로 생성하지 않음 → next()가 다시 호출됨
+        }
+        if (next_char == '*') {
+            // multi-line comment: /* ... */
+            self.scanMultiLineComment();
+            return .undetermined; // 주석은 토큰으로 생성하지 않음 → next()가 다시 호출됨
+        }
+        if (next_char == '=') {
             self.current += 1;
             return .slash_eq;
         }
         return .slash;
+    }
+
+    /// single-line comment를 스캔한다 (// ... \n).
+    /// JSX pragma (@jsx, @jsxFrag, @jsxRuntime, @jsxImportSource)를 감지한다 (D026).
+    fn scanSingleLineComment(self: *Scanner) void {
+        self.current += 1; // skip second '/'
+
+        const comment_start = self.current;
+
+        // 줄 끝까지 스킵
+        while (!self.isAtEnd()) {
+            const c = self.peek();
+            if (c == '\n' or c == '\r') break;
+            // U+2028, U+2029
+            if (c == 0xE2 and self.current + 2 < self.source.len and
+                self.source[self.current + 1] == 0x80 and
+                (self.source[self.current + 2] == 0xA8 or self.source[self.current + 2] == 0xA9))
+            {
+                break;
+            }
+            self.current += 1;
+        }
+
+        const comment_text = self.source[comment_start..self.current];
+        self.checkPureComment(comment_text);
+    }
+
+    /// multi-line comment를 스캔한다 (/* ... */).
+    /// @__PURE__ / @__NO_SIDE_EFFECTS__ 주석을 감지한다 (D025).
+    /// @license / @preserve 주석도 감지한다 (D022, 추후 코드젠에서 활용).
+    fn scanMultiLineComment(self: *Scanner) void {
+        self.current += 1; // skip '*'
+
+        const comment_start = self.current;
+
+        while (!self.isAtEnd()) {
+            const c = self.peek();
+            if (c == '*' and self.peekAt(1) == '/') {
+                const comment_text = self.source[comment_start..self.current];
+                self.current += 2; // skip */
+                self.checkPureComment(comment_text);
+                return;
+            }
+            // 줄바꿈 추적 (소스맵 정확성)
+            if (c == '\n' or c == '\r') {
+                _ = self.handleNewline();
+                self.token.has_newline_before = true;
+            } else {
+                self.current += 1;
+            }
+        }
+        // EOF까지 닫히지 않은 주석 — 에러지만 여기서는 조용히 종료
+        // (에러 리포팅은 추후 에러 처리 PR에서)
+    }
+
+    /// 주석 내용에서 @__PURE__ / #__PURE__ / @__NO_SIDE_EFFECTS__ 어노테이션을 확인한다.
+    fn checkPureComment(self: *Scanner, comment_text: []const u8) void {
+        // 빠른 reject: '@' 또는 '#' 포함하지 않으면 스킵
+        if (std.mem.indexOf(u8, comment_text, "@") == null and
+            std.mem.indexOf(u8, comment_text, "#") == null) return;
+
+        if (std.mem.indexOf(u8, comment_text, "@__PURE__") != null or
+            std.mem.indexOf(u8, comment_text, "#__PURE__") != null or
+            std.mem.indexOf(u8, comment_text, "@__NO_SIDE_EFFECTS__") != null)
+        {
+            self.token.has_pure_comment_before = true;
+        }
     }
 
     fn scanPercent(self: *Scanner) Kind {
@@ -878,4 +962,119 @@ test "Scanner: all assignment operators" {
         scanner.next();
         try std.testing.expectEqual(kind, scanner.token.kind);
     }
+}
+
+// ============================================================
+// Comment tests
+// ============================================================
+
+test "Scanner: single-line comment is skipped" {
+    const source = "a // comment\nb";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+    try std.testing.expectEqualStrings("a", scanner.tokenText());
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+    try std.testing.expectEqualStrings("b", scanner.tokenText());
+    try std.testing.expect(scanner.token.has_newline_before);
+}
+
+test "Scanner: multi-line comment is skipped" {
+    const source = "a /* comment */ b";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+    try std.testing.expectEqualStrings("a", scanner.tokenText());
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+    try std.testing.expectEqualStrings("b", scanner.tokenText());
+}
+
+test "Scanner: multi-line comment with newline sets has_newline_before" {
+    const source = "a /*\n*/ b";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next(); // a
+    scanner.next(); // b
+    try std.testing.expect(scanner.token.has_newline_before);
+}
+
+test "Scanner: @__PURE__ comment sets flag" {
+    const source = "/* @__PURE__ */ foo()";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+    try std.testing.expectEqualStrings("foo", scanner.tokenText());
+    try std.testing.expect(scanner.token.has_pure_comment_before);
+}
+
+test "Scanner: #__PURE__ comment sets flag" {
+    const source = "/* #__PURE__ */ bar()";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expect(scanner.token.has_pure_comment_before);
+}
+
+test "Scanner: @__NO_SIDE_EFFECTS__ comment sets flag" {
+    const source = "/* @__NO_SIDE_EFFECTS__ */ function f() {}";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.kw_function, scanner.token.kind);
+    try std.testing.expect(scanner.token.has_pure_comment_before);
+}
+
+test "Scanner: normal comment does not set pure flag" {
+    const source = "/* normal comment */ x";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expect(!scanner.token.has_pure_comment_before);
+}
+
+test "Scanner: single-line comment at end of file" {
+    const source = "a // comment";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+    scanner.next();
+    try std.testing.expectEqual(Kind.eof, scanner.token.kind);
+}
+
+test "Scanner: comment-only source" {
+    const source = "// just a comment";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.eof, scanner.token.kind);
+}
+
+test "Scanner: slash after comment is not confused" {
+    const source = "a /* */ / b";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next(); // a
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+    scanner.next(); // /
+    try std.testing.expectEqual(Kind.slash, scanner.token.kind);
+    scanner.next(); // b
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
 }
