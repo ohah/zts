@@ -827,7 +827,7 @@ pub const Codegen = struct {
 
     /// CJS: export const x = 1 → const x=1;exports.x=x;
     fn emitExportNamedCJS(self: *Codegen, decl: NodeIndex, specs_start: u32, specs_len: u32, source: NodeIndex) !void {
-        if (!decl.isNone()) {
+        if (!decl.isNone() and @intFromEnum(decl) < self.ast.nodes.items.len) {
             // export const x = 1 → const x=1; + exports.x=x;
             try self.emitNode(decl);
             // 선언에서 이름 추출하여 exports.name = name
@@ -848,27 +848,31 @@ pub const Codegen = struct {
         }
     }
 
-    /// 변수/함수/클래스 선언에서 이름을 추출하여 exports.name=name; 출력
+    /// 변수/함수/클래스 선언에서 이름을 추출하여 exports.name=name; 출력.
+    /// variable_declarator의 이름은 span 텍스트에서 직접 추출 (extra 경유 불필요).
     fn emitCJSExportBinding(self: *Codegen, decl_idx: NodeIndex) !void {
         const decl = self.ast.getNode(decl_idx);
         switch (decl.tag) {
             .variable_declaration => {
                 const e = decl.data.extra;
-                const extras = self.ast.extra_data.items[e .. e + 3];
-                const list_start = extras[1];
-                const list_len = extras[2];
+                const list_start = self.ast.extra_data.items[e + 1];
+                const list_len = self.ast.extra_data.items[e + 2];
                 const declarators = self.ast.extra_data.items[list_start .. list_start + list_len];
                 for (declarators) |raw_idx| {
                     const declarator = self.ast.getNode(@enumFromInt(raw_idx));
+                    // declarator의 첫 번째 extra가 name NodeIndex
                     const de = declarator.data.extra;
                     const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[de]);
-                    const name_node = self.ast.getNode(name_idx);
-                    const name = self.ast.source[name_node.span.start..name_node.span.end];
-                    try self.write("exports.");
-                    try self.write(name);
-                    try self.writeByte('=');
-                    try self.write(name);
-                    try self.writeByte(';');
+                    if (!name_idx.isNone()) {
+                        const name_node = self.ast.getNode(name_idx);
+                        // binding_identifier의 이름은 string_ref (span)
+                        const name = self.ast.source[name_node.data.string_ref.start..name_node.data.string_ref.end];
+                        try self.write("exports.");
+                        try self.write(name);
+                        try self.writeByte('=');
+                        try self.write(name);
+                        try self.writeByte(';');
+                    }
                 }
             },
             .function_declaration, .class_declaration => {
@@ -876,7 +880,7 @@ pub const Codegen = struct {
                 const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
                 if (!name_idx.isNone()) {
                     const name_node = self.ast.getNode(name_idx);
-                    const name = self.ast.source[name_node.span.start..name_node.span.end];
+                    const name = self.ast.source[name_node.data.string_ref.start..name_node.data.string_ref.end];
                     try self.write("exports.");
                     try self.write(name);
                     try self.writeByte('=');
@@ -1397,6 +1401,12 @@ test "Codegen: namespace IIFE" {
         "var Foo;(function(Foo){const x=1;})(Foo||(Foo={}));",
         r.output,
     );
+}
+
+test "Codegen CJS: export const" {
+    var r = try e2eCJS(std.testing.allocator, "export const x = 1;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const x=1;exports.x=x;", r.output);
 }
 
 test "Codegen CJS: export default" {
