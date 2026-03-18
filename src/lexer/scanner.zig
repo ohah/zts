@@ -61,6 +61,9 @@ pub const Scanner = struct {
     /// 현재 brace depth. `{`이면 +1, `}`이면 -1.
     brace_depth: u32 = 0,
 
+    /// 이전 토큰의 종류. regex vs division 판별에 사용 (slashIsRegex).
+    prev_token_kind: Kind = .eof,
+
     /// 소스를 UTF-8로 읽고 Scanner를 초기화한다.
     /// BOM이 있으면 스킵한다 (D019).
     pub fn init(allocator: std.mem.Allocator, source: []const u8) Scanner {
@@ -345,6 +348,7 @@ pub const Scanner = struct {
             // 주석(undetermined)이면 루프를 돌아 다음 토큰 스캔
             if (self.token.kind != .undetermined) {
                 self.token.span = .{ .start = self.start, .end = self.current };
+                self.prev_token_kind = self.token.kind;
                 return;
             }
         }
@@ -410,20 +414,89 @@ pub const Scanner = struct {
     fn scanSlash(self: *Scanner) Kind {
         const next_char = self.peek();
         if (next_char == '/') {
-            // single-line comment: // ... \n
             self.scanSingleLineComment();
-            return .undetermined; // 주석은 토큰으로 생성하지 않음 → next()가 다시 호출됨
+            return .undetermined;
         }
         if (next_char == '*') {
-            // multi-line comment: /* ... */
             self.scanMultiLineComment();
-            return .undetermined; // 주석은 토큰으로 생성하지 않음 → next()가 다시 호출됨
+            return .undetermined;
         }
+
+        // /= 는 항상 대입 연산자 (regex에서 = 가 첫 문자인 경우는 없음...
+        // 실제로는 /=.../flags 도 유효한 regex이지만, 대입 연산자가 더 일반적.
+        // esbuild/Bun도 /=를 항상 slash_eq로 처리)
         if (next_char == '=') {
             self.current += 1;
             return .slash_eq;
         }
+
+        // regex vs division: 이전 토큰에 기반하여 판별
+        if (self.prev_token_kind.slashIsRegex()) {
+            return self.scanRegExp();
+        }
+
         return .slash;
+    }
+
+    /// 정규식 리터럴을 스캔한다 (/pattern/flags).
+    /// opening `/`는 이미 소비된 상태.
+    ///
+    /// 규칙:
+    /// - `\/` 이스케이프된 slash → 정규식 계속
+    /// - `[...]` character class 안에서는 `/`가 정규식을 끝내지 않음
+    /// - 줄바꿈은 정규식 안에서 불허
+    fn scanRegExp(self: *Scanner) Kind {
+        var in_class = false; // [...] character class 안인지
+
+        while (!self.isAtEnd()) {
+            const c = self.peek();
+
+            if (c == '\\') {
+                // 이스케이프: 다음 문자를 무조건 스킵
+                self.current += 1;
+                if (!self.isAtEnd()) self.current += 1;
+                continue;
+            }
+
+            if (c == '[') {
+                in_class = true;
+                self.current += 1;
+                continue;
+            }
+
+            if (c == ']' and in_class) {
+                in_class = false;
+                self.current += 1;
+                continue;
+            }
+
+            if (c == '/' and !in_class) {
+                self.current += 1; // consume closing /
+                // flags: g, i, m, s, u, v, y, d 등
+                self.scanRegExpFlags();
+                return .regexp;
+            }
+
+            // 줄바꿈은 정규식 안에서 불허
+            if (c == '\n' or c == '\r') {
+                return .syntax_error;
+            }
+
+            self.current += 1;
+        }
+
+        // EOF까지 닫히지 않은 정규식
+        return .syntax_error;
+    }
+
+    /// 정규식 플래그를 스캔한다 (/pattern/ 뒤의 문자들).
+    fn scanRegExpFlags(self: *Scanner) void {
+        while (!self.isAtEnd()) {
+            const c = self.peek();
+            if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z')) {
+                self.current += 1;
+            } else break;
+        }
     }
 
     /// single-line comment를 스캔한다 (// ... \n).
@@ -1762,4 +1835,99 @@ test "Scanner: unterminated template" {
 
     scanner.next();
     try std.testing.expectEqual(Kind.syntax_error, scanner.token.kind);
+}
+
+// ============================================================
+// RegExp literal tests
+// ============================================================
+
+test "Scanner: regex after =" {
+    // = /pattern/gi → eq, regexp
+    const source = "= /abc/gi";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next(); // =
+    try std.testing.expectEqual(Kind.eq, scanner.token.kind);
+    scanner.next(); // /abc/gi
+    try std.testing.expectEqual(Kind.regexp, scanner.token.kind);
+    try std.testing.expectEqualStrings("/abc/gi", scanner.tokenText());
+}
+
+test "Scanner: regex after (" {
+    const source = "(/test/)";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next(); // (
+    try std.testing.expectEqual(Kind.l_paren, scanner.token.kind);
+    scanner.next(); // /test/
+    try std.testing.expectEqual(Kind.regexp, scanner.token.kind);
+}
+
+test "Scanner: division after identifier" {
+    // a / b → identifier, slash, identifier
+    const source = "a / b";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next(); // a
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+    scanner.next(); // /
+    try std.testing.expectEqual(Kind.slash, scanner.token.kind);
+    scanner.next(); // b
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+}
+
+test "Scanner: division after number" {
+    const source = "10 / 2";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next(); // 10
+    scanner.next(); // /
+    try std.testing.expectEqual(Kind.slash, scanner.token.kind);
+}
+
+test "Scanner: regex with character class" {
+    // character class 안의 / 는 regex를 끝내지 않음
+    const source = "= /[a/b]/";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next(); // =
+    scanner.next(); // /[a/b]/
+    try std.testing.expectEqual(Kind.regexp, scanner.token.kind);
+    try std.testing.expectEqualStrings("/[a/b]/", scanner.tokenText());
+}
+
+test "Scanner: regex with escape" {
+    const source = "= /a\\/b/";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next(); // =
+    scanner.next(); // /a\/b/
+    try std.testing.expectEqual(Kind.regexp, scanner.token.kind);
+}
+
+test "Scanner: regex after return keyword" {
+    const source = "return /test/g";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next(); // return
+    try std.testing.expectEqual(Kind.kw_return, scanner.token.kind);
+    scanner.next(); // /test/g
+    try std.testing.expectEqual(Kind.regexp, scanner.token.kind);
+}
+
+test "Scanner: regex after comma" {
+    const source = ", /re/";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next(); // ,
+    scanner.next(); // /re/
+    try std.testing.expectEqual(Kind.regexp, scanner.token.kind);
 }
