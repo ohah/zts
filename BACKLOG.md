@@ -128,6 +128,17 @@
 | 51 | infer type `infer T` | TS 타입 시스템 | Phase 2 TS PR |
 | 52 | template literal type `` `hello ${string}` `` | TS 타입 시스템 | Phase 2 TS PR |
 
+### PR #31: feat(parser): TS declarations
+
+| # | 항목 | 이유 | 해결 시점 |
+|---|------|------|----------|
+| 53 | parseTsDeclareStatement에 wrapper 노드 없음 (ambient vs runtime 구분 불가) | AST 정확성 | Phase 3 |
+| 54 | parseTsAbstractClass에 abstract flag 없음 | AST 정확성 | Phase 2 후반 |
+| 55 | declare global 미지원 | .d.ts 파일용 | Phase 2 후반 |
+| 56 | module "string" (문자열 모듈 이름) 미지원 | .d.ts 파일용 | Phase 2 후반 |
+| 57 | const enum이 parseStatement에서 라우팅 안 됨 | enum 앞에 const 소비됨 | Phase 2 후반 |
+| 58 | interface extends 다중 타입 (리스트로 AST 저장 필요) | 현재 첫 번째만 | Phase 2 후반 |
+
 ---
 
 ## 추후 개선

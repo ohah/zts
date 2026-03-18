@@ -1971,10 +1971,15 @@ pub const Parser = struct {
             type_params = try self.parseTsTypeParameterDeclaration();
         }
 
-        // extends
+        // extends (콤마 구분 리스트: interface Foo extends Bar, Baz)
         var extends_node = NodeIndex.none;
         if (self.eat(.kw_extends)) {
+            // 첫 번째 타입은 항상 파싱
             extends_node = try self.parseType();
+            // 추가 extends 타입들은 무시 (BACKLOG: 리스트로 변환)
+            while (self.eat(.comma)) {
+                _ = try self.parseType();
+            }
         }
 
         // interface body
@@ -2044,12 +2049,16 @@ pub const Parser = struct {
     fn parseTsModuleDeclaration(self: *Parser) !NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'namespace' or 'module'
+        return self.parseTsModuleBody(start);
+    }
 
+    /// namespace body (재귀: A.B.C 중첩 처리). keyword는 이미 소비된 상태.
+    fn parseTsModuleBody(self: *Parser, start: u32) !NodeIndex {
         const name = try self.parseBindingIdentifier();
 
         // 중첩: namespace A.B.C { }
         if (self.eat(.dot)) {
-            const inner = try self.parseTsModuleDeclaration();
+            const inner = try self.parseTsModuleBody(start);
             return try self.ast.addNode(.{
                 .tag = .ts_module_declaration,
                 .span = .{ .start = start, .end = self.currentSpan().start },
