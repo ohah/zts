@@ -257,10 +257,12 @@ pub const Transformer = struct {
             .binding_rest_element => self.visitUnaryNode(node),
             .assignment_target_with_default => self.visitBinaryNode(node),
 
-            // === TS enum: 런타임 코드 생성 (codegen에서 IIFE 출력) ===
+            // === TS enum/namespace: 런타임 코드 생성 (codegen에서 IIFE 출력) ===
             .ts_enum_declaration => self.visitEnumDeclaration(node),
             .ts_enum_member => self.visitBinaryNode(node),
             .ts_enum_body => self.visitListNode(node),
+            .ts_module_declaration => self.visitNamespaceDeclaration(node),
+            .ts_module_block => self.visitListNode(node),
 
             // === 나머지: invalid + TS 타입 전용 노드 ===
             // TS 타입 노드는 isTypeOnlyNode 검사(위)에서 이미 .none으로 반환됨.
@@ -379,6 +381,22 @@ pub const Transformer = struct {
         const new_members = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
         return self.addExtraNode(.ts_enum_declaration, node.span, &.{
             @intFromEnum(new_name), new_members.start, new_members.len,
+        });
+    }
+
+    // ================================================================
+    // TS namespace 변환
+    // ================================================================
+
+    /// ts_module_declaration: binary = { left=name, right=body_or_inner }
+    /// namespace를 새 AST에 복사. codegen에서 IIFE로 출력.
+    fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
+        const new_name = try self.visitNode(node.data.binary.left);
+        const new_body = try self.visitNode(node.data.binary.right);
+        return self.new_ast.addNode(.{
+            .tag = .ts_module_declaration,
+            .span = node.span,
+            .data = .{ .binary = .{ .left = new_name, .right = new_body, .flags = 0 } },
         });
     }
 
@@ -630,9 +648,8 @@ pub const Transformer = struct {
             .ts_type_parameter_instantiation,
             .ts_this_parameter,
             .ts_class_implements,
-            // TS module/namespace 선언
-            .ts_module_declaration,
-            .ts_module_block,
+            // namespace는 런타임 코드 생성 → visitNode에서 별도 처리
+            // ts_namespace_export_declaration은 타입 전용 (export as namespace X)
             .ts_namespace_export_declaration,
             // TS import/export 특수 형태
             .ts_import_equals_declaration,
