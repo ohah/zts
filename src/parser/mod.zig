@@ -1,16 +1,19 @@
 //! ZTS Parser
 //!
 //! 토큰 스트림을 AST로 변환한다.
-//! Phase 2에서 구현.
+//! 2패스: parse → visit (D040).
 
 pub const ast = @import("ast.zig");
+pub const parser = @import("parser.zig");
 
 pub const Ast = ast.Ast;
 pub const Node = ast.Node;
 pub const Tag = ast.Node.Tag;
 pub const NodeIndex = ast.NodeIndex;
 pub const NodeList = ast.NodeList;
+pub const Parser = parser.Parser;
 
 test {
     _ = ast;
+    _ = parser;
 }
