@@ -291,11 +291,7 @@ pub const Scanner = struct {
 
                 // 리터럴 — 추후 PR에서 세부 구현
                 '0'...'9' => self.scanNumericLiteral(c),
-                '\'', '"' => blk: {
-                    // TODO: 문자열 리터럴 세부 파싱 (escape sequence)
-                    self.scanStringLiteral(c);
-                    break :blk .string_literal;
-                },
+                '\'', '"' => self.scanStringLiteral(c),
                 '`' => blk: {
                     // TODO: 템플릿 리터럴 세부 파싱
                     self.scanTemplateLiteral();
@@ -776,12 +772,102 @@ pub const Scanner = struct {
         }
     }
 
-    fn scanStringLiteral(self: *Scanner, quote: u8) void {
-        // TODO: escape sequence, multi-line, legacy octal
+    /// 문자열 리터럴을 스캔한다 (opening quote는 이미 소비됨).
+    ///
+    /// 처리하는 이스케이프 시퀀스:
+    /// - 단순: \n \r \t \\ \' \" \0
+    /// - 16진수: \xHH
+    /// - 유니코드: \uHHHH, \u{H...H}
+    /// - 줄 연속: \ + 줄바꿈 (줄바꿈이 문자열에 포함되지 않음)
+    ///
+    /// 에러 감지:
+    /// - 닫히지 않은 문자열 → syntax_error
+    /// - 문자열 안 줄바꿈 (JS 스펙 위반) → syntax_error
+    fn scanStringLiteral(self: *Scanner, quote: u8) Kind {
         while (!self.isAtEnd()) {
-            const c = self.advance();
-            if (c == quote) return;
-            if (c == '\\') _ = self.advance(); // skip escaped char
+            const c = self.peek();
+
+            if (c == quote) {
+                self.current += 1; // consume closing quote
+                return .string_literal;
+            }
+
+            // 이스케이프 시퀀스
+            if (c == '\\') {
+                self.current += 1; // consume '\'
+                if (self.isAtEnd()) break; // '\' at EOF
+
+                const escaped = self.peek();
+                switch (escaped) {
+                    // 단순 이스케이프: 1바이트 스킵
+                    'n', 'r', 't', '\\', '\'', '"', '0', 'b', 'f', 'v' => {
+                        self.current += 1;
+                    },
+                    // 16진수 이스케이프: \xHH
+                    'x' => {
+                        self.current += 1;
+                        self.skipHexEscape(2);
+                    },
+                    // 유니코드 이스케이프: \uHHHH 또는 \u{H...H}
+                    'u' => {
+                        self.current += 1;
+                        if (self.peek() == '{') {
+                            // \u{H...H} — 가변 길이
+                            self.current += 1;
+                            while (!self.isAtEnd() and self.peek() != '}') {
+                                self.current += 1;
+                            }
+                            if (!self.isAtEnd()) self.current += 1; // consume '}'
+                        } else {
+                            // \uHHHH — 고정 4자리
+                            self.skipHexEscape(4);
+                        }
+                    },
+                    // 줄 연속: \ 뒤에 줄바꿈이 오면 줄바꿈을 건너뜀
+                    '\n' => {
+                        _ = self.handleNewline();
+                    },
+                    '\r' => {
+                        _ = self.handleNewline();
+                    },
+                    // 그 외: legacy octal (\1..\7) 또는 알 수 없는 이스케이프 → 1바이트 스킵
+                    // (엄격한 에러 검사는 파서에서)
+                    else => {
+                        self.current += 1;
+                    },
+                }
+                continue;
+            }
+
+            // 줄바꿈은 문자열 안에서 불허 (JS 스펙)
+            if (c == '\n' or c == '\r') {
+                // 에러: 닫히지 않은 문자열. 줄바꿈을 소비하지 않고 종료.
+                return .syntax_error;
+            }
+            // U+2028, U+2029도 줄바꿈
+            if (c == 0xE2 and self.current + 2 < self.source.len and
+                self.source[self.current + 1] == 0x80 and
+                (self.source[self.current + 2] == 0xA8 or self.source[self.current + 2] == 0xA9))
+            {
+                return .syntax_error;
+            }
+
+            // 일반 문자: UTF-8 바이트 스킵
+            self.current += 1;
+        }
+
+        // EOF까지 닫히지 않은 문자열
+        return .syntax_error;
+    }
+
+    /// hex 이스케이프의 지정된 자릿수만큼 스킵한다.
+    fn skipHexEscape(self: *Scanner, count: u32) void {
+        var i: u32 = 0;
+        while (i < count and !self.isAtEnd()) : (i += 1) {
+            const c = self.peek();
+            if ((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F')) {
+                self.current += 1;
+            } else break;
         }
     }
 
@@ -1358,4 +1444,106 @@ test "Scanner: float with exponent" {
     scanner.next();
     try std.testing.expectEqual(Kind.positive_exponential, scanner.token.kind);
     try std.testing.expectEqualStrings("1.5e10", scanner.tokenText());
+}
+
+// ============================================================
+// String literal tests
+// ============================================================
+
+test "Scanner: string with escape sequences" {
+    const source = "\"hello\\nworld\"";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
+    try std.testing.expectEqualStrings("\"hello\\nworld\"", scanner.tokenText());
+}
+
+test "Scanner: string with hex escape" {
+    const source = "'\\x41'";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
+}
+
+test "Scanner: string with unicode escape \\uHHHH" {
+    const source = "'\\u0041'";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
+}
+
+test "Scanner: string with unicode escape \\u{}" {
+    const source = "'\\u{1F600}'";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
+}
+
+test "Scanner: string with escaped quote" {
+    const source = "'it\\'s'";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
+}
+
+test "Scanner: string with line continuation" {
+    // '\' + newline = line continuation (valid)
+    const source = "'hello\\\nworld'";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
+}
+
+test "Scanner: unterminated string at EOF" {
+    const source = "\"hello";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.syntax_error, scanner.token.kind);
+}
+
+test "Scanner: newline inside string is error" {
+    const source = "\"hello\nworld\"";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.syntax_error, scanner.token.kind);
+}
+
+test "Scanner: string with backslash at EOF" {
+    const source = "'test\\";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.syntax_error, scanner.token.kind);
+}
+
+test "Scanner: consecutive strings" {
+    const source = "'a' \"b\" 'c'";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
+    try std.testing.expectEqualStrings("'a'", scanner.tokenText());
+    scanner.next();
+    try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
+    try std.testing.expectEqualStrings("\"b\"", scanner.tokenText());
+    scanner.next();
+    try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
 }
