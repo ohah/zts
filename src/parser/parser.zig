@@ -263,7 +263,7 @@ pub const Parser = struct {
         const name = try self.parseBindingIdentifier();
 
         // TS 타입 어노테이션 (: Type)
-        _ = try self.tryParseTypeAnnotation();
+        const type_ann = try self.tryParseTypeAnnotation();
 
         // 이니셜라이저
         var init_expr = NodeIndex.none;
@@ -271,10 +271,15 @@ pub const Parser = struct {
             init_expr = try self.parseAssignmentExpression();
         }
 
+        // name, type_ann, init_expr → extra_data
+        const extra_start = try self.ast.addExtra(@intFromEnum(name));
+        _ = try self.ast.addExtra(@intFromEnum(type_ann));
+        _ = try self.ast.addExtra(@intFromEnum(init_expr));
+
         return try self.ast.addNode(.{
             .tag = .variable_declarator,
             .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = name, .right = init_expr } },
+            .data = .{ .extra = extra_start },
         });
     }
 
@@ -612,7 +617,7 @@ pub const Parser = struct {
         self.expect(.r_paren);
 
         // TS 리턴 타입 어노테이션
-        _ = try self.tryParseReturnType();
+        const return_type = try self.tryParseReturnType();
 
         // 본문
         const body = try self.parseBlockStatement();
@@ -624,6 +629,7 @@ pub const Parser = struct {
         _ = try self.ast.addExtra(param_list.len);
         _ = try self.ast.addExtra(@intFromEnum(body));
         _ = try self.ast.addExtra(flags);
+        _ = try self.ast.addExtra(@intFromEnum(return_type));
 
         return try self.ast.addNode(.{
             .tag = .function_declaration,
@@ -1342,22 +1348,14 @@ pub const Parser = struct {
             });
         }
 
-        // TS: as Type / satisfies Type
-        if (self.current() == .kw_as) {
+        // TS: as Type / satisfies Type (체이닝 가능: x as A as B)
+        while (self.current() == .kw_as or self.current() == .kw_satisfies) {
             const expr_start = self.ast.getNode(expr).span.start;
+            const is_satisfies = self.current() == .kw_satisfies;
             self.advance();
             const ty = try self.parseType();
             expr = try self.ast.addNode(.{
-                .tag = .ts_as_expression,
-                .span = .{ .start = expr_start, .end = self.currentSpan().start },
-                .data = .{ .binary = .{ .left = expr, .right = ty } },
-            });
-        } else if (self.current() == .kw_satisfies) {
-            const expr_start = self.ast.getNode(expr).span.start;
-            self.advance();
-            const ty = try self.parseType();
-            expr = try self.ast.addNode(.{
-                .tag = .ts_satisfies_expression,
+                .tag = if (is_satisfies) .ts_satisfies_expression else .ts_as_expression,
                 .span = .{ .start = expr_start, .end = self.currentSpan().start },
                 .data = .{ .binary = .{ .left = expr, .right = ty } },
             });
@@ -1982,16 +1980,28 @@ pub const Parser = struct {
     fn parsePostfixType(self: *Parser) !NodeIndex {
         var base = try self.parsePrimaryType();
 
-        // 배열 타입: T[] , T[][]
-        while (self.current() == .l_bracket and self.peekNextKind() == .r_bracket) {
+        while (self.current() == .l_bracket) {
             const start = self.ast.getNode(base).span.start;
-            self.advance(); // [
-            self.advance(); // ]
-            base = try self.ast.addNode(.{
-                .tag = .ts_array_type,
-                .span = .{ .start = start, .end = self.currentSpan().start },
-                .data = .{ .unary = .{ .operand = base } },
-            });
+            if (self.peekNextKind() == .r_bracket) {
+                // 배열 타입: T[]
+                self.advance(); // [
+                self.advance(); // ]
+                base = try self.ast.addNode(.{
+                    .tag = .ts_array_type,
+                    .span = .{ .start = start, .end = self.currentSpan().start },
+                    .data = .{ .unary = .{ .operand = base } },
+                });
+            } else {
+                // 인덱스 접근 타입: T[K]
+                self.advance(); // [
+                const index_type = try self.parseType();
+                self.expect(.r_bracket);
+                base = try self.ast.addNode(.{
+                    .tag = .ts_indexed_access_type,
+                    .span = .{ .start = start, .end = self.currentSpan().start },
+                    .data = .{ .binary = .{ .left = base, .right = index_type } },
+                });
+            }
         }
 
         return base;
