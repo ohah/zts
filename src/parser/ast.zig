@@ -56,7 +56,7 @@ pub const Node = struct {
     /// 소스 위치 (8바이트)
     span: Span,
 
-    /// 노드별 데이터 (14바이트, union)
+    /// 노드별 데이터 (union, Tag에 의해 어떤 variant인지 결정)
     /// 작은 데이터는 인라인, 큰 데이터는 extra_data 인덱스
     data: Data,
 
@@ -89,7 +89,7 @@ pub const Node = struct {
         template_literal,
 
         // ==============================================================
-        // Expressions (30개)
+        // Expressions
         // ==============================================================
         this_expression,
         identifier_reference,
@@ -128,7 +128,7 @@ pub const Node = struct {
         template_element,
 
         // ==============================================================
-        // Statements (20개)
+        // Statements
         // ==============================================================
         block_statement,
         empty_statement,
@@ -154,7 +154,7 @@ pub const Node = struct {
         hashbang,
 
         // ==============================================================
-        // Declarations (15개)
+        // Declarations
         // ==============================================================
         variable_declaration,
         variable_declarator,
@@ -171,7 +171,7 @@ pub const Node = struct {
         export_specifier,
 
         // ==============================================================
-        // Functions / Classes (15개)
+        // Functions / Classes
         // ==============================================================
         function,
         formal_parameters,
@@ -186,7 +186,7 @@ pub const Node = struct {
         decorator,
 
         // ==============================================================
-        // Patterns (10개)
+        // Patterns
         // ==============================================================
         binding_identifier,
         array_pattern,
@@ -199,13 +199,13 @@ pub const Node = struct {
         assignment_target_with_default,
 
         // ==============================================================
-        // Object Properties (5개)
+        // Object Properties
         // ==============================================================
         object_property,
         computed_property_key,
 
         // ==============================================================
-        // JSX (15개)
+        // JSX
         // ==============================================================
         jsx_element,
         jsx_opening_element,
@@ -224,7 +224,7 @@ pub const Node = struct {
         jsx_spread_child,
 
         // ==============================================================
-        // TypeScript Types (45개)
+        // TypeScript Types
         // ==============================================================
         ts_any_keyword,
         ts_string_keyword,
@@ -265,7 +265,7 @@ pub const Node = struct {
         ts_type_predicate,
 
         // ==============================================================
-        // TypeScript Declarations (25개)
+        // TypeScript Declarations
         // ==============================================================
         ts_type_alias_declaration,
         ts_interface_declaration,
@@ -293,7 +293,7 @@ pub const Node = struct {
         ts_class_implements,
 
         // ==============================================================
-        // TypeScript Expressions (8개)
+        // TypeScript Expressions
         // ==============================================================
         ts_as_expression,
         ts_satisfies_expression,
@@ -302,7 +302,7 @@ pub const Node = struct {
         ts_instantiation_expression,
 
         // ==============================================================
-        // 합계: ~200개
+        // 합계: 개수는 컴파일 타임에 Tag 필드 수로 자동 검증
         // ==============================================================
     };
 
@@ -338,7 +338,7 @@ pub const Node = struct {
         /// 문자열 참조 (식별자, 리터럴 값 등)
         string_ref: StringRef,
 
-        /// 숫자 리터럴 값 (f64의 상위/하위 비트를 나눠 저장할 수 없으므로 extra로)
+        /// 숫자 리터럴 값 (f64, 8바이트 — union 크기 내에 인라인 저장)
         number_value: f64,
 
         /// extra_data 배열 인덱스 (큰 데이터용)
@@ -398,12 +398,15 @@ pub const Ast = struct {
     }
 
     /// extra_data에 NodeIndex 리스트를 추가한다.
+    /// 한 번의 capacity check로 전체 리스트를 추가 (O(1) alloc check).
     pub fn addNodeList(self: *Ast, indices: []const NodeIndex) !NodeList {
         const start: u32 = @intCast(self.extra_data.items.len);
+        const len: u32 = @intCast(indices.len);
+        try self.extra_data.ensureUnusedCapacity(len);
         for (indices) |idx| {
-            try self.extra_data.append(@intFromEnum(idx));
+            self.extra_data.appendAssumeCapacity(@intFromEnum(idx));
         }
-        return .{ .start = start, .len = @intCast(indices.len) };
+        return .{ .start = start, .len = len };
     }
 
     /// span이 가리키는 소스 텍스트를 반환한다.
