@@ -174,7 +174,7 @@ main ← feature/lexer-token-enum
 10. ✅ 파서 테스트 6개 수정 — PR #44
 11. ✅ parameter property 변환 — PR #45
 12. ✅ CJS export const segfault 수정 — PR #46
-13. ⬜ decorator 변환
+13. ✅ decorator 지원 (class에 연결 + 출력) — PR #47
 
 ## References
 - Bun JS Parser: github.com/oven-sh/bun (src/js_parser.zig, src/js_lexer.zig)
