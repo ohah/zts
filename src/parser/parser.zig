@@ -173,6 +173,13 @@ pub const Parser = struct {
             .kw_class => self.parseClassDeclaration(),
             .kw_import => self.parseImportDeclaration(),
             .kw_export => self.parseExportDeclaration(),
+            // TypeScript declarations
+            .kw_type => self.parseTsTypeAliasDeclaration(),
+            .kw_interface => self.parseTsInterfaceDeclaration(),
+            .kw_enum => self.parseTsEnumDeclaration(),
+            .kw_namespace, .kw_module => self.parseTsModuleDeclaration(),
+            .kw_declare => self.parseTsDeclareStatement(),
+            .kw_abstract => self.parseTsAbstractClass(),
             else => self.parseExpressionStatement(),
         };
     }
@@ -1920,6 +1927,209 @@ pub const Parser = struct {
     }
 
     // ================================================================
+    // TypeScript Declarations
+    // ================================================================
+
+    /// type Foo = Type;
+    fn parseTsTypeAliasDeclaration(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+        self.advance(); // skip 'type'
+
+        const name = try self.parseBindingIdentifier();
+
+        // 제네릭 파라미터: type Foo<T> = ...
+        var type_params = NodeIndex.none;
+        if (self.current() == .l_angle) {
+            type_params = try self.parseTsTypeParameterDeclaration();
+        }
+
+        self.expect(.eq);
+        const ty = try self.parseType();
+        _ = self.eat(.semicolon);
+
+        const extra_start = try self.ast.addExtra(@intFromEnum(name));
+        _ = try self.ast.addExtra(@intFromEnum(type_params));
+        _ = try self.ast.addExtra(@intFromEnum(ty));
+
+        return try self.ast.addNode(.{
+            .tag = .ts_type_alias_declaration,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .extra = extra_start },
+        });
+    }
+
+    /// interface Foo { ... }
+    fn parseTsInterfaceDeclaration(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+        self.advance(); // skip 'interface'
+
+        const name = try self.parseBindingIdentifier();
+
+        // 제네릭 파라미터
+        var type_params = NodeIndex.none;
+        if (self.current() == .l_angle) {
+            type_params = try self.parseTsTypeParameterDeclaration();
+        }
+
+        // extends
+        var extends_node = NodeIndex.none;
+        if (self.eat(.kw_extends)) {
+            extends_node = try self.parseType();
+        }
+
+        // interface body
+        const body = try self.parseObjectType();
+
+        const extra_start = try self.ast.addExtra(@intFromEnum(name));
+        _ = try self.ast.addExtra(@intFromEnum(type_params));
+        _ = try self.ast.addExtra(@intFromEnum(extends_node));
+        _ = try self.ast.addExtra(@intFromEnum(body));
+
+        return try self.ast.addNode(.{
+            .tag = .ts_interface_declaration,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .extra = extra_start },
+        });
+    }
+
+    /// enum Foo { A, B, C }
+    fn parseTsEnumDeclaration(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+        self.advance(); // skip 'enum'
+
+        const name = try self.parseBindingIdentifier();
+        self.expect(.l_curly);
+
+        const scratch_top = self.saveScratch();
+        while (self.current() != .r_curly and self.current() != .eof) {
+            const member = try self.parseTsEnumMember();
+            try self.scratch.append(member);
+            if (!self.eat(.comma)) break;
+        }
+
+        const end = self.currentSpan().end;
+        self.expect(.r_curly);
+
+        const members = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        self.restoreScratch(scratch_top);
+
+        const extra_start = try self.ast.addExtra(@intFromEnum(name));
+        _ = try self.ast.addExtra(members.start);
+        _ = try self.ast.addExtra(members.len);
+
+        return try self.ast.addNode(.{
+            .tag = .ts_enum_declaration,
+            .span = .{ .start = start, .end = end },
+            .data = .{ .extra = extra_start },
+        });
+    }
+
+    fn parseTsEnumMember(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+        const name = try self.parsePropertyKey();
+
+        var init_val = NodeIndex.none;
+        if (self.eat(.eq)) {
+            init_val = try self.parseAssignmentExpression();
+        }
+
+        return try self.ast.addNode(.{
+            .tag = .ts_enum_member,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .binary = .{ .left = name, .right = init_val } },
+        });
+    }
+
+    /// namespace Foo { ... } / module "name" { ... }
+    fn parseTsModuleDeclaration(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+        self.advance(); // skip 'namespace' or 'module'
+
+        const name = try self.parseBindingIdentifier();
+
+        // 중첩: namespace A.B.C { }
+        if (self.eat(.dot)) {
+            const inner = try self.parseTsModuleDeclaration();
+            return try self.ast.addNode(.{
+                .tag = .ts_module_declaration,
+                .span = .{ .start = start, .end = self.currentSpan().start },
+                .data = .{ .binary = .{ .left = name, .right = inner } },
+            });
+        }
+
+        const body = try self.parseBlockStatement();
+
+        return try self.ast.addNode(.{
+            .tag = .ts_module_declaration,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .binary = .{ .left = name, .right = body } },
+        });
+    }
+
+    /// declare var/let/const/function/class/...
+    fn parseTsDeclareStatement(self: *Parser) !NodeIndex {
+        self.advance(); // skip 'declare'
+        // declare 뒤의 선언을 파싱 (런타임 코드 없음)
+        return self.parseStatement();
+    }
+
+    /// abstract class Foo { }
+    fn parseTsAbstractClass(self: *Parser) !NodeIndex {
+        self.advance(); // skip 'abstract'
+        return self.parseClassDeclaration();
+    }
+
+    /// <T, U extends V = W>
+    fn parseTsTypeParameterDeclaration(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+        self.advance(); // skip <
+
+        const scratch_top = self.saveScratch();
+        while (self.current() != .r_angle and self.current() != .eof) {
+            const param = try self.parseTsTypeParameter();
+            try self.scratch.append(param);
+            if (!self.eat(.comma)) break;
+        }
+        self.expect(.r_angle);
+
+        const params = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        self.restoreScratch(scratch_top);
+
+        return try self.ast.addNode(.{
+            .tag = .ts_type_parameter_declaration,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .list = params },
+        });
+    }
+
+    fn parseTsTypeParameter(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+        const name = try self.parseBindingIdentifier();
+
+        // T extends U
+        var constraint = NodeIndex.none;
+        if (self.eat(.kw_extends)) {
+            constraint = try self.parseType();
+        }
+
+        // T = DefaultType
+        var default_type = NodeIndex.none;
+        if (self.eat(.eq)) {
+            default_type = try self.parseType();
+        }
+
+        const extra_start = try self.ast.addExtra(@intFromEnum(name));
+        _ = try self.ast.addExtra(@intFromEnum(constraint));
+        _ = try self.ast.addExtra(@intFromEnum(default_type));
+
+        return try self.ast.addNode(.{
+            .tag = .ts_type_parameter,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .extra = extra_start },
+        });
+    }
+
+    // ================================================================
     // TypeScript Type 파싱
     // ================================================================
 
@@ -3022,6 +3232,111 @@ test "Parser: TS tuple type" {
 
 test "Parser: TS typeof and keyof" {
     var scanner = Scanner.init(std.testing.allocator, "const k: keyof typeof obj = 'x';");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+// ============================================================
+// TypeScript declaration tests
+// ============================================================
+
+test "Parser: TS type alias" {
+    var scanner = Scanner.init(std.testing.allocator, "type StringOrNumber = string | number;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: TS generic type alias" {
+    var scanner = Scanner.init(std.testing.allocator, "type Result<T, E> = { ok: T } | { err: E };");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: TS interface" {
+    var scanner = Scanner.init(std.testing.allocator,
+        \\interface User {
+        \\  name: string;
+        \\  age: number;
+        \\}
+    );
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: TS interface extends" {
+    var scanner = Scanner.init(std.testing.allocator, "interface Admin extends User { role: string; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: TS enum" {
+    var scanner = Scanner.init(std.testing.allocator,
+        \\enum Color {
+        \\  Red,
+        \\  Green = 10,
+        \\  Blue
+        \\}
+    );
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: TS namespace" {
+    var scanner = Scanner.init(std.testing.allocator, "namespace Utils { const x = 1; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: TS declare" {
+    var scanner = Scanner.init(std.testing.allocator, "declare const VERSION: string;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: TS abstract class" {
+    var scanner = Scanner.init(std.testing.allocator, "abstract class Shape { abstract area(): number; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: TS generic type parameter with constraint and default" {
+    var scanner = Scanner.init(std.testing.allocator, "type Foo<T extends string = 'hello'> = T;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
