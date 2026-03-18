@@ -169,6 +169,7 @@ pub const Parser = struct {
             .kw_try => self.parseTryStatement(),
             .kw_debugger => self.parseSimpleStatement(.debugger_statement),
             .kw_function => self.parseFunctionDeclaration(),
+            .kw_class => self.parseClassDeclaration(),
             else => self.parseExpressionStatement(),
         };
     }
@@ -611,6 +612,202 @@ pub const Parser = struct {
         });
     }
 
+    fn parseFunctionExpression(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+        self.advance(); // skip 'function'
+
+        // 함수 이름 (선택적)
+        var name = NodeIndex.none;
+        if (self.current() == .identifier) {
+            name = try self.parseBindingIdentifier();
+        }
+
+        self.expect(.l_paren);
+        const scratch_top = self.saveScratch();
+        while (self.current() != .r_paren and self.current() != .eof) {
+            const param = try self.parseBindingIdentifier();
+            try self.scratch.append(param);
+            if (!self.eat(.comma)) break;
+        }
+        self.expect(.r_paren);
+
+        const body = try self.parseBlockStatement();
+
+        const param_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        self.restoreScratch(scratch_top);
+        const extra_start = try self.ast.addExtra(@intFromEnum(name));
+        _ = try self.ast.addExtra(param_list.start);
+        _ = try self.ast.addExtra(param_list.len);
+        _ = try self.ast.addExtra(@intFromEnum(body));
+
+        return try self.ast.addNode(.{
+            .tag = .function_expression,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .extra = extra_start },
+        });
+    }
+
+    fn parseClassDeclaration(self: *Parser) !NodeIndex {
+        return self.parseClass(.class_declaration);
+    }
+
+    fn parseClassExpression(self: *Parser) !NodeIndex {
+        return self.parseClass(.class_expression);
+    }
+
+    /// class 선언/표현식을 파싱한다.
+    fn parseClass(self: *Parser, tag: Tag) !NodeIndex {
+        const start = self.currentSpan().start;
+        self.advance(); // skip 'class'
+
+        // 클래스 이름 (선언은 필수, 표현식은 선택)
+        var name = NodeIndex.none;
+        if (self.current() == .identifier) {
+            name = try self.parseBindingIdentifier();
+        }
+
+        // extends 절 (선택)
+        var super_class = NodeIndex.none;
+        if (self.eat(.kw_extends)) {
+            super_class = try self.parseAssignmentExpression();
+        }
+
+        // 클래스 본문
+        const body = try self.parseClassBody();
+
+        const extra_start = try self.ast.addExtra(@intFromEnum(name));
+        _ = try self.ast.addExtra(@intFromEnum(super_class));
+        _ = try self.ast.addExtra(@intFromEnum(body));
+
+        return try self.ast.addNode(.{
+            .tag = tag,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .extra = extra_start },
+        });
+    }
+
+    fn parseClassBody(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+        self.expect(.l_curly);
+
+        const scratch_top = self.saveScratch();
+        while (self.current() != .r_curly and self.current() != .eof) {
+            // 세미콜론 스킵 (클래스 본문에서 허용)
+            if (self.current() == .semicolon) {
+                self.advance();
+                continue;
+            }
+            const member = try self.parseClassMember();
+            if (!member.isNone()) try self.scratch.append(member);
+        }
+
+        const end = self.currentSpan().end;
+        self.expect(.r_curly);
+
+        const members = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        self.restoreScratch(scratch_top);
+
+        return try self.ast.addNode(.{
+            .tag = .class_body,
+            .span = .{ .start = start, .end = end },
+            .data = .{ .list = members },
+        });
+    }
+
+    fn parseClassMember(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+
+        // static 키워드 (선택)
+        var flags: u16 = 0;
+        if (self.current() == .kw_static) {
+            // static { } — static block
+            if (self.peekNextKind() == .l_curly) {
+                self.advance(); // skip 'static'
+                const body = try self.parseBlockStatement();
+                return try self.ast.addNode(.{
+                    .tag = .static_block,
+                    .span = .{ .start = start, .end = self.currentSpan().start },
+                    .data = .{ .unary = .{ .operand = body } },
+                });
+            }
+            flags |= 0x01; // static flag
+            self.advance();
+        }
+
+        // get/set (선택)
+        if (self.current() == .kw_get and self.peekNextKind() != .l_paren) {
+            flags |= 0x02; // getter
+            self.advance();
+        } else if (self.current() == .kw_set and self.peekNextKind() != .l_paren) {
+            flags |= 0x04; // setter
+            self.advance();
+        }
+
+        // 키
+        const key = try self.parsePropertyKey();
+
+        // 메서드 (파라미터 리스트가 있으면)
+        if (self.current() == .l_paren) {
+            self.expect(.l_paren);
+            const param_top = self.saveScratch();
+            while (self.current() != .r_paren and self.current() != .eof) {
+                const param = try self.parseBindingIdentifier();
+                try self.scratch.append(param);
+                if (!self.eat(.comma)) break;
+            }
+            self.expect(.r_paren);
+
+            const body = try self.parseBlockStatement();
+            const param_list = try self.ast.addNodeList(self.scratch.items[param_top..]);
+            self.restoreScratch(param_top);
+
+            const extra_start = try self.ast.addExtra(@intFromEnum(key));
+            _ = try self.ast.addExtra(param_list.start);
+            _ = try self.ast.addExtra(param_list.len);
+            _ = try self.ast.addExtra(@intFromEnum(body));
+
+            return try self.ast.addNode(.{
+                .tag = .method_definition,
+                .span = .{ .start = start, .end = self.currentSpan().start },
+                .data = .{ .binary = .{ .left = @enumFromInt(extra_start), .right = NodeIndex.none, .flags = flags } },
+            });
+        }
+
+        // 프로퍼티 (= 이니셜라이저)
+        var init_val = NodeIndex.none;
+        if (self.eat(.eq)) {
+            init_val = try self.parseAssignmentExpression();
+        }
+        _ = self.eat(.semicolon);
+
+        return try self.ast.addNode(.{
+            .tag = .property_definition,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .binary = .{ .left = key, .right = init_val, .flags = flags } },
+        });
+    }
+
+    /// 다음 토큰의 Kind를 미리 본다 (현재 토큰을 소비하지 않음).
+    /// 간단한 1-lookahead. 비용이 있으므로 class member 파싱 등 제한적 사용.
+    fn peekNextKind(self: *Parser) Kind {
+        const saved_pos = self.scanner.current;
+        const saved_start = self.scanner.start;
+        const saved_token = self.scanner.token;
+        const saved_line = self.scanner.line;
+        const saved_line_start = self.scanner.line_start;
+
+        self.scanner.next();
+        const next_kind = self.scanner.token.kind;
+
+        self.scanner.current = saved_pos;
+        self.scanner.start = saved_start;
+        self.scanner.token = saved_token;
+        self.scanner.line = saved_line;
+        self.scanner.line_start = saved_line_start;
+
+        return next_kind;
+    }
+
     // ================================================================
     // Expression 파싱 (Pratt parser / precedence climbing)
     // ================================================================
@@ -911,6 +1108,8 @@ pub const Parser = struct {
                     .data = .{ .unary = .{ .operand = expr } },
                 });
             },
+            .kw_class => return self.parseClassExpression(),
+            .kw_function => return self.parseFunctionExpression(),
             .l_bracket => {
                 // 배열 리터럴
                 return self.parseArrayExpression();
@@ -1410,6 +1609,66 @@ test "Parser: spread in array" {
 
 test "Parser: spread in call" {
     var scanner = Scanner.init(std.testing.allocator, "foo(...args);");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: class declaration" {
+    var scanner = Scanner.init(std.testing.allocator,
+        \\class Foo {
+        \\  constructor(x) { this.x = x; }
+        \\  getX() { return this.x; }
+        \\}
+    );
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: class with extends" {
+    var scanner = Scanner.init(std.testing.allocator, "class Bar extends Foo { }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: class with static method and property" {
+    var scanner = Scanner.init(std.testing.allocator,
+        \\class Config {
+        \\  static defaultValue = 42;
+        \\  static create() { return 1; }
+        \\}
+    );
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: class expression" {
+    var scanner = Scanner.init(std.testing.allocator, "const Foo = class { bar() { } };");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: function expression" {
+    var scanner = Scanner.init(std.testing.allocator, "const f = function(x) { return x; };");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
