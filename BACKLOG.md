@@ -104,7 +104,9 @@
 | 32 | shorthand property | PR #25 (object pattern) |
 | 33 | spread in array/object | PR #23 |
 | 38 | #private 필드/메서드 | PR #28 |
+| 41 | elision 전용 노드 | PR #29 |
 | 42 | assignment destructuring — 파서에서는 expression으로 파싱, semantic에서 변환 | PR #28 (문서화) |
+| 43 | import.meta | PR #29 |
 
 ### PR #26: feat(parser): import/export
 
