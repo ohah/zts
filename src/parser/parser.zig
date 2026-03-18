@@ -818,6 +818,15 @@ pub const Parser = struct {
             }
         }
 
+        // static 뒤의 TS modifier도 소비 (static readonly x 등)
+        while (self.current() == .kw_readonly or self.current() == .kw_abstract or
+            self.current() == .kw_override or self.current() == .kw_declare or
+            self.current() == .kw_public or self.current() == .kw_private or
+            self.current() == .kw_protected)
+        {
+            self.advance();
+        }
+
         // get/set (선택)
         if (self.current() == .kw_get and self.peekNextKind() != .l_paren) {
             flags |= 0x02; // getter
@@ -3487,6 +3496,16 @@ test "Parser: decorator on class member" {
 
 test "Parser: class implements" {
     var scanner = Scanner.init(std.testing.allocator, "class Foo implements Bar, Baz { }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: static readonly member" {
+    var scanner = Scanner.init(std.testing.allocator, "class Foo { static readonly MAX = 100; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
