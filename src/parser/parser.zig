@@ -274,7 +274,10 @@ pub const Parser = struct {
         const start = self.currentSpan().start;
 
         // 바인딩 패턴 (identifier, [array], {object} destructuring)
-        const name = try self.parseBindingIdentifier();
+        // 주의: parseBindingPattern이 아닌 parseBindingName을 사용.
+        // parseBindingPattern은 `=`를 default value로 소비하지만,
+        // variable declarator에서 `=`는 initializer이므로 여기서 소비하면 안 됨.
+        const name = try self.parseBindingName();
 
         // TS 타입 어노테이션 (: Type)
         const type_ann = try self.tryParseTypeAnnotation();
@@ -1174,9 +1177,14 @@ pub const Parser = struct {
 
             const specifiers = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
             self.restoreScratch(scratch_top);
-            const extra_start = try self.ast.addExtra(specifiers.start);
-            _ = try self.ast.addExtra(specifiers.len);
-            _ = try self.ast.addExtra(@intFromEnum(source_node));
+
+            // extra_data layout: [declaration, specifiers_start, specifiers_len, source]
+            const extra_start = try self.ast.addExtras(&.{
+                @intFromEnum(NodeIndex.none), // declaration 없음
+                specifiers.start,
+                specifiers.len,
+                @intFromEnum(source_node),
+            });
 
             return try self.ast.addNode(.{
                 .tag = .export_named_declaration,
@@ -1186,11 +1194,18 @@ pub const Parser = struct {
         }
 
         // export var/let/const/function/class
+        // extra_data layout: [declaration, specifiers_start, specifiers_len, source]
         const decl = try self.parseStatement();
+        const extra_start = try self.ast.addExtras(&.{
+            @intFromEnum(decl),
+            0, // specifiers_start (사용 안 함)
+            0, // specifiers_len = 0
+            @intFromEnum(NodeIndex.none), // source 없음
+        });
         return try self.ast.addNode(.{
             .tag = .export_named_declaration,
             .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .unary = .{ .operand = decl, .flags = 0 } },
+            .data = .{ .extra = extra_start },
         });
     }
 
@@ -1816,6 +1831,38 @@ pub const Parser = struct {
     /// 하위 호환: 식별자만 필요한 곳에서 호출
     fn parseBindingIdentifier(self: *Parser) ParseError2!NodeIndex {
         return self.parseBindingPattern();
+    }
+
+    /// 바인딩 이름만 파싱한다 (identifier, [array], {object}).
+    /// `?`, 타입 어노테이션, default value `=`를 소비하지 않는다.
+    /// variable declarator에서 사용 — `=`는 initializer이므로 여기서 소비하면 안 됨.
+    fn parseBindingName(self: *Parser) ParseError2!NodeIndex {
+        switch (self.current()) {
+            .identifier => {
+                const span = self.currentSpan();
+                self.advance();
+                return try self.ast.addNode(.{
+                    .tag = .binding_identifier,
+                    .span = span,
+                    .data = .{ .string_ref = span },
+                });
+            },
+            .l_bracket => return self.parseArrayPattern(),
+            .l_curly => return self.parseObjectPattern(),
+            else => {
+                if (self.current().isKeyword()) {
+                    const span = self.currentSpan();
+                    self.advance();
+                    return try self.ast.addNode(.{
+                        .tag = .binding_identifier,
+                        .span = span,
+                        .data = .{ .string_ref = span },
+                    });
+                }
+                self.addError(self.currentSpan(), "binding pattern expected");
+                return NodeIndex.none;
+            },
+        }
     }
 
     /// 단순 식별자 이름만 파싱한다 (타입 어노테이션/기본값 없이).
