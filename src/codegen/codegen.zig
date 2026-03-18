@@ -183,6 +183,13 @@ pub const Codegen = struct {
 
             .formal_parameter => try self.emitFormalParam(node),
 
+            // JSX → React.createElement
+            .jsx_element => try self.emitJSXElement(node),
+            .jsx_fragment => try self.emitJSXFragment(node),
+            .jsx_expression_container => try self.emitNode(node.data.unary.operand),
+            .jsx_text => try self.emitJSXText(node),
+            .jsx_spread_attribute => try self.emitSpread(node),
+
             // TS enum/namespace → IIFE 출력
             .ts_enum_declaration => try self.emitEnumIIFE(node),
             .ts_module_declaration => try self.emitNamespaceIIFE(node),
@@ -731,6 +738,125 @@ pub const Codegen = struct {
         try self.write("export * from ");
         try self.emitNode(node.data.binary.left);
         try self.writeByte(';');
+    }
+
+    // ================================================================
+    // JSX → React.createElement 출력
+    // ================================================================
+
+    /// <div className="foo">hello</div> →
+    /// React.createElement("div",{className:"foo"},"hello")
+    fn emitJSXElement(self: *Codegen, node: Node) !void {
+        const e = node.data.extra;
+        const extras = self.ast.extra_data.items[e..];
+        const tag_name_idx: NodeIndex = @enumFromInt(extras[0]);
+        const attrs_start = extras[1];
+        const attrs_len = extras[2];
+
+        // children이 있으면 extras[3], extras[4]도 있음
+        const has_children = (e + 5 <= self.ast.extra_data.items.len) and
+            (extras.len >= 5);
+        const children_start = if (has_children) extras[3] else 0;
+        const children_len = if (has_children) extras[4] else 0;
+
+        try self.write("React.createElement(");
+
+        // tag name: 소문자면 문자열("div"), 대문자면 식별자(MyComp)
+        const tag_node = self.ast.getNode(tag_name_idx);
+        const tag_text = self.ast.source[tag_node.span.start..tag_node.span.end];
+        if (tag_text.len > 0 and tag_text[0] >= 'a' and tag_text[0] <= 'z') {
+            try self.writeByte('"');
+            try self.write(tag_text);
+            try self.writeByte('"');
+        } else {
+            try self.write(tag_text);
+        }
+
+        // attributes → object or null
+        if (attrs_len > 0) {
+            try self.writeByte(',');
+            try self.writeByte('{');
+            const attr_indices = self.ast.extra_data.items[attrs_start .. attrs_start + attrs_len];
+            for (attr_indices, 0..) |raw_idx, i| {
+                if (i > 0) try self.writeByte(',');
+                const attr = self.ast.getNode(@enumFromInt(raw_idx));
+                if (attr.tag == .jsx_attribute) {
+                    try self.emitJSXAttribute(attr);
+                } else if (attr.tag == .jsx_spread_attribute) {
+                    try self.write("...");
+                    try self.emitNode(attr.data.unary.operand);
+                }
+            }
+            try self.writeByte('}');
+        } else {
+            try self.write(",null");
+        }
+
+        // children
+        if (children_len > 0) {
+            const child_indices = self.ast.extra_data.items[children_start .. children_start + children_len];
+            for (child_indices) |raw_idx| {
+                const child = self.ast.getNode(@enumFromInt(raw_idx));
+                // 빈 텍스트(공백만) 스킵
+                if (child.tag == .jsx_text) {
+                    const text = self.ast.source[child.span.start..child.span.end];
+                    const trimmed = std.mem.trim(u8, text, " \t\n\r");
+                    if (trimmed.len == 0) continue;
+                    try self.writeByte(',');
+                    try self.writeByte('"');
+                    try self.write(trimmed);
+                    try self.writeByte('"');
+                } else {
+                    try self.writeByte(',');
+                    try self.emitNode(@enumFromInt(raw_idx));
+                }
+            }
+        }
+
+        try self.writeByte(')');
+    }
+
+    /// <>{children}</> → React.createElement(React.Fragment,null,...children)
+    fn emitJSXFragment(self: *Codegen, node: Node) !void {
+        try self.write("React.createElement(React.Fragment,null");
+        const list = node.data.list;
+        const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+        for (indices) |raw_idx| {
+            const child = self.ast.getNode(@enumFromInt(raw_idx));
+            if (child.tag == .jsx_text) {
+                const text = self.ast.source[child.span.start..child.span.end];
+                const trimmed = std.mem.trim(u8, text, " \t\n\r");
+                if (trimmed.len == 0) continue;
+                try self.writeByte(',');
+                try self.writeByte('"');
+                try self.write(trimmed);
+                try self.writeByte('"');
+            } else {
+                try self.writeByte(',');
+                try self.emitNode(@enumFromInt(raw_idx));
+            }
+        }
+        try self.writeByte(')');
+    }
+
+    /// JSX attribute: name={value} or name="value"
+    fn emitJSXAttribute(self: *Codegen, node: Node) !void {
+        // name
+        try self.emitNode(node.data.binary.left);
+        // value
+        if (!node.data.binary.right.isNone()) {
+            try self.writeByte(':');
+            try self.emitNode(node.data.binary.right);
+        } else {
+            try self.write(":true");
+        }
+    }
+
+    /// JSX text (공백 트리밍은 caller에서 처리)
+    fn emitJSXText(self: *Codegen, node: Node) !void {
+        try self.writeByte('"');
+        try self.writeNodeSpan(node);
+        try self.writeByte('"');
     }
 
     // ================================================================
