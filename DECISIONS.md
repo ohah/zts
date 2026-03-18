@@ -125,8 +125,50 @@
 - **결정**: browser / node / neutral 3가지 (Phase 5)
 - **이유**: `import.meta`, `__dirname`, `require` 등의 변환 동작이 플랫폼에 따라 다름. esbuild와 동일
 
+### D024: Flow 타입 시스템 지원
+- **결정**: 지원 (Hermes C++ 파서를 Zig에서 C ABI로 링크)
+- **이유**: React Native 프로젝트에서 Flow를 사용. 자체 구현 대신 Hermes 파서 임베딩으로 작업량 최소화
+- **방식**: Hermes C++ 파서를 static library로 빌드 → Zig에서 @cImport로 호출 → ESTree AST 반환 → zts가 변환/코드젠
+- **참고**: hermes-parser(npm)는 이미 WASM 빌드 존재. SWC는 자체 Flow 스트리핑 구현, oxc는 미지원
+
+### D025: `@__PURE__` / `@__NO_SIDE_EFFECTS__` 주석 추적
+- **결정**: 렉서에서 지원
+- **이유**: 트리쉐이킹의 핵심. esbuild/Bun/oxc 전부 렉서에서 이 주석을 토큰에 달아줌. 함수 호출이 부작용 없음을 표시하는 사실상 표준
+
+### D026: JSX pragma 주석 감지
+- **결정**: 렉서에서 지원
+- **이유**: `/** @jsx h */`, `/** @jsxRuntime automatic */` 등 파일 상단 주석에서 JSX 설정 오버라이드. esbuild/Bun/SWC 전부 지원. 렉서가 파일 시작 주석에서 추출
+
+### D027: AMD / SystemJS 모듈 출력
+- **결정**: 미지원
+- **이유**: 거의 사장된 형식. SWC만 지원하고 esbuild/oxc/Bun은 미지원
+
+### D028: Compiler Assumptions (Babel 호환)
+- **결정**: Phase 6에서 점진적 추가
+- **이유**: pure_getters, set_public_class_fields 등 20개+ 가정. 다운레벨링할 때만 의미 있으므로 ES 다운레벨링과 함께 추가. oxc 6개, SWC 20개+ 지원
+
+### D029: React Fast Refresh
+- **결정**: Phase 5에서 지원
+- **이유**: HMR 필수. $RefreshReg$, $RefreshSig$ 헬퍼 삽입. Bun/SWC/oxc 전부 지원. 개발 서버(Vite, Next.js, Metro) 연동에 필요
+
+### D030: 미니파이 세분화
+- **결정**: Phase 6, 3가지 개별 제어 (whitespace / syntax / identifiers)
+- **이유**: esbuild/Bun 방식. 디버깅용 공백만 제거, 프로덕션용 전부 등 유스케이스별 조합 가능
+
+### D031: `--ascii-only` (ASCII 전용 출력)
+- **결정**: Phase 4 코드젠에서 지원
+- **이유**: non-ASCII를 `\uXXXX`로 이스케이프. 레거시 환경/빌드 파이프라인 호환. esbuild/SWC 지원
+
+### D032: `--drop` (코드 제거)
+- **결정**: Phase 3에서 지원 (console, debugger, labels)
+- **이유**: 프로덕션 빌드 필수. `--drop=console`, `--drop=debugger`, `--drop-labels=DEV`. esbuild 방식 참고
+
+### D033: `--keep-names` (함수/클래스 이름 보존)
+- **결정**: Phase 6 미니파이어와 함께
+- **이유**: 미니파이 시 Function.name 보존. React DevTools, 에러 스택트레이스에 필요. Object.defineProperty로 원래 이름 복원
+
 ---
 
-## 모든 의사결정 완료
+## 모든 의사결정 완료 (D001-D033)
 
 추가 결정이 필요한 경우 구현 중 발생 시 즉시 논의 후 이 문서에 추가.

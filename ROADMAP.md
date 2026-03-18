@@ -23,6 +23,8 @@ JS/TS 소스 코드를 토큰으로 분리.
 - [ ] BOM(Byte Order Mark) 스킵
 - [ ] 줄 끝 문자 전부 인식 (`\n`, `\r\n`, `\r`, U+2028, U+2029)
 - [ ] import attributes 토큰 (`with`, `assert`)
+- [ ] `@__PURE__` / `@__NO_SIDE_EFFECTS__` 주석 추적 (D025)
+- [ ] JSX pragma 주석 감지 (`@jsx`, `@jsxFrag`, `@jsxRuntime`, `@jsxImportSource`) (D026)
 
 ### Test262 러너
 렉서/파서 구현과 동시에 Test262로 검증.
@@ -160,6 +162,8 @@ AST를 변환하여 JS로 출력 가능한 형태로 만듦.
 - [ ] ESM → CJS 모듈 변환 (import→require, export→module.exports)
 - [ ] direct eval 감지 → 해당 스코프 최적화 비활성화
 - [ ] 헬퍼 함수 전략 (인라인 기본, 외부 tslib 옵션)
+- [ ] `--drop` console/debugger/labels 제거 (D032)
+- [ ] Flow 타입 스트리핑 (Hermes C++ 파서 C ABI 링크) (D024)
 
 ---
 
@@ -173,6 +177,7 @@ AST를 변환하여 JS로 출력 가능한 형태로 만듦.
 - [ ] 줄바꿈, 들여쓰기 보존
 - [ ] Legal 코멘트 처리 (`@license`, `@preserve` — none/inline/eof/external)
 - [ ] `"use strict"` 삽입 (CJS + alwaysStrict)
+- [ ] `--ascii-only` 출력 (non-ASCII → `\uXXXX` 이스케이프) (D031)
 
 ---
 
@@ -189,6 +194,7 @@ AST를 변환하여 JS로 출력 가능한 형태로 만듦.
 - [ ] `--platform` 옵션 (browser/node/neutral)
 - [ ] `--format` 옵션 (esm/cjs)
 - [ ] .d.ts 생성 (isolatedDeclarations, TS 5.5+)
+- [ ] React Fast Refresh ($RefreshReg$, $RefreshSig$) (D029)
 - [ ] WASM 빌드 타겟
 
 ---
@@ -203,6 +209,9 @@ AST를 변환하여 JS로 출력 가능한 형태로 만듦.
 - [ ] 번들러 (paths/baseUrl/moduleResolution 활성화, UMD 출력)
 - [ ] WASM 플러그인 시스템
 - [ ] WASM 공개 AST API
+- [ ] Compiler Assumptions (pure_getters, set_public_class_fields 등) (D028)
+- [ ] 미니파이 세분화 (whitespace / syntax / identifiers) (D030)
+- [ ] `--keep-names` (함수/클래스 이름 보존) (D033)
 - [ ] import defer (TS 5.9)
 - [ ] 증분 파싱 (에디터 LSP 연동)
 
