@@ -1529,6 +1529,7 @@ pub const Parser = struct {
             },
             .kw_class => return self.parseClassExpression(),
             .kw_function => return self.parseFunctionExpression(),
+            .l_angle => return self.parseJSXElement(),
             .kw_import => {
                 self.advance(); // skip 'import'
                 if (self.current() == .dot) {
@@ -1982,6 +1983,229 @@ pub const Parser = struct {
             .star2 => 11, // ** (우결합)
             else => 0, // 이항 연산자 아님
         };
+    }
+
+    // ================================================================
+    // JSX 파싱
+    // ================================================================
+
+    /// <Tag ...>children</Tag> 또는 <Tag ... /> 또는 <>...</>
+    fn parseJSXElement(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+        self.scanner.nextInsideJSXElement(); // '<' 이후 JSX 모드
+
+        // Fragment: <>
+        if (self.current() == .r_angle) {
+            self.scanner.nextJSXChild(); // '>' 이후 children 모드
+            return self.parseJSXFragment(start);
+        }
+
+        // Opening tag: <TagName
+        const tag_name = try self.parseJSXTagName();
+
+        // Attributes
+        const scratch_top = self.saveScratch();
+        while (self.current() != .r_angle and self.current() != .slash and self.current() != .eof) {
+            const attr = try self.parseJSXAttribute();
+            try self.scratch.append(attr);
+        }
+        const attrs = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        self.restoreScratch(scratch_top);
+
+        // Self-closing: />
+        if (self.current() == .slash) {
+            self.scanner.nextInsideJSXElement(); // skip /
+            // expect >
+            self.scanner.next(); // back to normal mode after >
+
+            const extra_start = try self.ast.addExtra(@intFromEnum(tag_name));
+            _ = try self.ast.addExtra(attrs.start);
+            _ = try self.ast.addExtra(attrs.len);
+
+            return try self.ast.addNode(.{
+                .tag = .jsx_element,
+                .span = .{ .start = start, .end = self.currentSpan().start },
+                .data = .{ .extra = extra_start },
+            });
+        }
+
+        // > children </tag>
+        self.scanner.nextJSXChild(); // '>' 이후 children 모드
+
+        // Children
+        const children_top = self.saveScratch();
+        while (self.current() != .eof) {
+            if (self.current() == .l_angle) {
+                // 다음 토큰이 / 이면 닫는 태그
+                const peek = self.peekNextKind();
+                if (peek == .slash) break;
+                // 중첩 JSX element
+                const child = try self.parseJSXElement();
+                try self.scratch.append(child);
+            } else if (self.current() == .l_curly) {
+                // JSX expression: {expr}
+                self.advance(); // skip {
+                const expr = try self.parseExpression();
+                self.expect(.r_curly);
+                const container = try self.ast.addNode(.{
+                    .tag = .jsx_expression_container,
+                    .span = .{ .start = 0, .end = self.currentSpan().start },
+                    .data = .{ .unary = .{ .operand = expr } },
+                });
+                try self.scratch.append(container);
+                self.scanner.nextJSXChild(); // '{expr}' 이후 다시 children 모드
+            } else if (self.current() == .jsx_text) {
+                const text_span = self.currentSpan();
+                try self.scratch.append(try self.ast.addNode(.{
+                    .tag = .jsx_text,
+                    .span = text_span,
+                    .data = .{ .string_ref = text_span },
+                }));
+                self.scanner.nextJSXChild();
+            } else {
+                break;
+            }
+        }
+        const children = try self.ast.addNodeList(self.scratch.items[children_top..]);
+        self.restoreScratch(children_top);
+
+        // Closing tag: </TagName>
+        self.scanner.nextInsideJSXElement(); // skip <
+        self.scanner.nextInsideJSXElement(); // skip /
+        // skip tag name
+        if (self.current() == .jsx_identifier or self.current() == .identifier) {
+            self.scanner.nextInsideJSXElement();
+        }
+        // expect >
+        self.scanner.next(); // back to normal mode
+
+        const extra_start = try self.ast.addExtra(@intFromEnum(tag_name));
+        _ = try self.ast.addExtra(attrs.start);
+        _ = try self.ast.addExtra(attrs.len);
+        _ = try self.ast.addExtra(children.start);
+        _ = try self.ast.addExtra(children.len);
+
+        return try self.ast.addNode(.{
+            .tag = .jsx_element,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .extra = extra_start },
+        });
+    }
+
+    fn parseJSXFragment(self: *Parser, start: u32) !NodeIndex {
+        // Children
+        const children_top = self.saveScratch();
+        while (self.current() != .eof) {
+            if (self.current() == .l_angle) {
+                const peek = self.peekNextKind();
+                if (peek == .slash) break;
+                const child = try self.parseJSXElement();
+                try self.scratch.append(child);
+            } else if (self.current() == .l_curly) {
+                self.advance();
+                const expr = try self.parseExpression();
+                self.expect(.r_curly);
+                const container = try self.ast.addNode(.{
+                    .tag = .jsx_expression_container,
+                    .span = .{ .start = 0, .end = self.currentSpan().start },
+                    .data = .{ .unary = .{ .operand = expr } },
+                });
+                try self.scratch.append(container);
+                self.scanner.nextJSXChild();
+            } else if (self.current() == .jsx_text) {
+                const text_span = self.currentSpan();
+                try self.scratch.append(try self.ast.addNode(.{
+                    .tag = .jsx_text,
+                    .span = text_span,
+                    .data = .{ .string_ref = text_span },
+                }));
+                self.scanner.nextJSXChild();
+            } else {
+                break;
+            }
+        }
+        const children = try self.ast.addNodeList(self.scratch.items[children_top..]);
+        self.restoreScratch(children_top);
+
+        // </>
+        self.scanner.nextInsideJSXElement(); // <
+        self.scanner.nextInsideJSXElement(); // /
+        self.scanner.next(); // >
+
+        return try self.ast.addNode(.{
+            .tag = .jsx_fragment,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .list = children },
+        });
+    }
+
+    fn parseJSXTagName(self: *Parser) !NodeIndex {
+        const span = self.currentSpan();
+        if (self.current() == .jsx_identifier or self.current() == .identifier) {
+            self.scanner.nextInsideJSXElement();
+            return try self.ast.addNode(.{
+                .tag = .jsx_identifier,
+                .span = span,
+                .data = .{ .string_ref = span },
+            });
+        }
+        self.addError(span, "JSX tag name expected");
+        return NodeIndex.none;
+    }
+
+    fn parseJSXAttribute(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+
+        // spread attribute: {...expr}
+        if (self.current() == .l_curly) {
+            self.advance();
+            if (self.current() == .dot3) {
+                self.advance();
+                const expr = try self.parseAssignmentExpression();
+                self.expect(.r_curly);
+                return try self.ast.addNode(.{
+                    .tag = .jsx_spread_attribute,
+                    .span = .{ .start = start, .end = self.currentSpan().start },
+                    .data = .{ .unary = .{ .operand = expr } },
+                });
+            }
+            self.addError(self.currentSpan(), "spread expected");
+            return NodeIndex.none;
+        }
+
+        // name="value" or name={expr}
+        const name_span = self.currentSpan();
+        self.scanner.nextInsideJSXElement(); // skip attribute name
+
+        const name = try self.ast.addNode(.{
+            .tag = .jsx_identifier,
+            .span = name_span,
+            .data = .{ .string_ref = name_span },
+        });
+
+        var value = NodeIndex.none;
+        if (self.current() == .eq) {
+            self.scanner.nextInsideJSXElement(); // skip =
+            if (self.current() == .string_literal) {
+                const val_span = self.currentSpan();
+                self.scanner.nextInsideJSXElement();
+                value = try self.ast.addNode(.{
+                    .tag = .string_literal,
+                    .span = val_span,
+                    .data = .{ .string_ref = val_span },
+                });
+            } else if (self.current() == .l_curly) {
+                self.advance();
+                value = try self.parseAssignmentExpression();
+                self.expect(.r_curly);
+            }
+        }
+
+        return try self.ast.addNode(.{
+            .tag = .jsx_attribute,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .binary = .{ .left = name, .right = value } },
+        });
     }
 
     // ================================================================
@@ -3516,6 +3740,56 @@ test "Parser: static readonly member" {
 
 test "Parser: class with generics" {
     var scanner = Scanner.init(std.testing.allocator, "class Box<T> { value: T; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+// ============================================================
+// JSX tests
+// ============================================================
+
+test "Parser: JSX self-closing element" {
+    var scanner = Scanner.init(std.testing.allocator, "const x = <br />;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: JSX element with children" {
+    var scanner = Scanner.init(std.testing.allocator,
+        \\const x = <div>hello</div>;
+    );
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: JSX with attributes" {
+    var scanner = Scanner.init(std.testing.allocator,
+        \\const x = <div className="foo" id="bar" />;
+    );
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: JSX with expression" {
+    var scanner = Scanner.init(std.testing.allocator,
+        \\const x = <span>{name}</span>;
+    );
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
