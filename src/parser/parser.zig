@@ -1216,18 +1216,175 @@ pub const Parser = struct {
         });
     }
 
-    fn parseBindingIdentifier(self: *Parser) !NodeIndex {
-        const span = self.currentSpan();
-        if (self.current() == .identifier or self.current().isKeyword()) {
-            self.advance();
-            return try self.ast.addNode(.{
-                .tag = .binding_identifier,
-                .span = span,
-                .data = .{ .string_ref = span },
-            });
+    /// 바인딩 패턴을 파싱한다: identifier, [destructuring], {destructuring}
+    fn parseBindingPattern(self: *Parser) !NodeIndex {
+        switch (self.current()) {
+            .identifier => {
+                const span = self.currentSpan();
+                self.advance();
+                const node = try self.ast.addNode(.{
+                    .tag = .binding_identifier,
+                    .span = span,
+                    .data = .{ .string_ref = span },
+                });
+                // default value: pattern = expr
+                if (self.eat(.eq)) {
+                    const default_val = try self.parseAssignmentExpression();
+                    return try self.ast.addNode(.{
+                        .tag = .assignment_pattern,
+                        .span = .{ .start = span.start, .end = self.currentSpan().start },
+                        .data = .{ .binary = .{ .left = node, .right = default_val } },
+                    });
+                }
+                return node;
+            },
+            .l_bracket => return self.parseArrayPattern(),
+            .l_curly => return self.parseObjectPattern(),
+            else => {
+                // 키워드도 바인딩 이름으로 사용 가능한 경우 (let, yield 등)
+                if (self.current().isKeyword()) {
+                    const span = self.currentSpan();
+                    self.advance();
+                    return try self.ast.addNode(.{
+                        .tag = .binding_identifier,
+                        .span = span,
+                        .data = .{ .string_ref = span },
+                    });
+                }
+                self.addError(self.currentSpan(), "binding pattern expected");
+                return NodeIndex.none;
+            },
         }
-        self.addError(span, "identifier expected");
-        return NodeIndex.none;
+    }
+
+    /// 하위 호환: 식별자만 필요한 곳에서 호출
+    fn parseBindingIdentifier(self: *Parser) !NodeIndex {
+        return self.parseBindingPattern();
+    }
+
+    fn parseArrayPattern(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+        self.advance(); // skip [
+
+        const scratch_top = self.saveScratch();
+        while (self.current() != .r_bracket and self.current() != .eof) {
+            if (self.current() == .comma) {
+                // elision (빈 슬롯)
+                self.advance();
+                continue;
+            }
+            if (self.current() == .dot3) {
+                // rest element: ...pattern
+                const rest_start = self.currentSpan().start;
+                self.advance(); // skip ...
+                const rest_arg = try self.parseBindingPattern();
+                const rest = try self.ast.addNode(.{
+                    .tag = .rest_element,
+                    .span = .{ .start = rest_start, .end = self.currentSpan().start },
+                    .data = .{ .unary = .{ .operand = rest_arg } },
+                });
+                try self.scratch.append(rest);
+                break; // rest는 항상 마지막
+            }
+            const elem = try self.parseBindingPattern();
+            if (!elem.isNone()) try self.scratch.append(elem);
+            if (!self.eat(.comma)) break;
+        }
+
+        const end = self.currentSpan().end;
+        self.expect(.r_bracket);
+
+        const elements = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        self.restoreScratch(scratch_top);
+
+        return try self.ast.addNode(.{
+            .tag = .array_pattern,
+            .span = .{ .start = start, .end = end },
+            .data = .{ .list = elements },
+        });
+    }
+
+    fn parseObjectPattern(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+        self.advance(); // skip {
+
+        const scratch_top = self.saveScratch();
+        while (self.current() != .r_curly and self.current() != .eof) {
+            if (self.current() == .dot3) {
+                // rest element: ...pattern
+                const rest_start = self.currentSpan().start;
+                self.advance(); // skip ...
+                const rest_arg = try self.parseBindingPattern();
+                const rest = try self.ast.addNode(.{
+                    .tag = .rest_element,
+                    .span = .{ .start = rest_start, .end = self.currentSpan().start },
+                    .data = .{ .unary = .{ .operand = rest_arg } },
+                });
+                try self.scratch.append(rest);
+                break;
+            }
+
+            const prop = try self.parseBindingProperty();
+            if (!prop.isNone()) try self.scratch.append(prop);
+            if (!self.eat(.comma)) break;
+        }
+
+        const end = self.currentSpan().end;
+        self.expect(.r_curly);
+
+        const props = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        self.restoreScratch(scratch_top);
+
+        return try self.ast.addNode(.{
+            .tag = .object_pattern,
+            .span = .{ .start = start, .end = end },
+            .data = .{ .list = props },
+        });
+    }
+
+    fn parseBindingProperty(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+
+        // shorthand: { x } = { x: x } 또는 { x = defaultVal }
+        if (self.current() == .identifier) {
+            const id_span = self.currentSpan();
+            const next = self.peekNextKind();
+            if (next == .comma or next == .r_curly or next == .eq) {
+                // shorthand property
+                self.advance();
+                const key = try self.ast.addNode(.{
+                    .tag = .binding_identifier,
+                    .span = id_span,
+                    .data = .{ .string_ref = id_span },
+                });
+                var value = key;
+                // default value
+                if (self.eat(.eq)) {
+                    const default_val = try self.parseAssignmentExpression();
+                    value = try self.ast.addNode(.{
+                        .tag = .assignment_pattern,
+                        .span = .{ .start = id_span.start, .end = self.currentSpan().start },
+                        .data = .{ .binary = .{ .left = key, .right = default_val } },
+                    });
+                }
+                return try self.ast.addNode(.{
+                    .tag = .binding_property,
+                    .span = .{ .start = start, .end = self.currentSpan().start },
+                    .data = .{ .binary = .{ .left = key, .right = value } },
+                });
+            }
+        }
+
+        // key: pattern
+        const key = try self.parsePropertyKey();
+        self.expect(.colon);
+        const value = try self.parseBindingPattern();
+
+        return try self.ast.addNode(.{
+            .tag = .binding_property,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .binary = .{ .left = key, .right = value } },
+        });
     }
 
     fn parseIdentifierName(self: *Parser) !NodeIndex {
@@ -1683,6 +1840,66 @@ test "Parser: class expression" {
 
 test "Parser: function expression" {
     var scanner = Scanner.init(std.testing.allocator, "const f = function(x) { return x; };");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: array destructuring" {
+    var scanner = Scanner.init(std.testing.allocator, "const [a, b, c] = arr;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: object destructuring" {
+    var scanner = Scanner.init(std.testing.allocator, "const { x, y } = obj;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: destructuring with default values" {
+    var scanner = Scanner.init(std.testing.allocator, "const [a = 1, b = 2] = arr;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: nested destructuring" {
+    var scanner = Scanner.init(std.testing.allocator, "const { a: { b } } = obj;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: destructuring with rest" {
+    var scanner = Scanner.init(std.testing.allocator, "const [first, ...rest] = arr;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: function with destructuring params" {
+    var scanner = Scanner.init(std.testing.allocator, "function foo({ x, y }, [a, b]) { }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
