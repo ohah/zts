@@ -1737,19 +1737,36 @@ pub const Parser = struct {
     /// 바인딩 패턴을 파싱한다: identifier, [destructuring], {destructuring}
     fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
         // TS parameter property: public x, private x, protected x, readonly x
+        // flags 비트: 0x01=public, 0x02=private, 0x04=protected, 0x08=readonly
         if (self.current() == .kw_public or self.current() == .kw_private or
             self.current() == .kw_protected or self.current() == .kw_readonly)
         {
             const modifier_span = self.currentSpan();
             const next = self.peekNextKind();
             // modifier 뒤에 식별자가 오면 parameter property
-            if (next == .identifier or next == .l_bracket or next == .l_curly) {
-                self.advance(); // skip modifier
+            if (next == .identifier or next == .l_bracket or next == .l_curly or
+                next == .kw_readonly) // public readonly x
+            {
+                var modifier_flags: u16 = switch (self.current()) {
+                    .kw_public => 0x01,
+                    .kw_private => 0x02,
+                    .kw_protected => 0x04,
+                    .kw_readonly => 0x08,
+                    else => 0,
+                };
+                self.advance(); // skip first modifier
+
+                // 두 번째 modifier: public readonly x
+                if (self.current() == .kw_readonly) {
+                    modifier_flags |= 0x08;
+                    self.advance();
+                }
+
                 const inner = try self.parseBindingPattern();
                 return try self.ast.addNode(.{
                     .tag = .formal_parameter,
                     .span = .{ .start = modifier_span.start, .end = self.currentSpan().start },
-                    .data = .{ .unary = .{ .operand = inner, .flags = 0 } },
+                    .data = .{ .unary = .{ .operand = inner, .flags = modifier_flags } },
                 });
             }
         }
