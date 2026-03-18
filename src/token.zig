@@ -4,11 +4,11 @@
 //! oxc의 Kind enum을 참고하여 설계 (D034).
 //!
 //! 설계 원칙:
-//! - u8 repr (~208개, 256 이내)
+//! - u8 repr (256 이내)
 //! - 키워드를 개별 토큰으로 (파서에서 문자열 비교 불필요)
 //! - 숫자를 세분화 (Decimal/Float/Hex/Octal/Binary/BigInt)
 //! - 키워드 범위를 연속 배치하여 range check 최적화
-//!   예: `token.isKeyword()` → `@intFromEnum(token) >= first_kw and <= last_kw`
+//! - comptime assertion으로 range 순서 보장
 //!
 //! 참고: references/oxc/crates/oxc_parser/src/lexer/kind.rs
 
@@ -24,11 +24,13 @@ pub const Span = struct {
     pub const EMPTY = Span{ .start = 0, .end = 0 };
 
     pub fn len(self: Span) u32 {
+        std.debug.assert(self.end >= self.start);
         return self.end - self.start;
     }
 
-    /// 두 span을 합친다 (시작은 self, 끝은 other).
+    /// 두 span을 합친다. 호출자는 self가 other보다 앞에 있음을 보장해야 한다.
     pub fn merge(self: Span, other: Span) Span {
+        std.debug.assert(other.end >= self.start);
         return .{
             .start = self.start,
             .end = other.end,
@@ -52,13 +54,13 @@ pub const Token = struct {
 /// ECMAScript / TypeScript / JSX 토큰 종류.
 ///
 /// oxc 방식으로 세분화: TS 키워드 개별 토큰, 숫자 11가지 세분화.
-/// u8로 표현 가능 (208개 < 256).
+/// u8로 표현 가능 (256 이내).
 ///
 /// 키워드는 연속 배치하여 range check 최적화:
-///   isKeyword() → kw_await..kw_null 범위 체크
-///   isReservedKeyword() → kw_await..kw_with 범위 체크
-///   isStrictModeReserved() → kw_implements..kw_yield 범위 체크
-///   isTypeScriptKeyword() → kw_abstract..kw_override 범위 체크
+///   isKeyword()          → kw_await..kw_override
+///   isReservedKeyword()  → kw_await..kw_with
+///   isStrictModeReserved() → kw_implements..kw_yield
+///   isTypeScriptKeyword() → kw_abstract..kw_override
 pub const Kind = enum(u8) {
     // ========================================================================
     // Special
@@ -83,7 +85,7 @@ pub const Kind = enum(u8) {
 
     // ========================================================================
     // ECMAScript Reserved Keywords (ES2024)
-    // 순서 중요: isReservedKeyword() range check에 사용
+    // 순서 중요: range check에 사용. comptime assertion으로 검증됨.
     // ========================================================================
     kw_await,
     kw_break,
@@ -138,7 +140,6 @@ pub const Kind = enum(u8) {
 
     // ========================================================================
     // Strict Mode Reserved Words
-    // 순서 중요: isStrictModeReserved() range check에 사용
     // ========================================================================
     kw_implements,
     kw_interface,
@@ -158,7 +159,6 @@ pub const Kind = enum(u8) {
 
     // ========================================================================
     // TypeScript Contextual Keywords
-    // 순서 중요: isTypeScriptKeyword() range check에 사용
     // ========================================================================
     kw_abstract,
     kw_any,
@@ -251,7 +251,7 @@ pub const Kind = enum(u8) {
     question2, // ??
     question_dot, // ?.
 
-    // Assignment
+    // Assignment (연속 배치: isAssignment() range check)
     eq, // =
     plus_eq, // +=
     minus_eq, // -=
@@ -276,8 +276,7 @@ pub const Kind = enum(u8) {
     at, // @
 
     // ========================================================================
-    // Numeric Literals (세분화, D034)
-    // 순서 중요: isNumericLiteral() range check에 사용
+    // Numeric Literals (연속 배치: isNumericLiteral() range check)
     // ========================================================================
     decimal, // 123
     float, // 1.5, .5
@@ -287,7 +286,7 @@ pub const Kind = enum(u8) {
     positive_exponential, // 1e10, 1e+10
     negative_exponential, // 1e-10
 
-    // BigInt Literals (numeric literals with 'n' suffix)
+    // BigInt Literals (연속 배치: isBigIntLiteral() range check)
     decimal_bigint, // 123n
     binary_bigint, // 0b1010n
     octal_bigint, // 0o77n
@@ -304,7 +303,7 @@ pub const Kind = enum(u8) {
     regexp,
 
     // ========================================================================
-    // Template Literals
+    // Template Literals (연속 배치: isTemplateLiteral() range check)
     // ========================================================================
     no_substitution_template, // `string`  (보간 없는 완전한 템플릿)
     template_head, // `text${
@@ -318,67 +317,109 @@ pub const Kind = enum(u8) {
     jsx_identifier, // JSX 식별자 (하이픈 허용: data-value)
 
     // ========================================================================
+    // Comptime assertions — enum 순서가 range check와 일치하는지 검증.
+    // 새 variant를 추가하거나 재배치하면 여기서 컴파일 에러가 난다.
+    // ========================================================================
+    comptime {
+        // Reserved keywords: kw_await..kw_with 연속
+        std.debug.assert(@intFromEnum(Kind.kw_await) < @intFromEnum(Kind.kw_with));
+        std.debug.assert(@intFromEnum(Kind.kw_with) + 1 == @intFromEnum(Kind.kw_async));
+
+        // Contextual keywords → strict mode reserved 연속
+        std.debug.assert(@intFromEnum(Kind.kw_let) + 1 == @intFromEnum(Kind.kw_implements));
+
+        // Strict mode reserved: kw_implements..kw_yield 연속
+        std.debug.assert(@intFromEnum(Kind.kw_implements) < @intFromEnum(Kind.kw_yield));
+        std.debug.assert(@intFromEnum(Kind.kw_yield) + 1 == @intFromEnum(Kind.kw_true));
+
+        // Literal keywords: kw_true..kw_null 연속
+        std.debug.assert(@intFromEnum(Kind.kw_null) + 1 == @intFromEnum(Kind.kw_abstract));
+
+        // TS keywords: kw_abstract..kw_override 연속
+        std.debug.assert(@intFromEnum(Kind.kw_abstract) < @intFromEnum(Kind.kw_override));
+
+        // Full keyword range: kw_await..kw_override
+        std.debug.assert(@intFromEnum(Kind.kw_await) < @intFromEnum(Kind.kw_override));
+        std.debug.assert(@intFromEnum(Kind.kw_override) + 1 == @intFromEnum(Kind.l_paren));
+
+        // Assignment operators: eq..question2_eq 연속
+        std.debug.assert(@intFromEnum(Kind.eq) < @intFromEnum(Kind.question2_eq));
+
+        // Numeric literals: decimal..hex_bigint 연속
+        std.debug.assert(@intFromEnum(Kind.decimal) < @intFromEnum(Kind.hex_bigint));
+        std.debug.assert(@intFromEnum(Kind.decimal_bigint) < @intFromEnum(Kind.hex_bigint));
+
+        // Template literals: no_substitution_template..template_tail 연속
+        std.debug.assert(@intFromEnum(Kind.no_substitution_template) < @intFromEnum(Kind.template_tail));
+    }
+
+    // ========================================================================
     // Helper methods
     // ========================================================================
 
+    /// 두 Kind 값 사이에 있는지 (inclusive range check).
+    fn inRange(self: Kind, first: Kind, last: Kind) bool {
+        const v = @intFromEnum(self);
+        return v >= @intFromEnum(first) and v <= @intFromEnum(last);
+    }
+
     /// ECMAScript reserved keyword인지 (await..with)
     pub fn isReservedKeyword(self: Kind) bool {
-        const v = @intFromEnum(self);
-        return v >= @intFromEnum(Kind.kw_await) and v <= @intFromEnum(Kind.kw_with);
+        return self.inRange(.kw_await, .kw_with);
     }
 
     /// Strict mode reserved word인지 (implements..yield)
     pub fn isStrictModeReserved(self: Kind) bool {
-        const v = @intFromEnum(self);
-        return v >= @intFromEnum(Kind.kw_implements) and v <= @intFromEnum(Kind.kw_yield);
+        return self.inRange(.kw_implements, .kw_yield);
     }
 
     /// TypeScript contextual keyword인지 (abstract..override)
     pub fn isTypeScriptKeyword(self: Kind) bool {
-        const v = @intFromEnum(self);
-        return v >= @intFromEnum(Kind.kw_abstract) and v <= @intFromEnum(Kind.kw_override);
+        return self.inRange(.kw_abstract, .kw_override);
     }
 
     /// 키워드인지 (reserved + contextual + strict + TS + literals)
     pub fn isKeyword(self: Kind) bool {
-        const v = @intFromEnum(self);
-        return v >= @intFromEnum(Kind.kw_await) and v <= @intFromEnum(Kind.kw_override);
+        return self.inRange(.kw_await, .kw_override);
     }
 
     /// Literal keyword인지 (true, false, null)
     pub fn isLiteralKeyword(self: Kind) bool {
-        return self == .kw_true or self == .kw_false or self == .kw_null;
+        return self.inRange(.kw_true, .kw_null);
     }
 
     /// 숫자 리터럴인지 (decimal..hex_bigint)
     pub fn isNumericLiteral(self: Kind) bool {
-        const v = @intFromEnum(self);
-        return v >= @intFromEnum(Kind.decimal) and v <= @intFromEnum(Kind.hex_bigint);
+        return self.inRange(.decimal, .hex_bigint);
     }
 
     /// BigInt 리터럴인지 (decimal_bigint..hex_bigint)
     pub fn isBigIntLiteral(self: Kind) bool {
-        const v = @intFromEnum(self);
-        return v >= @intFromEnum(Kind.decimal_bigint) and v <= @intFromEnum(Kind.hex_bigint);
+        return self.inRange(.decimal_bigint, .hex_bigint);
     }
 
     /// 템플릿 리터럴인지
     pub fn isTemplateLiteral(self: Kind) bool {
-        return self == .no_substitution_template or
-            self == .template_head or
-            self == .template_middle or
-            self == .template_tail;
+        return self.inRange(.no_substitution_template, .template_tail);
     }
 
     /// 대입 연산자인지 (=, +=, -=, ...)
     pub fn isAssignment(self: Kind) bool {
-        const v = @intFromEnum(self);
-        return v >= @intFromEnum(Kind.eq) and v <= @intFromEnum(Kind.question2_eq);
+        return self.inRange(.eq, .question2_eq);
     }
 
     /// 이 토큰 뒤에 `/`가 나오면 regex로 해석해야 하는지.
     /// false면 division으로 해석.
+    ///
+    /// 주의: `r_curly`는 여기서 판정할 수 없다. 블록 `}` 뒤는 regex,
+    /// 표현식(함수 표현식, 객체 리터럴) `}` 뒤는 division이다.
+    /// 이 모호성은 파서가 brace context를 추적하여 해결해야 한다.
+    /// 현재 `r_curly`는 else → true (regex)로 처리되어 있으며,
+    /// 파서가 표현식 `}`일 때 직접 division으로 오버라이드한다.
     pub fn slashIsRegex(self: Kind) bool {
+        // 숫자 리터럴 뒤 → division
+        if (self.isNumericLiteral()) return false;
+
         return switch (self) {
             // 식별자/리터럴/닫는 괄호 뒤 → division
             .identifier,
@@ -392,34 +433,22 @@ pub const Kind = enum(u8) {
             .r_paren,
             .r_bracket,
             .plus2,
-            .minus2, // ++ --
+            .minus2,
             .string_literal,
             .regexp,
             .no_substitution_template,
             .template_tail,
             => false,
 
-            // 숫자 리터럴 뒤 → division
-            .decimal,
-            .float,
-            .binary,
-            .octal,
-            .hex,
-            .positive_exponential,
-            .negative_exponential,
-            .decimal_bigint,
-            .binary_bigint,
-            .octal_bigint,
-            .hex_bigint,
-            => false,
-
             // 그 외 → regex
             // 연산자, 키워드(return, throw, yield 등), 여는 괄호, 세미콜론 등
+            // r_curly도 여기에 포함 — 파서가 오버라이드 필요 (위 doc comment 참고)
             else => true,
         };
     }
 
     /// 토큰의 이름 문자열을 반환한다 (에러 메시지용).
+    /// 키워드는 `kw_` 접두사 없이 반환한다 (예: .kw_break → "break").
     pub fn symbol(self: Kind) []const u8 {
         return token_names[@intFromEnum(self)];
     }
@@ -528,6 +557,7 @@ pub const keywords = std.StaticStringMap(Kind).initComptime(.{
 
 /// 각 토큰 종류의 표시 이름 (에러 메시지, 디버깅용).
 /// Kind enum의 u8 값으로 인덱싱.
+/// 키워드는 `kw_` 접두사를 제거하여 반환 (예: `kw_break` → `"break"`).
 const token_names = blk: {
     const enum_fields = @typeInfo(Kind).@"enum".fields;
     var names: [enum_fields.len][]const u8 = undefined;
@@ -620,8 +650,14 @@ const token_names = blk: {
             // JSX
             .jsx_text => "<jsx text>",
             .jsx_identifier => "<jsx identifier>",
-            // Keywords — 키워드 이름 그대로 사용
-            else => field.name,
+            // Keywords — kw_ 접두사를 제거하여 실제 키워드 문자열 반환
+            else => blk2: {
+                const name = field.name;
+                if (name.len > 3 and name[0] == 'k' and name[1] == 'w' and name[2] == '_') {
+                    break :blk2 name[3..];
+                }
+                break :blk2 name;
+            },
         };
     }
     break :blk names;
@@ -632,16 +668,18 @@ const token_names = blk: {
 // ============================================================
 
 test "Kind fits in u8" {
-    // 토큰 종류가 256개 이내인지 확인 (u8 범위)
     const fields = @typeInfo(Kind).@"enum".fields;
     try std.testing.expect(fields.len <= 256);
 }
 
 test "Kind.isReservedKeyword" {
+    // 범위 내
+    try std.testing.expect(Kind.kw_await.isReservedKeyword());
     try std.testing.expect(Kind.kw_break.isReservedKeyword());
     try std.testing.expect(Kind.kw_with.isReservedKeyword());
-    try std.testing.expect(Kind.kw_await.isReservedKeyword());
-    try std.testing.expect(!Kind.kw_async.isReservedKeyword());
+    // 범위 밖 (경계값)
+    try std.testing.expect(!Kind.escaped_keyword.isReservedKeyword()); // kw_await 직전
+    try std.testing.expect(!Kind.kw_async.isReservedKeyword()); // kw_with 직후
     try std.testing.expect(!Kind.identifier.isReservedKeyword());
     try std.testing.expect(!Kind.kw_abstract.isReservedKeyword());
 }
@@ -650,16 +688,18 @@ test "Kind.isStrictModeReserved" {
     try std.testing.expect(Kind.kw_implements.isStrictModeReserved());
     try std.testing.expect(Kind.kw_yield.isStrictModeReserved());
     try std.testing.expect(Kind.kw_public.isStrictModeReserved());
-    try std.testing.expect(!Kind.kw_break.isStrictModeReserved());
-    try std.testing.expect(!Kind.kw_async.isStrictModeReserved());
+    // 경계값
+    try std.testing.expect(!Kind.kw_let.isStrictModeReserved()); // kw_implements 직전
+    try std.testing.expect(!Kind.kw_true.isStrictModeReserved()); // kw_yield 직후
 }
 
 test "Kind.isTypeScriptKeyword" {
     try std.testing.expect(Kind.kw_abstract.isTypeScriptKeyword());
     try std.testing.expect(Kind.kw_override.isTypeScriptKeyword());
     try std.testing.expect(Kind.kw_readonly.isTypeScriptKeyword());
-    try std.testing.expect(!Kind.kw_break.isTypeScriptKeyword());
-    try std.testing.expect(!Kind.kw_async.isTypeScriptKeyword());
+    // 경계값
+    try std.testing.expect(!Kind.kw_null.isTypeScriptKeyword()); // kw_abstract 직전
+    try std.testing.expect(!Kind.l_paren.isTypeScriptKeyword()); // kw_override 직후
 }
 
 test "Kind.isKeyword covers all keyword ranges" {
@@ -671,16 +711,29 @@ test "Kind.isKeyword covers all keyword ranges" {
     try std.testing.expect(Kind.kw_null.isKeyword());
     try std.testing.expect(Kind.kw_abstract.isKeyword());
     try std.testing.expect(Kind.kw_override.isKeyword());
+    // 경계값
+    try std.testing.expect(!Kind.escaped_keyword.isKeyword()); // kw_await 직전
+    try std.testing.expect(!Kind.l_paren.isKeyword()); // kw_override 직후
     try std.testing.expect(!Kind.identifier.isKeyword());
     try std.testing.expect(!Kind.plus.isKeyword());
+}
+
+test "Kind.isLiteralKeyword" {
+    try std.testing.expect(Kind.kw_true.isLiteralKeyword());
+    try std.testing.expect(Kind.kw_false.isLiteralKeyword());
+    try std.testing.expect(Kind.kw_null.isLiteralKeyword());
+    try std.testing.expect(!Kind.kw_yield.isLiteralKeyword()); // 직전
+    try std.testing.expect(!Kind.kw_abstract.isLiteralKeyword()); // 직후
 }
 
 test "Kind.isNumericLiteral" {
     try std.testing.expect(Kind.decimal.isNumericLiteral());
     try std.testing.expect(Kind.hex.isNumericLiteral());
     try std.testing.expect(Kind.hex_bigint.isNumericLiteral());
+    try std.testing.expect(Kind.float.isNumericLiteral());
     try std.testing.expect(!Kind.string_literal.isNumericLiteral());
     try std.testing.expect(!Kind.identifier.isNumericLiteral());
+    try std.testing.expect(!Kind.at.isNumericLiteral()); // decimal 직전
 }
 
 test "Kind.isBigIntLiteral" {
@@ -688,6 +741,16 @@ test "Kind.isBigIntLiteral" {
     try std.testing.expect(Kind.hex_bigint.isBigIntLiteral());
     try std.testing.expect(!Kind.decimal.isBigIntLiteral());
     try std.testing.expect(!Kind.float.isBigIntLiteral());
+}
+
+test "Kind.isTemplateLiteral" {
+    try std.testing.expect(Kind.no_substitution_template.isTemplateLiteral());
+    try std.testing.expect(Kind.template_head.isTemplateLiteral());
+    try std.testing.expect(Kind.template_middle.isTemplateLiteral());
+    try std.testing.expect(Kind.template_tail.isTemplateLiteral());
+    try std.testing.expect(!Kind.string_literal.isTemplateLiteral());
+    try std.testing.expect(!Kind.regexp.isTemplateLiteral()); // 직전
+    try std.testing.expect(!Kind.jsx_text.isTemplateLiteral()); // 직후
 }
 
 test "Kind.isAssignment" {
@@ -702,25 +765,48 @@ test "Kind.slashIsRegex" {
     // 식별자/리터럴 뒤 → division (false)
     try std.testing.expect(!Kind.identifier.slashIsRegex());
     try std.testing.expect(!Kind.decimal.slashIsRegex());
+    try std.testing.expect(!Kind.hex_bigint.slashIsRegex());
     try std.testing.expect(!Kind.string_literal.slashIsRegex());
     try std.testing.expect(!Kind.r_paren.slashIsRegex());
+    try std.testing.expect(!Kind.r_bracket.slashIsRegex());
     try std.testing.expect(!Kind.kw_this.slashIsRegex());
+    try std.testing.expect(!Kind.kw_true.slashIsRegex());
+    try std.testing.expect(!Kind.kw_false.slashIsRegex());
+    try std.testing.expect(!Kind.kw_null.slashIsRegex());
+    try std.testing.expect(!Kind.kw_super.slashIsRegex());
+    try std.testing.expect(!Kind.plus2.slashIsRegex());
+    try std.testing.expect(!Kind.minus2.slashIsRegex());
+    try std.testing.expect(!Kind.template_tail.slashIsRegex());
 
     // 연산자/키워드 뒤 → regex (true)
     try std.testing.expect(Kind.eq.slashIsRegex());
     try std.testing.expect(Kind.l_paren.slashIsRegex());
     try std.testing.expect(Kind.semicolon.slashIsRegex());
     try std.testing.expect(Kind.kw_return.slashIsRegex());
+    try std.testing.expect(Kind.kw_typeof.slashIsRegex());
+    try std.testing.expect(Kind.kw_void.slashIsRegex());
+    try std.testing.expect(Kind.kw_delete.slashIsRegex());
     try std.testing.expect(Kind.comma.slashIsRegex());
     try std.testing.expect(Kind.eof.slashIsRegex());
+    // r_curly → regex (파서가 오버라이드 필요)
+    try std.testing.expect(Kind.r_curly.slashIsRegex());
 }
 
-test "Kind.symbol returns readable name" {
+test "Kind.symbol returns readable name for punctuators" {
     try std.testing.expectEqualStrings("(", Kind.l_paren.symbol());
     try std.testing.expectEqualStrings("<eof>", Kind.eof.symbol());
     try std.testing.expectEqualStrings("<identifier>", Kind.identifier.symbol());
     try std.testing.expectEqualStrings("=>", Kind.arrow.symbol());
     try std.testing.expectEqualStrings("===", Kind.eq3.symbol());
+}
+
+test "Kind.symbol strips kw_ prefix for keywords" {
+    try std.testing.expectEqualStrings("break", Kind.kw_break.symbol());
+    try std.testing.expectEqualStrings("const", Kind.kw_const.symbol());
+    try std.testing.expectEqualStrings("abstract", Kind.kw_abstract.symbol());
+    try std.testing.expectEqualStrings("readonly", Kind.kw_readonly.symbol());
+    try std.testing.expectEqualStrings("true", Kind.kw_true.symbol());
+    try std.testing.expectEqualStrings("null", Kind.kw_null.symbol());
 }
 
 test "keywords map lookup" {
