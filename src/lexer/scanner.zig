@@ -56,9 +56,12 @@ pub const Scanner = struct {
     /// 소스를 UTF-8로 읽고 Scanner를 초기화한다.
     /// BOM이 있으면 스킵한다 (D019).
     pub fn init(allocator: std.mem.Allocator, source: []const u8) Scanner {
+        // 4GB 이상의 소스는 u32 offset으로 표현 불가 (D015)
+        std.debug.assert(source.len <= std.math.maxInt(u32));
+
         var line_offsets = std.ArrayList(u32).init(allocator);
-        // 첫 번째 줄의 시작 offset은 항상 0
-        line_offsets.append(0) catch {};
+        // 첫 번째 줄의 시작 offset은 항상 0. 이 append가 실패하면 getLineColumn()이 동작 불가.
+        line_offsets.append(0) catch @panic("OOM: failed to allocate initial line offset");
 
         var scanner = Scanner{
             .source = source,
@@ -66,11 +69,7 @@ pub const Scanner = struct {
         };
 
         // UTF-8 BOM 스킵 (0xEF 0xBB 0xBF)
-        if (source.len >= 3 and
-            source[0] == 0xEF and
-            source[1] == 0xBB and
-            source[2] == 0xBF)
-        {
+        if (std.mem.startsWith(u8, source, "\xEF\xBB\xBF")) {
             scanner.current = 3;
             scanner.start = 3;
             scanner.line_start = 3;
@@ -204,12 +203,8 @@ pub const Scanner = struct {
                     self.token.has_newline_before = true;
                 },
                 0xE2 => {
-                    // U+2028 (LS), U+2029 (PS) — 줄바꿈
-                    if (self.current + 2 < self.source.len and
-                        self.source[self.current + 1] == 0x80 and
-                        (self.source[self.current + 2] == 0xA8 or self.source[self.current + 2] == 0xA9))
-                    {
-                        _ = self.handleNewline();
+                    // U+2028 (LS), U+2029 (PS) — handleNewline()에 위임
+                    if (self.handleNewline()) {
                         self.token.has_newline_before = true;
                     } else {
                         return; // E2로 시작하지만 줄바꿈이 아님
@@ -311,9 +306,7 @@ pub const Scanner = struct {
 
             '#' => blk: {
                 // hashbang (파일 시작) 또는 private identifier
-                if (self.start == 0 or (self.start == 3 and self.source.len >= 3 and
-                    self.source[0] == 0xEF and self.source[1] == 0xBB and self.source[2] == 0xBF))
-                {
+                if (self.start == 0 or (self.start == 3 and std.mem.startsWith(u8, self.source, "\xEF\xBB\xBF"))) {
                     if (self.peek() == '!') {
                         self.scanHashbang();
                         break :blk .hashbang_comment;
@@ -811,4 +804,78 @@ test "Scanner: string literal basic" {
     try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
     scanner.next();
     try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
+}
+
+test "Scanner: empty string literals" {
+    const source = "'' \"\"";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
+    try std.testing.expectEqualStrings("''", scanner.tokenText());
+    scanner.next();
+    try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
+    try std.testing.expectEqualStrings("\"\"", scanner.tokenText());
+}
+
+test "Scanner: slash_eq operator" {
+    const source = "/=";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.slash_eq, scanner.token.kind);
+}
+
+test "Scanner: CR alone as line terminator" {
+    const source = "a\rb";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next(); // a
+    scanner.next(); // b
+    try std.testing.expect(scanner.token.has_newline_before);
+    try std.testing.expectEqual(@as(u32, 1), scanner.line);
+}
+
+test "Scanner: whitespace only source" {
+    const source = "   \t\t  \n  ";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.eof, scanner.token.kind);
+    try std.testing.expect(scanner.token.has_newline_before);
+}
+
+test "Scanner: NBSP whitespace (U+00A0)" {
+    // U+00A0 = C2 A0
+    const source = "a\xC2\xA0b";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+    try std.testing.expectEqualStrings("a", scanner.tokenText());
+    scanner.next();
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+    try std.testing.expectEqualStrings("b", scanner.tokenText());
+}
+
+test "Scanner: all assignment operators" {
+    const source = "= += -= *= /= %= **= &= |= ^= <<= >>= >>>= &&= ||= ??=";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    const expected = [_]Kind{
+        .eq,              .plus_eq,    .minus_eq,      .star_eq,
+        .slash_eq,        .percent_eq, .star2_eq,      .amp_eq,
+        .pipe_eq,         .caret_eq,   .shift_left_eq, .shift_right_eq,
+        .shift_right3_eq, .amp2_eq,    .pipe2_eq,      .question2_eq,
+    };
+    for (expected) |kind| {
+        scanner.next();
+        try std.testing.expectEqual(kind, scanner.token.kind);
+    }
 }
