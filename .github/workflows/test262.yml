@@ -1,0 +1,42 @@
+name: Test262 Conformance
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+  workflow_dispatch:
+
+jobs:
+  test262:
+    name: Test262 Pass Rate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.0
+
+      - name: Build (ReleaseFast)
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Run Test262 (language/)
+        run: |
+          # 추후 Test262 러너 구현 시 활성화
+          # zig build run -- --test262 tests/test262/test/language/
+          echo "Test262 runner placeholder - will be implemented with parser"
+
+      # 추후: 통과율을 뱃지로 표시
+      # - name: Update badge
+      #   run: |
+      #     echo "Pass rate: $PASS_RATE%"

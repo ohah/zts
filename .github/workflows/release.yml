@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-linux
+            os: ubuntu-latest
+            artifact: zts-x86_64-linux
+          - target: aarch64-linux
+            os: ubuntu-latest
+            artifact: zts-aarch64-linux
+          - target: x86_64-macos
+            os: macos-latest
+            artifact: zts-x86_64-macos
+          - target: aarch64-macos
+            os: macos-latest
+            artifact: zts-aarch64-macos
+          - target: x86_64-windows
+            os: windows-latest
+            artifact: zts-x86_64-windows
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.0
+
+      - name: Build (ReleaseFast)
+        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: zig-out/bin/
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Create tarballs
+        run: |
+          cd artifacts
+          for dir in */; do
+            name="${dir%/}"
+            tar -czf "${name}.tar.gz" -C "$dir" .
+          done
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: artifacts/*.tar.gz

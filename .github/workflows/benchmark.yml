@@ -1,0 +1,45 @@
+name: Benchmark
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+  workflow_dispatch:  # 수동 실행 가능
+
+jobs:
+  benchmark:
+    name: Performance Benchmark
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.0
+
+      - name: Build (ReleaseFast)
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Run benchmark
+        run: |
+          # 추후 벤치마크 스크립트 추가 시 활성화
+          # ./scripts/benchmark.sh
+          echo "Benchmark placeholder - will be implemented with lexer/parser"
+
+      # 추후: benchmark 결과를 PR 코멘트로 남기기
+      # - name: Comment PR with results
+      #   uses: actions/github-script@v7
+      #   with:
+      #     script: |
+      #       github.rest.issues.createComment({
+      #         issue_number: context.issue.number,
+      #         owner: context.repo.owner,
+      #         repo: context.repo.repo,
+      #         body: benchmarkResults
+      #       })
