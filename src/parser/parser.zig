@@ -166,6 +166,7 @@ pub const Parser = struct {
             .kw_break => self.parseSimpleStatement(.break_statement),
             .kw_continue => self.parseSimpleStatement(.continue_statement),
             .kw_throw => self.parseThrowStatement(),
+            .kw_try => self.parseTryStatement(),
             .kw_debugger => self.parseSimpleStatement(.debugger_statement),
             .kw_function => self.parseFunctionDeclaration(),
             else => self.parseExpressionStatement(),
@@ -523,6 +524,56 @@ pub const Parser = struct {
             .tag = .throw_statement,
             .span = .{ .start = start, .end = end },
             .data = .{ .unary = .{ .operand = arg } },
+        });
+    }
+
+    fn parseTryStatement(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+        self.advance(); // skip 'try'
+
+        const block = try self.parseBlockStatement();
+
+        // catch 절 (선택적)
+        var handler = NodeIndex.none;
+        if (self.current() == .kw_catch) {
+            handler = try self.parseCatchClause();
+        }
+
+        // finally 절 (선택적)
+        var finalizer = NodeIndex.none;
+        if (self.eat(.kw_finally)) {
+            finalizer = try self.parseBlockStatement();
+        }
+
+        // catch도 finally도 없으면 에러
+        if (handler.isNone() and finalizer.isNone()) {
+            self.addError(.{ .start = start, .end = self.currentSpan().start }, "catch or finally expected");
+        }
+
+        return try self.ast.addNode(.{
+            .tag = .try_statement,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .ternary = .{ .a = block, .b = handler, .c = finalizer } },
+        });
+    }
+
+    fn parseCatchClause(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+        self.advance(); // skip 'catch'
+
+        // catch 파라미터 (선택적 — ES2019 optional catch binding)
+        var param = NodeIndex.none;
+        if (self.eat(.l_paren)) {
+            param = try self.parseBindingIdentifier();
+            self.expect(.r_paren);
+        }
+
+        const body = try self.parseBlockStatement();
+
+        return try self.ast.addNode(.{
+            .tag = .catch_clause,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .binary = .{ .left = param, .right = body } },
         });
     }
 
@@ -1189,6 +1240,46 @@ test "Parser: switch with var in case body (scratch nesting)" {
 test "Parser: nested call in var initializer (scratch nesting)" {
     // var x = foo(bar(1, 2), 3); — 중첩 호출에서 scratch가 안전한지 검증
     var scanner = Scanner.init(std.testing.allocator, "var x = foo(bar(1, 2), 3);");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: try-catch" {
+    var scanner = Scanner.init(std.testing.allocator, "try { foo(); } catch (e) { bar(); }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: try-finally" {
+    var scanner = Scanner.init(std.testing.allocator, "try { foo(); } finally { cleanup(); }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: try-catch-finally" {
+    var scanner = Scanner.init(std.testing.allocator, "try { foo(); } catch (e) { bar(); } finally { cleanup(); }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: optional catch binding (ES2019)" {
+    var scanner = Scanner.init(std.testing.allocator, "try { foo(); } catch { bar(); }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
