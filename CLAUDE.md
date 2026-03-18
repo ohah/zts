@@ -162,16 +162,16 @@ main ← feature/lexer-token-enum
 18. ⬜ semantic analysis (스코프/심볼, 별도 패스, D038) — Phase 2 후반
 
 ### 트랜스포머 구현 순서 (PR 단위) — Phase 3 진행 중
-1. ⬜ Phase 3 의사결정 (D041-D043) — PR #34
-2. ⬜ Visitor/순회 인프라 + 새 AST 빌더 — PR #35
-3. ⬜ 타입 스트리핑 — PR #36
-4. ⬜ TS expression 변환 (as, satisfies, !) — PR #37
-5. ⬜ enum → IIFE — PR #38
-6. ⬜ namespace → IIFE — PR #39
-7. ⬜ parameter property 변환 — PR #40
-8. ⬜ JSX 변환 (Classic + Automatic) — PR #41
-9. ⬜ ESM → CJS 모듈 변환 — PR #42
-10. ⬜ decorator 변환 — PR #43
+1. ⬜ Phase 3 의사결정 (D041-D043) — PR #36
+2. ⬜ Visitor/순회 인프라 + 새 AST 빌더
+3. ⬜ 타입 스트리핑
+4. ⬜ TS expression 변환 (as, satisfies, !)
+5. ⬜ enum → IIFE
+6. ⬜ namespace → IIFE
+7. ⬜ parameter property 변환
+8. ⬜ JSX 변환 (Classic + Automatic)
+9. ⬜ ESM → CJS 모듈 변환
+10. ⬜ decorator 변환
 
 ## References
 - Bun JS Parser: github.com/oven-sh/bun (src/js_parser.zig, src/js_lexer.zig)
