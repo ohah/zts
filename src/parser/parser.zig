@@ -630,12 +630,13 @@ pub const Parser = struct {
     /// async 뒤에 function이 오면 async function declaration,
     /// 그 외는 expression statement로 처리.
     fn parseAsyncStatement(self: *Parser) !NodeIndex {
-        const next = self.peekNextKind();
-        if (next == .kw_function) {
+        const peek = self.peekNext();
+        // async [no LineTerminator here] function → async function declaration
+        if (peek.kind == .kw_function and !peek.has_newline_before) {
             self.advance(); // skip 'async'
             return self.parseFunctionDeclarationWithFlags(0x01); // 0x01 = async flag
         }
-        // async가 식별자인 경우 → expression statement
+        // async 뒤에 줄바꿈이 있거나 function이 아니면 → expression statement
         return self.parseExpressionStatement();
     }
 
@@ -822,9 +823,10 @@ pub const Parser = struct {
         });
     }
 
-    /// 다음 토큰의 Kind를 미리 본다 (현재 토큰을 소비하지 않음).
-    /// 간단한 1-lookahead. 비용이 있으므로 class member 파싱 등 제한적 사용.
-    fn peekNextKind(self: *Parser) Kind {
+    const PeekResult = struct { kind: Kind, has_newline_before: bool };
+
+    /// 다음 토큰의 Kind와 줄바꿈 여부를 미리 본다 (현재 토큰을 소비하지 않음).
+    fn peekNext(self: *Parser) PeekResult {
         const saved_pos = self.scanner.current;
         const saved_start = self.scanner.start;
         const saved_token = self.scanner.token;
@@ -835,7 +837,10 @@ pub const Parser = struct {
         const saved_template_len = self.scanner.template_depth_stack.items.len;
 
         self.scanner.next();
-        const next_kind = self.scanner.token.kind;
+        const result = PeekResult{
+            .kind = self.scanner.token.kind,
+            .has_newline_before = self.scanner.token.has_newline_before,
+        };
 
         self.scanner.current = saved_pos;
         self.scanner.start = saved_start;
@@ -846,7 +851,12 @@ pub const Parser = struct {
         self.scanner.prev_token_kind = saved_prev_token;
         self.scanner.template_depth_stack.shrinkRetainingCapacity(saved_template_len);
 
-        return next_kind;
+        return result;
+    }
+
+    /// peekNext의 Kind만 반환하는 편의 함수.
+    fn peekNextKind(self: *Parser) Kind {
+        return self.peekNext().kind;
     }
 
     // ================================================================
