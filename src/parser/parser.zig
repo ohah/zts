@@ -173,6 +173,8 @@ pub const Parser = struct {
             .kw_class => self.parseClassDeclaration(),
             .kw_import => self.parseImportDeclaration(),
             .kw_export => self.parseExportDeclaration(),
+            // Decorator: @expr class Foo {}
+            .at => self.parseDecoratedStatement(),
             // TypeScript declarations
             .kw_type => self.parseTsTypeAliasDeclaration(),
             .kw_interface => self.parseTsInterfaceDeclaration(),
@@ -713,10 +715,25 @@ pub const Parser = struct {
             name = try self.parseBindingIdentifier();
         }
 
+        // TS 제네릭 파라미터: class Foo<T> { }
+        var type_params = NodeIndex.none;
+        if (self.current() == .l_angle) {
+            type_params = try self.parseTsTypeParameterDeclaration();
+        }
+
         // extends 절 (선택)
         var super_class = NodeIndex.none;
         if (self.eat(.kw_extends)) {
             super_class = try self.parseAssignmentExpression();
+        }
+
+        // TS implements 절 (선택): class Foo implements Bar, Baz
+        if (self.eat(.kw_implements)) {
+            // implements 타입 리스트 파싱 (AST에는 저장하지 않고 스킵 — 스트리핑 대상)
+            _ = try self.parseType();
+            while (self.eat(.comma)) {
+                _ = try self.parseType();
+            }
         }
 
         // 클래스 본문
@@ -763,6 +780,20 @@ pub const Parser = struct {
 
     fn parseClassMember(self: *Parser) !NodeIndex {
         const start = self.currentSpan().start;
+
+        // 데코레이터 (class member 앞)
+        while (self.current() == .at) {
+            _ = try self.parseDecorator(); // TODO: 멤버에 연결 (BACKLOG)
+        }
+
+        // TS 접근 제어자 (public/private/protected) + readonly + abstract + override
+        while (self.current() == .kw_public or self.current() == .kw_private or
+            self.current() == .kw_protected or self.current() == .kw_readonly or
+            self.current() == .kw_abstract or self.current() == .kw_override or
+            self.current() == .kw_declare)
+        {
+            self.advance(); // skip modifier (스트리핑 대상이므로 AST에 저장 불필요)
+        }
 
         // static 키워드 (선택)
         // static은 멤버 이름으로도 사용 가능: class C { static() {} }
@@ -1612,6 +1643,24 @@ pub const Parser = struct {
 
     /// 바인딩 패턴을 파싱한다: identifier, [destructuring], {destructuring}
     fn parseBindingPattern(self: *Parser) !NodeIndex {
+        // TS parameter property: public x, private x, protected x, readonly x
+        if (self.current() == .kw_public or self.current() == .kw_private or
+            self.current() == .kw_protected or self.current() == .kw_readonly)
+        {
+            const modifier_span = self.currentSpan();
+            const next = self.peekNextKind();
+            // modifier 뒤에 식별자가 오면 parameter property
+            if (next == .identifier or next == .l_bracket or next == .l_curly) {
+                self.advance(); // skip modifier
+                const inner = try self.parseBindingPattern();
+                return try self.ast.addNode(.{
+                    .tag = .formal_parameter,
+                    .span = .{ .start = modifier_span.start, .end = self.currentSpan().start },
+                    .data = .{ .unary = .{ .operand = inner } },
+                });
+            }
+        }
+
         switch (self.current()) {
             .identifier => {
                 const span = self.currentSpan();
@@ -2086,6 +2135,43 @@ pub const Parser = struct {
     fn parseTsAbstractClass(self: *Parser) !NodeIndex {
         self.advance(); // skip 'abstract'
         return self.parseClassDeclaration();
+    }
+
+    /// @decorator 파싱 후 class/export 문을 파싱
+    fn parseDecoratedStatement(self: *Parser) !NodeIndex {
+        // 데코레이터 수집
+        const scratch_top = self.saveScratch();
+        while (self.current() == .at) {
+            const dec = try self.parseDecorator();
+            try self.scratch.append(dec);
+        }
+        const decorators = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        self.restoreScratch(scratch_top);
+        _ = decorators; // TODO: 데코레이터를 클래스 노드에 연결 (BACKLOG)
+
+        // 데코레이터 뒤에 올 수 있는 것: class, export, abstract
+        return switch (self.current()) {
+            .kw_class => self.parseClassDeclaration(),
+            .kw_export => self.parseExportDeclaration(),
+            .kw_abstract => self.parseTsAbstractClass(),
+            else => {
+                self.addError(self.currentSpan(), "class or export expected after decorator");
+                return self.parseExpressionStatement();
+            },
+        };
+    }
+
+    /// @expr — 단일 데코레이터 파싱
+    fn parseDecorator(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+        self.advance(); // skip @
+        const expr = try self.parseCallExpression();
+
+        return try self.ast.addNode(.{
+            .tag = .decorator,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .unary = .{ .operand = expr } },
+        });
     }
 
     /// <T, U extends V = W>
@@ -3346,6 +3432,71 @@ test "Parser: TS abstract class" {
 
 test "Parser: TS generic type parameter with constraint and default" {
     var scanner = Scanner.init(std.testing.allocator, "type Foo<T extends string = 'hello'> = T;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: TS parameter property" {
+    var scanner = Scanner.init(std.testing.allocator, "class Foo { constructor(public x: number, private y: string) { } }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: decorator on class" {
+    var scanner = Scanner.init(std.testing.allocator, "@Component class Foo { }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: decorator with arguments" {
+    var scanner = Scanner.init(std.testing.allocator, "@Injectable() class Service { }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: decorator on class member" {
+    var scanner = Scanner.init(std.testing.allocator,
+        \\class Foo {
+        \\  @log
+        \\  public greet(): void { }
+        \\}
+    );
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: class implements" {
+    var scanner = Scanner.init(std.testing.allocator, "class Foo implements Bar, Baz { }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: class with generics" {
+    var scanner = Scanner.init(std.testing.allocator, "class Box<T> { value: T; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
