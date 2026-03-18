@@ -5,6 +5,7 @@
 
 pub const token = @import("token.zig");
 pub const scanner = @import("scanner.zig");
+pub const unicode_util = @import("unicode.zig");
 
 pub const Token = token.Token;
 pub const Kind = token.Kind;
@@ -15,4 +16,5 @@ pub const keywords = token.keywords;
 test {
     _ = token;
     _ = scanner;
+    _ = unicode_util;
 }

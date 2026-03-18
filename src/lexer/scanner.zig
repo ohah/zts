@@ -13,6 +13,7 @@
 
 const std = @import("std");
 const token = @import("token.zig");
+const unicode = @import("unicode.zig");
 
 const Token = token.Token;
 const Kind = token.Kind;
@@ -334,12 +335,36 @@ pub const Scanner = struct {
                 },
 
                 else => blk: {
-                    // 식별자 시작 문자인지 확인
-                    if (isIdentifierStart(c)) {
+                    // ASCII 식별자 시작
+                    if (isAsciiIdentStart(c)) {
                         self.scanIdentifierTail();
-                        // 키워드 확인
                         const text = self.tokenText();
                         break :blk token.keywords.get(text) orelse .identifier;
+                    }
+                    // \u 유니코드 이스케이프로 시작하는 식별자
+                    if (c == '\\') {
+                        // advance()에서 이미 \ 를 소비했으므로 current-1 부터
+                        self.current -= 1; // put back '\'
+                        if (self.scanIdentifierEscape()) {
+                            self.scanIdentifierTail();
+                            // 이스케이프 키워드는 키워드가 아닌 식별자로 취급
+                            break :blk .escaped_keyword;
+                        }
+                        self.current += 1; // re-consume '\'
+                        break :blk .syntax_error;
+                    }
+                    // Non-ASCII 유니코드 식별자
+                    if (c >= 0x80) {
+                        // advance()에서 1바이트 소비했으므로 나머지 UTF-8 바이트 소비
+                        const start_pos = self.current - 1;
+                        const remaining = self.source[start_pos..];
+                        const decoded = unicode.decodeUtf8(remaining);
+                        if (unicode.isIdentifierStart(decoded.codepoint)) {
+                            self.current = @intCast(start_pos + decoded.len);
+                            self.scanIdentifierTail();
+                            const text = self.tokenText();
+                            break :blk token.keywords.get(text) orelse .identifier;
+                        }
                     }
                     break :blk .syntax_error;
                 },
@@ -1041,31 +1066,76 @@ pub const Scanner = struct {
         }
     }
 
+    /// 식별자의 나머지 부분을 스캔한다. 유니코드 문자와 \u 이스케이프를 처리.
     fn scanIdentifierTail(self: *Scanner) void {
         while (!self.isAtEnd()) {
             const c = self.peek();
-            if (isIdentifierContinue(c)) {
-                self.current += 1;
+            // ASCII fast path
+            if (c < 0x80) {
+                if (isAsciiIdentContinue(c)) {
+                    self.current += 1;
+                } else if (c == '\\') {
+                    // \uXXXX 유니코드 이스케이프
+                    if (!self.scanIdentifierEscape()) break;
+                } else {
+                    break;
+                }
             } else {
-                break;
+                // Non-ASCII: UTF-8 디코딩 후 유니코드 ID_Continue 확인
+                const remaining = self.source[self.current..];
+                const decoded = unicode.decodeUtf8(remaining);
+                if (decoded.len == 0) break;
+                if (unicode.isIdentifierContinue(decoded.codepoint)) {
+                    self.current += decoded.len;
+                } else {
+                    break;
+                }
             }
         }
+    }
+
+    /// 식별자 안의 \uXXXX 또는 \u{XXXX} 이스케이프를 스캔한다.
+    /// 성공하면 true, 유효하지 않으면 false.
+    fn scanIdentifierEscape(self: *Scanner) bool {
+        if (self.peek() != '\\') return false;
+        if (self.peekAt(1) != 'u') return false;
+        self.current += 2; // skip \u
+
+        if (self.peek() == '{') {
+            self.current += 1;
+            while (!self.isAtEnd() and self.peek() != '}') {
+                self.current += 1;
+            }
+            if (!self.isAtEnd()) self.current += 1; // skip }
+        } else {
+            self.skipHexEscape(4);
+        }
+        return true;
     }
 
     // ====================================================================
     // 문자 분류
     // ====================================================================
 
-    /// ASCII 식별자 시작 문자인지. (추후 유니코드 PR에서 확장)
-    fn isIdentifierStart(c: u8) bool {
+    /// ASCII 식별자 시작 문자인지.
+    fn isAsciiIdentStart(c: u8) bool {
         return (c >= 'a' and c <= 'z') or
             (c >= 'A' and c <= 'Z') or
             c == '_' or c == '$';
     }
 
-    /// ASCII 식별자 계속 문자인지. (추후 유니코드 PR에서 확장)
-    fn isIdentifierContinue(c: u8) bool {
-        return isIdentifierStart(c) or (c >= '0' and c <= '9');
+    /// ASCII 식별자 계속 문자인지.
+    fn isAsciiIdentContinue(c: u8) bool {
+        return isAsciiIdentStart(c) or (c >= '0' and c <= '9');
+    }
+
+    /// 바이트가 식별자 시작 문자인지 (ASCII + non-ASCII).
+    fn isIdentifierStartByte(self: *Scanner, c: u8) bool {
+        if (c < 0x80) return isAsciiIdentStart(c);
+        // Non-ASCII: UTF-8 디코딩
+        const remaining = self.source[self.current - 1 ..];
+        const decoded = unicode.decodeUtf8(remaining);
+        return unicode.isIdentifierStart(decoded.codepoint);
     }
 };
 
@@ -1930,4 +2000,54 @@ test "Scanner: regex after comma" {
     scanner.next(); // ,
     scanner.next(); // /re/
     try std.testing.expectEqual(Kind.regexp, scanner.token.kind);
+}
+
+// ============================================================
+// Unicode identifier tests
+// ============================================================
+
+test "Scanner: unicode identifier (Latin)" {
+    // café = UTF-8: 63 61 66 C3 A9
+    const source = "caf\xC3\xA9";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+    try std.testing.expectEqualStrings("caf\xC3\xA9", scanner.tokenText());
+}
+
+test "Scanner: unicode identifier (CJK)" {
+    // 변수 = UTF-8: EB B3 80 EC 88 98
+    const source = "\xEB\xB3\x80\xEC\x88\x98";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+}
+
+test "Scanner: unicode identifier (Greek)" {
+    // α = UTF-8: CE B1
+    const source = "\xCE\xB1 = 1";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+    try std.testing.expectEqualStrings("\xCE\xB1", scanner.tokenText());
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.eq, scanner.token.kind);
+}
+
+test "Scanner: mixed ASCII and unicode in identifier" {
+    // test변수 = ASCII + CJK
+    const source = "test\xEB\xB3\x80\xEC\x88\x98";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    scanner.next();
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+    try std.testing.expectEqualStrings("test\xEB\xB3\x80\xEC\x88\x98", scanner.tokenText());
 }
