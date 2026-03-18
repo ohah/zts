@@ -844,6 +844,11 @@ pub const Parser = struct {
         // 키
         const key = try self.parsePropertyKey();
 
+        // 제네릭 파라미터: method<T>()
+        if (self.current() == .l_angle) {
+            _ = try self.parseTsTypeParameterDeclaration();
+        }
+
         // 메서드 (파라미터 리스트가 있으면)
         if (self.current() == .l_paren) {
             self.expect(.l_paren);
@@ -855,7 +860,16 @@ pub const Parser = struct {
             }
             self.expect(.r_paren);
 
-            const body = try self.parseBlockStatement();
+            // TS 리턴 타입 어노테이션: (): Type
+            _ = try self.tryParseReturnType();
+
+            // 바디: abstract 메서드는 바디 없음 (세미콜론으로 끝남)
+            var body = NodeIndex.none;
+            if (self.current() == .l_curly) {
+                body = try self.parseBlockStatement();
+            } else {
+                _ = self.eat(.semicolon);
+            }
             const param_list = try self.ast.addNodeList(self.scratch.items[param_top..]);
             self.restoreScratch(param_top);
 
@@ -872,6 +886,9 @@ pub const Parser = struct {
                 .data = .{ .extra = extra_start },
             });
         }
+
+        // TS 타입 어노테이션: value: Type
+        _ = try self.tryParseTypeAnnotation();
 
         // 프로퍼티 (= 이니셜라이저)
         var init_val = NodeIndex.none;
@@ -1522,14 +1539,78 @@ pub const Parser = struct {
                 });
             },
             .l_paren => {
-                // 괄호 표현식
+                // 괄호 표현식 또는 arrow function 파라미터 리스트
+                // (a, b) => ... 같은 경우 콤마 구분된 표현식을 파싱해야 함
                 self.advance();
-                const expr = try self.parseExpression();
+
+                // 빈 괄호: () → arrow function의 빈 파라미터 리스트
+                if (self.current() == .r_paren) {
+                    self.advance(); // skip )
+                    return try self.ast.addNode(.{
+                        .tag = .parenthesized_expression,
+                        .span = .{ .start = span.start, .end = self.currentSpan().start },
+                        .data = .{ .none = 0 },
+                    });
+                }
+
+                // 첫 번째 표현식 또는 rest (...x)
+                if (self.current() == .dot3) {
+                    // rest parameter: (...args)
+                    const rest_start = self.currentSpan().start;
+                    self.advance(); // skip ...
+                    const rest_arg = try self.parseBindingPattern();
+                    const rest = try self.ast.addNode(.{
+                        .tag = .rest_element,
+                        .span = .{ .start = rest_start, .end = self.currentSpan().start },
+                        .data = .{ .unary = .{ .operand = rest_arg, .flags = 0 } },
+                    });
+                    self.expect(.r_paren);
+                    return try self.ast.addNode(.{
+                        .tag = .parenthesized_expression,
+                        .span = .{ .start = span.start, .end = self.currentSpan().start },
+                        .data = .{ .unary = .{ .operand = rest, .flags = 0 } },
+                    });
+                }
+
+                const first = try self.parseAssignmentExpression();
+
+                // 콤마가 없으면 단순 괄호 표현식
+                if (!self.eat(.comma)) {
+                    self.expect(.r_paren);
+                    return try self.ast.addNode(.{
+                        .tag = .parenthesized_expression,
+                        .span = .{ .start = span.start, .end = self.currentSpan().start },
+                        .data = .{ .unary = .{ .operand = first, .flags = 0 } },
+                    });
+                }
+
+                // 콤마 구분 리스트 → sequence expression (arrow function params로 변환 가능)
+                const scratch_top = self.saveScratch();
+                try self.scratch.append(first);
+                while (self.current() != .r_paren and self.current() != .eof) {
+                    if (self.current() == .dot3) {
+                        const rest_start = self.currentSpan().start;
+                        self.advance(); // skip ...
+                        const rest_arg = try self.parseBindingPattern();
+                        try self.scratch.append(try self.ast.addNode(.{
+                            .tag = .rest_element,
+                            .span = .{ .start = rest_start, .end = self.currentSpan().start },
+                            .data = .{ .unary = .{ .operand = rest_arg, .flags = 0 } },
+                        }));
+                        break; // rest는 마지막
+                    }
+                    const elem = try self.parseAssignmentExpression();
+                    try self.scratch.append(elem);
+                    if (!self.eat(.comma)) break;
+                }
                 self.expect(.r_paren);
+
+                const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+                self.restoreScratch(scratch_top);
                 return try self.ast.addNode(.{
-                    .tag = .parenthesized_expression,
+                    .tag = .sequence_expression,
                     .span = .{ .start = span.start, .end = self.currentSpan().start },
-                    .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
+                    .data = .{ .list = list },
                 });
             },
             .kw_class => return self.parseClassExpression(),
@@ -1721,6 +1802,22 @@ pub const Parser = struct {
     /// 하위 호환: 식별자만 필요한 곳에서 호출
     fn parseBindingIdentifier(self: *Parser) ParseError2!NodeIndex {
         return self.parseBindingPattern();
+    }
+
+    /// 단순 식별자 이름만 파싱한다 (타입 어노테이션/기본값 없이).
+    /// type alias, interface, enum 등 선언 이름에 사용.
+    fn parseSimpleIdentifier(self: *Parser) ParseError2!NodeIndex {
+        const span = self.currentSpan();
+        if (self.current() == .identifier or self.current().isKeyword()) {
+            self.advance();
+            return try self.ast.addNode(.{
+                .tag = .binding_identifier,
+                .span = span,
+                .data = .{ .string_ref = span },
+            });
+        }
+        self.addError(span, "identifier expected");
+        return NodeIndex.none;
     }
 
     fn parseArrayPattern(self: *Parser) ParseError2!NodeIndex {
@@ -2041,9 +2138,23 @@ pub const Parser = struct {
         const children_top = self.saveScratch();
         while (self.current() != .eof) {
             if (self.current() == .l_angle) {
-                // 다음 토큰이 / 이면 닫는 태그
-                const peek = self.peekNextKind();
-                if (peek == .slash) break;
+                // 다음 토큰이 / 이면 닫는 태그 (JSX 모드로 peek)
+                const saved_pos = self.scanner.current;
+                const saved_start = self.scanner.start;
+                const saved_token = self.scanner.token;
+                const saved_line = self.scanner.line;
+                const saved_line_start = self.scanner.line_start;
+                const saved_prev = self.scanner.prev_token_kind;
+                self.scanner.nextInsideJSXElement();
+                const peek_kind = self.scanner.token.kind;
+                self.scanner.current = saved_pos;
+                self.scanner.start = saved_start;
+                self.scanner.token = saved_token;
+                self.scanner.line = saved_line;
+                self.scanner.line_start = saved_line_start;
+                self.scanner.prev_token_kind = saved_prev;
+
+                if (peek_kind == .slash) break;
                 // 중첩 JSX element
                 const child = try self.parseJSXElement();
                 try self.scratch.append(child);
@@ -2102,8 +2213,23 @@ pub const Parser = struct {
         const children_top = self.saveScratch();
         while (self.current() != .eof) {
             if (self.current() == .l_angle) {
-                const peek = self.peekNextKind();
-                if (peek == .slash) break;
+                // JSX 모드로 peek (normal 모드에서는 /가 regex로 해석될 수 있음)
+                const saved_pos = self.scanner.current;
+                const saved_start = self.scanner.start;
+                const saved_token = self.scanner.token;
+                const saved_line = self.scanner.line;
+                const saved_line_start = self.scanner.line_start;
+                const saved_prev = self.scanner.prev_token_kind;
+                self.scanner.nextInsideJSXElement();
+                const peek_kind = self.scanner.token.kind;
+                self.scanner.current = saved_pos;
+                self.scanner.start = saved_start;
+                self.scanner.token = saved_token;
+                self.scanner.line = saved_line;
+                self.scanner.line_start = saved_line_start;
+                self.scanner.prev_token_kind = saved_prev;
+
+                if (peek_kind == .slash) break;
                 const child = try self.parseJSXElement();
                 try self.scratch.append(child);
             } else if (self.current() == .l_curly) {
@@ -2222,7 +2348,7 @@ pub const Parser = struct {
         const start = self.currentSpan().start;
         self.advance(); // skip 'type'
 
-        const name = try self.parseBindingIdentifier();
+        const name = try self.parseSimpleIdentifier();
 
         // 제네릭 파라미터: type Foo<T> = ...
         var type_params = NodeIndex.none;
@@ -2250,7 +2376,7 @@ pub const Parser = struct {
         const start = self.currentSpan().start;
         self.advance(); // skip 'interface'
 
-        const name = try self.parseBindingIdentifier();
+        const name = try self.parseSimpleIdentifier();
 
         // 제네릭 파라미터
         var type_params = NodeIndex.none;
@@ -2289,7 +2415,7 @@ pub const Parser = struct {
         const start = self.currentSpan().start;
         self.advance(); // skip 'enum'
 
-        const name = try self.parseBindingIdentifier();
+        const name = try self.parseSimpleIdentifier();
         self.expect(.l_curly);
 
         const scratch_top = self.saveScratch();
@@ -2341,7 +2467,7 @@ pub const Parser = struct {
 
     /// namespace body (재귀: A.B.C 중첩 처리). keyword는 이미 소비된 상태.
     fn parseTsModuleBody(self: *Parser, start: u32) ParseError2!NodeIndex {
-        const name = try self.parseBindingIdentifier();
+        const name = try self.parseSimpleIdentifier();
 
         // 중첩: namespace A.B.C { }
         if (self.eat(.dot)) {
@@ -2437,7 +2563,7 @@ pub const Parser = struct {
 
     fn parseTsTypeParameter(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
-        const name = try self.parseBindingIdentifier();
+        const name = try self.parseSimpleIdentifier();
 
         // T extends U
         var constraint = NodeIndex.none;
