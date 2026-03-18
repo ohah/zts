@@ -67,6 +67,43 @@
 | 32 | shorthand property (`{x}` = `{x: x}`) 미지원 | 문법 | Phase 2 다음 PR |
 | 33 | spread in array/object (`...x`) 미지원 | 문법 | Phase 2 다음 PR |
 
+### PR #21: feat(parser): for-in/of, switch
+
+| # | 항목 | 이유 | 해결 시점 |
+|---|------|------|----------|
+| 34 | parseForIn/parseForOf 통합 가능 (7줄씩 거의 동일) | 코드 중복 | 최적화 PR |
+
+### PR #23: feat(parser): arrow, spread
+
+| # | 항목 | 이유 | 해결 시점 |
+|---|------|------|----------|
+| 35 | async arrow function (`async x => ...`) 미지원 | 문법 | Phase 2 (#11 async/await PR) |
+| 36 | yield/await를 arrow 파라미터로 사용 시 에러 미감지 | 스펙 준수 | Phase 2 semantic |
+
+### PR #24: feat(parser): class
+
+| # | 항목 | 이유 | 해결 시점 |
+|---|------|------|----------|
+| 37 | async 메서드, * generator 메서드 미지원 | 문법 | Phase 2 (#11 async/await PR) |
+| 38 | #private 필드/메서드 미지원 | 문법 | Phase 2 다음 PR |
+| 39 | class field 뒤 ASI (세미콜론 자동 삽입) 미구현 | 스펙 | Phase 2 semantic |
+
+### PR #25: feat(parser): destructuring
+
+| # | 항목 | 이유 | 해결 시점 |
+|---|------|------|----------|
+| 40 | 키워드 shorthand 프로퍼티 (`{ let }`, `{ yield }`) 미지원 | edge case | Phase 2 후반 |
+| 41 | 배열 패턴 elision에 empty_statement 대신 전용 elision 노드 필요 | AST 정확성 | Phase 2 후반 |
+| 42 | assignment destructuring (`[a, b] = arr`) 미지원 (binding만) | 문법 | Phase 2 다음 PR |
+
+## 해결됨 (Phase 2)
+
+| # | 항목 | 해결 PR |
+|---|------|---------|
+| 29 | for-in/for-of 미구현 | PR #21 |
+| 32 | shorthand property | PR #25 (object pattern) |
+| 33 | spread in array/object | PR #23 |
+
 ---
 
 ## 추후 개선
