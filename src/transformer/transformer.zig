@@ -257,6 +257,11 @@ pub const Transformer = struct {
             .binding_rest_element => self.visitUnaryNode(node),
             .assignment_target_with_default => self.visitBinaryNode(node),
 
+            // === TS enum: 런타임 코드 생성 (codegen에서 IIFE 출력) ===
+            .ts_enum_declaration => self.visitEnumDeclaration(node),
+            .ts_enum_member => self.visitBinaryNode(node),
+            .ts_enum_body => self.visitListNode(node),
+
             // === 나머지: invalid + TS 타입 전용 노드 ===
             // TS 타입 노드는 isTypeOnlyNode 검사(위)에서 이미 .none으로 반환됨.
             // 여기 도달하면 strip_types=false인 경우 → 그대로 복사.
@@ -360,6 +365,25 @@ pub const Transformer = struct {
 
     // ================================================================
     // Extra 기반 노드 변환
+    // ================================================================
+
+    // ================================================================
+    // TS enum 변환
+    // ================================================================
+
+    /// ts_enum_declaration: extra = [name, members_start, members_len]
+    /// enum 노드를 새 AST에 복사. codegen에서 IIFE 패턴으로 출력.
+    fn visitEnumDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
+        const e = node.data.extra;
+        const new_name = try self.visitNode(self.readNodeIdx(e, 0));
+        const new_members = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
+        return self.addExtraNode(.ts_enum_declaration, node.span, &.{
+            @intFromEnum(new_name), new_members.start, new_members.len,
+        });
+    }
+
+    // ================================================================
+    // 헬퍼
     // ================================================================
 
     /// extra_data에서 연속된 필드를 슬라이스로 읽기.
@@ -614,10 +638,8 @@ pub const Transformer = struct {
             .ts_import_equals_declaration,
             .ts_external_module_reference,
             .ts_export_assignment,
-            // TS enum (향후 IIFE 변환, 지금은 삭제)
-            .ts_enum_declaration,
-            .ts_enum_body,
-            .ts_enum_member,
+            // enum은 타입 전용이 아님 — 런타임 코드 생성이 필요
+            // visitNode의 switch에서 별도 처리
             => true,
             else => false,
         };
@@ -851,10 +873,11 @@ test "Integration: JS preserved alongside TS stripped" {
     try std.testing.expectEqual(@as(u32, 1), r.statementCount());
 }
 
-test "Integration: enum stripped" {
+test "Integration: enum preserved for codegen" {
+    // enum은 런타임 코드 생성 → 삭제되지 않고 codegen으로 전달
     var r = try parseAndTransform(std.testing.allocator, "enum Color { Red, Green, Blue }");
     defer r.deinit();
-    try std.testing.expectEqual(@as(u32, 0), r.statementCount());
+    try std.testing.expectEqual(@as(u32, 1), r.statementCount());
 }
 
 test "Integration: multiple JS statements preserved" {
@@ -883,5 +906,6 @@ test "Transformer: isTypeOnlyNode covers all TS type tags" {
     // TS 선언은 isTypeOnlyNode
     try std_lib.testing.expect(Transformer.isTypeOnlyNode(.ts_type_alias_declaration));
     try std_lib.testing.expect(Transformer.isTypeOnlyNode(.ts_interface_declaration));
-    try std_lib.testing.expect(Transformer.isTypeOnlyNode(.ts_enum_declaration));
+    // enum은 런타임 코드를 생성하므로 isTypeOnlyNode이 아님
+    try std_lib.testing.expect(!Transformer.isTypeOnlyNode(.ts_enum_declaration));
 }

@@ -183,6 +183,9 @@ pub const Codegen = struct {
 
             .formal_parameter => try self.emitFormalParam(node),
 
+            // TS enum → IIFE 출력
+            .ts_enum_declaration => try self.emitEnumIIFE(node),
+
             // TS 노드는 transformer에서 제거됨 — 여기 도달하면 strip_types=false
             else => try self.writeNodeSpan(node),
         }
@@ -730,6 +733,88 @@ pub const Codegen = struct {
     }
 
     // ================================================================
+    // TS enum → IIFE 출력
+    // ================================================================
+
+    /// enum Color { Red, Green = 5, Blue } →
+    /// var Color;(function(Color){Color[Color["Red"]=0]="Red";Color[Color["Green"]=5]="Green";Color[Color["Blue"]=6]="Blue";})(Color||(Color={}));
+    fn emitEnumIIFE(self: *Codegen, node: Node) !void {
+        const e = node.data.extra;
+        const extras = self.ast.extra_data.items[e .. e + 3];
+        const name_idx: NodeIndex = @enumFromInt(extras[0]);
+        const members_start = extras[1];
+        const members_len = extras[2];
+
+        // enum 이름 텍스트 가져오기
+        const name_node = self.ast.getNode(name_idx);
+        const name_text = self.ast.source[name_node.span.start..name_node.span.end];
+
+        // var Color;
+        try self.write("var ");
+        try self.write(name_text);
+        try self.writeByte(';');
+
+        // (function(Color){ ... })(Color||(Color={}));
+        try self.write("(function(");
+        try self.write(name_text);
+        try self.write("){");
+
+        // 각 멤버 출력
+        const member_indices = self.ast.extra_data.items[members_start .. members_start + members_len];
+        var auto_value: i64 = 0;
+
+        for (member_indices) |raw_idx| {
+            const member = self.ast.getNode(@enumFromInt(raw_idx));
+            // ts_enum_member: binary = { left=name, right=init_val }
+            const member_name_idx = member.data.binary.left;
+            const member_init_idx = member.data.binary.right;
+
+            const member_name = self.ast.getNode(member_name_idx);
+            const member_text = self.ast.source[member_name.span.start..member_name.span.end];
+
+            // Color[Color["Red"] = 0] = "Red";
+            try self.write(name_text);
+            try self.writeByte('[');
+            try self.write(name_text);
+            try self.write("[\"");
+            try self.write(member_text);
+            try self.write("\"]=");
+
+            if (!member_init_idx.isNone()) {
+                // 이니셜라이저가 있으면 그대로 출력
+                try self.emitNode(member_init_idx);
+                // 이니셜라이저가 숫자 리터럴이면 auto_value 업데이트
+                const init_node = self.ast.getNode(member_init_idx);
+                if (init_node.tag == .numeric_literal) {
+                    const num_text = self.ast.source[init_node.span.start..init_node.span.end];
+                    auto_value = std.fmt.parseInt(i64, num_text, 10) catch auto_value;
+                    auto_value += 1;
+                }
+            } else {
+                // 자동 증가 값 출력
+                try self.emitInt(auto_value);
+                auto_value += 1;
+            }
+
+            try self.write("]=\"");
+            try self.write(member_text);
+            try self.write("\";");
+        }
+
+        try self.write("})(");
+        try self.write(name_text);
+        try self.write("||(");
+        try self.write(name_text);
+        try self.write("={}));");
+    }
+
+    fn emitInt(self: *Codegen, value: i64) !void {
+        var buf: [20]u8 = undefined;
+        const len = std.fmt.formatIntBuf(&buf, value, 10, .lower, .{});
+        try self.buf.appendSlice(buf[0..len]);
+    }
+
+    // ================================================================
     // 리스트 헬퍼
     // ================================================================
 
@@ -837,4 +922,22 @@ test "Codegen: return statement" {
     var r = try e2e(std.testing.allocator, "return;");
     defer r.deinit();
     try std.testing.expectEqualStrings("return;", r.output);
+}
+
+test "Codegen: enum IIFE" {
+    var r = try e2e(std.testing.allocator, "enum Color { Red, Green, Blue }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings(
+        "var Color;(function(Color){Color[Color[\"Red\"]=0]=\"Red\";Color[Color[\"Green\"]=1]=\"Green\";Color[Color[\"Blue\"]=2]=\"Blue\";})(Color||(Color={}));",
+        r.output,
+    );
+}
+
+test "Codegen: enum with initializer" {
+    var r = try e2e(std.testing.allocator, "enum Status { Active = 1, Inactive = 0 }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings(
+        "var Status;(function(Status){Status[Status[\"Active\"]=1]=\"Active\";Status[Status[\"Inactive\"]=0]=\"Inactive\";})(Status||(Status={}));",
+        r.output,
+    );
 }
