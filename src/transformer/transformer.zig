@@ -447,15 +447,116 @@ pub const Transformer = struct {
 
     /// function/function_declaration/function_expression/arrow_function_expression
     /// extra_data = [name, params_start, params_len, body, flags, return_type]
+    ///
+    /// parameter property 변환:
+    ///   constructor(public x: number) {} →
+    ///   constructor(x) { this.x = x; }
     fn visitFunction(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
         const new_name = try self.visitNode(self.readNodeIdx(e, 0));
-        const new_params = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
-        const new_body = try self.visitNode(self.readNodeIdx(e, 3));
+
+        // 파라미터 방문 + parameter property 수집
+        const params_start = self.readU32(e, 1);
+        const params_len = self.readU32(e, 2);
+        const old_params = self.old_ast.extra_data.items[params_start .. params_start + params_len];
+
+        const scratch_top = self.scratch.items.len;
+        defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+        // parameter property 이름을 수집 (this.x = x 문 생성용)
+        var prop_names: [32]NodeIndex = undefined; // 최대 32개 parameter property
+        var prop_count: usize = 0;
+
+        for (old_params) |raw_idx| {
+            const param_node = self.old_ast.getNode(@enumFromInt(raw_idx));
+
+            // formal_parameter가 unary로 저장된 경우 = parameter property
+            // flags != 0 → modifier 있음 (public/private/protected/readonly)
+            if (param_node.tag == .formal_parameter and param_node.data.unary.flags != 0) {
+                // parameter property: modifier를 제거하고 내부 패턴만 복사
+                const inner = try self.visitNode(param_node.data.unary.operand);
+                try self.scratch.append(inner);
+
+                // this.x = x 문 생성을 위해 이름 저장
+                if (prop_count < prop_names.len) {
+                    prop_names[prop_count] = inner;
+                    prop_count += 1;
+                }
+            } else {
+                const new_param = try self.visitNode(@enumFromInt(raw_idx));
+                if (!new_param.isNone()) {
+                    try self.scratch.append(new_param);
+                }
+            }
+        }
+
+        const new_params = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+
+        // 바디 방문
+        var new_body = try self.visitNode(self.readNodeIdx(e, 3));
+
+        // parameter property가 있으면 바디 앞에 this.x = x 문 삽입
+        if (prop_count > 0 and !new_body.isNone()) {
+            new_body = try self.insertParameterPropertyAssignments(new_body, prop_names[0..prop_count]);
+        }
+
         const none = @intFromEnum(NodeIndex.none);
         return self.addExtraNode(node.tag, node.span, &.{
             @intFromEnum(new_name), new_params.start, new_params.len,
-            @intFromEnum(new_body), self.readU32(e, 4), none, // return_type 제거
+            @intFromEnum(new_body), self.readU32(e, 4), none,
+        });
+    }
+
+    /// block_statement 바디 앞에 this.x = x; 문들을 삽입한다.
+    fn insertParameterPropertyAssignments(self: *Transformer, body_idx: NodeIndex, prop_names: []const NodeIndex) Error!NodeIndex {
+        const body = self.new_ast.getNode(body_idx);
+        if (body.tag != .block_statement) return body_idx;
+
+        const old_list = body.data.list;
+        const scratch_top = self.scratch.items.len;
+        defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+        // this.x = x 문들을 먼저 추가
+        for (prop_names) |name_idx| {
+            const name_node = self.new_ast.getNode(name_idx);
+            // this 노드
+            const this_node = try self.new_ast.addNode(.{
+                .tag = .this_expression,
+                .span = name_node.span,
+                .data = .{ .none = 0 },
+            });
+            // this.x (static member)
+            const member = try self.new_ast.addNode(.{
+                .tag = .static_member_expression,
+                .span = name_node.span,
+                .data = .{ .binary = .{ .left = this_node, .right = name_idx, .flags = 0 } },
+            });
+            // this.x = x (assignment)
+            const assign = try self.new_ast.addNode(.{
+                .tag = .assignment_expression,
+                .span = name_node.span,
+                .data = .{ .binary = .{ .left = member, .right = name_idx, .flags = 0 } },
+            });
+            // expression_statement
+            const stmt = try self.new_ast.addNode(.{
+                .tag = .expression_statement,
+                .span = name_node.span,
+                .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
+            });
+            try self.scratch.append(stmt);
+        }
+
+        // 기존 바디 문들을 추가
+        const old_stmts = self.new_ast.extra_data.items[old_list.start .. old_list.start + old_list.len];
+        for (old_stmts) |raw_idx| {
+            try self.scratch.append(@enumFromInt(raw_idx));
+        }
+
+        const new_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+        return self.new_ast.addNode(.{
+            .tag = .block_statement,
+            .span = body.span,
+            .data = .{ .list = new_list },
         });
     }
 
