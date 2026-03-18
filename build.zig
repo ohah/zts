@@ -118,7 +118,7 @@ pub fn build(b: *std.Build) void {
     // test262.zig 내의 unit test를 실행한다.
     // `zig build test262` 로 실행 가능.
     const test262_mod = b.createModule(.{
-        .root_source_file = b.path("src/test262.zig"),
+        .root_source_file = b.path("src/test262/runner.zig"),
         .target = target,
         .optimize = optimize,
     });

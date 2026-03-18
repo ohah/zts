@@ -1,17 +1,16 @@
+//! ZTS — Zig TypeScript Transpiler
+//!
+//! 라이브러리 엔트리포인트. 모든 공개 모듈을 여기서 re-export한다.
+
 const std = @import("std");
-const testing = std.testing;
 
-pub const token = @import("token.zig");
-
-pub fn add(a: i32, b: i32) i32 {
-    return a + b;
-}
-
-test "basic add" {
-    try testing.expectEqual(@as(i32, 150), add(100, 50));
-}
+pub const lexer = @import("lexer/mod.zig");
+pub const parser = @import("parser/mod.zig");
+pub const transformer = @import("transformer/mod.zig");
+pub const codegen = @import("codegen/mod.zig");
+pub const test262 = @import("test262/mod.zig");
 
 test {
-    // token.zig 내의 모든 테스트를 포함
-    _ = token;
+    _ = lexer;
+    _ = test262;
 }
