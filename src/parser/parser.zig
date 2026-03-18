@@ -102,6 +102,21 @@ pub const Parser = struct {
         }) catch @panic("OOM: parser error list");
     }
 
+    /// scratch 버퍼의 현재 위치를 저장한다. 중첩 사용 시 save/restore 패턴.
+    /// 사용법:
+    ///   const top = self.saveScratch();
+    ///   // ... scratch에 append ...
+    ///   const items = self.scratch.items[top..];
+    ///   // ... items 사용 후 ...
+    ///   self.restoreScratch(top);
+    fn saveScratch(self: *const Parser) usize {
+        return self.scratch.items.len;
+    }
+
+    fn restoreScratch(self: *Parser, top: usize) void {
+        self.scratch.shrinkRetainingCapacity(top);
+    }
+
     /// 현재 토큰의 소스 텍스트.
     fn tokenText(self: *const Parser) []const u8 {
         return self.scanner.tokenText();
@@ -212,7 +227,7 @@ pub const Parser = struct {
         };
         self.advance(); // skip var/let/const
 
-        self.scratch.clearRetainingCapacity();
+        const scratch_top = self.saveScratch();
         while (true) {
             const decl = try self.parseVariableDeclarator();
             try self.scratch.append(decl);
@@ -222,7 +237,8 @@ pub const Parser = struct {
         const end = self.currentSpan().end;
         _ = self.eat(.semicolon);
 
-        const list = try self.ast.addNodeList(self.scratch.items);
+        const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        self.restoreScratch(scratch_top);
         // extra_data: [kind_flags, list.start, list.len]
         const extra_start = try self.ast.addExtra(kind_flags);
         _ = try self.ast.addExtra(list.start);
@@ -437,7 +453,7 @@ pub const Parser = struct {
         self.expect(.r_paren);
         self.expect(.l_curly);
 
-        self.scratch.clearRetainingCapacity();
+        const scratch_top = self.saveScratch();
         while (self.current() != .r_curly and self.current() != .eof) {
             const case_node = try self.parseSwitchCase();
             try self.scratch.append(case_node);
@@ -446,7 +462,8 @@ pub const Parser = struct {
         const end = self.currentSpan().end;
         self.expect(.r_curly);
 
-        const cases = try self.ast.addNodeList(self.scratch.items);
+        const cases = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        self.restoreScratch(scratch_top);
         const extra_start = try self.ast.addExtra(@intFromEnum(discriminant));
         _ = try self.ast.addExtra(cases.start);
         _ = try self.ast.addExtra(cases.len);
@@ -468,22 +485,23 @@ pub const Parser = struct {
         } else if (self.eat(.kw_default)) {
             self.expect(.colon);
         } else {
-            self.addError(self.currentSpan(), "case or default expected");
+            const err_span = self.currentSpan();
+            self.addError(err_span, "case or default expected");
             self.advance();
-            return try self.ast.addNode(.{ .tag = .invalid, .span = self.currentSpan(), .data = .{ .none = {} } });
+            return try self.ast.addNode(.{ .tag = .invalid, .span = err_span, .data = .{ .none = {} } });
         }
 
         // case 본문: 다음 case/default/} 전까지
-        var stmts = std.ArrayList(NodeIndex).init(self.allocator);
-        defer stmts.deinit();
+        const body_top = self.saveScratch();
         while (self.current() != .kw_case and self.current() != .kw_default and
             self.current() != .r_curly and self.current() != .eof)
         {
             const stmt = try self.parseStatement();
-            if (!stmt.isNone()) try stmts.append(stmt);
+            if (!stmt.isNone()) try self.scratch.append(stmt);
         }
 
-        const body = try self.ast.addNodeList(stmts.items);
+        const body = try self.ast.addNodeList(self.scratch.items[body_top..]);
+        self.restoreScratch(body_top);
         const extra_start = try self.ast.addExtra(@intFromEnum(test_expr));
         _ = try self.ast.addExtra(body.start);
         _ = try self.ast.addExtra(body.len);
@@ -680,7 +698,7 @@ pub const Parser = struct {
                 .l_paren => {
                     // 함수 호출
                     self.advance();
-                    self.scratch.clearRetainingCapacity();
+                    const scratch_top = self.saveScratch();
                     while (self.current() != .r_paren and self.current() != .eof) {
                         const arg = try self.parseAssignmentExpression();
                         try self.scratch.append(arg);
@@ -688,7 +706,8 @@ pub const Parser = struct {
                     }
                     self.expect(.r_paren);
 
-                    const arg_list = try self.ast.addNodeList(self.scratch.items);
+                    const arg_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+                    self.restoreScratch(scratch_top);
                     expr = try self.ast.addNode(.{
                         .tag = .call_expression,
                         .span = .{ .start = expr_start, .end = self.currentSpan().start },
@@ -1135,6 +1154,41 @@ test "Parser: switch statement" {
 
 test "Parser: for with empty parts" {
     var scanner = Scanner.init(std.testing.allocator, "for (;;) { }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: switch with var in case body (scratch nesting)" {
+    // 이 테스트는 scratch save/restore가 올바르게 동작하는지 검증한다.
+    // case 본문에 var 선언이 있으면 scratch를 중첩 사용하게 되는데,
+    // save/restore 없이 clearRetainingCapacity를 쓰면 이전 case가 사라진다.
+    var scanner = Scanner.init(std.testing.allocator,
+        \\switch (x) {
+        \\  case 1:
+        \\    var a = 1;
+        \\    break;
+        \\  case 2:
+        \\    var b = 2;
+        \\    break;
+        \\  default:
+        \\    break;
+        \\}
+    );
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: nested call in var initializer (scratch nesting)" {
+    // var x = foo(bar(1, 2), 3); — 중첩 호출에서 scratch가 안전한지 검증
+    var scanner = Scanner.init(std.testing.allocator, "var x = foo(bar(1, 2), 3);");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
