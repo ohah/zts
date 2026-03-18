@@ -145,7 +145,9 @@ pub const Parser = struct {
             .kw_return => self.parseReturnStatement(),
             .kw_if => self.parseIfStatement(),
             .kw_while => self.parseWhileStatement(),
+            .kw_do => self.parseDoWhileStatement(),
             .kw_for => self.parseForStatement(),
+            .kw_switch => self.parseSwitchStatement(),
             .kw_break => self.parseSimpleStatement(.break_statement),
             .kw_continue => self.parseSimpleStatement(.continue_statement),
             .kw_throw => self.parseThrowStatement(),
@@ -308,24 +310,63 @@ pub const Parser = struct {
         });
     }
 
+    fn parseDoWhileStatement(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+        self.advance(); // skip 'do'
+        const body = try self.parseStatement();
+        self.expect(.kw_while);
+        self.expect(.l_paren);
+        const test_expr = try self.parseExpression();
+        self.expect(.r_paren);
+        _ = self.eat(.semicolon);
+
+        return try self.ast.addNode(.{
+            .tag = .do_while_statement,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .binary = .{ .left = test_expr, .right = body } },
+        });
+    }
+
     fn parseForStatement(self: *Parser) !NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'for'
         self.expect(.l_paren);
 
-        // 간단한 for(;;) 파싱 — for-in/for-of는 추후 PR
-        var init_expr = NodeIndex.none;
-        if (self.current() != .semicolon) {
-            if (self.current() == .kw_var or self.current() == .kw_let or self.current() == .kw_const) {
-                init_expr = try self.parseVariableDeclaration();
-            } else {
-                init_expr = try self.parseExpression();
-                _ = self.eat(.semicolon);
-            }
-        } else {
-            self.advance(); // skip ;
+        // for문의 init 부분 파싱
+        // for(init; ...) or for(left in/of right)
+        if (self.current() == .semicolon) {
+            // for(; ...) — 빈 init
+            self.advance();
+            return self.parseForRest(start, NodeIndex.none);
         }
 
+        if (self.current() == .kw_var or self.current() == .kw_let or self.current() == .kw_const) {
+            const init_expr = try self.parseVariableDeclaration();
+            // parseVariableDeclaration이 세미콜론을 소비했으면 for(;;)
+            // 'in' 또는 'of'가 보이면 for-in/for-of
+            if (self.current() == .kw_in) {
+                return self.parseForIn(start, init_expr);
+            }
+            if (self.current() == .kw_of) {
+                return self.parseForOf(start, init_expr);
+            }
+            return self.parseForRest(start, init_expr);
+        }
+
+        // 일반 표현식 init
+        const init_expr = try self.parseExpression();
+        if (self.current() == .kw_in) {
+            return self.parseForIn(start, init_expr);
+        }
+        if (self.current() == .kw_of) {
+            return self.parseForOf(start, init_expr);
+        }
+        _ = self.eat(.semicolon);
+        return self.parseForRest(start, init_expr);
+    }
+
+    /// for(init; test; update) body — 나머지 파싱
+    fn parseForRest(self: *Parser, start: u32, init_expr: NodeIndex) !NodeIndex {
         var test_expr = NodeIndex.none;
         if (self.current() != .semicolon) {
             test_expr = try self.parseExpression();
@@ -340,7 +381,6 @@ pub const Parser = struct {
 
         const body = try self.parseStatement();
 
-        // for는 4개 자식 → extra_data에 저장
         const extra_start = try self.ast.addExtra(@intFromEnum(init_expr));
         _ = try self.ast.addExtra(@intFromEnum(test_expr));
         _ = try self.ast.addExtra(@intFromEnum(update_expr));
@@ -353,12 +393,106 @@ pub const Parser = struct {
         });
     }
 
+    /// for(left in right) body
+    fn parseForIn(self: *Parser, start: u32, left: NodeIndex) !NodeIndex {
+        self.advance(); // skip 'in'
+        const right = try self.parseExpression();
+        self.expect(.r_paren);
+        const body = try self.parseStatement();
+
+        return try self.ast.addNode(.{
+            .tag = .for_in_statement,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .ternary = .{ .a = left, .b = right, .c = body } },
+        });
+    }
+
+    /// for(left of right) body
+    fn parseForOf(self: *Parser, start: u32, left: NodeIndex) !NodeIndex {
+        self.advance(); // skip 'of'
+        const right = try self.parseAssignmentExpression();
+        self.expect(.r_paren);
+        const body = try self.parseStatement();
+
+        return try self.ast.addNode(.{
+            .tag = .for_of_statement,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .ternary = .{ .a = left, .b = right, .c = body } },
+        });
+    }
+
     /// break, continue, debugger 등 키워드 + 세미콜론만으로 구성된 단순 문.
     fn parseSimpleStatement(self: *Parser, tag: Tag) !NodeIndex {
         const span = self.currentSpan();
         self.advance();
         _ = self.eat(.semicolon);
         return try self.ast.addNode(.{ .tag = tag, .span = span, .data = .{ .none = {} } });
+    }
+
+    fn parseSwitchStatement(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+        self.advance(); // skip 'switch'
+        self.expect(.l_paren);
+        const discriminant = try self.parseExpression();
+        self.expect(.r_paren);
+        self.expect(.l_curly);
+
+        self.scratch.clearRetainingCapacity();
+        while (self.current() != .r_curly and self.current() != .eof) {
+            const case_node = try self.parseSwitchCase();
+            try self.scratch.append(case_node);
+        }
+
+        const end = self.currentSpan().end;
+        self.expect(.r_curly);
+
+        const cases = try self.ast.addNodeList(self.scratch.items);
+        const extra_start = try self.ast.addExtra(@intFromEnum(discriminant));
+        _ = try self.ast.addExtra(cases.start);
+        _ = try self.ast.addExtra(cases.len);
+
+        return try self.ast.addNode(.{
+            .tag = .switch_statement,
+            .span = .{ .start = start, .end = end },
+            .data = .{ .extra = extra_start },
+        });
+    }
+
+    fn parseSwitchCase(self: *Parser) !NodeIndex {
+        const start = self.currentSpan().start;
+
+        var test_expr = NodeIndex.none;
+        if (self.eat(.kw_case)) {
+            test_expr = try self.parseExpression();
+            self.expect(.colon);
+        } else if (self.eat(.kw_default)) {
+            self.expect(.colon);
+        } else {
+            self.addError(self.currentSpan(), "case or default expected");
+            self.advance();
+            return try self.ast.addNode(.{ .tag = .invalid, .span = self.currentSpan(), .data = .{ .none = {} } });
+        }
+
+        // case 본문: 다음 case/default/} 전까지
+        var stmts = std.ArrayList(NodeIndex).init(self.allocator);
+        defer stmts.deinit();
+        while (self.current() != .kw_case and self.current() != .kw_default and
+            self.current() != .r_curly and self.current() != .eof)
+        {
+            const stmt = try self.parseStatement();
+            if (!stmt.isNone()) try stmts.append(stmt);
+        }
+
+        const body = try self.ast.addNodeList(stmts.items);
+        const extra_start = try self.ast.addExtra(@intFromEnum(test_expr));
+        _ = try self.ast.addExtra(body.start);
+        _ = try self.ast.addExtra(body.len);
+
+        return try self.ast.addNode(.{
+            .tag = .switch_case,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .extra = extra_start },
+        });
     }
 
     fn parseThrowStatement(self: *Parser) !NodeIndex {
@@ -950,6 +1084,61 @@ test "Parser: error recovery" {
     defer parser.deinit();
 
     _ = try parser.parse();
-    // 에러가 수집되지만 파싱은 계속됨
     try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "Parser: do-while statement" {
+    var scanner = Scanner.init(std.testing.allocator, "do { x++; } while (x < 10);");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: for-in statement" {
+    var scanner = Scanner.init(std.testing.allocator, "for (var key in obj) { }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: for-of statement" {
+    var scanner = Scanner.init(std.testing.allocator, "for (const item of arr) { }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: switch statement" {
+    var scanner = Scanner.init(std.testing.allocator,
+        \\switch (x) {
+        \\  case 1: break;
+        \\  case 2: return 2;
+        \\  default: return 0;
+        \\}
+    );
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: for with empty parts" {
+    var scanner = Scanner.init(std.testing.allocator, "for (;;) { }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
 }
