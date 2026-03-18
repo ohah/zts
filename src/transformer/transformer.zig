@@ -791,9 +791,33 @@ test "Transformer: strip ts_as_expression" {
 // 통합 테스트: 파서 → transformer 연동
 // ============================================================
 
-/// 테스트 헬퍼: 소스 코드를 파싱하고 transformer를 실행한다.
-/// 변환된 AST의 program 노드를 반환한다.
-fn parseAndTransform(allocator: std.mem.Allocator, source: []const u8) !struct { ast: Ast, root: NodeIndex, scanner: *Scanner, parser: *Parser } {
+const Scanner = @import("../lexer/scanner.zig").Scanner;
+const Parser = @import("../parser/parser.zig").Parser;
+
+/// 통합 테스트 결과. deinit()으로 모든 리소스를 한 번에 해제.
+const TestResult = struct {
+    ast: Ast,
+    root: NodeIndex,
+    scanner: *Scanner,
+    parser: *Parser,
+    allocator: std.mem.Allocator,
+
+    fn deinit(self: *TestResult) void {
+        self.ast.deinit();
+        self.parser.deinit();
+        self.allocator.destroy(self.parser);
+        self.scanner.deinit();
+        self.allocator.destroy(self.scanner);
+    }
+
+    /// program의 statement 수를 반환.
+    fn statementCount(self: *const TestResult) u32 {
+        return self.ast.getNode(self.root).data.list.len;
+    }
+};
+
+/// 테스트 헬퍼: 소스 코드를 파싱 → transformer 실행.
+fn parseAndTransform(allocator: std.mem.Allocator, source: []const u8) !TestResult {
     const scanner_ptr = try allocator.create(Scanner);
     scanner_ptr.* = Scanner.init(allocator, source);
 
@@ -804,114 +828,39 @@ fn parseAndTransform(allocator: std.mem.Allocator, source: []const u8) !struct {
 
     var t = Transformer.init(allocator, &parser_ptr.ast, .{});
     const root = try t.transform();
-
-    // transformer의 scratch는 변환 후 불필요 → 해제
     t.scratch.deinit();
-    // new_ast는 반환하므로 t.deinit()을 호출하면 안 됨
-    return .{ .ast = t.new_ast, .root = root, .scanner = scanner_ptr, .parser = parser_ptr };
-}
 
-const Scanner = @import("../lexer/scanner.zig").Scanner;
-const Parser = @import("../parser/parser.zig").Parser;
-
-/// 변환된 AST에 특정 태그의 노드가 있는지 재귀적으로 검사.
-fn astContainsTag(ast: *const Ast, idx: NodeIndex, tag: Tag) bool {
-    if (idx.isNone()) return false;
-    const node = ast.getNode(idx);
-    if (node.tag == tag) return true;
-
-    // 자식 검사 — data 타입에 따라 재귀
-    // unary
-    if (!node.data.unary.operand.isNone() and astContainsTag(ast, node.data.unary.operand, tag)) return true;
-    // binary (left는 unary.operand와 같은 오프셋)
-    if (!node.data.binary.right.isNone() and astContainsTag(ast, node.data.binary.right, tag)) return true;
-    // ternary
-    if (!node.data.ternary.c.isNone() and astContainsTag(ast, node.data.ternary.c, tag)) return true;
-
-    // list
-    const list = node.data.list;
-    if (list.len > 0 and list.start + list.len <= ast.extra_data.items.len) {
-        const indices = ast.extra_data.items[list.start .. list.start + list.len];
-        for (indices) |raw_idx| {
-            if (astContainsTag(ast, @enumFromInt(raw_idx), tag)) return true;
-        }
-    }
-
-    return false;
-}
-
-/// 변환된 AST의 program statement 수를 반환.
-fn countProgramStatements(ast: *const Ast, root: NodeIndex) u32 {
-    const prog = ast.getNode(root);
-    return prog.data.list.len;
+    return .{ .ast = t.new_ast, .root = root, .scanner = scanner_ptr, .parser = parser_ptr, .allocator = allocator };
 }
 
 test "Integration: type alias stripped" {
-    // `type Foo = string;` → 빈 program
-    const alloc = std.testing.allocator;
-    var result = try parseAndTransform(alloc, "type Foo = string;");
-    defer {
-        result.ast.deinit();
-        result.parser.deinit();
-        alloc.destroy(result.parser);
-        result.scanner.deinit();
-        alloc.destroy(result.scanner);
-    }
-    try std.testing.expectEqual(@as(u32, 0), countProgramStatements(&result.ast, result.root));
+    var r = try parseAndTransform(std.testing.allocator, "type Foo = string;");
+    defer r.deinit();
+    try std.testing.expectEqual(@as(u32, 0), r.statementCount());
 }
 
 test "Integration: interface stripped" {
-    const alloc = std.testing.allocator;
-    var result = try parseAndTransform(alloc, "interface Foo { bar: string; }");
-    defer {
-        result.ast.deinit();
-        result.parser.deinit();
-        alloc.destroy(result.parser);
-        result.scanner.deinit();
-        alloc.destroy(result.scanner);
-    }
-    try std.testing.expectEqual(@as(u32, 0), countProgramStatements(&result.ast, result.root));
+    var r = try parseAndTransform(std.testing.allocator, "interface Foo { bar: string; }");
+    defer r.deinit();
+    try std.testing.expectEqual(@as(u32, 0), r.statementCount());
 }
 
 test "Integration: JS preserved alongside TS stripped" {
-    // `const x = 1; type Foo = string;` → 1 statement (const x = 1)
-    const alloc = std.testing.allocator;
-    var result = try parseAndTransform(alloc, "const x = 1; type Foo = string;");
-    defer {
-        result.ast.deinit();
-        result.parser.deinit();
-        alloc.destroy(result.parser);
-        result.scanner.deinit();
-        alloc.destroy(result.scanner);
-    }
-    try std.testing.expectEqual(@as(u32, 1), countProgramStatements(&result.ast, result.root));
+    var r = try parseAndTransform(std.testing.allocator, "const x = 1; type Foo = string;");
+    defer r.deinit();
+    try std.testing.expectEqual(@as(u32, 1), r.statementCount());
 }
 
 test "Integration: enum stripped" {
-    const alloc = std.testing.allocator;
-    var result = try parseAndTransform(alloc, "enum Color { Red, Green, Blue }");
-    defer {
-        result.ast.deinit();
-        result.parser.deinit();
-        alloc.destroy(result.parser);
-        result.scanner.deinit();
-        alloc.destroy(result.scanner);
-    }
-    // enum은 현재 삭제 (향후 IIFE 변환)
-    try std.testing.expectEqual(@as(u32, 0), countProgramStatements(&result.ast, result.root));
+    var r = try parseAndTransform(std.testing.allocator, "enum Color { Red, Green, Blue }");
+    defer r.deinit();
+    try std.testing.expectEqual(@as(u32, 0), r.statementCount());
 }
 
 test "Integration: multiple JS statements preserved" {
-    const alloc = std.testing.allocator;
-    var result = try parseAndTransform(alloc, "const x = 1; let y = 2; var z = 3;");
-    defer {
-        result.ast.deinit();
-        result.parser.deinit();
-        alloc.destroy(result.parser);
-        result.scanner.deinit();
-        alloc.destroy(result.scanner);
-    }
-    try std.testing.expectEqual(@as(u32, 3), countProgramStatements(&result.ast, result.root));
+    var r = try parseAndTransform(std.testing.allocator, "const x = 1; let y = 2; var z = 3;");
+    defer r.deinit();
+    try std.testing.expectEqual(@as(u32, 3), r.statementCount());
 }
 
 test "Transformer: isTypeOnlyNode covers all TS type tags" {
