@@ -183,8 +183,9 @@ pub const Codegen = struct {
 
             .formal_parameter => try self.emitFormalParam(node),
 
-            // TS enum → IIFE 출력
+            // TS enum/namespace → IIFE 출력
             .ts_enum_declaration => try self.emitEnumIIFE(node),
+            .ts_module_declaration => try self.emitNamespaceIIFE(node),
 
             // TS 노드는 transformer에서 제거됨 — 여기 도달하면 strip_types=false
             else => try self.writeNodeSpan(node),
@@ -808,6 +809,139 @@ pub const Codegen = struct {
         try self.write("={}));");
     }
 
+    // ================================================================
+    // TS namespace → IIFE 출력
+    // ================================================================
+
+    /// namespace Foo { export const x = 1; } →
+    /// var Foo;(function(Foo){const x=1;Foo.x=x;})(Foo||(Foo={}));
+    ///
+    /// 현재 단순 구현: 내부 문을 그대로 출력하고, export 문은 Foo.name = name으로 변환.
+    fn emitNamespaceIIFE(self: *Codegen, node: Node) !void {
+        const name_idx = node.data.binary.left;
+        const body_idx = node.data.binary.right;
+
+        // 중첩 namespace (A.B.C)인 경우: right가 ts_module_declaration
+        const body_node = self.ast.getNode(body_idx);
+        if (body_node.tag == .ts_module_declaration) {
+            // 외부 namespace IIFE를 열고, 내부를 재귀 처리
+            const name_node = self.ast.getNode(name_idx);
+            const name_text = self.ast.source[name_node.span.start..name_node.span.end];
+
+            try self.write("var ");
+            try self.write(name_text);
+            try self.writeByte(';');
+            try self.write("(function(");
+            try self.write(name_text);
+            try self.write("){");
+            // 내부 namespace를 재귀 출력
+            try self.emitNamespaceIIFE(body_node);
+            try self.write("})(");
+            try self.write(name_text);
+            try self.write("||(");
+            try self.write(name_text);
+            try self.write("={}));");
+            return;
+        }
+
+        // body가 block_statement인 경우 (일반 namespace)
+        const name_node = self.ast.getNode(name_idx);
+        const name_text = self.ast.source[name_node.span.start..name_node.span.end];
+
+        // var Foo;
+        try self.write("var ");
+        try self.write(name_text);
+        try self.writeByte(';');
+
+        // (function(Foo){ ... })(Foo||(Foo={}));
+        try self.write("(function(");
+        try self.write(name_text);
+        try self.write("){");
+
+        // body의 각 statement 출력
+        // export 문은 Foo.name = expr 형태로 변환
+        if (body_node.tag == .block_statement) {
+            const list = body_node.data.list;
+            const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+            for (indices) |raw_idx| {
+                const stmt_node = self.ast.getNode(@enumFromInt(raw_idx));
+                switch (stmt_node.tag) {
+                    .export_named_declaration => {
+                        // export const x = 1; → const x = 1; Foo.x = x;
+                        const e = stmt_node.data.extra;
+                        const extras = self.ast.extra_data.items[e .. e + 4];
+                        const decl_idx: NodeIndex = @enumFromInt(extras[0]);
+                        if (!decl_idx.isNone()) {
+                            try self.emitNode(decl_idx);
+                            // 선언에서 이름을 추출하여 Foo.name = name 추가
+                            try self.emitNamespaceExport(name_text, decl_idx);
+                        }
+                    },
+                    .export_default_declaration => {
+                        // export default expr → Foo.default = expr;
+                        try self.write(name_text);
+                        try self.write(".default=");
+                        try self.emitNode(stmt_node.data.unary.operand);
+                        try self.writeByte(';');
+                    },
+                    else => try self.emitNode(@enumFromInt(raw_idx)),
+                }
+            }
+        }
+
+        try self.write("})(");
+        try self.write(name_text);
+        try self.write("||(");
+        try self.write(name_text);
+        try self.write("={}));");
+    }
+
+    /// namespace 내부의 export 선언에서 이름을 추출하여 Foo.name = name; 형태로 출력.
+    fn emitNamespaceExport(self: *Codegen, ns_name: []const u8, decl_idx: NodeIndex) !void {
+        const decl = self.ast.getNode(decl_idx);
+        switch (decl.tag) {
+            .variable_declaration => {
+                // const x = 1, y = 2; → Foo.x = x; Foo.y = y;
+                const e = decl.data.extra;
+                const extras = self.ast.extra_data.items[e .. e + 3];
+                const list_start = extras[1];
+                const list_len = extras[2];
+                const declarators = self.ast.extra_data.items[list_start .. list_start + list_len];
+                for (declarators) |raw_idx| {
+                    const declarator = self.ast.getNode(@enumFromInt(raw_idx));
+                    const de = declarator.data.extra;
+                    const d_extras = self.ast.extra_data.items[de .. de + 3];
+                    const name_idx: NodeIndex = @enumFromInt(d_extras[0]);
+                    const var_name_node = self.ast.getNode(name_idx);
+                    const var_name = self.ast.source[var_name_node.span.start..var_name_node.span.end];
+                    try self.write(ns_name);
+                    try self.writeByte('.');
+                    try self.write(var_name);
+                    try self.writeByte('=');
+                    try self.write(var_name);
+                    try self.writeByte(';');
+                }
+            },
+            .function_declaration, .class_declaration => {
+                // function foo() {} → Foo.foo = foo;
+                const e = decl.data.extra;
+                const extras = self.ast.extra_data.items[e .. e + 6];
+                const name_idx: NodeIndex = @enumFromInt(extras[0]);
+                if (!name_idx.isNone()) {
+                    const fn_name_node = self.ast.getNode(name_idx);
+                    const fn_name = self.ast.source[fn_name_node.span.start..fn_name_node.span.end];
+                    try self.write(ns_name);
+                    try self.writeByte('.');
+                    try self.write(fn_name);
+                    try self.writeByte('=');
+                    try self.write(fn_name);
+                    try self.writeByte(';');
+                }
+            },
+            else => {},
+        }
+    }
+
     fn emitInt(self: *Codegen, value: i64) !void {
         var buf: [20]u8 = undefined;
         const len = std.fmt.formatIntBuf(&buf, value, 10, .lower, .{});
@@ -929,6 +1063,16 @@ test "Codegen: enum IIFE" {
     defer r.deinit();
     try std.testing.expectEqualStrings(
         "var Color;(function(Color){Color[Color[\"Red\"]=0]=\"Red\";Color[Color[\"Green\"]=1]=\"Green\";Color[Color[\"Blue\"]=2]=\"Blue\";})(Color||(Color={}));",
+        r.output,
+    );
+}
+
+test "Codegen: namespace IIFE" {
+    var r = try e2e(std.testing.allocator, "namespace Foo { const x = 1; }");
+    defer r.deinit();
+    // 내부 const는 export 아니므로 Foo.x = x 없음
+    try std.testing.expectEqualStrings(
+        "var Foo;(function(Foo){const x=1;})(Foo||(Foo={}));",
         r.output,
     );
 }
