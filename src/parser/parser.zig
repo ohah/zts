@@ -168,6 +168,7 @@ pub const Parser = struct {
             .kw_throw => self.parseThrowStatement(),
             .kw_try => self.parseTryStatement(),
             .kw_debugger => self.parseSimpleStatement(.debugger_statement),
+            .kw_async => self.parseAsyncStatement(),
             .kw_function => self.parseFunctionDeclaration(),
             .kw_class => self.parseClassDeclaration(),
             .kw_import => self.parseImportDeclaration(),
@@ -581,8 +582,18 @@ pub const Parser = struct {
     }
 
     fn parseFunctionDeclaration(self: *Parser) !NodeIndex {
+        return self.parseFunctionDeclarationWithFlags(0);
+    }
+
+    fn parseFunctionDeclarationWithFlags(self: *Parser, extra_flags: u32) !NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'function'
+
+        // generator: function* name()
+        var flags = extra_flags;
+        if (self.eat(.star)) {
+            flags |= 0x02; // generator flag
+        }
 
         // 함수 이름
         const name = try self.parseBindingIdentifier();
@@ -606,12 +617,26 @@ pub const Parser = struct {
         _ = try self.ast.addExtra(param_list.start);
         _ = try self.ast.addExtra(param_list.len);
         _ = try self.ast.addExtra(@intFromEnum(body));
+        _ = try self.ast.addExtra(flags);
 
         return try self.ast.addNode(.{
             .tag = .function_declaration,
             .span = .{ .start = start, .end = self.currentSpan().start },
             .data = .{ .extra = extra_start },
         });
+    }
+
+    /// async function / async arrow를 파싱한다.
+    /// async 뒤에 function이 오면 async function declaration,
+    /// 그 외는 expression statement로 처리.
+    fn parseAsyncStatement(self: *Parser) !NodeIndex {
+        const next = self.peekNextKind();
+        if (next == .kw_function) {
+            self.advance(); // skip 'async'
+            return self.parseFunctionDeclarationWithFlags(0x01); // 0x01 = async flag
+        }
+        // async가 식별자인 경우 → expression statement
+        return self.parseExpressionStatement();
     }
 
     fn parseFunctionExpression(self: *Parser) !NodeIndex {
@@ -1243,6 +1268,30 @@ pub const Parser = struct {
                     .tag = .await_expression,
                     .span = .{ .start = start, .end = self.currentSpan().start },
                     .data = .{ .unary = .{ .operand = operand } },
+                });
+            },
+            .kw_yield => {
+                const start = self.currentSpan().start;
+                self.advance();
+                // yield* delegate
+                var flags: u16 = 0;
+                if (self.eat(.star)) {
+                    flags = 1; // delegate
+                }
+                var operand = NodeIndex.none;
+                // yield 뒤에 줄바꿈 없이 expression이 오면 yield의 인자
+                if (!self.scanner.token.has_newline_before and
+                    self.current() != .semicolon and self.current() != .r_curly and
+                    self.current() != .r_paren and self.current() != .r_bracket and
+                    self.current() != .colon and self.current() != .comma and
+                    self.current() != .eof)
+                {
+                    operand = try self.parseAssignmentExpression();
+                }
+                return try self.ast.addNode(.{
+                    .tag = .yield_expression,
+                    .span = .{ .start = start, .end = self.currentSpan().start },
+                    .data = .{ .unary = .{ .operand = operand, .flags = flags } },
                 });
             },
             else => return self.parsePostfixExpression(),
@@ -2321,4 +2370,45 @@ test "Parser: dynamic import expression" {
 
     _ = try parser.parse();
     try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: async function declaration" {
+    var scanner = Scanner.init(std.testing.allocator, "async function fetchData() { return await fetch(); }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: generator function" {
+    var scanner = Scanner.init(std.testing.allocator, "function* gen() { yield 1; yield 2; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: yield delegate" {
+    var scanner = Scanner.init(std.testing.allocator, "function* gen() { yield* other(); }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: async arrow function" {
+    var scanner = Scanner.init(std.testing.allocator, "const f = async () => { await fetch(); };");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    // async arrow는 현재 async가 expression statement로 파싱됨
+    // 완전한 async arrow는 추후 구현 (BACKLOG #35)
 }
