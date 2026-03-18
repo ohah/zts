@@ -24,16 +24,21 @@
 
 ---
 
-## 결정 필요
-
 ### D005: TypeScript 버전 지원 범위
-- **옵션 A**: TS 5.5까지 (현재 실무 대부분 커버)
-- **옵션 B**: TS 5.8까지 (현재 최신)
-- **옵션 C**: 최신 stable 항상 추적
-- **고려사항**:
-  - 버전별로 추가되는 건 주로 "삭제" 구문이라 부담 적음
-  - 변환이 필요한 구문은 거의 추가 안 됨
-  - import defer (TS 5.9)는 패스스루라 파서만 인식하면 됨
+- **결정**: TS 5.8 (최신 stable) 전체 지원, 새 버전 나오면 점진적 추가
+- **이유**: TS 구문은 누적(상위 호환). 5.8 파서를 만들면 4.x도 자동 파싱. 버전별 차이는 트랜스포머 분기로 처리
+
+### D008: JSX Transform 방식
+- **결정**: Classic + Automatic 둘 다 지원
+- **이유**: 파서에는 영향 없음. JSX 구문 파싱은 동일하고 트랜스포머에서 설정으로 분기. SWC/oxc 둘 다 전부 지원
+
+### D011: isolatedModules 모드
+- **결정**: 항상 isolatedModules 모드 (파일 단위 독립 처리)
+- **이유**: SWC/oxc/esbuild/Bun 전부 이 방식. 크로스 파일 분석은 번들러 영역. const enum은 같은 파일 내에서만 인라이닝, 크로스 파일은 일반 enum으로 폴백
+
+---
+
+## 결정 필요
 
 ### D006: ESM / CJS 출력 형식
 - **옵션 A**: ESM only
@@ -49,12 +54,6 @@
   - 다운레벨링은 별도 Phase로 분리 가능
   - 처음엔 안 하고 추후 추가하는 게 현실적
   - SWC는 preset-env 수준으로 세밀하게 지원
-
-### D008: JSX Transform 방식
-- **옵션 A**: Classic (React.createElement)
-- **옵션 B**: Automatic (react/jsx-runtime, React 17+)
-- **옵션 C**: 둘 다 + 커스텀 pragma
-- **고려사항**: SWC/oxc 둘 다 전부 지원
 
 ### D009: 소스맵
 - **옵션 A**: inline only
@@ -75,13 +74,6 @@
   - paths / baseUrl (번들러 영역이라 일단 무시?)
   - extends (tsconfig 상속)
 
-### D011: isolatedModules 모드
-- **옵션 A**: 항상 isolatedModules 모드 (파일 단위 독립 처리)
-- **옵션 B**: 선택적
-- **고려사항**:
-  - SWC/oxc/esbuild/Bun 전부 사실상 isolatedModules
-  - 크로스 파일 const enum 인라이닝 불가
-  - 사실상 A가 표준
 
 ### D012: 에러 출력 형식
 - **옵션 A**: 단순 텍스트

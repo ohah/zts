@@ -113,4 +113,19 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_unit_tests.step);
     test_step.dependOn(&run_exe_unit_tests.step);
+
+    // Test262 러너 테스트
+    // test262.zig 내의 unit test를 실행한다.
+    // `zig build test262` 로 실행 가능.
+    const test262_mod = b.createModule(.{
+        .root_source_file = b.path("src/test262.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const test262_unit_tests = b.addTest(.{
+        .root_module = test262_mod,
+    });
+    const run_test262_unit_tests = b.addRunArtifact(test262_unit_tests);
+    const test262_step = b.step("test262", "Run Test262 runner tests");
+    test262_step.dependOn(&run_test262_unit_tests.step);
 }

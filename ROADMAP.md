@@ -20,8 +20,33 @@ JS/TS 소스 코드를 토큰으로 분리.
 - [ ] SIMD 최적화 (공백 스킵, 식별자 스캔)
 - [ ] 유니코드 식별자 지원
 
-### 검증
-- [ ] Test262 토큰 테스트 통과
+### Test262 러너
+렉서/파서 구현과 동시에 Test262로 검증.
+
+- [ ] Test262 메타데이터 파서 (YAML frontmatter: negative, flags, features 등)
+- [ ] 테스트 실행기 (pass/fail 판정)
+  - `negative.phase: parse` → 파서가 에러를 던져야 통과
+  - `negative` 없음 → 파서가 에러 없이 파싱해야 통과
+  - `flags: [module]` → ESM 모드로 파싱
+  - `flags: [noStrict]` / `flags: [onlyStrict]` → strict mode 제어
+- [ ] 카테고리별 실행 (`--test262 test/language/literals/`)
+- [ ] 통과율 리포트 (총 N개 중 M개 통과, X% pass rate)
+- [ ] CI 연동 (test262.yml 워크플로우 활성화)
+- [ ] 실패 테스트 목록 출력 (디버깅용)
+
+#### Phase 1에서 검증할 Test262 카테고리
+```
+test/language/literals/numeric/     ← 숫자 리터럴
+test/language/literals/string/      ← 문자열 리터럴
+test/language/literals/bigint/      ← BigInt
+test/language/literals/boolean/     ← boolean
+test/language/literals/null/        ← null
+test/language/literals/regexp/      ← 정규식
+test/language/comments/             ← 주석
+test/language/keywords/             ← 키워드
+test/language/line-terminators/     ← 줄바꿈
+test/language/asi/                  ← 자동 세미콜론 삽입
+```
 
 ---
 
