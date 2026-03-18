@@ -1,6 +1,7 @@
 const std = @import("std");
 const fs = std.fs;
 const mem = std.mem;
+const Scanner = @import("../lexer/scanner.zig").Scanner;
 
 /// Test262 테스트 파일의 YAML 메타데이터
 /// 각 .js 파일 상단의 /*--- ... ---*/ 블록을 파싱한 결과
@@ -145,21 +146,34 @@ pub fn parseMetadata(source: []const u8) TestMetadata {
 /// 판정 로직:
 /// - is_negative_parse == true → 파서가 에러를 던지면 pass
 /// - is_negative_parse == false → 파서가 에러 없이 완료되면 pass
-pub fn runTest(source: []const u8, meta: TestMetadata) TestResult {
-    _ = source;
+/// 단일 Test262 테스트를 실행한다.
+/// 렉서로 소스를 토크나이즈하고, 에러 발생 여부로 pass/fail을 판정.
+///
+/// 판정 로직:
+/// - is_negative_parse == true → 렉서가 에러를 던지면 pass
+/// - is_negative_parse == false → 렉서가 에러 없이 완료되면 pass
+pub fn runTest(allocator: mem.Allocator, source: []const u8, meta: TestMetadata) TestResult {
+    _ = meta.is_module; // 렉서 단계에서는 module/script 구분 없음
 
-    // TODO: 렉서/파서 구현 후 실제 연결
-    // const result = parser.parse(source, .{ .module = meta.is_module });
-    // const had_error = result.hasErrors();
-    //
-    // if (meta.is_negative_parse) {
-    //     return if (had_error) .pass else .fail;
-    // } else {
-    //     return if (had_error) .fail else .pass;
-    // }
+    // 렉서로 전체 토크나이즈
+    var scanner = Scanner.init(allocator, source);
+    defer scanner.deinit();
 
-    _ = meta;
-    return .skip;
+    var had_error = false;
+    while (true) {
+        scanner.next();
+        if (scanner.token.kind == .syntax_error) {
+            had_error = true;
+            break;
+        }
+        if (scanner.token.kind == .eof) break;
+    }
+
+    if (meta.is_negative_parse) {
+        return if (had_error) .pass else .fail;
+    } else {
+        return if (had_error) .fail else .pass;
+    }
 }
 
 /// 디렉토리 내 모든 .js 파일을 재귀적으로 찾아 테스트를 실행한다.
@@ -186,7 +200,7 @@ pub fn runDirectory(allocator: mem.Allocator, dir_path: []const u8) !TestSummary
 
         // 메타데이터 파싱 & 테스트 실행
         const meta = parseMetadata(source);
-        const result = runTest(source, meta);
+        const result = runTest(allocator, source, meta);
 
         summary.total += 1;
         switch (result) {
