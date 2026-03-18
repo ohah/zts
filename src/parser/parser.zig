@@ -215,7 +215,7 @@ pub const Parser = struct {
         return try self.ast.addNode(.{
             .tag = .empty_statement,
             .span = span,
-            .data = .{ .none = {} },
+            .data = .{ .none = 0 },
         });
     }
 
@@ -464,7 +464,7 @@ pub const Parser = struct {
         const span = self.currentSpan();
         self.advance();
         _ = self.eat(.semicolon);
-        return try self.ast.addNode(.{ .tag = tag, .span = span, .data = .{ .none = {} } });
+        return try self.ast.addNode(.{ .tag = tag, .span = span, .data = .{ .none = 0 } });
     }
 
     fn parseSwitchStatement(self: *Parser) !NodeIndex {
@@ -510,7 +510,7 @@ pub const Parser = struct {
             const err_span = self.currentSpan();
             self.addError(err_span, "case or default expected");
             self.advance();
-            return try self.ast.addNode(.{ .tag = .invalid, .span = err_span, .data = .{ .none = {} } });
+            return try self.ast.addNode(.{ .tag = .invalid, .span = err_span, .data = .{ .none = 0 } });
         }
 
         // case 본문: 다음 case/default/} 전까지
@@ -1481,7 +1481,7 @@ pub const Parser = struct {
                 return try self.ast.addNode(.{
                     .tag = .numeric_literal,
                     .span = span,
-                    .data = .{ .none = {} },
+                    .data = .{ .none = 0 },
                 });
             },
             .string_literal => {
@@ -1497,7 +1497,7 @@ pub const Parser = struct {
                 return try self.ast.addNode(.{
                     .tag = .boolean_literal,
                     .span = span,
-                    .data = .{ .none = {} },
+                    .data = .{ .none = 0 },
                 });
             },
             .kw_null => {
@@ -1505,7 +1505,7 @@ pub const Parser = struct {
                 return try self.ast.addNode(.{
                     .tag = .null_literal,
                     .span = span,
-                    .data = .{ .none = {} },
+                    .data = .{ .none = 0 },
                 });
             },
             .kw_this => {
@@ -1513,7 +1513,7 @@ pub const Parser = struct {
                 return try self.ast.addNode(.{
                     .tag = .this_expression,
                     .span = span,
-                    .data = .{ .none = {} },
+                    .data = .{ .none = 0 },
                 });
             },
             .l_paren => {
@@ -1540,7 +1540,7 @@ pub const Parser = struct {
                     return try self.ast.addNode(.{
                         .tag = .meta_property,
                         .span = .{ .start = span.start, .end = meta_span.end },
-                        .data = .{ .none = {} },
+                        .data = .{ .none = 0 },
                     });
                 }
                 // dynamic import: import("module")
@@ -1568,7 +1568,7 @@ pub const Parser = struct {
                 return try self.ast.addNode(.{
                     .tag = .invalid,
                     .span = span,
-                    .data = .{ .none = {} },
+                    .data = .{ .none = 0 },
                 });
             },
         }
@@ -1588,7 +1588,7 @@ pub const Parser = struct {
                 try elements.append(try self.ast.addNode(.{
                     .tag = .elision,
                     .span = hole_span,
-                    .data = .{ .none = {} },
+                    .data = .{ .none = 0 },
                 }));
                 self.advance();
                 continue;
@@ -1730,7 +1730,7 @@ pub const Parser = struct {
                 try self.scratch.append(try self.ast.addNode(.{
                     .tag = .elision,
                     .span = hole_span,
-                    .data = .{ .none = {} },
+                    .data = .{ .none = 0 },
                 }));
                 self.advance();
                 continue;
@@ -1879,7 +1879,7 @@ pub const Parser = struct {
         }
         self.addError(span, "identifier expected");
         self.advance();
-        return try self.ast.addNode(.{ .tag = .invalid, .span = span, .data = .{ .none = {} } });
+        return try self.ast.addNode(.{ .tag = .invalid, .span = span, .data = .{ .none = 0 } });
     }
 
     /// 객체 프로퍼티 키를 파싱한다.
@@ -1932,7 +1932,7 @@ pub const Parser = struct {
                 return try self.ast.addNode(.{
                     .tag = .numeric_literal,
                     .span = span,
-                    .data = .{ .none = {} },
+                    .data = .{ .none = 0 },
                 });
             },
             .l_bracket => {
@@ -1958,7 +1958,7 @@ pub const Parser = struct {
                 }
                 self.addError(span, "property key expected");
                 self.advance();
-                return try self.ast.addNode(.{ .tag = .invalid, .span = span, .data = .{ .none = {} } });
+                return try self.ast.addNode(.{ .tag = .invalid, .span = span, .data = .{ .none = 0 } });
             },
         }
     }
@@ -2568,7 +2568,7 @@ pub const Parser = struct {
                 return try self.ast.addNode(.{
                     .tag = tag,
                     .span = span,
-                    .data = .{ .none = {} },
+                    .data = .{ .none = 0 },
                 });
             }
         }
@@ -2580,7 +2580,7 @@ pub const Parser = struct {
                 return try self.ast.addNode(.{
                     .tag = .ts_void_keyword,
                     .span = span,
-                    .data = .{ .none = {} },
+                    .data = .{ .none = 0 },
                 });
             },
             // null
@@ -2589,7 +2589,7 @@ pub const Parser = struct {
                 return try self.ast.addNode(.{
                     .tag = .ts_null_keyword,
                     .span = span,
-                    .data = .{ .none = {} },
+                    .data = .{ .none = 0 },
                 });
             },
             // this
@@ -2598,7 +2598,7 @@ pub const Parser = struct {
                 return try self.ast.addNode(.{
                     .tag = .ts_this_type,
                     .span = span,
-                    .data = .{ .none = {} },
+                    .data = .{ .none = 0 },
                 });
             },
             // 리터럴 타입 (true, false, 숫자, 문자열)
@@ -2607,7 +2607,7 @@ pub const Parser = struct {
                 return try self.ast.addNode(.{
                     .tag = .ts_literal_type,
                     .span = span,
-                    .data = .{ .none = {} },
+                    .data = .{ .none = 0 },
                 });
             },
             .decimal, .float, .hex, .string_literal => {
@@ -2653,7 +2653,7 @@ pub const Parser = struct {
                 }
                 self.addError(span, "type expected");
                 self.advance();
-                return try self.ast.addNode(.{ .tag = .invalid, .span = span, .data = .{ .none = {} } });
+                return try self.ast.addNode(.{ .tag = .invalid, .span = span, .data = .{ .none = 0 } });
             },
         }
     }
@@ -2726,7 +2726,7 @@ pub const Parser = struct {
                 });
             }
             // 빈 괄호 — 에러 또는 void
-            return try self.ast.addNode(.{ .tag = .ts_void_keyword, .span = .{ .start = start, .end = self.currentSpan().start }, .data = .{ .none = {} } });
+            return try self.ast.addNode(.{ .tag = .ts_void_keyword, .span = .{ .start = start, .end = self.currentSpan().start }, .data = .{ .none = 0 } });
         }
 
         // 파라미터가 있는 경우 — 단순히 첫 번째 타입을 파싱하고 ) 뒤에 =>가 있으면 함수 타입

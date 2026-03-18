@@ -17,7 +17,8 @@ const std = @import("std");
 /// 소스 코드의 위치를 나타내는 span.
 /// start와 end는 소스 코드의 byte offset이다.
 /// line/column은 별도 line offset 테이블에서 lazy 계산한다 (D015).
-pub const Span = struct {
+/// extern struct: AST Node.Data의 extern union 안에서 사용하기 위해 C ABI 호환.
+pub const Span = extern struct {
     start: u32,
     end: u32,
 
