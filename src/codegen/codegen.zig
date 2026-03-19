@@ -25,14 +25,30 @@ pub const ModuleFormat = enum {
     cjs, // CommonJS (require/exports 변환)
 };
 
+/// 들여쓰기 문자 (D044)
+pub const IndentChar = enum {
+    tab,
+    space,
+};
+
 pub const CodegenOptions = struct {
     module_format: ModuleFormat = .esm,
+    /// 들여쓰기 문자 (D044: Tab 기본)
+    indent_char: IndentChar = .tab,
+    /// Space일 때 들여쓰기 너비 (기본 2)
+    indent_width: u8 = 2,
+    /// 줄바꿈 문자 (D045: \n 기본, Windows는 \r\n)
+    newline: []const u8 = "\n",
+    /// 공백 최소화 (minify)
+    minify: bool = false,
 };
 
 pub const Codegen = struct {
     ast: *const Ast,
     buf: std.ArrayList(u8),
     options: CodegenOptions,
+    /// 현재 들여쓰기 레벨
+    indent_level: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator, ast: *const Ast) Codegen {
         return initWithOptions(allocator, ast, .{});
@@ -43,6 +59,7 @@ pub const Codegen = struct {
             .ast = ast,
             .buf = std.ArrayList(u8).init(allocator),
             .options = options,
+            .indent_level = 0,
         };
     }
 
@@ -68,6 +85,34 @@ pub const Codegen = struct {
 
     fn writeByte(self: *Codegen, b: u8) !void {
         try self.buf.append(b);
+    }
+
+    /// 줄바꿈 출력. minify 모드에서는 아무것도 출력하지 않음.
+    fn writeNewline(self: *Codegen) !void {
+        if (self.options.minify) return;
+        try self.write(self.options.newline);
+    }
+
+    /// 현재 들여쓰기 레벨만큼 들여쓰기 출력.
+    fn writeIndent(self: *Codegen) !void {
+        if (self.options.minify) return;
+        var i: u32 = 0;
+        while (i < self.indent_level) : (i += 1) {
+            switch (self.options.indent_char) {
+                .tab => try self.writeByte('\t'),
+                .space => {
+                    var j: u8 = 0;
+                    while (j < self.options.indent_width) : (j += 1) {
+                        try self.writeByte(' ');
+                    }
+                },
+            }
+        }
+    }
+
+    /// 공백 출력. minify에서는 생략.
+    fn writeSpace(self: *Codegen) !void {
+        if (!self.options.minify) try self.writeByte(' ');
     }
 
     /// 소스 코드의 span 범위를 그대로 출력 (zero-copy).
@@ -223,9 +268,10 @@ pub const Codegen = struct {
         const list = node.data.list;
         const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
         for (indices, 0..) |raw_idx, i| {
-            if (i > 0) try self.writeByte('\n');
+            if (i > 0) try self.writeNewline();
             try self.emitNode(@enumFromInt(raw_idx));
         }
+        if (indices.len > 0) try self.writeNewline();
     }
 
     fn emitBlock(self: *Codegen, node: Node) !void {
@@ -234,11 +280,20 @@ pub const Codegen = struct {
 
     /// { item1 item2 ... } — 블록과 클래스 바디 공통
     fn emitBracedList(self: *Codegen, node: Node) !void {
+        try self.writeSpace();
         try self.writeByte('{');
         const list = node.data.list;
         const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
-        for (indices) |raw_idx| {
-            try self.emitNode(@enumFromInt(raw_idx));
+        if (indices.len > 0) {
+            self.indent_level += 1;
+            for (indices) |raw_idx| {
+                try self.writeNewline();
+                try self.writeIndent();
+                try self.emitNode(@enumFromInt(raw_idx));
+            }
+            self.indent_level -= 1;
+            try self.writeNewline();
+            try self.writeIndent();
         }
         try self.writeByte('}');
     }
@@ -704,7 +759,9 @@ pub const Codegen = struct {
 
         try self.emitNode(name);
         if (!init_val.isNone()) {
+            try self.writeSpace();
             try self.writeByte('=');
+            try self.writeSpace();
             try self.emitNode(init_val);
         }
     }
@@ -1343,16 +1400,18 @@ const TestResult = struct {
     }
 };
 
+/// 기본 e2e: minify 모드 (기존 테스트 호환)
 fn e2e(allocator: std.mem.Allocator, source: []const u8) !TestResult {
-    return e2eWithOptions(allocator, source, .{});
+    return e2eWithOptions(allocator, source, .{ .minify = true });
 }
 
 fn e2eCJS(allocator: std.mem.Allocator, source: []const u8) !TestResult {
-    return e2eWithOptions(allocator, source, .{ .module_format = .cjs });
+    return e2eWithOptions(allocator, source, .{ .module_format = .cjs, .minify = true });
 }
 
 const TransformOptions = @import("../transformer/transformer.zig").TransformOptions;
 
+/// 풀 옵션 e2e. transform + codegen 옵션 모두 전달.
 fn e2eFull(allocator: std.mem.Allocator, source: []const u8, t_options: TransformOptions, cg_options: CodegenOptions) !TestResult {
     const scanner_ptr = try allocator.create(Scanner);
     scanner_ptr.* = Scanner.init(allocator, source);
@@ -1445,15 +1504,27 @@ test "Codegen CJS: export default" {
 }
 
 test "Codegen: drop debugger" {
-    var r = try e2eFull(std.testing.allocator, "debugger; const x = 1;", .{ .drop_debugger = true }, .{});
+    var r = try e2eFull(std.testing.allocator, "debugger; const x = 1;", .{ .drop_debugger = true }, .{ .minify = true });
     defer r.deinit();
     try std.testing.expectEqualStrings("const x=1;", r.output);
 }
 
 test "Codegen: drop console" {
-    var r = try e2eFull(std.testing.allocator, "console.log(1); const x = 1;", .{ .drop_console = true }, .{});
+    var r = try e2eFull(std.testing.allocator, "console.log(1); const x = 1;", .{ .drop_console = true }, .{ .minify = true });
     defer r.deinit();
     try std.testing.expectEqualStrings("const x=1;", r.output);
+}
+
+test "Codegen: formatted output with tab" {
+    var r = try e2eWithOptions(std.testing.allocator, "const x = 1;", .{});
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const x = 1;\n", r.output);
+}
+
+test "Codegen: formatted output with spaces" {
+    var r = try e2eWithOptions(std.testing.allocator, "const x = 1;", .{ .indent_char = .space, .indent_width = 4 });
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const x = 1;\n", r.output);
 }
 
 test "Codegen: enum with initializer" {
