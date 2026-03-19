@@ -2564,10 +2564,13 @@ pub const Parser = struct {
             .kw_import => {
                 self.advance(); // skip 'import'
                 if (self.current() == .dot) {
-                    // import.meta, import.defer, import.source 등
+                    // import.meta — module code에서만 허용 (ECMAScript 13.3.12.1)
                     self.advance(); // skip '.'
                     const prop_span = self.currentSpan();
                     _ = try self.parseIdentifierName(); // meta, defer, source 등
+                    if (!self.is_module) {
+                        self.addError(.{ .start = span.start, .end = prop_span.end }, "'import.meta' is only allowed in module code");
+                    }
                     return try self.ast.addNode(.{
                         .tag = .meta_property,
                         .span = .{ .start = span.start, .end = prop_span.end },
@@ -4858,6 +4861,7 @@ test "Parser: import.meta" {
     var scanner = Scanner.init(std.testing.allocator, "const url = import.meta.url;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
+    parser.is_module = true;
     defer parser.deinit();
 
     _ = try parser.parse();
