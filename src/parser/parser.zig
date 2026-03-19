@@ -299,6 +299,78 @@ pub const Parser = struct {
         };
     }
 
+    /// assignment destructuring에서 rest/spread element에 initializer가 있으면 에러.
+    /// ECMAScript: AssignmentRestElement에는 Initializer가 올 수 없다.
+    /// `[...x = 1] = arr` → SyntaxError
+    fn checkRestInitInAssignmentPattern(self: *Parser, idx: NodeIndex) void {
+        if (idx.isNone()) return;
+        const node = self.ast.getNode(idx);
+        if (node.tag == .array_expression) {
+            // 배열 요소 중 spread_element가 있고, operand가 assignment_expression이면 에러
+            const list = node.data.list;
+            var i: u32 = 0;
+            while (i < list.len) : (i += 1) {
+                const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+                if (elem_idx.isNone()) continue;
+                const elem = self.ast.getNode(elem_idx);
+                if (elem.tag == .spread_element) {
+                    const operand = self.ast.getNode(elem.data.unary.operand);
+                    if (operand.tag == .assignment_expression) {
+                        self.addError(operand.span, "rest element may not have a default initializer");
+                    }
+                    // spread의 operand가 array/object이면 재귀 검증
+                    self.checkRestInitInAssignmentPattern(elem.data.unary.operand);
+                }
+                // 일반 요소의 operand도 nested destructuring이면 재귀 검증
+                if (elem.tag == .assignment_expression) {
+                    self.checkRestInitInAssignmentPattern(elem.data.binary.left);
+                }
+            }
+        } else if (node.tag == .object_expression) {
+            // 객체 속성 중 spread_element가 있고, operand가 assignment_expression이면 에러
+            const list = node.data.list;
+            var i: u32 = 0;
+            while (i < list.len) : (i += 1) {
+                const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+                if (elem_idx.isNone()) continue;
+                const elem = self.ast.getNode(elem_idx);
+                if (elem.tag == .spread_element) {
+                    const operand = self.ast.getNode(elem.data.unary.operand);
+                    if (operand.tag == .assignment_expression) {
+                        self.addError(operand.span, "rest element may not have a default initializer");
+                    }
+                }
+                // object property의 value가 nested pattern이면 재귀 검증
+                if (elem.tag == .object_property) {
+                    self.checkRestInitInAssignmentPattern(elem.data.binary.right);
+                }
+            }
+        }
+    }
+
+    /// arrow function 파라미터에서 rest-init 검증.
+    /// `([...x = 1]) => {}` — 파라미터 리스트가 parenthesized expression으로 파싱된 경우,
+    /// 내부의 배열/객체 expression에 대해 rest-init 체크를 수행한다.
+    fn checkArrowParamsRestInit(self: *Parser, idx: NodeIndex) void {
+        if (idx.isNone()) return;
+        const node = self.ast.getNode(idx);
+        if (node.tag == .parenthesized_expression) {
+            // 괄호 안의 expression이 sequence_expression이면 각 요소를 검증
+            const inner = node.data.unary.operand;
+            self.checkArrowParamsRestInit(inner);
+        } else if (node.tag == .sequence_expression) {
+            // (a, b, [..x = 1]) 같은 경우 — 각 요소 검증
+            const list = node.data.list;
+            var i: u32 = 0;
+            while (i < list.len) : (i += 1) {
+                const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+                self.checkRestInitInAssignmentPattern(elem_idx);
+            }
+        } else {
+            self.checkRestInitInAssignmentPattern(idx);
+        }
+    }
+
     /// 키워드를 바인딩 위치에서 사용할 때의 검증.
     /// ECMAScript 12.1.1: reserved keyword, strict mode reserved, contextual keywords.
     fn checkKeywordBinding(self: *Parser) void {
@@ -946,9 +1018,13 @@ pub const Parser = struct {
         const init_expr = try self.parseExpression();
         self.restoreContext(for_saved);
         if (self.current() == .kw_in) {
+            // for-in LHS가 assignment destructuring이면 rest-init 검증
+            self.checkRestInitInAssignmentPattern(init_expr);
             return self.parseForIn(start, init_expr);
         }
         if (self.current() == .kw_of) {
+            // for-of LHS가 assignment destructuring이면 rest-init 검증
+            self.checkRestInitInAssignmentPattern(init_expr);
             return self.parseForOf(start, init_expr);
         }
         _ = self.eat(.semicolon);
@@ -2133,6 +2209,7 @@ pub const Parser = struct {
                         // 괄호를 expression으로 파싱 (parenthesized_expression)
                         const params_expr = try self.parseConditionalExpression();
                         if (self.current() == .arrow and !self.scanner.token.has_newline_before) {
+                            self.checkArrowParamsRestInit(params_expr);
                             self.advance(); // skip =>
                             const body = try self.parseArrowBody(true);
                             return try self.ast.addNode(.{
@@ -2197,6 +2274,8 @@ pub const Parser = struct {
         // => 를 만나면 arrow function (괄호 형태)
         // left가 parenthesized_expression이면 파라미터 리스트로 취급
         if (self.current() == .arrow) {
+            // arrow 파라미터에서 rest-init 검증 (ECMAScript: ArrowFormalParameters)
+            self.checkArrowParamsRestInit(left);
             const left_start = self.ast.getNode(left).span.start;
             self.advance(); // skip =>
             const body = try self.parseArrowBody(false);
@@ -2213,6 +2292,8 @@ pub const Parser = struct {
             if (!self.isValidAssignmentTarget(left)) {
                 self.addError(self.ast.getNode(left).span, "invalid assignment target");
             }
+            // assignment destructuring에서 rest element에 initializer 금지
+            self.checkRestInitInAssignmentPattern(left);
             // strict mode: eval/arguments에 할당 금지 (ECMAScript 13.15.1)
             if (self.ctx.is_strict_mode) {
                 self.checkStrictAssignmentTarget(left);
@@ -3243,6 +3324,10 @@ pub const Parser = struct {
             const rest_start = self.currentSpan().start;
             self.advance(); // skip '...'
             const pattern = try self.parseBindingPattern();
+            // rest parameter에 initializer가 있으면 SyntaxError
+            if (!pattern.isNone() and self.ast.getNode(pattern).tag == .assignment_pattern) {
+                self.addError(self.ast.getNode(pattern).span, "rest element may not have a default initializer");
+            }
             return try self.ast.addNode(.{
                 .tag = .spread_element,
                 .span = .{ .start = rest_start, .end = self.currentSpan().start },
@@ -3417,7 +3502,12 @@ pub const Parser = struct {
                 // rest element: ...pattern
                 const rest_start = self.currentSpan().start;
                 self.advance(); // skip ...
+                // parseBindingPattern은 = initializer까지 소비하므로, 반환 후 assignment_pattern인지 체크 (oxc 방식)
                 const rest_arg = try self.parseBindingPattern();
+                // rest element에 initializer가 있으면 SyntaxError (ECMAScript: BindingRestElement에 Initializer 불가)
+                if (!rest_arg.isNone() and self.ast.getNode(rest_arg).tag == .assignment_pattern) {
+                    self.addError(self.ast.getNode(rest_arg).span, "rest element may not have a default initializer");
+                }
                 const rest = try self.ast.addNode(.{
                     .tag = .rest_element,
                     .span = .{ .start = rest_start, .end = self.currentSpan().start },
@@ -3460,6 +3550,10 @@ pub const Parser = struct {
                 const rest_start = self.currentSpan().start;
                 self.advance(); // skip ...
                 const rest_arg = try self.parseBindingPattern();
+                // rest element에 initializer가 있으면 SyntaxError
+                if (!rest_arg.isNone() and self.ast.getNode(rest_arg).tag == .assignment_pattern) {
+                    self.addError(self.ast.getNode(rest_arg).span, "rest element may not have a default initializer");
+                }
                 const rest = try self.ast.addNode(.{
                     .tag = .rest_element,
                     .span = .{ .start = rest_start, .end = self.currentSpan().start },
