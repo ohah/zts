@@ -398,8 +398,13 @@ pub const Scanner = struct {
                             break :blk .hashbang_comment;
                         }
                     }
-                    // private identifier
+                    // private identifier — # 뒤에 식별자 문자가 있어야 함
+                    const before_tail = self.current;
                     self.scanIdentifierTail();
+                    if (self.current == before_tail) {
+                        // # 뒤에 식별자 문자 없음 → syntax error
+                        break :blk .syntax_error;
+                    }
                     break :blk .private_identifier;
                 },
 
