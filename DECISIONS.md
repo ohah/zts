@@ -293,15 +293,25 @@
 - **결정**: parse + early 통합 (is_negative_parse 하나로 처리)
 - **이유**: ECMAScript에서 early error는 실행 전 검출 대상. 트랜스파일러 관점에서 parse/early 구분 불필요. oxc/SWC도 같은 파이프라인에서 처리
 
-### Phase 6 (Advanced) — 의사결정 필요
+### Phase 6 (Advanced) — 결정 완료 + 미결정
 
-#### 확정 예정
-- D057: 트랜스포머 패스 전략 (단일 패스 vs 파이프라인 vs feature별)
-- D058: 다운레벨링 타겟 설정 방식 (target 버전 vs 개별 feature vs 둘 다)
+### D057: 트랜스포머 패스 전략
+- **결정**: 파이프라인 (별도 패스)
+- **이유**: 기존 transformer(TS+JSX+module) 수정 없이 ES 다운레벨링을 새 모듈로 추가. "나중에 패스 합치기 가능, 반대 방향은 재작성" (D040 원칙). ES2015 변환(class→prototype)이 들어오면 구조적 변환이 필요해 단일 패스로는 한계
+- **패스 구성**: Pass 1 = TS strip + JSX + Module (기존), Pass 2 = ES downlevel (신규). ES2015는 필요 시 Pass 3
+- **성능**: 20-30% 느리지만 D040에서 이미 수용한 트레이드오프
+- **외부 API**: `transform(source, options)` 하나로 패스 수를 숨김 (oxc/Rolldown 방식)
+- **비교**: esbuild(단일 패스, 빠르지만 확장 어려움), Babel(feature별 패스, 느림), oxc(파이프라인, 채택)
 
-#### 추가 의사결정 필요
-- transform API 설계: oxc/Rolldown 방식 단일 API. bungae에서 라이브러리로 호출하는 구조
-- 런타임 헬퍼 전략: ES 다운레벨링 + 번들러에서 헬퍼 주입 (bundled vs external)
+### D058: 다운레벨링 타겟 설정 방식
+- **결정**: target 먼저 노출, 개별 feature override는 나중에 추가
+- **이유**: 사용자 99%가 `--target es2020`만 사용. 내부는 처음부터 feature별 bool로 구현하여 override 추가가 쉬움. esbuild도 target 먼저 → supported 나중에 추가
+- **구현 순서**: (1) 개별 feature 변환 구현 (PR 단위) → (2) target→features 매핑 테이블 → (3) --target CLI → (4) --supported override (나중에)
+- **타겟 범위**: ES2024→ES2016 먼저, ES2015→ES5는 이후 (헬퍼 함수 인프라 필요)
+
+#### 미결정 (구현 시 결정)
+- 런타임 헬퍼 전략: ES2015 다운레벨링 + 번들러에서 헬퍼 주입 (bundled vs external)
+- transform API 상세 설계: typescript/jsx/target/define/inject/decorator 옵션 구조
 - 번들러 아키텍처 (의존성 그래프, 청크 분할)
 - strictExecutionOrder: ESM→CJS 번들 시 모듈 실행 순서 보장 (RN/Metro 지원)
   - 모듈 래핑 (lazy evaluation), DFS 실행 순서, side effect 추적
