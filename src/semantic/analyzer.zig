@@ -205,6 +205,14 @@ pub const SemanticAnalyzer = struct {
         // 기존이 재선언 가능(var/function)이고 새것도 재선언 가능이면 허용
         if (existing.allowsRedeclaration() and new.allowsRedeclaration()) return true;
 
+        // parameter + var/function → 허용 (var/function이 parameter를 덮어씀)
+        // function f(x) { var x = 1; } — 항상 허용
+        // function f(x) { function x() {} } — non-strict에서 허용
+        if (existing == .parameter and new.allowsRedeclaration()) return true;
+
+        // catch_binding + var → 허용 (var가 catch 스코프 밖으로 호이스팅)
+        if (existing == .catch_binding and new == .variable_var) return true;
+
         // 그 외는 모두 에러
         return false;
     }
@@ -538,12 +546,53 @@ pub const SemanticAnalyzer = struct {
     }
 
     fn visitImportDeclaration(self: *SemanticAnalyzer, node: Node) void {
-        // import 선언의 extra 구조가 경로에 따라 다름 (side-effect, default, namespace, named).
-        // side-effect import (import "module")는 unary 형태로 extra가 없음.
-        // 나머지는 extra: [specifiers.start, specifiers.len, source] 구조.
-        // TODO: import 바인딩 심볼 등록은 extra 구조 정규화 후 구현
-        _ = self;
-        _ = node;
+        // side-effect import (import "module")는 unary 형태 — 바인딩 없음
+        // 나머지: extra: [specifiers.start, specifiers.len, source]
+
+        // side-effect import 감지: unary.operand가 유효한 string_literal 노드이면 skip
+        const maybe_operand = node.data.unary.operand;
+        if (!maybe_operand.isNone() and @intFromEnum(maybe_operand) < self.ast.nodes.items.len) {
+            const operand_node = self.ast.getNode(maybe_operand);
+            if (operand_node.tag == .string_literal) return; // side-effect import
+        }
+
+        // extra_data에서 specifiers 리스트 추출
+        const extra_start = node.data.extra;
+        const extras = self.ast.extra_data.items;
+        if (extra_start + 2 >= extras.len) return;
+
+        const specs_start = extras[extra_start];
+        const specs_len = extras[extra_start + 1];
+        if (specs_len == 0) return;
+        if (specs_start + specs_len > extras.len) return;
+
+        const spec_indices = extras[specs_start .. specs_start + specs_len];
+        for (spec_indices) |raw_idx| {
+            const spec_idx: NodeIndex = @enumFromInt(raw_idx);
+            if (spec_idx.isNone()) continue;
+            if (@intFromEnum(spec_idx) >= self.ast.nodes.items.len) continue;
+
+            const spec_node = self.ast.getNode(spec_idx);
+            switch (spec_node.tag) {
+                .import_default_specifier => {
+                    // string_ref — span 자체가 식별자 이름
+                    self.declareSymbol(spec_node.span, .import_binding, spec_node.span);
+                },
+                .import_namespace_specifier => {
+                    // string_ref — span 자체가 식별자 이름
+                    self.declareSymbol(spec_node.span, .import_binding, spec_node.span);
+                },
+                .import_specifier => {
+                    // binary: { left = imported, right = local } — local이 바인딩
+                    const local_idx = spec_node.data.binary.right;
+                    if (!local_idx.isNone() and @intFromEnum(local_idx) < self.ast.nodes.items.len) {
+                        const local_node = self.ast.getNode(local_idx);
+                        self.declareSymbol(local_node.span, .import_binding, spec_node.span);
+                    }
+                },
+                else => {},
+            }
+        }
     }
 
     fn visitExportNamedDeclaration(self: *SemanticAnalyzer, node: Node) void {
