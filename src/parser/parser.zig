@@ -2298,14 +2298,28 @@ pub const Parser = struct {
                 self.advance();
                 const operand = try self.parseUnaryExpression();
                 // strict mode: delete identifier → SyntaxError (ECMAScript 12.5.3.1)
-                // delete of private field → always SyntaxError
+                // delete of private field → always SyntaxError (ECMAScript 13.5.1.1)
+                // delete (this.#x), delete this?.#x 도 포함
                 if (is_delete and !operand.isNone()) {
-                    const del_node = self.ast.getNode(operand);
-                    if (del_node.tag == .static_member_expression or del_node.tag == .private_field_expression) {
-                        const right_idx = del_node.data.binary.right;
-                        if (!right_idx.isNone() and @intFromEnum(right_idx) < self.ast.nodes.items.len) {
-                            if (self.ast.getNode(right_idx).tag == .private_identifier) {
-                                self.addError(del_node.span, "private fields cannot be deleted");
+                    var del_target = operand;
+                    // 괄호 unwrap
+                    while (!del_target.isNone()) {
+                        const dt = self.ast.getNode(del_target);
+                        if (dt.tag == .parenthesized_expression) {
+                            del_target = dt.data.unary.operand;
+                        } else break;
+                    }
+                    if (!del_target.isNone()) {
+                        const del_node = self.ast.getNode(del_target);
+                        if (del_node.tag == .static_member_expression or
+                            del_node.tag == .computed_member_expression or
+                            del_node.tag == .private_field_expression)
+                        {
+                            const right_idx = del_node.data.binary.right;
+                            if (!right_idx.isNone() and @intFromEnum(right_idx) < self.ast.nodes.items.len) {
+                                if (self.ast.getNode(right_idx).tag == .private_identifier) {
+                                    self.addError(del_node.span, "private fields cannot be deleted");
+                                }
                             }
                         }
                     }
