@@ -170,13 +170,14 @@ main ← feature/lexer-token-enum
 15. ✅ TS 변환 대상 (parameter property, decorator, implements, class generics) — PR #32
 16. ✅ JSX 파싱 (element, fragment, attributes, expression, text) — PR #33
 17. ⬜ 에러 복구 강화 + Test262 파서 통과율 — Phase 2 후반
-18. 🔄 semantic analysis (D038, D051-D055) — Phase 2 후반
+18. ✅ semantic analysis (D038, D051-D055) — Phase 2 후반
     - ✅ 파서 컨텍스트 추적 (strict/function/async/generator/loop/switch)
     - ✅ strict mode 에러 (with문), break/continue/return 검증
     - ✅ Test262 early phase 통합
-    - ⬜ semantic 모듈 (scope + symbol + analyzer)
-    - ⬜ 변수 재선언 검증
-    - ⬜ 예약어/contextual keyword 검증
+    - ✅ semantic 모듈 (scope + symbol + analyzer) — PR #82
+    - ✅ 변수 재선언 검증 (let/const/var/import) — PR #82, #83
+    - ✅ 예약어/contextual keyword 검증 — PR #84, #85
+    - ✅ 중복 파라미터 + non-simple params strict 충돌 — PR #87
 
 ### 트랜스포머 구현 순서 (PR 단위) — Phase 3 진행 중
 1. ✅ Phase 3 의사결정 (D041-D043) — PR #36

@@ -270,10 +270,10 @@
 ### Semantic Analysis — 결정 완료
 
 ### D051: 파서 vs Semantic 패스 경계
-- **결정**: 파서에 풍부한 컨텍스트 추적 (strict mode + async/generator/loop/switch), Semantic 패스에 스코프/심볼
-- **이유**: 파서가 이미 아는 구문 컨텍스트(loop/function/switch)를 버리지 않음. break/continue/return 검증은 파서가 자연스럽게 처리. Semantic 패스는 "이름 해결" 관련(스코프/심볼/재선언/예약어)만 담당. oxc도 이 방식
-- **파서 담당**: strict mode, async/generator/loop/switch 컨텍스트, break/continue/return 유효성
-- **Semantic 담당**: 스코프 구축, 심볼 수집, 재선언 검증, 예약어 검증, 미선언 export 검증
+- **결정**: 파서에서 토큰/구문 수준 검증, Semantic 패스에서 이름 해결 (scope/symbol 필요한 것)
+- **이유**: 파서가 이미 아는 구문 컨텍스트를 버리지 않음. 토큰 Kind로 판별 가능한 것은 파서에서 즉시 처리하고, 이름 충돌처럼 scope 테이블이 필요한 것만 semantic에서 처리. oxc도 동일한 패턴
+- **파서 담당** (토큰/구문 수준): strict mode 추적, async/generator/loop/switch 컨텍스트, break/continue/return, 예약어/escaped keyword 바인딩 금지, strict mode eval/arguments 바인딩 금지, 중복 파라미터 (strict/non-simple), non-simple params + "use strict" 충돌
+- **Semantic 담당** (이름 해결): 스코프 트리 구축, 심볼 수집, let/const/var/import 재선언 검증, var 호이스팅 충돌
 
 ### D052: 스코프 모델
 - **결정**: 플랫 배열 + 부모 인덱스 (oxc 방식)
