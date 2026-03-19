@@ -6,6 +6,203 @@ const Transformer = lib.transformer.Transformer;
 const Codegen = lib.codegen.Codegen;
 const runner = lib.test262.runner;
 
+/// 트랜스파일 옵션을 담는 구조체.
+/// CLI에서 파싱한 옵션들을 transpileFile / walkAndTranspile에 전달한다.
+const TranspileOptions = struct {
+    module_format: lib.codegen.codegen.ModuleFormat = .esm,
+    minify: bool = false,
+    drop_console: bool = false,
+    drop_debugger: bool = false,
+    sourcemap: bool = false,
+    ascii_only: bool = false,
+};
+
+/// 단일 파일을 트랜스파일한다.
+/// file_path: 입력 파일 경로, output_path: 출력 파일 경로 (null이면 stdout)
+/// source가 null이면 file_path에서 읽고, non-null이면 해당 소스를 사용한다 (stdin 등).
+fn transpileFile(
+    allocator: std.mem.Allocator,
+    file_path: []const u8,
+    source_override: ?[]const u8,
+    output_path: ?[]const u8,
+    options: TranspileOptions,
+) !void {
+    const stderr = std.io.getStdErr().writer();
+    const stdout = std.io.getStdOut().writer();
+
+    // 소스 읽기
+    const source = source_override orelse blk: {
+        break :blk std.fs.cwd().readFileAlloc(allocator, file_path, 100 * 1024 * 1024) catch |err| {
+            try stderr.print("zts: cannot read '{s}': {}\n", .{ file_path, err });
+            return;
+        };
+    };
+    // source_override가 제공된 경우 호출자가 메모리를 관리하므로 여기서 free하지 않음
+    const should_free_source = source_override == null;
+    defer if (should_free_source) allocator.free(source);
+
+    // 파싱
+    var scanner = Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    _ = parser.parse() catch |err| {
+        try stderr.print("zts: parse error in '{s}': {}\n", .{ file_path, err });
+        return;
+    };
+
+    // 에러 출력 (코드 프레임, D012)
+    if (parser.errors.items.len > 0) {
+        for (parser.errors.items) |parse_err| {
+            try printErrorCodeFrame(stderr, source, file_path, &scanner, parse_err);
+        }
+    }
+
+    // 변환
+    var transformer = Transformer.init(allocator, &parser.ast, .{
+        .drop_console = options.drop_console,
+        .drop_debugger = options.drop_debugger,
+    });
+    const root = transformer.transform() catch |err| {
+        try stderr.print("zts: transform error in '{s}': {}\n", .{ file_path, err });
+        return;
+    };
+    transformer.scratch.deinit();
+    defer transformer.new_ast.deinit();
+
+    // 코드 생성
+    var cg = Codegen.initWithOptions(allocator, &transformer.new_ast, .{
+        .module_format = options.module_format,
+        .minify = options.minify,
+        .sourcemap = options.sourcemap,
+        .ascii_only = options.ascii_only,
+    });
+    cg.comments = scanner.comments.items;
+    if (options.sourcemap) {
+        cg.addSourceFile(file_path) catch {};
+        cg.line_offsets = scanner.line_offsets.items;
+    }
+    defer cg.deinit();
+    const output = cg.generate(root) catch |err| {
+        try stderr.print("zts: codegen error in '{s}': {}\n", .{ file_path, err });
+        return;
+    };
+
+    // 출력
+    if (output_path) |out_path| {
+        // 출력 디렉토리가 없으면 생성
+        if (std.fs.path.dirname(out_path)) |dir| {
+            std.fs.cwd().makePath(dir) catch |err| {
+                try stderr.print("zts: cannot create directory '{s}': {}\n", .{ dir, err });
+                return;
+            };
+        }
+
+        std.fs.cwd().writeFile(.{
+            .sub_path = out_path,
+            .data = output,
+        }) catch |err| {
+            try stderr.print("zts: cannot write '{s}': {}\n", .{ out_path, err });
+            return;
+        };
+
+        // 소스맵 파일 출력 (.js.map)
+        if (options.sourcemap) {
+            if (cg.generateSourceMap(out_path) catch null) |sm_json| {
+                const map_path = try std.fmt.allocPrint(allocator, "{s}.map", .{out_path});
+                defer allocator.free(map_path);
+                std.fs.cwd().writeFile(.{
+                    .sub_path = map_path,
+                    .data = sm_json,
+                }) catch |err| {
+                    try stderr.print("zts: cannot write '{s}': {}\n", .{ map_path, err });
+                };
+            }
+        }
+    } else {
+        try stdout.writeAll(output);
+    }
+}
+
+/// 디렉토리를 재귀 순회하며 .ts/.tsx 파일을 찾아 트랜스파일한다.
+/// input_dir: 입력 디렉토리 경로, output_dir: 출력 디렉토리 경로
+/// .d.ts 파일과 node_modules 디렉토리는 건너뛴다.
+fn walkAndTranspile(
+    allocator: std.mem.Allocator,
+    input_dir: []const u8,
+    output_dir: []const u8,
+    options: TranspileOptions,
+) !void {
+    const stderr = std.io.getStdErr().writer();
+    const stdout = std.io.getStdOut().writer();
+
+    // 입력 디렉토리 열기
+    var dir = std.fs.cwd().openDir(input_dir, .{ .iterate = true }) catch |err| {
+        try stderr.print("zts: cannot open directory '{s}': {}\n", .{ input_dir, err });
+        return;
+    };
+    defer dir.close();
+
+    // 재귀적으로 파일 순회
+    var walker = dir.walk(allocator) catch |err| {
+        try stderr.print("zts: cannot walk directory '{s}': {}\n", .{ input_dir, err });
+        return;
+    };
+    defer walker.deinit();
+
+    var file_count: usize = 0;
+
+    while (walker.next() catch |err| {
+        try stderr.print("zts: error walking directory: {}\n", .{err});
+        return;
+    }) |entry| {
+        // 디렉토리는 건너뛰되, node_modules는 순회 자체를 차단할 수 없으므로
+        // 파일 경로에 node_modules가 포함되면 건너뛴다
+        if (entry.kind != .file) continue;
+
+        const path = entry.path; // input_dir 기준 상대 경로
+
+        // node_modules 포함 경로 건너뛰기
+        if (std.mem.indexOf(u8, path, "node_modules") != null) continue;
+
+        // .ts 또는 .tsx 파일만 처리
+        const is_ts = std.mem.endsWith(u8, path, ".ts");
+        const is_tsx = std.mem.endsWith(u8, path, ".tsx");
+        if (!is_ts and !is_tsx) continue;
+
+        // .d.ts 파일 건너뛰기
+        if (std.mem.endsWith(u8, path, ".d.ts")) continue;
+
+        // 입력 파일의 전체 경로 구성
+        const input_path = try std.fs.path.join(allocator, &.{ input_dir, path });
+        defer allocator.free(input_path);
+
+        // 출력 경로 구성: 확장자를 .js로 변경
+        const basename_no_ext = if (is_tsx)
+            path[0 .. path.len - 4] // ".tsx" 제거
+        else
+            path[0 .. path.len - 3]; // ".ts" 제거
+        const output_rel = try std.fmt.allocPrint(allocator, "{s}.js", .{basename_no_ext});
+        defer allocator.free(output_rel);
+
+        const output_path = try std.fs.path.join(allocator, &.{ output_dir, output_rel });
+        defer allocator.free(output_path);
+
+        // 진행 상황 출력
+        try stdout.print("{s} → {s}\n", .{ input_path, output_path });
+
+        // 트랜스파일 실행
+        try transpileFile(allocator, input_path, null, output_path, options);
+        file_count += 1;
+    }
+
+    if (file_count == 0) {
+        try stderr.print("zts: no .ts/.tsx files found in '{s}'\n", .{input_dir});
+    } else {
+        try stdout.print("\nDone: {d} file(s) transpiled.\n", .{file_count});
+    }
+}
+
 pub fn main() !void {
     const stdout = std.io.getStdOut().writer();
     const stderr = std.io.getStdErr().writer();
@@ -25,6 +222,7 @@ pub fn main() !void {
     // 옵션 파싱
     var input_file: ?[]const u8 = null;
     var output_file: ?[]const u8 = null;
+    var output_dir: ?[]const u8 = null;
     var minify = false;
     var module_format: lib.codegen.codegen.ModuleFormat = .esm;
     var drop_console = false;
@@ -50,6 +248,11 @@ pub fn main() !void {
             if (i + 1 < args.len) {
                 i += 1;
                 output_file = args[i];
+            }
+        } else if (std.mem.eql(u8, arg, "--outdir")) {
+            if (i + 1 < args.len) {
+                i += 1;
+                output_dir = args[i];
             }
         } else if (std.mem.eql(u8, arg, "--minify")) {
             minify = true;
@@ -116,102 +319,66 @@ pub fn main() !void {
         return;
     }
 
-    // 트랜스파일
-    // 입력 소스 읽기: 파일 또는 stdin
-    const is_stdin = if (input_file) |f| std.mem.eql(u8, f, "-") else false;
-    const file_path = if (is_stdin) "<stdin>" else (input_file orelse {
+    // 트랜스파일 옵션 구성
+    const options = TranspileOptions{
+        .module_format = module_format,
+        .minify = minify,
+        .drop_console = drop_console,
+        .drop_debugger = drop_debugger,
+        .sourcemap = sourcemap,
+        .ascii_only = ascii_only,
+    };
+
+    // 입력 경로가 디렉토리인지 확인
+    const input_path_str = input_file orelse {
         try printUsage(stdout);
         return;
-    });
+    };
 
-    const source = if (is_stdin) blk: {
-        // stdin에서 읽기
-        break :blk std.io.getStdIn().readToEndAlloc(allocator, 100 * 1024 * 1024) catch |err| {
+    const is_stdin = std.mem.eql(u8, input_path_str, "-");
+
+    if (!is_stdin) {
+        // statFile로 디렉토리 여부 판별
+        const stat = std.fs.cwd().statFile(input_path_str) catch |err| {
+            // statFile이 실패하면 openDir을 시도하여 디렉토리인지 확인
+            // (일부 시스템에서 디렉토리에 statFile이 실패할 수 있음)
+            var dir = std.fs.cwd().openDir(input_path_str, .{}) catch {
+                // 파일도 디렉토리도 아닌 경우
+                try stderr.print("zts: cannot access '{s}': {}\n", .{ input_path_str, err });
+                return;
+            };
+            dir.close();
+            // 디렉토리 확인됨 — 아래 디렉토리 처리로 이동
+            const out_dir = output_dir orelse {
+                try stderr.print("zts: --outdir is required when input is a directory\n", .{});
+                return;
+            };
+            try walkAndTranspile(allocator, input_path_str, out_dir, options);
+            return;
+        };
+
+        if (stat.kind == .directory) {
+            const out_dir = output_dir orelse {
+                try stderr.print("zts: --outdir is required when input is a directory\n", .{});
+                return;
+            };
+            try walkAndTranspile(allocator, input_path_str, out_dir, options);
+            return;
+        }
+    }
+
+    // 단일 파일 트랜스파일 (기존 로직)
+    const file_path = if (is_stdin) "<stdin>" else input_path_str;
+
+    if (is_stdin) {
+        const source = std.io.getStdIn().readToEndAlloc(allocator, 100 * 1024 * 1024) catch |err| {
             try stderr.print("zts: cannot read stdin: {}\n", .{err});
             return;
         };
-    } else blk: {
-        break :blk std.fs.cwd().readFileAlloc(allocator, file_path, 100 * 1024 * 1024) catch |err| {
-            try stderr.print("zts: cannot read '{s}': {}\n", .{ file_path, err });
-            return;
-        };
-    };
-    defer allocator.free(source);
-
-    // 파싱
-    var scanner = Scanner.init(allocator, source);
-    defer scanner.deinit();
-    var parser = Parser.init(allocator, &scanner);
-    defer parser.deinit();
-    _ = parser.parse() catch |err| {
-        try stderr.print("zts: parse error: {}\n", .{err});
-        return;
-    };
-
-    // 에러 출력 (코드 프레임, D012)
-    if (parser.errors.items.len > 0) {
-        for (parser.errors.items) |parse_err| {
-            try printErrorCodeFrame(stderr, source, file_path, &scanner, parse_err);
-        }
-    }
-
-    // 변환
-    var transformer = Transformer.init(allocator, &parser.ast, .{
-        .drop_console = drop_console,
-        .drop_debugger = drop_debugger,
-    });
-    const root = transformer.transform() catch |err| {
-        try stderr.print("zts: transform error: {}\n", .{err});
-        return;
-    };
-    transformer.scratch.deinit();
-    defer transformer.new_ast.deinit();
-
-    // 코드 생성
-    var cg = Codegen.initWithOptions(allocator, &transformer.new_ast, .{
-        .module_format = module_format,
-        .minify = minify,
-        .sourcemap = sourcemap,
-        .ascii_only = ascii_only,
-    });
-    // 스캐너에서 수집한 주석을 codegen에 전달 (주석 보존)
-    cg.comments = scanner.comments.items;
-    if (sourcemap) {
-        cg.addSourceFile(file_path) catch {};
-        cg.line_offsets = scanner.line_offsets.items;
-    }
-    defer cg.deinit();
-    const output = cg.generate(root) catch |err| {
-        try stderr.print("zts: codegen error: {}\n", .{err});
-        return;
-    };
-
-    // 출력
-    if (output_file) |out_path| {
-        std.fs.cwd().writeFile(.{
-            .sub_path = out_path,
-            .data = output,
-        }) catch |err| {
-            try stderr.print("zts: cannot write '{s}': {}\n", .{ out_path, err });
-            return;
-        };
-
-        // 소스맵 파일 출력 (.js.map)
-        if (sourcemap) {
-            if (cg.generateSourceMap(out_path) catch null) |sm_json| {
-                const map_path = try std.fmt.allocPrint(allocator, "{s}.map", .{out_path});
-                defer allocator.free(map_path);
-                std.fs.cwd().writeFile(.{
-                    .sub_path = map_path,
-                    .data = sm_json,
-                }) catch |err| {
-                    try stderr.print("zts: cannot write '{s}': {}\n", .{ map_path, err });
-                };
-            }
-        }
+        defer allocator.free(source);
+        try transpileFile(allocator, file_path, source, output_file, options);
     } else {
-        try stdout.writeAll(output);
-        // stdout에 소스맵은 inline으로 출력하지 않음 (별도 옵션 필요)
+        try transpileFile(allocator, file_path, null, output_file, options);
     }
 }
 
@@ -288,10 +455,12 @@ fn printUsage(writer: anytype) !void {
         \\Usage:
         \\  zts <file.ts>                Transpile to stdout
         \\  zts <file.ts> -o <out.js>    Transpile to file
+        \\  zts <dir/> --outdir <out/>   Transpile directory recursively
         \\  zts - < input.ts             Read from stdin
         \\
         \\Options:
         \\  -o, --out-file <path>        Output file path
+        \\  --outdir <path>              Output directory (for directory input)
         \\  --minify                     Minify output
         \\  --format=esm|cjs             Module format (default: esm)
         \\  --drop=console               Remove console.* calls
