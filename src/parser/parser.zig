@@ -1370,6 +1370,8 @@ pub const Parser = struct {
         const span = self.currentSpan();
         if (self.current() == .string_literal) {
             self.advance();
+            // import attributes: with { type: 'json' } 또는 assert { type: 'json' }
+            self.skipImportAttributes();
             return try self.ast.addNode(.{
                 .tag = .string_literal,
                 .span = span,
@@ -1378,6 +1380,29 @@ pub const Parser = struct {
         }
         self.addError(span, "module source string expected");
         return NodeIndex.none;
+    }
+
+    /// import attributes (with/assert { ... })를 건너뛴다.
+    /// AST에 저장하지 않고 소비만 한다 (트랜스포머에서 필요 시 추가).
+    fn skipImportAttributes(self: *Parser) void {
+        // with { ... } 또는 assert { ... }
+        if ((self.current() == .kw_with or self.current() == .kw_assert) and
+            !self.scanner.token.has_newline_before)
+        {
+            self.advance(); // skip with/assert
+            if (self.current() == .l_curly) {
+                self.advance(); // skip {
+                while (self.current() != .r_curly and self.current() != .eof) {
+                    self.advance(); // key
+                    _ = self.eat(.colon);
+                    if (self.current() != .r_curly and self.current() != .eof) {
+                        self.advance(); // value
+                    }
+                    _ = self.eat(.comma);
+                }
+                _ = self.eat(.r_curly);
+            }
+        }
     }
 
     // ================================================================
