@@ -857,9 +857,8 @@ pub const Parser = struct {
             @intFromEnum(super_class),
             @intFromEnum(body),
             @intFromEnum(type_params),
-            0, 0, // implements (스트리핑 대상이므로 빈 리스트)
-            decorators.start,
-            decorators.len,
+            0,                0, // implements (스트리핑 대상이므로 빈 리스트)
+            decorators.start, decorators.len,
         });
         _ = none;
 
