@@ -751,11 +751,10 @@ pub const Codegen = struct {
         try self.writeByte('}');
     }
 
+    /// object_property: binary = { left=key, right=value, flags }
     fn emitObjectProperty(self: *Codegen, node: Node) !void {
-        const e = node.data.extra;
-        const extras = self.ast.extra_data.items[e .. e + 3];
-        const key: NodeIndex = @enumFromInt(extras[0]);
-        const value: NodeIndex = @enumFromInt(extras[1]);
+        const key = node.data.binary.left;
+        const value = node.data.binary.right;
         try self.emitNode(key);
         if (!value.isNone()) {
             try self.writeByte(':');

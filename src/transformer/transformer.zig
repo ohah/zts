@@ -179,6 +179,11 @@ pub const Transformer = struct {
             .jsx_expression_container,
             .jsx_spread_child,
             .chain_expression,
+            .computed_property_key,
+            .break_statement,
+            .continue_statement,
+            .import_expression,
+            .static_block,
             => self.visitUnaryNode(node),
 
             // === 이항 노드: 자식 2개 재귀 방문 ===
@@ -250,17 +255,12 @@ pub const Transformer = struct {
             .binding_identifier,
             .empty_statement,
             .debugger_statement,
-            .break_statement,
-            .continue_statement,
             .directive,
             .hashbang,
             .super_expression,
             .meta_property,
             .template_element,
-            .import_expression,
             .elision,
-            .static_block,
-            .computed_property_key,
             // JSX leaf
             .jsx_text,
             .jsx_empty_expression,
@@ -787,13 +787,18 @@ pub const Transformer = struct {
         });
     }
 
-    /// object_property: extra_data = [key, value, flags]
+    /// object_property: binary = { left=key, right=value, flags }
     fn visitObjectProperty(self: *Transformer, node: Node) Error!NodeIndex {
-        const e = node.data.extra;
-        const new_key = try self.visitNode(self.readNodeIdx(e, 0));
-        const new_value = try self.visitNode(self.readNodeIdx(e, 1));
-        return self.addExtraNode(.object_property, node.span, &.{
-            @intFromEnum(new_key), @intFromEnum(new_value), self.readU32(e, 2),
+        const new_key = try self.visitNode(node.data.binary.left);
+        const new_value = try self.visitNode(node.data.binary.right);
+        return self.new_ast.addNode(.{
+            .tag = .object_property,
+            .span = node.span,
+            .data = .{ .binary = .{
+                .left = new_key,
+                .right = new_value,
+                .flags = node.data.binary.flags,
+            } },
         });
     }
 
