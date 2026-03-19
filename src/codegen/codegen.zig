@@ -271,9 +271,6 @@ pub const Codegen = struct {
     // 주석 출력
     // ================================================================
 
-    /// 현재 노드의 소스 위치(pos) 이전에 위치한 주석들을 출력한다.
-    /// minify 모드에서는 주석을 출력하지 않는다.
-    /// 주석 출력. pos가 null이면 남은 모든 주석 출력 (trailing).
     /// 주석 출력. pos가 null이면 남은 모든 주석 출력 (trailing).
     /// minify 모드에서는 legal comment (@license, @preserve, /*!)만 보존 (D022).
     fn emitComments(self: *Codegen, pos: ?u32) !void {
