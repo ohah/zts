@@ -163,6 +163,8 @@ pub const Parser = struct {
     // 이렇게 하는 이유: 함수 안의 break/continue는 함수 밖 loop에 속하지 않고,
     // 함수마다 독립된 strict/async/generator 컨텍스트를 가진다.
 
+    /// SavedContext: 함수 경계에서 저장/복원할 컨텍스트.
+    /// is_module은 제외 — 파싱 시작 시 한 번 설정되고 변경되지 않음 (ECMA-262: module/script 구분은 호스트가 결정).
     const SavedContext = struct {
         is_strict_mode: bool,
         in_function: bool,
@@ -192,6 +194,38 @@ pub const Parser = struct {
         self.in_switch = saved.in_switch;
     }
 
+    /// 함수 컨텍스트를 설정한다 (saveContext + 플래그 세팅).
+    /// 함수/메서드/arrow 진입 시 호출하고, 본문 파싱 후 restoreContext로 복원.
+    fn enterFunctionContext(self: *Parser, is_async: bool, is_generator: bool) SavedContext {
+        const saved = self.saveContext();
+        self.in_function = true;
+        self.in_async = is_async;
+        self.in_generator = is_generator;
+        self.in_loop = false;
+        self.in_switch = false;
+        return saved;
+    }
+
+    /// 현재 토큰이 "use strict" directive인지 확인한다.
+    /// directive prologue에서 호출 — tokenText()는 따옴표를 포함하므로 내부를 비교.
+    fn isUseStrictDirective(self: *const Parser) bool {
+        if (self.current() != .string_literal) return false;
+        const text = self.tokenText();
+        // "use strict" 또는 'use strict' — 따옴표 포함 길이 = "use strict".len + 2 = 12
+        if (text.len < "\"use strict\"".len) return false;
+        const inner = text[1 .. text.len - 1];
+        return std.mem.eql(u8, inner, "use strict");
+    }
+
+    /// 루프 본문을 파싱한다. in_loop 컨텍스트를 설정/복원.
+    fn parseLoopBody(self: *Parser) ParseError2!NodeIndex {
+        const was_in_loop = self.in_loop;
+        self.in_loop = true;
+        const body = try self.parseStatement();
+        self.in_loop = was_in_loop;
+        return body;
+    }
+
     /// 함수 본문을 파싱한다.
     /// block statement와 동일하지만, "use strict" directive를 감지하여 strict mode를 설정한다.
     fn parseFunctionBody(self: *Parser) ParseError2!NodeIndex {
@@ -201,24 +235,16 @@ pub const Parser = struct {
         var stmts = std.ArrayList(NodeIndex).init(self.allocator);
         defer stmts.deinit();
 
-        // directive prologue 감지: 함수 본문 시작 부분의 문자열 리터럴 expression statement
-        // "use strict"를 만나면 strict mode 설정
+        // directive prologue: 본문 시작의 문자열 리터럴 expression statement 중 "use strict" 감지
         var in_directive_prologue = true;
 
         while (self.current() != .r_curly and self.current() != .eof) {
-            // directive prologue: 문자열 리터럴로 시작하는 expression statement
-            if (in_directive_prologue and self.current() == .string_literal) {
-                const text = self.tokenText();
-                // "use strict" 또는 'use strict' 감지
-                // tokenText()는 따옴표를 포함하므로 내부 문자열을 비교
-                if (text.len >= 12) {
-                    const inner = text[1 .. text.len - 1];
-                    if (std.mem.eql(u8, inner, "use strict")) {
-                        self.is_strict_mode = true;
-                    }
+            if (in_directive_prologue) {
+                if (self.isUseStrictDirective()) {
+                    self.is_strict_mode = true;
+                } else {
+                    in_directive_prologue = false;
                 }
-            } else {
-                in_directive_prologue = false;
             }
 
             const stmt = try self.parseStatement();
@@ -261,16 +287,12 @@ pub const Parser = struct {
         var in_directive_prologue = true;
 
         while (self.current() != .eof) {
-            if (in_directive_prologue and self.current() == .string_literal) {
-                const text = self.tokenText();
-                if (text.len >= 12) {
-                    const inner = text[1 .. text.len - 1];
-                    if (std.mem.eql(u8, inner, "use strict")) {
-                        self.is_strict_mode = true;
-                    }
+            if (in_directive_prologue) {
+                if (self.isUseStrictDirective()) {
+                    self.is_strict_mode = true;
+                } else {
+                    in_directive_prologue = false;
                 }
-            } else if (in_directive_prologue) {
-                in_directive_prologue = false;
             }
 
             const stmt = try self.parseStatement();
@@ -547,11 +569,7 @@ pub const Parser = struct {
         self.expect(.l_paren);
         const test_expr = try self.parseExpression();
         self.expect(.r_paren);
-
-        const was_in_loop = self.in_loop;
-        self.in_loop = true;
-        const body = try self.parseStatement();
-        self.in_loop = was_in_loop;
+        const body = try self.parseLoopBody();
 
         return try self.ast.addNode(.{
             .tag = .while_statement,
@@ -563,11 +581,7 @@ pub const Parser = struct {
     fn parseDoWhileStatement(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'do'
-
-        const was_in_loop = self.in_loop;
-        self.in_loop = true;
-        const body = try self.parseStatement();
-        self.in_loop = was_in_loop;
+        const body = try self.parseLoopBody();
         self.expect(.kw_while);
         self.expect(.l_paren);
         const test_expr = try self.parseExpression();
@@ -638,11 +652,7 @@ pub const Parser = struct {
             update_expr = try self.parseExpression();
         }
         self.expect(.r_paren);
-
-        const was_in_loop = self.in_loop;
-        self.in_loop = true;
-        const body = try self.parseStatement();
-        self.in_loop = was_in_loop;
+        const body = try self.parseLoopBody();
 
         const extra_start = try self.ast.addExtra(@intFromEnum(init_expr));
         _ = try self.ast.addExtra(@intFromEnum(test_expr));
@@ -661,11 +671,7 @@ pub const Parser = struct {
         self.advance(); // skip 'in'
         const right = try self.parseExpression();
         self.expect(.r_paren);
-
-        const was_in_loop = self.in_loop;
-        self.in_loop = true;
-        const body = try self.parseStatement();
-        self.in_loop = was_in_loop;
+        const body = try self.parseLoopBody();
 
         return try self.ast.addNode(.{
             .tag = .for_in_statement,
@@ -679,11 +685,7 @@ pub const Parser = struct {
         self.advance(); // skip 'of'
         const right = try self.parseAssignmentExpression();
         self.expect(.r_paren);
-
-        const was_in_loop = self.in_loop;
-        self.in_loop = true;
-        const body = try self.parseStatement();
-        self.in_loop = was_in_loop;
+        const body = try self.parseLoopBody();
 
         return try self.ast.addNode(.{
             .tag = .for_of_statement,
@@ -893,13 +895,7 @@ pub const Parser = struct {
         const return_type = try self.tryParseReturnType();
 
         // 함수 본문 — 컨텍스트 저장/복원
-        // 함수 경계에서 loop/switch 컨텍스트 리셋 (함수 안의 break/continue는 함수 밖 loop에 속하지 않음)
-        const saved_ctx = self.saveContext();
-        self.in_function = true;
-        self.in_async = (flags & 0x01) != 0;
-        self.in_generator = (flags & 0x02) != 0;
-        self.in_loop = false;
-        self.in_switch = false;
+        const saved_ctx = self.enterFunctionContext((flags & 0x01) != 0, (flags & 0x02) != 0);
         const body = try self.parseFunctionBody();
         self.restoreContext(saved_ctx);
 
@@ -966,12 +962,7 @@ pub const Parser = struct {
         _ = try self.tryParseReturnType();
 
         // 함수 본문 — 컨텍스트 저장/복원
-        const saved_ctx = self.saveContext();
-        self.in_function = true;
-        self.in_async = (flags & 0x01) != 0;
-        self.in_generator = (flags & 0x02) != 0;
-        self.in_loop = false;
-        self.in_switch = false;
+        const saved_ctx = self.enterFunctionContext((flags & 0x01) != 0, (flags & 0x02) != 0);
         const body = try self.parseFunctionBody();
         self.restoreContext(saved_ctx);
 
@@ -1176,12 +1167,8 @@ pub const Parser = struct {
             // 메서드도 함수이므로 컨텍스트 설정
             var body = NodeIndex.none;
             if (self.current() == .l_curly) {
-                const saved_ctx = self.saveContext();
-                self.in_function = true;
-                self.in_async = (flags & 0x08) != 0;
-                self.in_generator = (flags & 0x10) != 0;
-                self.in_loop = false;
-                self.in_switch = false;
+                // 메서드의 async/generator 플래그는 함수와 비트 위치가 다름 (0x08/0x10)
+                const saved_ctx = self.enterFunctionContext((flags & 0x08) != 0, (flags & 0x10) != 0);
                 body = try self.parseFunctionBody();
                 self.restoreContext(saved_ctx);
             } else {
@@ -1629,12 +1616,8 @@ pub const Parser = struct {
     /// arrow function은 함수이므로 in_function=true, loop/switch 리셋.
     /// block body면 parseFunctionBody(), expression body면 parseAssignmentExpression().
     fn parseArrowBody(self: *Parser, is_async: bool) ParseError2!NodeIndex {
-        const saved_ctx = self.saveContext();
-        self.in_function = true;
-        self.in_async = is_async;
-        self.in_generator = false; // arrow function은 generator가 될 수 없음
-        self.in_loop = false;
-        self.in_switch = false;
+        // arrow function은 generator가 될 수 없으므로 is_generator=false
+        const saved_ctx = self.enterFunctionContext(is_async, false);
         const body = if (self.current() == .l_curly)
             try self.parseFunctionBody()
         else
