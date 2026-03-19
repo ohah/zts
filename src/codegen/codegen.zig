@@ -880,13 +880,16 @@ pub const Codegen = struct {
 
         if (flags & 0x01 != 0) try self.write("async ");
 
-        // params가 단일 binding_identifier이면 괄호 없이 출력
+        // params 출력
         if (!params.isNone()) {
             const param_node = self.ast.getNode(params);
             if (param_node.tag == .binding_identifier) {
+                // 단일 파라미터: x => x
+                try self.emitNode(params);
+            } else if (param_node.tag == .parenthesized_expression) {
+                // 괄호 형태: (a, b) => a + b — parenthesized_expression이 이미 괄호를 포함
                 try self.emitNode(params);
             } else {
-                // parenthesized params나 다른 패턴
                 try self.writeByte('(');
                 try self.emitNode(params);
                 try self.writeByte(')');

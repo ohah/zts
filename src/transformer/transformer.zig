@@ -270,12 +270,13 @@ pub const Transformer = struct {
             .jsx_closing_fragment,
             => self.copyNodeDirect(node),
 
-            // === import/export specifiers: 그대로 복사 ===
-            .import_specifier,
+            // === import/export specifiers ===
+            .import_specifier => self.visitBinaryNode(node),
+            .export_specifier => self.visitBinaryNode(node),
+            // default/namespace specifier는 string_ref(span) 복사 — 자식 노드 없음
             .import_default_specifier,
             .import_namespace_specifier,
             .import_attribute,
-            .export_specifier,
             => self.copyNodeDirect(node),
 
             // === Pattern 노드: 자식 재귀 방문 ===
