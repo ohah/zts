@@ -743,18 +743,19 @@ pub const Transformer = struct {
         });
     }
 
-    /// property_definition: extra_data = [key, value, flags, type_ann, decorators_start, decorators_len]
+    /// property_definition: binary = { left=key, right=init_val, flags }
+    /// flags: bit0=static
     fn visitPropertyDefinition(self: *Transformer, node: Node) Error!NodeIndex {
-        const e = node.data.extra;
-        const new_key = try self.visitNode(self.readNodeIdx(e, 0));
-        const new_value = try self.visitNode(self.readNodeIdx(e, 1));
-        const new_decos = try self.visitExtraList(self.readU32(e, 4), self.readU32(e, 5));
-        const none = @intFromEnum(NodeIndex.none);
-        return self.addExtraNode(.property_definition, node.span, &.{
-            @intFromEnum(new_key), @intFromEnum(new_value), self.readU32(e, 2),
-            none, // type_ann 제거
-            new_decos.start,
-            new_decos.len,
+        const new_key = try self.visitNode(node.data.binary.left);
+        const new_value = try self.visitNode(node.data.binary.right);
+        return self.new_ast.addNode(.{
+            .tag = .property_definition,
+            .span = node.span,
+            .data = .{ .binary = .{
+                .left = new_key,
+                .right = new_value,
+                .flags = node.data.binary.flags,
+            } },
         });
     }
 
