@@ -159,7 +159,7 @@ pub const Codegen = struct {
             .template_element => try self.writeNodeSpan(node),
             .tagged_template_expression => try self.emitTaggedTemplate(node),
             .import_expression => try self.emitImportExpr(node),
-            .meta_property => try self.writeNodeSpan(node),
+            .meta_property => try self.emitMetaProperty(node),
             .chain_expression => try self.emitNode(node.data.unary.operand),
 
             // Functions / Classes
@@ -521,6 +521,19 @@ pub const Codegen = struct {
     fn emitTaggedTemplate(self: *Codegen, node: Node) !void {
         try self.emitNode(node.data.binary.left);
         try self.emitNode(node.data.binary.right);
+    }
+
+    /// import.meta → CJS에서 치환
+    fn emitMetaProperty(self: *Codegen, node: Node) !void {
+        if (self.options.module_format == .cjs) {
+            // import.meta → { url: require('url').pathToFileURL(__filename).href }
+            const text = self.ast.source[node.span.start..node.span.end];
+            if (std.mem.eql(u8, text, "import.meta")) {
+                try self.write("{url:require('url').pathToFileURL(__filename).href}");
+                return;
+            }
+        }
+        try self.writeNodeSpan(node);
     }
 
     fn emitImportExpr(self: *Codegen, node: Node) !void {
