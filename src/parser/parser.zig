@@ -101,7 +101,7 @@ pub const Parser = struct {
         /// `in`을 관계 연산자가 아닌 for-in 키워드로 파싱)
         allow_in: bool = true,
 
-        // --- 추가 ECMAScript 컨텍스트 (비트 8~12) ---
+        // --- 추가 ECMAScript 컨텍스트 (비트 8~11) ---
 
         /// 최상위 레벨인지 (top-level await 감지용)
         is_top_level: bool = true,
@@ -127,7 +127,7 @@ pub const Parser = struct {
         /// super.x / super[x] 허용 여부
         allow_super_property: bool = false,
 
-        // --- TypeScript 컨텍스트 (비트 18~21) ---
+        // --- TypeScript 컨텍스트 (비트 18~20) ---
 
         /// TS 타입 어노테이션 안인지 (렉서 동작 변경: `<`/`>`를 타입 구분자로)
         in_type: bool = false,
@@ -136,7 +136,7 @@ pub const Parser = struct {
         /// TS 조건부 타입 금지 (infer 절에서 extends를 제약으로 파싱)
         disallow_conditional_types: bool = false,
 
-        // --- 기타 (비트 21~) ---
+        // --- 기타 (비트 21~22) ---
 
         /// new.target 허용 여부
         allow_new_target: bool = false,
@@ -324,12 +324,12 @@ pub const Parser = struct {
         return std.mem.eql(u8, inner, "use strict");
     }
 
-    /// 루프 본문을 파싱한다. in_loop 컨텍스트를 설정/복원.
+    /// 루프 본문을 파싱한다. 전체 ctx를 save/restore하여 일관성 유지.
     fn parseLoopBody(self: *Parser) ParseError2!NodeIndex {
-        const was_in_loop = self.ctx.in_loop;
+        const saved = self.ctx;
         self.ctx.in_loop = true;
         const body = try self.parseStatement();
-        self.ctx.in_loop = was_in_loop;
+        self.ctx = saved;
         return body;
     }
 
@@ -899,7 +899,7 @@ pub const Parser = struct {
         self.expect(.r_paren);
         self.expect(.l_curly);
 
-        const was_in_switch = self.ctx.in_switch;
+        const saved = self.ctx;
         self.ctx.in_switch = true;
 
         const scratch_top = self.saveScratch();
@@ -908,7 +908,7 @@ pub const Parser = struct {
             try self.scratch.append(case_node);
         }
 
-        self.ctx.in_switch = was_in_switch;
+        self.ctx = saved;
 
         const end = self.currentSpan().end;
         self.expect(.r_curly);
