@@ -301,7 +301,7 @@ pub const Kind = enum(u8) {
     // ========================================================================
     // Regular Expression Literal
     // ========================================================================
-    regexp,
+    regexp_literal,
 
     // ========================================================================
     // Template Literals (연속 배치: isTemplateLiteral() range check)
@@ -436,7 +436,7 @@ pub const Kind = enum(u8) {
             .plus2,
             .minus2,
             .string_literal,
-            .regexp,
+            .regexp_literal,
             .no_substitution_template,
             .template_tail,
             => false,
@@ -643,7 +643,7 @@ const token_names = blk: {
             .octal_bigint => "<bigint>",
             .hex_bigint => "<bigint>",
             .string_literal => "<string>",
-            .regexp => "<regexp>",
+            .regexp_literal => "<regexp>",
             .no_substitution_template => "<template>",
             .template_head => "<template head>",
             .template_middle => "<template middle>",
@@ -750,7 +750,7 @@ test "Kind.isTemplateLiteral" {
     try std.testing.expect(Kind.template_middle.isTemplateLiteral());
     try std.testing.expect(Kind.template_tail.isTemplateLiteral());
     try std.testing.expect(!Kind.string_literal.isTemplateLiteral());
-    try std.testing.expect(!Kind.regexp.isTemplateLiteral()); // 직전
+    try std.testing.expect(!Kind.regexp_literal.isTemplateLiteral()); // 직전
     try std.testing.expect(!Kind.jsx_text.isTemplateLiteral()); // 직후
 }
 
