@@ -1109,6 +1109,10 @@ pub const Parser = struct {
     fn parseThrowStatement(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'throw'
+        // ECMAScript 14.14: throw [no LineTerminator here] Expression
+        if (self.scanner.token.has_newline_before) {
+            self.addError(.{ .start = start, .end = self.currentSpan().start }, "no line break is allowed after 'throw'");
+        }
         const arg = try self.parseExpression();
         const end = self.currentSpan().end;
         _ = self.eat(.semicolon);
