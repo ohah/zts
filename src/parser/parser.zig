@@ -181,10 +181,13 @@ pub const Parser = struct {
             .kw_async => self.parseAsyncStatement(),
             .kw_function => self.parseFunctionDeclaration(),
             .kw_class => self.parseClassDeclaration(),
-            .kw_import => if (self.peekNextKind() == .l_paren or self.peekNextKind() == .dot)
-                self.parseExpressionStatement()
-            else
-                self.parseImportDeclaration(),
+            .kw_import => blk: {
+                const next = self.peekNextKind();
+                break :blk if (next == .l_paren or next == .dot)
+                    self.parseExpressionStatement()
+                else
+                    self.parseImportDeclaration();
+            },
             .kw_export => self.parseExportDeclaration(),
             // Decorator: @expr class Foo {}
             .at => self.parseDecoratedStatement(),
