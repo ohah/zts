@@ -399,35 +399,32 @@ pub const Parser = struct {
     /// ECMAScript 13.1.1: yield는 [Yield] 또는 strict mode에서, await는 [Await] 또는 module에서 금지.
     /// context_noun: "identifier", "label" 등 — 에러 메시지에 사용 (comptime 문자열 연결).
     fn checkYieldAwaitUse(self: *Parser, span: Span, comptime context_noun: []const u8) void {
-        if (self.current() == .kw_yield) {
+        // yield/await는 escaped 형태(yi\u0065ld)도 동일 규칙 적용 (ECMAScript 12.1.1)
+        // await는 reserved keyword이므로 escaped_keyword로 분류됨 → 여기서는 yield만 처리
+        const is_yield = self.current() == .kw_yield or
+            (self.current() == .escaped_strict_reserved and self.isEscapedKeyword("yield"));
+        const is_await = self.current() == .kw_await;
+
+        if (is_yield) {
             if (self.ctx.in_generator) {
                 self.addError(span, "'yield' cannot be used as " ++ context_noun ++ " in generator");
             } else if (self.ctx.is_strict_mode) {
                 self.addError(span, "'yield' cannot be used as " ++ context_noun ++ " in strict mode");
             }
-        } else if (self.current() == .kw_await) {
+        } else if (is_await) {
             if (self.ctx.in_async) {
                 self.addError(span, "'await' cannot be used as " ++ context_noun ++ " in async function");
             } else if (self.is_module) {
                 self.addError(span, "'await' cannot be used as " ++ context_noun ++ " in module code");
             }
-        } else if (self.current() == .escaped_strict_reserved) {
-            // escaped yield/await도 generator/async에서 금지 (ECMAScript 12.1.1)
-            const decoded = self.scanner.decodeIdentifierEscapes(self.tokenText());
-            if (decoded) |name| {
-                if (std.mem.eql(u8, name, "yield")) {
-                    if (self.ctx.in_generator) {
-                        self.addError(span, "'yield' cannot be used as " ++ context_noun ++ " in generator");
-                    }
-                } else if (std.mem.eql(u8, name, "await")) {
-                    if (self.ctx.in_async) {
-                        self.addError(span, "'await' cannot be used as " ++ context_noun ++ " in async function");
-                    } else if (self.is_module) {
-                        self.addError(span, "'await' cannot be used as " ++ context_noun ++ " in module code");
-                    }
-                }
-            }
         }
+    }
+
+    /// escaped_strict_reserved 토큰이 특정 키워드인지 확인한다.
+    /// Scanner.decodeIdentifierEscapes로 디코딩 후 비교.
+    fn isEscapedKeyword(self: *Parser, comptime expected: []const u8) bool {
+        const decoded = self.scanner.decodeIdentifierEscapes(self.tokenText()) orelse return false;
+        return std.mem.eql(u8, decoded, expected);
     }
 
     // ================================================================
