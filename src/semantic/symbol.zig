@@ -1,7 +1,10 @@
 //! ZTS Semantic — 심볼 정의
 //!
-//! 최소 심볼 모델 (D053): name + scope_id + kind + flags + declaration_span.
-//! 재선언 검증에 필요한 최소 정보만 저장.
+//! 비트플래그 기반 심볼 모델 (oxc 참고).
+//! SymbolKind는 enum으로 선언 종류를 표현하고,
+//! SymbolFlags는 packed struct로 선언 속성을 비트플래그로 표현한다.
+//! 재선언 규칙은 excludes 비트마스크로 O(1) 판단.
+//!
 //! references(참조 추적)는 Phase 6(minifier/bundler)에서 추가 예정.
 
 const std = @import("std");
@@ -18,7 +21,7 @@ pub const SymbolId = enum(u32) {
     }
 };
 
-/// 심볼 종류. 재선언 규칙이 kind별로 다르다 (D053).
+/// 심볼 종류. 재선언 규칙이 kind별로 다르다.
 ///
 /// 재선언 규칙 요약:
 ///   var + var       → 허용 (같은 스코프에서도 가능)
@@ -53,46 +56,133 @@ pub const SymbolKind = enum(u8) {
     /// import { x }의 x — 재선언 불가, 재할당 불가
     import_binding,
 
-    /// 블록 스코프 선언인지 (let/const/class/generator/async function/async generator)
-    pub fn isBlockScoped(self: SymbolKind) bool {
+    /// 이 kind의 선언 속성을 DeclFlags로 변환한다.
+    pub fn declFlags(self: SymbolKind) DeclFlags {
         return switch (self) {
-            .variable_let,
-            .variable_const,
-            .class_decl,
-            .generator_decl,
-            .async_function_decl,
-            .async_generator_decl,
-            => true,
-            else => false,
+            .variable_var => DeclFlags.FUNCTION_SCOPED,
+            .variable_let => DeclFlags.BLOCK_SCOPED,
+            .variable_const => .{ .block_scoped = true, .is_const = true },
+            .function_decl => .{ .function_scoped = true, .is_function = true },
+            .generator_decl => .{ .block_scoped = true, .is_function = true, .is_generator = true },
+            .async_function_decl => .{ .block_scoped = true, .is_function = true, .is_async = true },
+            .async_generator_decl => .{ .block_scoped = true, .is_function = true, .is_generator = true, .is_async = true },
+            .class_decl => .{ .block_scoped = true, .is_class = true },
+            .parameter => DeclFlags.PARAMETER,
+            .catch_binding => DeclFlags.CATCH_BINDING,
+            .import_binding => DeclFlags.IMPORT,
         };
     }
 
+    /// 블록 스코프 선언인지 (let/const/class/generator/async function/async generator)
+    pub fn isBlockScoped(self: SymbolKind) bool {
+        return self.declFlags().block_scoped;
+    }
+
     /// 같은 스코프에서 재선언 가능한지 (var, function만)
-    /// generator/async function/async generator는 항상 블록 스코프에서 lexical이므로 재선언 불가
     pub fn allowsRedeclaration(self: SymbolKind) bool {
-        return switch (self) {
-            .variable_var, .function_decl => true,
-            else => false,
-        };
+        const f = self.declFlags();
+        return f.function_scoped and !f.block_scoped;
     }
 
     /// function-like 선언인지 (function, generator, async function, async generator)
     pub fn isFunctionLike(self: SymbolKind) bool {
-        return switch (self) {
-            .function_decl, .generator_decl, .async_function_decl, .async_generator_decl => true,
-            else => false,
-        };
+        return self.declFlags().is_function;
     }
 };
 
-/// 심볼 플래그 (D053).
-pub const SymbolFlags = packed struct(u16) {
+/// 선언 속성 비트플래그 (oxc의 SymbolFlags 참고).
+///
+/// 재선언 충돌은 `existing.intersects(new.excludes())` 로 O(1) 판단:
+/// - excludes()는 이 선언과 공존할 수 없는 플래그 마스크를 반환
+/// - 기존 심볼의 flags가 그 마스크와 겹치면 재선언 에러
+pub const DeclFlags = packed struct(u16) {
+    /// var — 함수 스코프로 호이스팅
+    function_scoped: bool = false,
+    /// let/const/class — 블록 스코프
+    block_scoped: bool = false,
+    /// function/generator/async function
+    is_function: bool = false,
+    /// generator (function*)
+    is_generator: bool = false,
+    /// async function
+    is_async: bool = false,
+    /// class
+    is_class: bool = false,
+    /// const (immutable)
+    is_const: bool = false,
+    /// parameter
+    is_parameter: bool = false,
+    /// catch(e)
+    is_catch_binding: bool = false,
+    /// import binding
+    is_import: bool = false,
     /// export된 심볼
     is_exported: bool = false,
     /// export default
     is_default_export: bool = false,
-    /// 사용되지 않는 패딩 (Phase 6에서 is_reassigned, is_read 등 추가 예정)
-    _padding: u14 = 0,
+    /// 나머지 패딩
+    _padding: u4 = 0,
+
+    /// 모든 "값(value)" 비트. 재선언 체크에 사용할 전체 마스크.
+    pub const all_values: DeclFlags = .{
+        .function_scoped = true,
+        .block_scoped = true,
+        .is_function = true,
+        .is_generator = true,
+        .is_async = true,
+        .is_class = true,
+        .is_const = true,
+        .is_parameter = true,
+        .is_catch_binding = true,
+        .is_import = true,
+    };
+
+    /// 편의 상수 — 단일 비트 마스크
+    pub const FUNCTION_SCOPED: DeclFlags = .{ .function_scoped = true };
+    pub const BLOCK_SCOPED: DeclFlags = .{ .block_scoped = true };
+    pub const FUNCTION: DeclFlags = .{ .is_function = true };
+    pub const PARAMETER: DeclFlags = .{ .is_parameter = true };
+    pub const CATCH_BINDING: DeclFlags = .{ .is_catch_binding = true };
+    pub const IMPORT: DeclFlags = .{ .is_import = true };
+
+    /// u16 비트 연산용 변환
+    pub fn toInt(self: DeclFlags) u16 {
+        return @bitCast(self);
+    }
+
+    pub fn fromInt(val: u16) DeclFlags {
+        return @bitCast(val);
+    }
+
+    /// 두 플래그가 겹치는 비트가 있는지 (비트 AND != 0)
+    pub fn intersects(self: DeclFlags, other: DeclFlags) bool {
+        return (self.toInt() & other.toInt()) != 0;
+    }
+
+    // 자주 사용하는 마스크 상수 (excludes 계산용)
+    const fn_scoped_or_function = fromInt(FUNCTION_SCOPED.toInt() | FUNCTION.toInt());
+    const fn_scoped_or_function_or_param = fromInt(fn_scoped_or_function.toInt() | PARAMETER.toInt());
+
+    /// 이 선언과 공존할 수 없는 플래그 마스크를 반환한다 (oxc의 excludes 패턴).
+    /// 새 선언의 excludes()와 기존 심볼의 declFlags()를 intersects하면 충돌 판단.
+    pub fn excludes(self: DeclFlags) DeclFlags {
+        // var/function: 다른 var/function/parameter와 공존 가능, 나머지(let/const/class 등)와 충돌
+        if (self.function_scoped and !self.block_scoped) {
+            return fromInt(all_values.toInt() & ~fn_scoped_or_function_or_param.toInt());
+        }
+        // import: 모든 것과 충돌
+        if (self.is_import) return all_values;
+        // parameter: 다른 parameter와는 공존 가능 (non-strict), var/function과도 공존
+        if (self.is_parameter) {
+            return fromInt(all_values.toInt() & ~fn_scoped_or_function_or_param.toInt());
+        }
+        // catch binding: var와는 공존 가능
+        if (self.is_catch_binding) {
+            return fromInt(all_values.toInt() & ~FUNCTION_SCOPED.toInt());
+        }
+        // let/const/class/block-scoped function: 모든 것과 충돌
+        return all_values;
+    }
 };
 
 /// 심볼 하나의 데이터.
@@ -112,8 +202,8 @@ pub const Symbol = struct {
     /// 선언 종류
     kind: SymbolKind,
 
-    /// 플래그
-    flags: SymbolFlags = .{},
+    /// 선언 속성 비트플래그 (kind에서 파생 + export 등 추가 속성)
+    decl_flags: DeclFlags = .{},
 
     /// 선언 위치 (에러 메시지에서 "여기서 먼저 선언됨" 출력용)
     declaration_span: Span,
@@ -124,10 +214,17 @@ pub const Symbol = struct {
     }
 };
 
+// ============================================================
+// Tests
+// ============================================================
+
 test "SymbolKind.isBlockScoped" {
     try std.testing.expect(SymbolKind.variable_let.isBlockScoped());
     try std.testing.expect(SymbolKind.variable_const.isBlockScoped());
     try std.testing.expect(SymbolKind.class_decl.isBlockScoped());
+    try std.testing.expect(SymbolKind.generator_decl.isBlockScoped());
+    try std.testing.expect(SymbolKind.async_function_decl.isBlockScoped());
+    try std.testing.expect(SymbolKind.async_generator_decl.isBlockScoped());
     try std.testing.expect(!SymbolKind.variable_var.isBlockScoped());
     try std.testing.expect(!SymbolKind.function_decl.isBlockScoped());
     try std.testing.expect(!SymbolKind.parameter.isBlockScoped());
@@ -139,4 +236,46 @@ test "SymbolKind.allowsRedeclaration" {
     try std.testing.expect(!SymbolKind.variable_let.allowsRedeclaration());
     try std.testing.expect(!SymbolKind.variable_const.allowsRedeclaration());
     try std.testing.expect(!SymbolKind.import_binding.allowsRedeclaration());
+}
+
+test "SymbolKind.isFunctionLike" {
+    try std.testing.expect(SymbolKind.function_decl.isFunctionLike());
+    try std.testing.expect(SymbolKind.generator_decl.isFunctionLike());
+    try std.testing.expect(SymbolKind.async_function_decl.isFunctionLike());
+    try std.testing.expect(SymbolKind.async_generator_decl.isFunctionLike());
+    try std.testing.expect(!SymbolKind.variable_var.isFunctionLike());
+    try std.testing.expect(!SymbolKind.variable_let.isFunctionLike());
+    try std.testing.expect(!SymbolKind.class_decl.isFunctionLike());
+}
+
+test "DeclFlags.intersects" {
+    const var_flags = SymbolKind.variable_var.declFlags();
+    const let_flags = SymbolKind.variable_let.declFlags();
+    const fn_flags = SymbolKind.function_decl.declFlags();
+
+    // var와 let은 공존 불가: let의 excludes에 function_scoped가 포함
+    try std.testing.expect(var_flags.intersects(let_flags.excludes()));
+    // var와 function은 공존 가능: var의 excludes에 function_scoped/is_function이 제외
+    try std.testing.expect(!fn_flags.intersects(var_flags.excludes()));
+    // let과 let은 공존 불가
+    try std.testing.expect(let_flags.intersects(let_flags.excludes()));
+}
+
+test "DeclFlags.excludes - var" {
+    const var_excludes = SymbolKind.variable_var.declFlags().excludes();
+    // var는 let/const/class와 충돌
+    try std.testing.expect(var_excludes.block_scoped);
+    try std.testing.expect(var_excludes.is_class);
+    // var는 다른 var/function과 충돌하지 않음
+    try std.testing.expect(!var_excludes.function_scoped);
+    try std.testing.expect(!var_excludes.is_function);
+}
+
+test "DeclFlags.excludes - import" {
+    const import_excludes = SymbolKind.import_binding.declFlags().excludes();
+    // import는 모든 것과 충돌
+    try std.testing.expect(import_excludes.function_scoped);
+    try std.testing.expect(import_excludes.block_scoped);
+    try std.testing.expect(import_excludes.is_function);
+    try std.testing.expect(import_excludes.is_import);
 }
