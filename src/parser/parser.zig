@@ -2163,8 +2163,16 @@ pub const Parser = struct {
         switch (kind) {
             .bang, .tilde, .minus, .plus, .kw_typeof, .kw_void, .kw_delete => {
                 const start = self.currentSpan().start;
+                const is_delete = kind == .kw_delete;
                 self.advance();
                 const operand = try self.parseUnaryExpression();
+                // strict mode: delete identifier → SyntaxError (ECMAScript 12.5.3.1)
+                if (is_delete and self.ctx.is_strict_mode and !operand.isNone()) {
+                    const op_node = self.ast.getNode(operand);
+                    if (op_node.tag == .identifier_reference) {
+                        self.addError(op_node.span, "delete of an identifier is not allowed in strict mode");
+                    }
+                }
                 return try self.ast.addNode(.{
                     .tag = .unary_expression,
                     .span = .{ .start = start, .end = self.currentSpan().start },
