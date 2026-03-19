@@ -184,10 +184,10 @@ main ← feature/lexer-token-enum
 15. ✅ import.meta CJS 변환 (D021) — PR #49
 
 ### 코드젠 + CLI 구현 순서 (PR 단위) — Phase 4 진행 중
-1. ⬜ Phase 4 의사결정 (D044-D046)
-2. ⬜ 코드 포맷팅 (들여쓰기, 줄바꿈, 세미콜론)
-3. ⬜ CLI 기본 (파일 읽기 → 파싱 → 변환 → 출력)
-4. ⬜ 소스맵 V3 생성 (VLQ 인코딩)
+1. ✅ Phase 4 의사결정 (D044-D046) — PR #50
+2. ✅ 코드 포맷팅 (들여쓰기, 줄바꿈, minify) — PR #51
+3. ✅ CLI 기본 (파일 → 파싱 → 변환 → 출력) — PR #52
+4. ✅ 소스맵 V3 생성 (VLQ + JSON) — PR #53
 5. ⬜ legal comments (@license, @preserve)
 6. ⬜ --ascii-only (D031)
 
