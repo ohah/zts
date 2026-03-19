@@ -101,8 +101,42 @@ fn isUnicodeIdStart(cp: u21) bool {
     if (cp >= 0x0900 and cp <= 0x097F) return true;
     // Bengali, Gurmukhi, Gujarati, Oriya, Tamil, Telugu, Kannada, Malayalam
     if (cp >= 0x0980 and cp <= 0x0DFF) return true;
+    // Syriac
+    if (cp >= 0x0700 and cp <= 0x074F) return true;
+    // Thaana
+    if (cp >= 0x0780 and cp <= 0x07BF) return true;
+    // NKo
+    if (cp >= 0x07C0 and cp <= 0x07FF) return true;
     // Thai
     if (cp >= 0x0E00 and cp <= 0x0E7F) return true;
+    // Lao
+    if (cp >= 0x0E80 and cp <= 0x0EFF) return true;
+    // Tibetan
+    if (cp >= 0x0F00 and cp <= 0x0FFF) return true;
+    // Myanmar
+    if (cp >= 0x1000 and cp <= 0x109F) return true;
+    // Georgian
+    if (cp >= 0x10A0 and cp <= 0x10FF) return true;
+    // Hangul Jamo
+    if (cp >= 0x1100 and cp <= 0x11FF) return true;
+    // Ethiopic
+    if (cp >= 0x1200 and cp <= 0x137F) return true;
+    // Cherokee
+    if (cp >= 0x13A0 and cp <= 0x13FF) return true;
+    // Unified Canadian Aboriginal Syllabics
+    if (cp >= 0x1400 and cp <= 0x167F) return true;
+    // Mongolian
+    if (cp >= 0x1800 and cp <= 0x18AF) return true;
+    // Khmer
+    if (cp >= 0x1780 and cp <= 0x17FF) return true;
+    // Latin Extended Additional
+    if (cp >= 0x1E00 and cp <= 0x1EFF) return true;
+    // Greek Extended
+    if (cp >= 0x1F00 and cp <= 0x1FFF) return true;
+    // CJK Radicals Supplement, Kangxi Radicals, CJK Symbols
+    if (cp >= 0x2E80 and cp <= 0x2FDF) return true;
+    // Bopomofo
+    if (cp >= 0x3100 and cp <= 0x312F) return true;
     // CJK Unified Ideographs
     if (cp >= 0x4E00 and cp <= 0x9FFF) return true;
     // Hangul Syllables
@@ -126,29 +160,92 @@ fn isUnicodeIdStart(cp: u21) bool {
 }
 
 /// Unicode ID_Continue 범위 판별 (간소화).
+/// ID_Start + Mn + Mc + Nd + Pc + Other_ID_Continue + ZWNJ + ZWJ
 fn isUnicodeIdContinue(cp: u21) bool {
     if (isUnicodeIdStart(cp)) return true;
 
-    // Combining marks (Mn, Mc)
+    // Combining marks (Mn, Mc) — 넓은 범위 커버
     if (cp >= 0x0300 and cp <= 0x036F) return true; // Combining Diacritical Marks
     if (cp >= 0x0483 and cp <= 0x0487) return true; // Cyrillic combining
     if (cp >= 0x0591 and cp <= 0x05BD) return true; // Hebrew combining
+    if (cp >= 0x05BF and cp == 0x05BF) return true;
+    if (cp >= 0x05C1 and cp <= 0x05C2) return true;
+    if (cp >= 0x05C4 and cp <= 0x05C5) return true;
+    if (cp == 0x05C7) return true;
     if (cp >= 0x0610 and cp <= 0x061A) return true; // Arabic combining
-    if (cp >= 0x064B and cp <= 0x065F) return true; // Arabic combining
-    if (cp >= 0x0670 and cp == 0x0670) return true;
+    if (cp >= 0x064B and cp <= 0x0669) return true; // Arabic combining + digits
+    if (cp == 0x0670) return true;
     if (cp >= 0x06D6 and cp <= 0x06DC) return true;
+    if (cp >= 0x06DF and cp <= 0x06E4) return true;
+    if (cp >= 0x06E7 and cp <= 0x06E8) return true;
+    if (cp >= 0x06EA and cp <= 0x06ED) return true;
+    if (cp >= 0x06F0 and cp <= 0x06F9) return true; // Extended Arabic-Indic digits
+    if (cp >= 0x0711 and cp == 0x0711) return true; // Syriac
+    if (cp >= 0x0730 and cp <= 0x074A) return true;
+    if (cp >= 0x07A6 and cp <= 0x07B0) return true; // Thaana
+    if (cp >= 0x07C0 and cp <= 0x07C9) return true; // NKo digits
+    if (cp >= 0x07EB and cp <= 0x07F3) return true;
     if (cp >= 0x0901 and cp <= 0x0903) return true; // Devanagari combining
-
-    // Decimal digits in other scripts
-    if (cp >= 0x0660 and cp <= 0x0669) return true; // Arabic-Indic digits
-    if (cp >= 0x06F0 and cp <= 0x06F9) return true; // Extended Arabic-Indic
+    if (cp == 0x093C) return true;
+    if (cp >= 0x093E and cp <= 0x094D) return true;
+    if (cp >= 0x0951 and cp <= 0x0954) return true;
+    if (cp >= 0x0962 and cp <= 0x0963) return true;
     if (cp >= 0x0966 and cp <= 0x096F) return true; // Devanagari digits
+    // Bengali, Gurmukhi, Gujarati, Oriya, Tamil, Telugu, Kannada, Malayalam combining + digits
+    if (cp >= 0x0981 and cp <= 0x0983) return true;
+    if (cp >= 0x09BC and cp <= 0x09CD) return true;
+    if (cp >= 0x09E2 and cp <= 0x09E3) return true;
+    if (cp >= 0x09E6 and cp <= 0x09EF) return true; // Bengali digits
+    if (cp >= 0x0A01 and cp <= 0x0A03) return true;
+    if (cp >= 0x0A3C and cp <= 0x0A4D) return true;
+    if (cp >= 0x0A66 and cp <= 0x0A6F) return true; // Gurmukhi digits
+    if (cp >= 0x0AE6 and cp <= 0x0AEF) return true; // Gujarati digits
+    if (cp >= 0x0B66 and cp <= 0x0B6F) return true; // Oriya digits
+    if (cp >= 0x0BE6 and cp <= 0x0BEF) return true; // Tamil digits
+    if (cp >= 0x0C66 and cp <= 0x0C6F) return true; // Telugu digits
+    if (cp >= 0x0CE6 and cp <= 0x0CEF) return true; // Kannada digits
+    if (cp >= 0x0D66 and cp <= 0x0D6F) return true; // Malayalam digits
+    // Thai combining + digits
+    if (cp >= 0x0E31 and cp == 0x0E31) return true;
+    if (cp >= 0x0E34 and cp <= 0x0E3A) return true;
+    if (cp >= 0x0E47 and cp <= 0x0E4E) return true;
+    if (cp >= 0x0E50 and cp <= 0x0E59) return true; // Thai digits
+    // Lao
+    if (cp >= 0x0EB1 and cp == 0x0EB1) return true;
+    if (cp >= 0x0EB4 and cp <= 0x0EB9) return true;
+    if (cp >= 0x0EBB and cp <= 0x0EBC) return true;
+    if (cp >= 0x0EC8 and cp <= 0x0ECD) return true;
+    if (cp >= 0x0ED0 and cp <= 0x0ED9) return true; // Lao digits
+    // Tibetan
+    if (cp >= 0x0F18 and cp <= 0x0F19) return true;
+    if (cp >= 0x0F20 and cp <= 0x0F29) return true; // Tibetan digits
+    if (cp == 0x0F35 or cp == 0x0F37 or cp == 0x0F39) return true;
+    if (cp >= 0x0F3E and cp <= 0x0F3F) return true;
+    if (cp >= 0x0F71 and cp <= 0x0F84) return true;
+    if (cp >= 0x0F86 and cp <= 0x0F87) return true;
+    if (cp >= 0x0F90 and cp <= 0x0F97) return true;
+    if (cp >= 0x0F99 and cp <= 0x0FBC) return true;
+    if (cp == 0x0FC6) return true;
+    // Myanmar
+    if (cp >= 0x1040 and cp <= 0x1049) return true; // Myanmar digits
+    if (cp >= 0x1050 and cp <= 0x109D) return true; // Myanmar combining
+
+    // Hangul Jamo (combining, Mn)
+    if (cp >= 0x1160 and cp <= 0x11FF) return true;
+
+    // Other_ID_Continue (ECMAScript 특별 예외)
+    if (cp == 0x00B7) return true; // MIDDLE DOT
+    if (cp == 0x0387) return true; // GREEK ANO TELEIA
+    if (cp >= 0x1369 and cp <= 0x1371) return true; // Ethiopic digits
 
     // Connector punctuation (Pc)
     if (cp == 0x203F or cp == 0x2040) return true; // UNDERTIE, CHARACTER TIE
     if (cp == 0xFE33 or cp == 0xFE34) return true; // PRESENTATION FORM
     if (cp == 0xFE4D or cp == 0xFE4E or cp == 0xFE4F) return true;
     if (cp == 0xFF3F) return true; // FULLWIDTH LOW LINE
+
+    // Fullwidth digits
+    if (cp >= 0xFF10 and cp <= 0xFF19) return true;
 
     return false;
 }
