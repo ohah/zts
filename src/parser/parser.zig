@@ -2298,6 +2298,18 @@ pub const Parser = struct {
                 self.advance();
                 const operand = try self.parseUnaryExpression();
                 // strict mode: delete identifier → SyntaxError (ECMAScript 12.5.3.1)
+                // delete of private field → always SyntaxError
+                if (is_delete and !operand.isNone()) {
+                    const del_node = self.ast.getNode(operand);
+                    if (del_node.tag == .static_member_expression or del_node.tag == .private_field_expression) {
+                        const right_idx = del_node.data.binary.right;
+                        if (!right_idx.isNone() and @intFromEnum(right_idx) < self.ast.nodes.items.len) {
+                            if (self.ast.getNode(right_idx).tag == .private_identifier) {
+                                self.addError(del_node.span, "private fields cannot be deleted");
+                            }
+                        }
+                    }
+                }
                 // delete (x) 도 괄호를 통과하여 체크
                 if (is_delete and self.ctx.is_strict_mode and !operand.isNone()) {
                     var target = operand;
