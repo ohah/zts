@@ -1716,31 +1716,70 @@ pub const Parser = struct {
     }
 
     fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
-        // async identifier => body — async arrow (간단한 형태: async x => x + 1)
+        // async arrow function 감지 (2가지 형태)
         if (self.current() == .kw_async) {
             const async_span = self.currentSpan();
             const peek = self.peekNext();
-            if ((peek.kind == .identifier or (peek.kind.isKeyword() and !peek.kind.isReservedKeyword())) and !peek.has_newline_before) {
-                // async 뒤에 줄바꿈 없이 식별자 → async arrow 가능성
-                const saved = self.saveState();
-                self.advance(); // skip 'async'
-                const id_span = self.currentSpan();
-                self.advance(); // skip identifier
-                if (self.current() == .arrow and !self.scanner.token.has_newline_before) {
-                    self.advance(); // skip =>
-                    const param = try self.ast.addNode(.{
-                        .tag = .binding_identifier,
-                        .span = id_span,
-                        .data = .{ .string_ref = id_span },
-                    });
-                    const body = try self.parseArrowBody(true);
-                    return try self.ast.addNode(.{
-                        .tag = .arrow_function_expression,
-                        .span = .{ .start = async_span.start, .end = self.currentSpan().start },
-                        .data = .{ .binary = .{ .left = param, .right = body, .flags = 0x01 } }, // 0x01 = async
-                    });
+
+            if (!peek.has_newline_before) {
+                // 형태 1: async x => body (단순 식별자)
+                if (peek.kind == .identifier or (peek.kind.isKeyword() and !peek.kind.isReservedKeyword())) {
+                    const saved = self.saveState();
+                    self.advance(); // skip 'async'
+                    const id_span = self.currentSpan();
+                    self.advance(); // skip identifier
+                    if (self.current() == .arrow and !self.scanner.token.has_newline_before) {
+                        self.advance(); // skip =>
+                        const param = try self.ast.addNode(.{
+                            .tag = .binding_identifier,
+                            .span = id_span,
+                            .data = .{ .string_ref = id_span },
+                        });
+                        const body = try self.parseArrowBody(true);
+                        return try self.ast.addNode(.{
+                            .tag = .arrow_function_expression,
+                            .span = .{ .start = async_span.start, .end = self.currentSpan().start },
+                            .data = .{ .binary = .{ .left = param, .right = body, .flags = 0x01 } },
+                        });
+                    }
+                    self.restoreState(saved);
                 }
-                self.restoreState(saved);
+
+                // 형태 2: async (...) => body (괄호 형태)
+                // async () => {} — 빈 파라미터도 포함
+                if (peek.kind == .l_paren) {
+                    const saved = self.saveState();
+                    self.advance(); // skip 'async'
+
+                    // () 빈 파라미터 체크
+                    if (self.current() == .l_paren and self.peekNextKind() == .r_paren) {
+                        self.advance(); // skip (
+                        self.advance(); // skip )
+                        if (self.current() == .arrow and !self.scanner.token.has_newline_before) {
+                            self.advance(); // skip =>
+                            const body = try self.parseArrowBody(true);
+                            return try self.ast.addNode(.{
+                                .tag = .arrow_function_expression,
+                                .span = .{ .start = async_span.start, .end = self.currentSpan().start },
+                                .data = .{ .binary = .{ .left = .none, .right = body, .flags = 0x01 } },
+                            });
+                        }
+                        self.restoreState(saved);
+                    } else {
+                        // 괄호를 expression으로 파싱 (parenthesized_expression)
+                        const params_expr = try self.parseConditionalExpression();
+                        if (self.current() == .arrow and !self.scanner.token.has_newline_before) {
+                            self.advance(); // skip =>
+                            const body = try self.parseArrowBody(true);
+                            return try self.ast.addNode(.{
+                                .tag = .arrow_function_expression,
+                                .span = .{ .start = async_span.start, .end = self.currentSpan().start },
+                                .data = .{ .binary = .{ .left = params_expr, .right = body, .flags = 0x01 } },
+                            });
+                        }
+                        self.restoreState(saved);
+                    }
+                }
             }
         }
 
@@ -1768,6 +1807,24 @@ pub const Parser = struct {
             }
 
             // arrow가 아님 → 되돌리기
+            self.restoreState(saved);
+        }
+
+        // () => body — 빈 파라미터 arrow function
+        if (self.current() == .l_paren and self.peekNextKind() == .r_paren) {
+            const arrow_start = self.currentSpan().start;
+            const saved = self.saveState();
+            self.advance(); // skip (
+            self.advance(); // skip )
+            if (self.current() == .arrow and !self.scanner.token.has_newline_before) {
+                self.advance(); // skip =>
+                const body = try self.parseArrowBody(false);
+                return try self.ast.addNode(.{
+                    .tag = .arrow_function_expression,
+                    .span = .{ .start = arrow_start, .end = self.currentSpan().start },
+                    .data = .{ .binary = .{ .left = .none, .right = body, .flags = 0 } },
+                });
+            }
             self.restoreState(saved);
         }
 
