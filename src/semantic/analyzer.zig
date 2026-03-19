@@ -71,6 +71,10 @@ pub const SemanticAnalyzer = struct {
     }
 
     pub fn deinit(self: *SemanticAnalyzer) void {
+        // allocPrint으로 할당된 에러 메시지 해제
+        for (self.errors.items) |err| {
+            self.allocator.free(err.message);
+        }
         self.scopes.deinit();
         self.symbols.deinit();
         self.errors.deinit();
@@ -165,6 +169,7 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// 특정 스코프에서 이름으로 심볼을 찾는다.
+    /// TODO: O(N) 선형 스캔 → per-scope HashMap으로 개선 필요 (대규모 파일에서 O(N²))
     fn findSymbolInScope(self: *const SemanticAnalyzer, scope_id: ScopeId, name: []const u8) ?Symbol {
         for (self.symbols.items) |sym| {
             if (@intFromEnum(sym.scope_id) == @intFromEnum(scope_id)) {
@@ -193,8 +198,7 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// 두 심볼 종류의 재선언 가능 여부를 판단한다.
-    fn canRedeclare(self: *const SemanticAnalyzer, existing: SymbolKind, new: SymbolKind) bool {
-        _ = self;
+    fn canRedeclare(_: *const SemanticAnalyzer, existing: SymbolKind, new: SymbolKind) bool {
         // import는 항상 재선언 불가
         if (existing == .import_binding) return false;
 
@@ -263,6 +267,7 @@ pub const SemanticAnalyzer = struct {
                 self.visitNode(node.data.binary.left);
                 self.visitNode(node.data.binary.right);
             },
+            .switch_case => self.visitSwitchCase(node),
             .try_statement => self.visitTryStatement(node),
             .export_named_declaration => self.visitExportNamedDeclaration(node),
             .export_default_declaration => {
@@ -390,34 +395,27 @@ pub const SemanticAnalyzer = struct {
         const extras = self.ast.extra_data.items;
         if (extra_start + 2 >= extras.len) return;
         const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
-        const body_idx: NodeIndex = @enumFromInt(extras[extra_start + 2]);
 
-        // 클래스 이름을 현재 스코프에 등록
+        // 클래스 이름을 현재 스코프(외부)에 등록
         if (!name_idx.isNone()) {
             const name_node = self.ast.getNode(name_idx);
             self.declareSymbol(name_node.span, .class_decl, node.span);
         }
 
-        // class body 스코프
-        const saved = self.enterScope(.class_body, false);
-        if (!body_idx.isNone()) {
-            const body_node = self.ast.getNode(body_idx);
-            if (body_node.tag == .class_body) {
-                self.visitNodeList(body_node.data.list);
-            }
-        }
-        self.exitScope(saved);
+        self.visitClassBodyNode(@enumFromInt(extras[extra_start + 2]));
     }
 
     fn visitClassExpression(self: *SemanticAnalyzer, node: Node) void {
-        // class expression: 이름은 자체 스코프에만 등록
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (extra_start + 2 >= extras.len) return;
-        const body_idx: NodeIndex = @enumFromInt(extras[extra_start + 2]);
+        self.visitClassBodyNode(@enumFromInt(extras[extra_start + 2]));
+    }
 
+    /// class body를 스코프로 감싸서 순회한다.
+    fn visitClassBodyNode(self: *SemanticAnalyzer, body_idx: NodeIndex) void {
         const saved = self.enterScope(.class_body, false);
-        if (!body_idx.isNone()) {
+        if (!body_idx.isNone() and @intFromEnum(body_idx) < self.ast.nodes.items.len) {
             const body_node = self.ast.getNode(body_idx);
             if (body_node.tag == .class_body) {
                 self.visitNodeList(body_node.data.list);
@@ -478,6 +476,17 @@ pub const SemanticAnalyzer = struct {
         }
         self.visitNode(node.data.binary.right); // body
         self.exitScope(saved);
+    }
+
+    fn visitSwitchCase(self: *SemanticAnalyzer, node: Node) void {
+        // extra: [test_expr, body.start, body.len]
+        const extra_start = node.data.extra;
+        const extras = self.ast.extra_data.items;
+        if (extra_start + 2 >= extras.len) return;
+        // test_expr은 순회 불필요 (리터럴/식별자)
+        const body_start = extras[extra_start + 1];
+        const body_len = extras[extra_start + 2];
+        self.visitNodeList(.{ .start = body_start, .len = body_len });
     }
 
     fn visitTryStatement(self: *SemanticAnalyzer, node: Node) void {
@@ -622,13 +631,6 @@ pub const SemanticAnalyzer = struct {
 const Parser = @import("../parser/parser.zig").Parser;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 
-/// 에러 메시지에 할당된 문자열을 해제한다.
-fn freeErrors(ana: *SemanticAnalyzer) void {
-    for (ana.errors.items) |err| {
-        ana.allocator.free(err.message);
-    }
-}
-
 test "SemanticAnalyzer: var declaration creates symbol" {
     var scanner = Scanner.init(std.testing.allocator, "var x = 1;");
     defer scanner.deinit();
@@ -653,10 +655,7 @@ test "SemanticAnalyzer: let redeclaration is error" {
     _ = try parser.parse();
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
-    defer {
-        freeErrors(&ana);
-        ana.deinit();
-    }
+    defer ana.deinit();
     ana.analyze();
 
     try std.testing.expect(ana.errors.items.len > 0);
@@ -715,10 +714,7 @@ test "SemanticAnalyzer: let and var conflict is error" {
     _ = try parser.parse();
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
-    defer {
-        freeErrors(&ana);
-        ana.deinit();
-    }
+    defer ana.deinit();
     ana.analyze();
 
     try std.testing.expect(ana.errors.items.len > 0);
@@ -732,10 +728,7 @@ test "SemanticAnalyzer: const redeclaration is error" {
     _ = try parser.parse();
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
-    defer {
-        freeErrors(&ana);
-        ana.deinit();
-    }
+    defer ana.deinit();
     ana.analyze();
 
     try std.testing.expect(ana.errors.items.len > 0);
