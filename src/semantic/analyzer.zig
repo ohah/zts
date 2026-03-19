@@ -342,8 +342,8 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// child_scope가 parent_scope와 같거나 그 자손인지 확인한다.
+    /// child가 parent와 같거나 그 자손인지 확인한다 (scope chain 순회).
     fn isScopeDescendantOf(self: *const SemanticAnalyzer, child: ScopeId, parent: ScopeId) bool {
-        if (@intFromEnum(child) == @intFromEnum(parent)) return true;
         var scope_id = child;
         while (!scope_id.isNone()) {
             if (@intFromEnum(scope_id) == @intFromEnum(parent)) return true;
@@ -554,9 +554,9 @@ pub const SemanticAnalyzer = struct {
         const flags = extras[extra_start + 4];
 
         // flags에서 async/generator 판별하여 적절한 SymbolKind 결정
-        // 0x01 = async, 0x02 = generator
-        const is_async = (flags & 0x01) != 0;
-        const is_generator = (flags & 0x02) != 0;
+        const FnFlags = ast_mod.FunctionFlags;
+        const is_async = (flags & FnFlags.is_async) != 0;
+        const is_generator = (flags & FnFlags.is_generator) != 0;
         const symbol_kind: SymbolKind = if (is_async and is_generator)
             .async_generator_decl
         else if (is_async)

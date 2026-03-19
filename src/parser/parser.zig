@@ -1114,20 +1114,14 @@ pub const Parser = struct {
             self.advance();
         }
 
-        // label이 없는 break → loop 또는 switch 안에서만 허용
-        // label이 있는 break → labelled statement 안에서 유효 (loop/switch 불필요)
         // continue → label 유무와 관계없이 loop 안에서만 허용
-        if (label.isNone()) {
-            if (tag == .break_statement and !self.ctx.in_loop and !self.ctx.in_switch) {
-                self.addError(keyword_span, "'break' outside of loop or switch");
-            } else if (tag == .continue_statement and !self.ctx.in_loop) {
-                self.addError(keyword_span, "'continue' outside of loop");
-            }
-        } else {
-            // label이 있는 continue는 여전히 loop 안이어야 함
-            if (tag == .continue_statement and !self.ctx.in_loop) {
-                self.addError(keyword_span, "'continue' outside of loop");
-            }
+        if (tag == .continue_statement and !self.ctx.in_loop) {
+            self.addError(keyword_span, "'continue' outside of loop");
+        }
+        // break → label이 없을 때만 loop 또는 switch 필요
+        // label이 있는 break는 labelled statement 안에서 유효 (loop/switch 불필요)
+        if (tag == .break_statement and label.isNone() and !self.ctx.in_loop and !self.ctx.in_switch) {
+            self.addError(keyword_span, "'break' outside of loop or switch");
         }
 
         const end = self.currentSpan().end;
@@ -1290,7 +1284,7 @@ pub const Parser = struct {
         // generator: function* name()
         var flags = extra_flags;
         if (self.eat(.star)) {
-            flags |= 0x02; // generator flag
+            flags |= ast_mod.FunctionFlags.is_generator;
         }
 
         // 함수 이름
@@ -1344,7 +1338,7 @@ pub const Parser = struct {
         // async [no LineTerminator here] function → async function declaration
         if (peek.kind == .kw_function and !peek.has_newline_before) {
             self.advance(); // skip 'async'
-            return self.parseFunctionDeclarationWithFlags(0x01); // 0x01 = async flag
+            return self.parseFunctionDeclarationWithFlags(ast_mod.FunctionFlags.is_async);
         }
         // async 뒤에 줄바꿈이 있거나 function이 아니면 → expression statement
         return self.parseExpressionStatement();
@@ -1361,7 +1355,7 @@ pub const Parser = struct {
         // generator: function* () {}
         var flags: u32 = extra_flags;
         if (self.eat(.star)) {
-            flags |= 0x02; // generator flag
+            flags |= ast_mod.FunctionFlags.is_generator;
         }
 
         // 함수 이름 (선택적)
@@ -3011,7 +3005,7 @@ pub const Parser = struct {
                 if (peek.kind == .kw_function and !peek.has_newline_before) {
                     // async function expression
                     self.advance(); // skip 'async'
-                    return self.parseFunctionExpressionWithFlags(0x01); // async flag
+                    return self.parseFunctionExpressionWithFlags(ast_mod.FunctionFlags.is_async);
                 }
                 // async를 일반 식별자로 취급 (async arrow는 parseAssignmentExpression에서 처리)
                 self.advance();
