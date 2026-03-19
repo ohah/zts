@@ -704,6 +704,18 @@ pub const Parser = struct {
         const scratch_top = self.saveScratch();
         while (true) {
             const decl = try self.parseVariableDeclarator();
+            // const without initializer → SyntaxError (ECMAScript 14.3.1)
+            // for-in/for-of에서는 const 이니셜라이저 불필요 (for (const x of ...))
+            // TS declare에서도 불필요 (declare const x: number)
+            if (kind_flags == 2 and !decl.isNone() and !self.ctx.for_loop_init and !self.ctx.in_ambient) {
+                const decl_node = self.ast.getNode(decl);
+                if (decl_node.tag == .variable_declarator) {
+                    const init_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[decl_node.data.extra + 2]);
+                    if (init_idx.isNone()) {
+                        self.addError(decl_node.span, "const declarations must be initialized");
+                    }
+                }
+            }
             try self.scratch.append(decl);
             if (!self.eat(.comma)) break;
         }
@@ -854,11 +866,10 @@ pub const Parser = struct {
             return self.parseForRest(start, NodeIndex.none);
         }
 
-        // for 초기화절에서는 `in` 연산자를 비활성화한다 (ECMAScript 13.7.4).
-        // `for (x in obj)`에서 `in`이 for-in 키워드로 인식되어야 함.
-        // 변수 선언/일반 표현식 모두 [~In]: VariableDeclarationList[~In], Expression[~In].
-        // 이니셜라이저/디스트럭처링 기본값 안에서는 [+In]으로 복원됨 (각 파싱 함수에서 처리).
+        // for 초기화절에서는 `in` 연산자를 비활성화하고 for_loop_init을 설정한다.
+        // for_loop_init: const without init 체크 스킵 (for-in/for-of에서는 init 불필요)
         const for_saved = self.enterAllowInContext(false);
+        self.ctx.for_loop_init = true;
 
         if (self.current() == .kw_var or self.current() == .kw_let or self.current() == .kw_const) {
             const init_expr = try self.parseVariableDeclaration();
@@ -3744,8 +3755,12 @@ pub const Parser = struct {
     /// declare var/let/const/function/class/...
     fn parseTsDeclareStatement(self: *Parser) ParseError2!NodeIndex {
         self.advance(); // skip 'declare'
-        // declare 뒤의 선언을 파싱 (런타임 코드 없음)
-        return self.parseStatement();
+        // declare 뒤의 선언은 ambient context (const 이니셜라이저 불필요 등)
+        const saved = self.ctx;
+        self.ctx.in_ambient = true;
+        const result = try self.parseStatement();
+        self.ctx = saved;
+        return result;
     }
 
     /// abstract class Foo { }
