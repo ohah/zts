@@ -293,7 +293,7 @@ pub const Parser = struct {
     /// 키워드를 바인딩 위치에서 사용할 때의 검증.
     /// ECMAScript 12.1.1: reserved keyword, strict mode reserved, contextual keywords.
     fn checkKeywordBinding(self: *Parser) void {
-        if (self.current().isReservedKeyword()) {
+        if (self.current().isReservedKeyword() or self.current().isLiteralKeyword()) {
             self.addError(self.currentSpan(), "reserved word cannot be used as identifier");
         } else if (self.ctx.is_strict_mode and self.current().isStrictModeReserved()) {
             self.addError(self.currentSpan(), "reserved word in strict mode cannot be used as identifier");
