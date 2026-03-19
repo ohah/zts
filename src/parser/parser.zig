@@ -534,9 +534,12 @@ pub const Parser = struct {
                 }
             },
             .kw_function => {
-                // strict mode에서 function declaration도 statement position 금지 (ECMAScript 14.6).
-                // Annex B (B.3.3)는 non-strict에서만 허용.
-                if (self.ctx.is_strict_mode) {
+                // generator declaration (function*)은 statement position에서 항상 금지
+                if (self.peekNextKind() == .star) {
+                    self.addError(self.currentSpan(), "generator declaration is not allowed in statement position");
+                } else if (self.ctx.is_strict_mode) {
+                    // strict mode에서 일반 function declaration도 금지 (ECMAScript 14.6).
+                    // Annex B (B.3.3)는 non-strict에서만 허용.
                     self.addError(self.currentSpan(), "function declaration is not allowed in statement position in strict mode");
                 }
             },
