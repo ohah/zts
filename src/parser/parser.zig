@@ -372,7 +372,7 @@ pub const Parser = struct {
     fn parseLoopBody(self: *Parser) ParseError2!NodeIndex {
         const saved = self.ctx;
         self.ctx.in_loop = true;
-        const body = try self.parseStatementNoLexical();
+        const body = try self.parseStatementChecked(true);
         self.ctx = saved;
         return body;
     }
@@ -509,18 +509,15 @@ pub const Parser = struct {
     // Statement 파싱
     // ================================================================
 
-    /// statement position에서 lexical declaration 금지를 체크한 뒤 parseStatement 호출.
-    /// if/else/while/do-while/for/with/labeled 의 body에서 사용.
-    /// ECMAScript 13.6/13.7: lexical declaration(let/const/class)은 statement position에서 금지.
-    fn parseStatementNoLexical(self: *Parser) ParseError2!NodeIndex {
+    /// statement position에서 lexical/function declaration 금지를 체크한 뒤 parseStatement 호출.
+    /// is_loop_body: true면 for/while/do-while body (function도 항상 금지)
+    ///               false면 if/else/with/labeled body (function은 Annex B로 non-strict 허용)
+    fn parseStatementChecked(self: *Parser, comptime is_loop_body: bool) ParseError2!NodeIndex {
         switch (self.current()) {
             .kw_const => {
                 self.addError(self.currentSpan(), "lexical declaration is not allowed in statement position");
             },
             .kw_let => {
-                // let은 non-strict에서 식별자로 사용 가능 (let = 5 등).
-                // let 뒤에 identifier/[/{가 오면 lexical declaration이므로 에러.
-                // 그 외(let =, let; 등)는 식별자 사용이므로 허용.
                 if (self.ctx.is_strict_mode) {
                     self.addError(self.currentSpan(), "lexical declaration is not allowed in statement position");
                 } else {
@@ -531,24 +528,23 @@ pub const Parser = struct {
                 }
             },
             .kw_class => {
-                // class declaration은 statement position에서 금지.
-                // V8/SpiderMonkey는 non-strict에서 허용 (web compat) — 스펙에 Annex B 규정은 없음.
-                if (self.ctx.is_strict_mode) {
+                if (self.ctx.is_strict_mode or is_loop_body) {
                     self.addError(self.currentSpan(), "class declaration is not allowed in statement position");
                 }
             },
             .kw_function => {
-                // generator declaration (function*)은 statement position에서 항상 금지
                 if (self.peekNextKind() == .star) {
+                    // generator는 항상 금지
                     self.addError(self.currentSpan(), "generator declaration is not allowed in statement position");
+                } else if (is_loop_body) {
+                    // loop body에서 function은 항상 금지 (ECMAScript 13.7.4, Annex B 미적용)
+                    self.addError(self.currentSpan(), "function declaration is not allowed in statement position");
                 } else if (self.ctx.is_strict_mode) {
-                    // strict mode에서 일반 function declaration도 금지 (ECMAScript 14.6).
-                    // Annex B (B.3.3)는 non-strict에서만 허용.
+                    // if/else/with/labeled body에서는 strict mode에서만 금지
                     self.addError(self.currentSpan(), "function declaration is not allowed in statement position in strict mode");
                 }
             },
             .kw_async => {
-                // async function declaration도 statement position 금지 (Annex B 적용 안 됨)
                 const peek = self.peekNext();
                 if (peek.kind == .kw_function and !peek.has_newline_before) {
                     self.addError(self.currentSpan(), "async function declaration is not allowed in statement position");
@@ -682,7 +678,7 @@ pub const Parser = struct {
         });
         self.advance(); // skip label
         self.advance(); // skip ':'
-        const body = try self.parseStatementNoLexical();
+        const body = try self.parseStatementChecked(false);
         return try self.ast.addNode(.{
             .tag = .labeled_statement,
             .span = .{ .start = start, .end = self.currentSpan().start },
@@ -701,7 +697,7 @@ pub const Parser = struct {
         self.expect(.l_paren);
         const obj = try self.parseExpression();
         self.expect(.r_paren);
-        const body = try self.parseStatementNoLexical();
+        const body = try self.parseStatementChecked(false);
         return try self.ast.addNode(.{
             .tag = .with_statement,
             .span = .{ .start = start, .end = self.currentSpan().start },
@@ -819,11 +815,11 @@ pub const Parser = struct {
         self.expect(.l_paren);
         const test_expr = try self.parseExpression();
         self.expect(.r_paren);
-        const consequent = try self.parseStatementNoLexical();
+        const consequent = try self.parseStatementChecked(false);
 
         var alternate = NodeIndex.none;
         if (self.eat(.kw_else)) {
-            alternate = try self.parseStatementNoLexical();
+            alternate = try self.parseStatementChecked(false);
         }
 
         return try self.ast.addNode(.{
