@@ -28,6 +28,9 @@ pub const Comment = struct {
     end: u32,
     /// true이면 `/* ... */`, false이면 `// ...`
     is_multiline: bool,
+    /// legal comment: @license, @preserve, 또는 /*! 로 시작 (D022)
+    /// minify 모드에서도 보존해야 하는 주석
+    is_legal: bool = false,
 };
 
 /// 소스 코드를 토큰으로 분리하는 렉서.
@@ -735,11 +738,17 @@ pub const Scanner = struct {
                 self.current += 2; // skip */
                 self.checkPureComment(comment_text);
 
+                // legal comment 감지 (D022): /*! 또는 @license 또는 @preserve
+                const is_legal = (comment_text.len > 0 and comment_text[0] == '!') or
+                    std.mem.indexOf(u8, comment_text, "@license") != null or
+                    std.mem.indexOf(u8, comment_text, "@preserve") != null;
+
                 // 주석을 기록한다 (start = 첫 번째 '/' 위치, end = '*/' 직후)
                 self.comments.append(.{
                     .start = self.start,
                     .end = self.current,
                     .is_multiline = true,
+                    .is_legal = is_legal,
                 }) catch @panic("OOM: comments");
 
                 return false; // 정상 종료
