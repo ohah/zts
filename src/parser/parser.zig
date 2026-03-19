@@ -501,10 +501,22 @@ pub const Parser = struct {
     /// expression statement 또는 labeled statement를 파싱한다.
     /// `identifier:` 패턴이면 labeled statement, 아니면 expression statement.
     fn parseExpressionOrLabeledStatement(self: *Parser) ParseError2!NodeIndex {
-        // identifier: statement — labeled statement 판별
-        if (self.current() == .identifier) {
+        // identifier/keyword: statement — labeled statement 판별
+        if (self.current() == .identifier or self.current() == .escaped_keyword or
+            (self.current().isKeyword() and !self.current().isReservedKeyword()))
+        {
             const peek = self.peekNext();
             if (peek.kind == .colon) {
+                // yield/await를 label로 사용하면 generator/async에서 에러
+                if (self.current() == .kw_yield and self.in_generator) {
+                    self.addError(self.currentSpan(), "'yield' cannot be used as label in generator");
+                } else if (self.current() == .kw_await and self.in_async) {
+                    self.addError(self.currentSpan(), "'await' cannot be used as label in async function");
+                } else if (self.current() == .escaped_keyword) {
+                    self.addError(self.currentSpan(), "escaped reserved word cannot be used as label");
+                } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
+                    self.addError(self.currentSpan(), "reserved word in strict mode cannot be used as label");
+                }
                 return self.parseLabeledStatement();
             }
         }
@@ -2427,9 +2439,15 @@ pub const Parser = struct {
             else => {
                 // contextual keyword, strict mode reserved, TS keyword는
                 // expression에서 식별자로 사용 가능 (reserved keyword만 불가)
-                // 예: undefined, of, let, from, as, target, assert, get, set,
-                //     implements, yield, static 등
+                // 단, yield/await는 generator/async 내부에서, strict mode reserved는 strict에서 불가
                 if (self.current().isKeyword() and !self.current().isReservedKeyword()) {
+                    if (self.is_strict_mode and self.current().isStrictModeReserved()) {
+                        self.addError(span, "reserved word in strict mode cannot be used as identifier");
+                    } else if (self.current() == .kw_yield and self.in_generator) {
+                        self.addError(span, "'yield' cannot be used as identifier in generator");
+                    } else if (self.current() == .kw_await and self.in_async) {
+                        self.addError(span, "'await' cannot be used as identifier in async function");
+                    }
                     self.advance();
                     return try self.ast.addNode(.{
                         .tag = .identifier_reference,
