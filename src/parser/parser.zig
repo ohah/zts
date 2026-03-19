@@ -482,27 +482,52 @@ pub const Parser = struct {
         return true;
     }
 
-    /// strict mode 또는 non-simple params에서 중복 파라미터를 검사한다.
+    /// 중복 파라미터를 검사한다.
+    /// ECMAScript 14.1.2: non-simple params면 항상 에러
+    /// ECMAScript 15.4.1/15.5.1: generator/async generator는 항상 에러
+    /// strict mode에서도 항상 에러
+    /// sloppy mode + simple params인 일반 function만 허용
     fn checkDuplicateParams(self: *Parser, scratch_top: usize) void {
-        if (!self.ctx.is_strict_mode and self.ctx.has_simple_params) return;
+        // generator/async에서는 항상 체크 (ECMAScript 15.4.1, 15.5.1, 15.6.1)
+        // strict mode에서도 항상 체크
+        // non-simple params면 항상 체크
+        // sloppy mode + simple params + 일반 function만 건너뜀
+        if (!self.ctx.is_strict_mode and self.ctx.has_simple_params and
+            !self.ctx.in_generator and !self.ctx.in_async) return;
         const params = self.scratch.items[scratch_top..];
         // O(N²)이지만 파라미터 수가 적으므로 (보통 <10) 충분
         for (params, 0..) |param_idx, i| {
-            if (param_idx.isNone()) continue;
-            const node = self.ast.getNode(param_idx);
-            if (node.tag != .binding_identifier) continue;
-            const name = self.ast.source[node.span.start..node.span.end];
+            const name_span = self.extractParamName(param_idx) orelse continue;
+            const name = self.ast.source[name_span.start..name_span.end];
             for (params[0..i]) |prev_idx| {
-                if (prev_idx.isNone()) continue;
-                const prev = self.ast.getNode(prev_idx);
-                if (prev.tag != .binding_identifier) continue;
-                const prev_name = self.ast.source[prev.span.start..prev.span.end];
+                const prev_span = self.extractParamName(prev_idx) orelse continue;
+                const prev_name = self.ast.source[prev_span.start..prev_span.end];
                 if (std.mem.eql(u8, name, prev_name)) {
-                    self.addError(node.span, "duplicate parameter name");
+                    self.addError(name_span, "duplicate parameter name");
                     break;
                 }
             }
         }
+    }
+
+    /// 파라미터 노드에서 바인딩 이름의 Span을 추출한다.
+    /// binding_identifier, assignment_pattern(= default), formal_parameter(TS modifier),
+    /// spread_element(...rest) 등 다양한 형태를 재귀적으로 처리.
+    /// destructuring([a,b], {a,b})은 단일 이름이 아니므로 null 반환.
+    fn extractParamName(self: *const Parser, idx: NodeIndex) ?Span {
+        if (idx.isNone()) return null;
+        const node = self.ast.getNode(idx);
+        return switch (node.tag) {
+            .binding_identifier => node.span,
+            // x = default → left가 binding name
+            .assignment_pattern => self.extractParamName(node.data.binary.left),
+            // TS parameter property (public x 등) → operand가 binding
+            .formal_parameter => self.extractParamName(node.data.unary.operand),
+            // rest parameter (...x) → operand가 binding
+            .spread_element => self.extractParamName(node.data.unary.operand),
+            // destructuring은 단일 이름이 아니므로 null (별도 처리 필요)
+            else => null,
+        };
     }
 
     /// 함수 본문을 파싱한다.
@@ -2282,6 +2307,33 @@ pub const Parser = struct {
             self.restoreState(saved);
         }
 
+        // yield expression — AssignmentExpression 레벨에서만 유효 (ECMAScript 14.4)
+        // UnaryExpression 위치에서는 yield가 IdentifierReference로 해석되어야 함
+        if (self.current() == .kw_yield and self.ctx.in_generator) {
+            const yield_start = self.currentSpan().start;
+            self.advance();
+            // yield* delegate — * 전에 줄바꿈이 있으면 delegate 아님
+            var yield_flags: u16 = 0;
+            if (!self.scanner.token.has_newline_before and self.eat(.star)) {
+                yield_flags = 1; // delegate
+            }
+            var operand = NodeIndex.none;
+            // yield 뒤에 줄바꿈 없이 expression이 오면 yield의 인자
+            if (!self.scanner.token.has_newline_before and
+                self.current() != .semicolon and self.current() != .r_curly and
+                self.current() != .r_paren and self.current() != .r_bracket and
+                self.current() != .colon and self.current() != .comma and
+                self.current() != .eof)
+            {
+                operand = try self.parseAssignmentExpression();
+            }
+            return try self.ast.addNode(.{
+                .tag = .yield_expression,
+                .span = .{ .start = yield_start, .end = self.currentSpan().start },
+                .data = .{ .unary = .{ .operand = operand, .flags = yield_flags } },
+            });
+        }
+
         const left = try self.parseConditionalExpression();
 
         // => 를 만나면 arrow function (괄호 형태)
@@ -2490,35 +2542,9 @@ pub const Parser = struct {
                 // async 밖 + script mode에서는 식별자로 파싱
                 return self.parsePostfixExpression();
             },
-            .kw_yield => {
-                // generator 안에서만 yield_expression, 밖에서는 식별자로 fallthrough
-                if (self.ctx.in_generator) {
-                    const start = self.currentSpan().start;
-                    self.advance();
-                    // yield* delegate — * 전에 줄바꿈이 있으면 delegate 아님
-                    var flags: u16 = 0;
-                    if (!self.scanner.token.has_newline_before and self.eat(.star)) {
-                        flags = 1; // delegate
-                    }
-                    var operand = NodeIndex.none;
-                    // yield 뒤에 줄바꿈 없이 expression이 오면 yield의 인자
-                    if (!self.scanner.token.has_newline_before and
-                        self.current() != .semicolon and self.current() != .r_curly and
-                        self.current() != .r_paren and self.current() != .r_bracket and
-                        self.current() != .colon and self.current() != .comma and
-                        self.current() != .eof)
-                    {
-                        operand = try self.parseAssignmentExpression();
-                    }
-                    return try self.ast.addNode(.{
-                        .tag = .yield_expression,
-                        .span = .{ .start = start, .end = self.currentSpan().start },
-                        .data = .{ .unary = .{ .operand = operand, .flags = flags } },
-                    });
-                }
-                // generator 밖에서는 식별자로 파싱 (strict mode에서는 에러이지만 파싱은 계속)
-                return self.parsePostfixExpression();
-            },
+            // yield expression은 parseAssignmentExpression에서 처리됨 (ECMAScript 14.4)
+            // generator 안에서 여기에 도달하면 identifier reference로 해석 → 에러
+            .kw_yield => return self.parsePostfixExpression(),
             else => return self.parsePostfixExpression(),
         }
     }
