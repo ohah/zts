@@ -1931,7 +1931,7 @@ pub const Parser = struct {
                 // 보간 있는 템플릿 리터럴: `text${expr}...`
                 return self.parseTemplateLiteral();
             },
-            .regexp => {
+            .regexp_literal => {
                 self.advance();
                 return try self.ast.addNode(.{
                     .tag = .regexp_literal,

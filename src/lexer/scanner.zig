@@ -665,7 +665,7 @@ pub const Scanner = struct {
                 self.current += 1; // consume closing /
                 // flags: g, i, m, s, u, v, y, d 등
                 self.scanRegExpFlags();
-                return .regexp;
+                return .regexp_literal;
             }
 
             // 줄바꿈은 정규식 안에서 불허 (U+2028/U+2029 포함)
@@ -2203,7 +2203,7 @@ test "Scanner: regex after =" {
     scanner.next(); // =
     try std.testing.expectEqual(Kind.eq, scanner.token.kind);
     scanner.next(); // /abc/gi
-    try std.testing.expectEqual(Kind.regexp, scanner.token.kind);
+    try std.testing.expectEqual(Kind.regexp_literal, scanner.token.kind);
     try std.testing.expectEqualStrings("/abc/gi", scanner.tokenText());
 }
 
@@ -2215,7 +2215,7 @@ test "Scanner: regex after (" {
     scanner.next(); // (
     try std.testing.expectEqual(Kind.l_paren, scanner.token.kind);
     scanner.next(); // /test/
-    try std.testing.expectEqual(Kind.regexp, scanner.token.kind);
+    try std.testing.expectEqual(Kind.regexp_literal, scanner.token.kind);
 }
 
 test "Scanner: division after identifier" {
@@ -2250,7 +2250,7 @@ test "Scanner: regex with character class" {
 
     scanner.next(); // =
     scanner.next(); // /[a/b]/
-    try std.testing.expectEqual(Kind.regexp, scanner.token.kind);
+    try std.testing.expectEqual(Kind.regexp_literal, scanner.token.kind);
     try std.testing.expectEqualStrings("/[a/b]/", scanner.tokenText());
 }
 
@@ -2261,7 +2261,7 @@ test "Scanner: regex with escape" {
 
     scanner.next(); // =
     scanner.next(); // /a\/b/
-    try std.testing.expectEqual(Kind.regexp, scanner.token.kind);
+    try std.testing.expectEqual(Kind.regexp_literal, scanner.token.kind);
 }
 
 test "Scanner: regex after return keyword" {
@@ -2272,7 +2272,7 @@ test "Scanner: regex after return keyword" {
     scanner.next(); // return
     try std.testing.expectEqual(Kind.kw_return, scanner.token.kind);
     scanner.next(); // /test/g
-    try std.testing.expectEqual(Kind.regexp, scanner.token.kind);
+    try std.testing.expectEqual(Kind.regexp_literal, scanner.token.kind);
 }
 
 test "Scanner: regex after comma" {
@@ -2282,7 +2282,7 @@ test "Scanner: regex after comma" {
 
     scanner.next(); // ,
     scanner.next(); // /re/
-    try std.testing.expectEqual(Kind.regexp, scanner.token.kind);
+    try std.testing.expectEqual(Kind.regexp_literal, scanner.token.kind);
 }
 
 // ============================================================
