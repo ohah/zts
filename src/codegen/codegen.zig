@@ -41,7 +41,12 @@ pub const CodegenOptions = struct {
     newline: []const u8 = "\n",
     /// 공백 최소화 (minify)
     minify: bool = false,
+    /// 소스맵 생성 활성화
+    sourcemap: bool = false,
 };
+
+const SourceMapBuilder = @import("sourcemap.zig").SourceMapBuilder;
+const Mapping = @import("sourcemap.zig").Mapping;
 
 pub const Codegen = struct {
     ast: *const Ast,
@@ -49,6 +54,11 @@ pub const Codegen = struct {
     options: CodegenOptions,
     /// 현재 들여쓰기 레벨
     indent_level: u32 = 0,
+    /// 소스맵 빌더 (sourcemap 옵션 활성화 시)
+    sm_builder: ?SourceMapBuilder = null,
+    /// 출력의 현재 줄/열 (소스맵 매핑용)
+    gen_line: u32 = 0,
+    gen_col: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator, ast: *const Ast) Codegen {
         return initWithOptions(allocator, ast, .{});
@@ -60,11 +70,15 @@ pub const Codegen = struct {
             .buf = std.ArrayList(u8).init(allocator),
             .options = options,
             .indent_level = 0,
+            .sm_builder = if (options.sourcemap) SourceMapBuilder.init(allocator) else null,
+            .gen_line = 0,
+            .gen_col = 0,
         };
     }
 
     pub fn deinit(self: *Codegen) void {
         self.buf.deinit();
+        if (self.sm_builder) |*sm| sm.deinit();
     }
 
     /// AST를 JS 문자열로 출력한다.
@@ -75,16 +89,66 @@ pub const Codegen = struct {
         return self.buf.items;
     }
 
+    /// 소스맵에 소스 파일을 등록한다. generate() 전에 호출.
+    pub fn addSourceFile(self: *Codegen, source_name: []const u8) !void {
+        if (self.sm_builder) |*sm| {
+            _ = try sm.addSource(source_name);
+        }
+    }
+
+    /// 소스맵 JSON을 생성한다. generate() 후에 호출.
+    pub fn generateSourceMap(self: *Codegen, output_file: []const u8) !?[]const u8 {
+        if (self.sm_builder) |*sm| {
+            return try sm.generateJSON(output_file);
+        }
+        return null;
+    }
+
     // ================================================================
     // 출력 헬퍼
     // ================================================================
 
     fn write(self: *Codegen, s: []const u8) !void {
         try self.buf.appendSlice(s);
+        // 줄/열 추적
+        for (s) |c| {
+            if (c == '\n') {
+                self.gen_line += 1;
+                self.gen_col = 0;
+            } else {
+                self.gen_col += 1;
+            }
+        }
     }
 
     fn writeByte(self: *Codegen, b: u8) !void {
         try self.buf.append(b);
+        if (b == '\n') {
+            self.gen_line += 1;
+            self.gen_col = 0;
+        } else {
+            self.gen_col += 1;
+        }
+    }
+
+    /// 소스맵 매핑 추가. 노드의 소스 span과 현재 출력 위치를 매핑.
+    fn addSourceMapping(self: *Codegen, span: Span) !void {
+        if (self.sm_builder) |*sm| {
+            // span의 byte offset → 소스의 줄/열 변환
+            // 현재는 Scanner의 line offset table이 없으므로 byte offset을 직접 사용
+            // TODO: Scanner에서 line offset table을 가져와 정확한 줄/열 계산
+            const src_line = span.start; // 임시: byte offset을 줄로 사용
+            const src_col: u32 = 0; // 임시
+            _ = src_line;
+            _ = src_col;
+            try sm.addMapping(.{
+                .generated_line = self.gen_line,
+                .generated_column = self.gen_col,
+                .source_index = 0,
+                .original_line = 0, // TODO: 정확한 줄/열 계산
+                .original_column = span.start,
+            });
+        }
     }
 
     /// 줄바꿈 출력. minify 모드에서는 아무것도 출력하지 않음.
@@ -135,6 +199,11 @@ pub const Codegen = struct {
         if (idx.isNone()) return;
 
         const node = self.ast.getNode(idx);
+
+        // 소스맵 매핑: 유의미한 노드 출력 시 원본 위치 기록
+        if (self.sm_builder != null and node.span.start != node.span.end) {
+            try self.addSourceMapping(node.span);
+        }
 
         switch (node.tag) {
             .program => try self.emitProgram(node),
