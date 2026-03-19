@@ -88,13 +88,58 @@ references/                 # 레퍼런스 프로젝트 (.gitignore, 로컬만)
 - Strict mode는 파서에서 추적 ("use strict" directive + module mode)
 - Test262 early phase는 parse와 통합
 
-### Advanced Features (Phase 6)
-- ES 다운레벨링: ES2024→ES2016 점진적, ES2015는 그 이후, ES5는 미정
-- WASM 플러그인, WASM 공개 AST API
-- .d.ts 생성 (isolatedDeclarations)
+### Phase 5.5: 파서 품질 강화 — positive 실패 제거 (다운레벨링 선행)
+파싱이 되어야 하는 정상 코드가 실패하는 케이스를 제거하여 파서 기반을 튼튼히 함.
+현재 80.8% → 목표: positive 실패 최소화 후 Phase 6 진입.
+- ⬜ for-await-of destructuring (~200건)
+- ⬜ object/class 메서드 엣지 케이스 (~200건)
+- ⬜ 이스케이프 키워드 식별자 허용 범위 (~100건)
+- ⬜ 유니코드 식별자 범위 확장 (~100건)
+- ⬜ 기타 파서 미지원 패턴 (~900건)
+
+### Phase 6 구현 순서 (D057, D058)
+
+#### 6-1. ES 다운레벨링 — ES2024→ES2016 (파이프라인 Pass 2)
+- 기존 transformer(Pass 1) 수정 없이 새 Downleveler 모듈 추가
+- feature 단위 PR: nullish coalescing → optional chaining → logical assignment → class fields → ...
+- --target CLI 옵션 → 내부 feature별 bool 매핑
+- ⬜ Downleveler 기본 구조 + nullish coalescing (??)
+- ⬜ optional chaining (?.)
+- ⬜ logical assignment (&&=, ||=, ??=)
+- ⬜ class fields (public)
+- ⬜ private class fields (#x)
+- ⬜ class static block
+- ⬜ --target CLI + target→features 매핑 테이블
+
+#### 6-2. ES 다운레벨링 — ES2015→ES5 (헬퍼 필요)
+- 런타임 헬퍼 인프라 구축 (bundled/external 모드)
+- ⬜ arrow function → regular function (this 캡처)
+- ⬜ template literal → string concatenation
+- ⬜ destructuring → variable assignment
+- ⬜ let/const → var
+- ⬜ class → prototype chain
+- ⬜ for-of → for loop
+- ⬜ spread/rest → Array.prototype.slice
+- ⬜ default parameters → conditional
+
+#### 6-3. 미니파이어
+- ⬜ whitespace/syntax (codegen 옵션)
+- ⬜ identifier 축약 (scope/symbol + references 필요)
+
+#### 6-4. .d.ts 생성 (isolatedDeclarations)
+
+#### 6-5. 번들러
+- import resolution (paths/baseUrl/node_modules)
+- 의존성 그래프 + 청크 분할 + tree-shaking
+- strictExecutionOrder (RN/Metro 지원)
+  - 모듈 래핑 (lazy evaluation) + DFS 실행 순서
+  - side effect 추적
+
+#### 6-6. 기타
+- transform API: oxc/Rolldown 방식 `transform(source, options)` (bungae 연동)
+- --supported override (개별 feature 제어)
 - React Fast Refresh
-- 미니파이어 (whitespace/syntax/identifiers 개별)
-- 번들러 (paths/baseUrl/moduleResolution 활성화)
+- WASM 플러그인, WASM 공개 AST API
 
 ## Commands
 ```bash
