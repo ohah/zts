@@ -229,10 +229,24 @@
 - **이유**: 대부분의 변환이 독립적 (타입 스트리핑, JSX, 모듈). 의존성이 있는 경우(decorator→class) switch 내에서 순서 제어. 멀티 패스는 AST를 여러 번 순회하므로 성능 손해
 - **변환 우선순위**: (1) 타입 스트리핑 (2) TS expression (as/satisfies/!) (3) enum→IIFE (4) namespace→IIFE (5) parameter property (6) JSX (7) ESM→CJS (8) decorator
 
-### Phase 4 (코드젠) 시작 시
-- 들여쓰기 방식 (탭 vs 스페이스, 기본값)
-- 줄바꿈 처리 (원본 보존? 정규화?)
-- 소스맵 v3 인코딩 세부 (VLQ 구현 방식)
+### Phase 4 (코드젠) — 결정 완료
+
+### D044: 들여쓰기 방식
+- **결정**: Tab 기본 + Space 옵션 (oxc 방식)
+- **이유**: Tab이 바이트 효율적 (1바이트 vs 2-4바이트). IndentChar enum으로 Tab/Space 선택 + indent_width로 Space일 때 너비 설정. minify 모드에서는 들여쓰기 완전 제거
+- **비교**: esbuild(2 spaces 고정), SWC(4 spaces 고정, 변경 어려움), oxc(Tab/Space enum + width)
+- **참고**: oxc가 가장 유연하고, 추후 Prettier 연동 시 Space 2/4 전환이 자연스러움
+
+### D045: 줄바꿈 처리
+- **결정**: `\n` 정규화 + CRLF 옵션 (SWC 방식)
+- **이유**: 내부적으로 `\n`으로 통일하고, 출력 시 설정에 따라 `\n` 또는 `\r\n`으로 변환. 크로스 플랫폼(Windows/Unix) 지원. 원본 줄바꿈 보존은 소스맵으로 매핑하므로 불필요
+- **비교**: esbuild(`\n` 정규화), oxc(원본 구조 유지), SWC(설정 가능)
+
+### D046: 소스맵 V3 VLQ 인코딩
+- **결정**: 자체 구현 (esbuild/SWC 방식, ~30줄)
+- **이유**: VLQ는 표준 알고리즘(sign bit → 5bit chunks → continuation bit → base64). esbuild/oxc/SWC 모두 자체 구현. 외부 의존성 불필요. Zig로 포팅 간단
+- **구현 세부**: sign bit은 bit 0, 값은 5bit씩 분할, continuation bit은 bit 5, base64 인코딩
+- **참고**: oxc도 `oxc_sourcemap` 크레이트를 자체 개발 (외부 의존 아님)
 
 ### Phase 5 (CLI) 시작 시
 - 설정 파일 (tsconfig만? zts.config.json 별도?)

@@ -77,6 +77,11 @@ references/                 # 레퍼런스 프로젝트 (.gitignore, 로컬만)
 - Switch 기반 visitor + comptime 보조 (esbuild/Bun 방식). 성능 핵심은 메모리 레이아웃
 - 단일 패스, 변환 우선순위로 순서 제어
 
+### Codegen Design (D044-D046)
+- Tab 기본 + Space 옵션 (oxc 방식). IndentChar enum으로 Tab/Space 선택
+- `\n` 정규화 + CRLF 옵션. 크로스 플랫폼 지원
+- 소스맵 VLQ 자체 구현 (~30줄). 외부 의존성 없음
+
 ### Advanced Features (Phase 6)
 - ES 다운레벨링: ES2024→ES2016 점진적, ES2015는 그 이후, ES5는 미정
 - WASM 플러그인, WASM 공개 AST API
@@ -177,6 +182,14 @@ main ← feature/lexer-token-enum
 13. ✅ decorator 지원 (class에 연결 + 출력) — PR #47
 14. ✅ --drop console/debugger + define 글로벌 치환 — PR #48
 15. ✅ import.meta CJS 변환 (D021) — PR #49
+
+### 코드젠 + CLI 구현 순서 (PR 단위) — Phase 4 진행 중
+1. ⬜ Phase 4 의사결정 (D044-D046)
+2. ⬜ 코드 포맷팅 (들여쓰기, 줄바꿈, 세미콜론)
+3. ⬜ CLI 기본 (파일 읽기 → 파싱 → 변환 → 출력)
+4. ⬜ 소스맵 V3 생성 (VLQ 인코딩)
+5. ⬜ legal comments (@license, @preserve)
+6. ⬜ --ascii-only (D031)
 
 ## References
 - Bun JS Parser: github.com/oven-sh/bun (src/js_parser.zig, src/js_lexer.zig)
