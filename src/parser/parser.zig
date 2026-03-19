@@ -2915,6 +2915,20 @@ pub const Parser = struct {
         } else if (self.eat(.eq)) {
             // shorthand with default: { x = 1 }  (destructuring default)
             value = try self.parseAssignmentExpression();
+        } else {
+            // shorthand: { x } — key가 identifier shorthand로 사용 가능한지 검증
+            // reserved word (true, false, null 등)는 shorthand 불가
+            if (!key.isNone()) {
+                const key_node = self.ast.getNode(key);
+                if (key_node.tag == .identifier_reference) {
+                    const key_text = self.ast.source[key_node.span.start..key_node.span.end];
+                    if (token_mod.keywords.get(key_text)) |kw| {
+                        if (kw.isReservedKeyword() or kw.isLiteralKeyword()) {
+                            self.addError(key_node.span, "reserved word cannot be used as shorthand property");
+                        }
+                    }
+                }
+            }
         }
 
         return try self.ast.addNode(.{
@@ -5489,4 +5503,131 @@ test "Parser: let as variable name is valid in non-strict" {
 
     _ = try parser.parse();
     try std.testing.expect(parser.errors.items.len == 0);
+}
+
+// ============================================================
+// 검증 로직 유닛 테스트
+// ============================================================
+
+test "Parser: ++this is invalid assignment target" {
+    var scanner = Scanner.init(std.testing.allocator, "++this;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "Parser: delete identifier in strict mode is error" {
+    var scanner = Scanner.init(std.testing.allocator, "\"use strict\"; delete x;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "Parser: const without initializer is error" {
+    var scanner = Scanner.init(std.testing.allocator, "const x;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "Parser: for-of const without init is valid" {
+    var scanner = Scanner.init(std.testing.allocator, "for (const x of [1]) {}");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: import/export only at module top-level" {
+    // import in function body — error even in module
+    var scanner = Scanner.init(std.testing.allocator, "function f() { import 'x'; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    parser.is_module = true;
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "Parser: function in loop body is error" {
+    var scanner = Scanner.init(std.testing.allocator, "for (;;) function f() {}");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "Parser: yield is identifier outside generator" {
+    var scanner = Scanner.init(std.testing.allocator, "var yield = 1;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: await is identifier in script mode" {
+    var scanner = Scanner.init(std.testing.allocator, "var await = 1;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: await is reserved in module mode" {
+    var scanner = Scanner.init(std.testing.allocator, "var await = 1;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    parser.is_module = true;
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "Parser: super outside method is error" {
+    var scanner = Scanner.init(std.testing.allocator, "super.x;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "Parser: new.target outside function is error" {
+    var scanner = Scanner.init(std.testing.allocator, "new.target;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "Parser: object shorthand reserved word is error" {
+    var scanner = Scanner.init(std.testing.allocator, "({true});");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
 }
