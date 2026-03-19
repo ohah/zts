@@ -313,6 +313,15 @@ pub const Parser = struct {
         self.ctx = saved;
     }
 
+    /// `in` 연산자 허용/금지 컨텍스트에 진입한다.
+    /// ECMAScript 문법의 [+In]/[~In] 파라미터 전환에 사용.
+    /// 반환값을 restoreContext()에 전달하여 복원.
+    fn enterAllowInContext(self: *Parser, allow: bool) Context {
+        const saved = self.ctx;
+        self.ctx.allow_in = allow;
+        return saved;
+    }
+
     /// 현재 토큰이 "use strict" directive인지 확인한다.
     /// directive prologue에서 호출 — tokenText()는 따옴표를 포함하므로 내부를 비교.
     fn isUseStrictDirective(self: *const Parser) bool {
@@ -663,10 +672,13 @@ pub const Parser = struct {
         // TS 타입 어노테이션 (: Type)
         const type_ann = try self.tryParseTypeAnnotation();
 
-        // 이니셜라이저
+        // 이니셜라이저 — `in` 연산자를 복원한다 (ECMAScript: Initializer[+In]).
+        // for 초기화절에서 allow_in=false여도, 이니셜라이저 안에서는 `in`이 연산자로 동작해야 한다.
         var init_expr = NodeIndex.none;
         if (self.eat(.eq)) {
+            const init_saved = self.enterAllowInContext(true);
             init_expr = try self.parseAssignmentExpression();
+            self.restoreContext(init_saved);
         }
 
         // name, type_ann, init_expr → extra_data
@@ -777,8 +789,15 @@ pub const Parser = struct {
             return self.parseForRest(start, NodeIndex.none);
         }
 
+        // for 초기화절에서는 `in` 연산자를 비활성화한다 (ECMAScript 13.7.4).
+        // `for (x in obj)`에서 `in`이 for-in 키워드로 인식되어야 함.
+        // 변수 선언/일반 표현식 모두 [~In]: VariableDeclarationList[~In], Expression[~In].
+        // 이니셜라이저/디스트럭처링 기본값 안에서는 [+In]으로 복원됨 (각 파싱 함수에서 처리).
+        const for_saved = self.enterAllowInContext(false);
+
         if (self.current() == .kw_var or self.current() == .kw_let or self.current() == .kw_const) {
             const init_expr = try self.parseVariableDeclaration();
+            self.restoreContext(for_saved);
             // parseVariableDeclaration이 세미콜론을 소비했으면 for(;;)
             // 'in' 또는 'of'가 보이면 for-in/for-of
             if (self.current() == .kw_in) {
@@ -790,14 +809,9 @@ pub const Parser = struct {
             return self.parseForRest(start, init_expr);
         }
 
-        // 일반 표현식 init — `in` 연산자를 비활성화한다 (ECMAScript 13.7.4).
-        // `for (x in obj)`에서 `in`이 for-in 키워드로 인식되어야 하고,
-        // `for (a in b;;)` 처럼 이항 연산자로 파싱되면 안 된다.
-        // 변수 선언 경로에는 적용하지 않는다 — 디스트럭처링 기본값에서 `in`이 필요.
-        const saved = self.ctx;
-        self.ctx.allow_in = false;
+        // 일반 표현식 init
         const init_expr = try self.parseExpression();
-        self.ctx = saved;
+        self.restoreContext(for_saved);
         if (self.current() == .kw_in) {
             return self.parseForIn(start, init_expr);
         }
@@ -1965,12 +1979,11 @@ pub const Parser = struct {
         if (self.eat(.question)) {
             const expr_start = self.ast.getNode(expr).span.start;
             // 조건 연산자의 consequent/alternate에서는 `in` 연산자 항상 허용
-            const cond_saved = self.ctx;
-            self.ctx.allow_in = true;
+            const cond_saved = self.enterAllowInContext(true);
             const consequent = try self.parseAssignmentExpression();
             self.expect(.colon);
             const alternate = try self.parseAssignmentExpression();
-            self.ctx = cond_saved;
+            self.restoreContext(cond_saved);
             return try self.ast.addNode(.{
                 .tag = .conditional_expression,
                 .span = .{ .start = expr_start, .end = self.currentSpan().start },
@@ -2164,9 +2177,11 @@ pub const Parser = struct {
                     });
                 },
                 .l_bracket => {
-                    // 계산된 멤버 접근: a[b]
+                    // 계산된 멤버 접근: a[b] — `in` 연산자 허용 (ECMAScript: [+In])
                     self.advance();
+                    const cm_saved = self.enterAllowInContext(true);
                     const prop = try self.parseExpression();
+                    self.restoreContext(cm_saved);
                     self.expect(.r_bracket);
                     expr = try self.ast.addNode(.{
                         .tag = .computed_member_expression,
@@ -2178,9 +2193,11 @@ pub const Parser = struct {
                     // optional chaining: a?.b, a?.[b], a?.()
                     self.advance(); // skip ?.
                     if (self.current() == .l_bracket) {
-                        // a?.[expr]
+                        // a?.[expr] — `in` 연산자 허용 (ECMAScript: [+In])
                         self.advance();
+                        const oc_saved = self.enterAllowInContext(true);
                         const prop = try self.parseExpression();
+                        self.restoreContext(oc_saved);
                         self.expect(.r_bracket);
                         expr = try self.ast.addNode(.{
                             .tag = .computed_member_expression,
@@ -2418,10 +2435,9 @@ pub const Parser = struct {
                     });
                 }
 
-                const paren_saved = self.ctx;
-                self.ctx.allow_in = true;
+                const paren_saved = self.enterAllowInContext(true);
                 const expr = try self.parseExpression();
-                self.ctx = paren_saved;
+                self.restoreContext(paren_saved);
                 self.expect(.r_paren);
                 return try self.ast.addNode(.{
                     .tag = .parenthesized_expression,
@@ -2485,18 +2501,16 @@ pub const Parser = struct {
             },
             .l_bracket => {
                 // 배열 리터럴 — 내부에서 `in` 연산자 항상 허용
-                const arr_saved = self.ctx;
-                self.ctx.allow_in = true;
+                const arr_saved = self.enterAllowInContext(true);
                 const arr = try self.parseArrayExpression();
-                self.ctx = arr_saved;
+                self.restoreContext(arr_saved);
                 return arr;
             },
             .l_curly => {
                 // 객체 리터럴 — 내부에서 `in` 연산자 항상 허용
-                const obj_saved = self.ctx;
-                self.ctx.allow_in = true;
+                const obj_saved = self.enterAllowInContext(true);
                 const obj = try self.parseObjectExpression();
-                self.ctx = obj_saved;
+                self.restoreContext(obj_saved);
                 return obj;
             },
             .kw_async => {
@@ -2560,8 +2574,10 @@ pub const Parser = struct {
         self.advance(); // skip template_head
 
         while (true) {
-            // expression inside ${}
+            // expression inside ${} — `in` 연산자 항상 허용 (ECMAScript: TemplateMiddleList[+In])
+            const tmpl_saved = self.enterAllowInContext(true);
             const expr = try self.parseExpression();
+            self.restoreContext(tmpl_saved);
             try self.scratch.append(expr);
 
             // template_middle: }text${ 또는 template_tail: }text`
@@ -2885,10 +2901,9 @@ pub const Parser = struct {
     /// 기본값 표현식에서는 `in` 연산자가 항상 허용된다 (ECMAScript: Initializer[+In]).
     fn tryWrapDefaultValue(self: *Parser, node: NodeIndex) ParseError2!NodeIndex {
         if (self.eat(.eq)) {
-            const def_saved = self.ctx;
-            self.ctx.allow_in = true;
+            const def_saved = self.enterAllowInContext(true);
             const default_val = try self.parseAssignmentExpression();
-            self.ctx = def_saved;
+            self.restoreContext(def_saved);
             return try self.ast.addNode(.{
                 .tag = .assignment_pattern,
                 .span = .{ .start = self.ast.getNode(node).span.start, .end = self.currentSpan().start },
@@ -3135,7 +3150,10 @@ pub const Parser = struct {
         return list;
     }
 
+    /// 함수 인자 하나를 파싱한다. `in` 연산자 허용 (ECMAScript: Arguments[+In]).
     fn parseSpreadOrAssignment(self: *Parser) ParseError2!NodeIndex {
+        const arg_saved = self.enterAllowInContext(true);
+        defer self.restoreContext(arg_saved);
         if (self.current() == .dot3) {
             const start = self.currentSpan().start;
             self.advance(); // skip ...
@@ -3186,9 +3204,11 @@ pub const Parser = struct {
                 });
             },
             .l_bracket => {
-                // computed property: [expr]
+                // computed property: [expr] — `in` 연산자 허용 (ECMAScript: ComputedPropertyName[+In])
                 self.advance();
+                const cpk_saved = self.enterAllowInContext(true);
                 const expr = try self.parseAssignmentExpression();
+                self.restoreContext(cpk_saved);
                 self.expect(.r_bracket);
                 return try self.ast.addNode(.{
                     .tag = .computed_property_key,
