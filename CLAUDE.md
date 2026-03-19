@@ -188,8 +188,8 @@ main ← feature/lexer-token-enum
 2. ✅ 코드 포맷팅 (들여쓰기, 줄바꿈, minify) — PR #51
 3. ✅ CLI 기본 (파일 → 파싱 → 변환 → 출력) — PR #52
 4. ✅ 소스맵 V3 생성 (VLQ + JSON) — PR #53
-5. ⬜ legal comments (@license, @preserve)
-6. ⬜ --ascii-only (D031)
+5. ✅ --ascii-only (D031) — PR #54
+6. ⬜ legal comments (@license, @preserve) — 렉서 수정 필요, 후순위
 
 ## References
 - Bun JS Parser: github.com/oven-sh/bun (src/js_parser.zig, src/js_lexer.zig)
