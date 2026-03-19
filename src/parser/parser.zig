@@ -1954,6 +1954,8 @@ pub const Parser = struct {
         const scratch_top = self.saveScratch();
         try self.scratch.append(first);
         while (self.eat(.comma)) {
+            // trailing comma: 콤마 뒤에 )가 오면 arrow function 파라미터 trailing comma
+            if (self.current() == .r_paren) break;
             const elem = try self.parseAssignmentExpression();
             try self.scratch.append(elem);
         }
