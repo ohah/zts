@@ -148,16 +148,10 @@ pub fn main() !void {
         return;
     };
 
-    // 에러 출력
+    // 에러 출력 (코드 프레임, D012)
     if (parser.errors.items.len > 0) {
         for (parser.errors.items) |parse_err| {
-            const lc = scanner.getLineColumn(parse_err.span.start);
-            try stderr.print("{s}:{d}:{d}: error: {s}\n", .{
-                file_path,
-                lc.line + 1,
-                lc.column + 1,
-                parse_err.message,
-            });
+            try printErrorCodeFrame(stderr, source, file_path, &scanner, parse_err);
         }
     }
 
@@ -219,6 +213,72 @@ pub fn main() !void {
         try stdout.writeAll(output);
         // stdout에 소스맵은 inline으로 출력하지 않음 (별도 옵션 필요)
     }
+}
+
+/// 에러 코드 프레임 출력 (D012).
+/// 형식:
+///   file.ts:3:5: error: expected ';'
+///     3 | const x =
+///       |           ^
+fn printErrorCodeFrame(writer: anytype, source: []const u8, file_path: []const u8, scanner: *const Scanner, err: lib.parser.parser.ParseError) !void {
+    const lc = scanner.getLineColumn(err.span.start);
+    const line_num = lc.line + 1;
+    const col_num = lc.column + 1;
+
+    // 에러 헤더
+    try writer.print("{s}:{d}:{d}: error: {s}\n", .{ file_path, line_num, col_num, err.message });
+
+    // 해당 줄 텍스트 추출
+    const line_start = if (lc.line < scanner.line_offsets.items.len)
+        scanner.line_offsets.items[lc.line]
+    else
+        0;
+
+    var line_end = line_start;
+    while (line_end < source.len and source[line_end] != '\n' and source[line_end] != '\r') {
+        line_end += 1;
+    }
+    const line_text = source[line_start..line_end];
+
+    // 줄 번호 너비 계산
+    var num_width: usize = 0;
+    var n = line_num;
+    while (n > 0) : (n /= 10) {
+        num_width += 1;
+    }
+
+    // 소스 줄 출력: "  3 | const x ="
+    try writer.print("  {d} | {s}\n", .{ line_num, line_text });
+
+    // 밑줄 출력: "    |           ^"
+    // 줄 번호 자리만큼 공백
+    var i: usize = 0;
+    while (i < num_width + 2) : (i += 1) {
+        try writer.writeByte(' ');
+    }
+    try writer.writeAll("| ");
+
+    // 열 위치까지 공백
+    i = 0;
+    while (i < lc.column) : (i += 1) {
+        // 원본에서 탭이면 탭으로 맞춤
+        if (line_start + i < source.len and source[line_start + i] == '\t') {
+            try writer.writeByte('\t');
+        } else {
+            try writer.writeByte(' ');
+        }
+    }
+
+    // 밑줄
+    const err_len = if (err.span.end > err.span.start)
+        @min(err.span.end - err.span.start, line_end - (line_start + lc.column))
+    else
+        1;
+    i = 0;
+    while (i < err_len) : (i += 1) {
+        try writer.writeByte('^');
+    }
+    try writer.writeByte('\n');
 }
 
 fn printUsage(writer: anytype) !void {
