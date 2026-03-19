@@ -2612,6 +2612,9 @@ pub const Parser = struct {
         while (self.current() != .r_paren and self.current() != .eof) {
             const param = try self.parseBindingIdentifier();
             try self.scratch.append(param);
+            if (!param.isNone() and self.ast.getNode(param).tag == .spread_element and self.current() == .comma) {
+                self.addError(self.currentSpan(), "rest parameter must be last formal parameter");
+            }
             if (!self.eat(.comma)) break;
         }
         self.expect(.r_paren);
@@ -2619,7 +2622,12 @@ pub const Parser = struct {
         // TS 리턴 타입
         _ = try self.tryParseReturnType();
 
-        const body = try self.parseBlockStatement();
+        // object method도 함수이므로 컨텍스트 설정 (return/break/continue 검증)
+        const saved_ctx = self.enterFunctionContext((flags & 0x08) != 0, (flags & 0x10) != 0);
+        self.has_simple_params = self.checkSimpleParams(scratch_top);
+        self.checkDuplicateParams(scratch_top);
+        const body = try self.parseFunctionBody();
+        self.restoreContext(saved_ctx);
 
         const param_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
         self.restoreScratch(scratch_top);
