@@ -179,6 +179,8 @@ pub const SemanticAnalyzer = struct {
     fn declarePrivateName(self: *SemanticAnalyzer, name: []const u8, span: Span) void {
         if (self.class_private_declared.items.len == 0) return;
         var current = &self.class_private_declared.items[self.class_private_declared.items.len - 1];
+        // 중복 private name 선언 체크는 getter+setter 쌍 구분이 필요하므로
+        // 향후 PrivateKind 기반으로 구현 예정
         current.put(name, span) catch @panic("OOM");
     }
 
