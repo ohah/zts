@@ -163,7 +163,7 @@ pub fn runTest(allocator: mem.Allocator, source: []const u8, meta: TestMetadata,
 
     // onlyStrict 플래그 — strict mode로 파싱
     if (meta.is_only_strict) {
-        parser.is_strict_mode = true;
+        parser.ctx.is_strict_mode = true;
     }
 
     // parse()는 OOM 시 error 반환, 파싱 에러는 parser.errors에 누적
@@ -177,7 +177,7 @@ pub fn runTest(allocator: mem.Allocator, source: []const u8, meta: TestMetadata,
     if (scanner.token.kind != .syntax_error and parser.errors.items.len == 0) {
         var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
         defer analyzer.deinit(); // deinit이 에러 메시지 메모리도 해제
-        analyzer.is_strict_mode = parser.is_strict_mode;
+        analyzer.is_strict_mode = parser.ctx.is_strict_mode;
         analyzer.analyze();
         semantic_error_count = analyzer.errors.items.len;
     }
