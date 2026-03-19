@@ -276,16 +276,28 @@ pub const Parser = struct {
     }
 
     /// 키워드를 바인딩 위치에서 사용할 때의 검증.
-    /// reserved keyword, strict mode reserved, generator 내 yield, async 내 await.
+    /// ECMAScript 12.1.1: reserved keyword, strict mode reserved, contextual keywords.
     fn checkKeywordBinding(self: *Parser) void {
         if (self.current().isReservedKeyword()) {
             self.addError(self.currentSpan(), "reserved word cannot be used as identifier");
         } else if (self.ctx.is_strict_mode and self.current().isStrictModeReserved()) {
             self.addError(self.currentSpan(), "reserved word in strict mode cannot be used as identifier");
-        } else if (self.current() == .kw_yield and self.ctx.in_generator) {
-            self.addError(self.currentSpan(), "'yield' cannot be used as identifier in generator");
-        } else if (self.current() == .kw_await and self.ctx.in_async) {
-            self.addError(self.currentSpan(), "'await' cannot be used as identifier in async function");
+        } else if (self.current() == .kw_yield) {
+            // yield는 generator 안에서, 또는 strict mode에서 바인딩 불가
+            // ECMAScript 13.1.1: yield는 [Yield] 컨텍스트 또는 strict mode에서 BindingIdentifier 불가
+            if (self.ctx.in_generator) {
+                self.addError(self.currentSpan(), "'yield' cannot be used as identifier in generator");
+            } else if (self.ctx.is_strict_mode) {
+                self.addError(self.currentSpan(), "'yield' is reserved in strict mode");
+            }
+        } else if (self.current() == .kw_await) {
+            // await는 async 안에서, 또는 module mode에서 바인딩 불가
+            // ECMAScript 13.1.1: await는 [Await] 컨텍스트 또는 module에서 BindingIdentifier 불가
+            if (self.ctx.in_async) {
+                self.addError(self.currentSpan(), "'await' cannot be used as identifier in async function");
+            } else if (self.is_module) {
+                self.addError(self.currentSpan(), "'await' is reserved in module code");
+            }
         }
     }
 
@@ -573,10 +585,18 @@ pub const Parser = struct {
             const peek = self.peekNext();
             if (peek.kind == .colon) {
                 // yield/await를 label로 사용하면 generator/async에서 에러
-                if (self.current() == .kw_yield and self.ctx.in_generator) {
-                    self.addError(self.currentSpan(), "'yield' cannot be used as label in generator");
-                } else if (self.current() == .kw_await and self.ctx.in_async) {
-                    self.addError(self.currentSpan(), "'await' cannot be used as label in async function");
+                if (self.current() == .kw_yield) {
+                    if (self.ctx.in_generator) {
+                        self.addError(self.currentSpan(), "'yield' cannot be used as label in generator");
+                    } else if (self.ctx.is_strict_mode) {
+                        self.addError(self.currentSpan(), "'yield' is reserved in strict mode");
+                    }
+                } else if (self.current() == .kw_await) {
+                    if (self.ctx.in_async) {
+                        self.addError(self.currentSpan(), "'await' cannot be used as label in async function");
+                    } else if (self.is_module) {
+                        self.addError(self.currentSpan(), "'await' is reserved in module code");
+                    }
                 } else if (self.current() == .escaped_keyword) {
                     self.addError(self.currentSpan(), "escaped reserved word cannot be used as label");
                 } else if (self.ctx.is_strict_mode and self.current().isStrictModeReserved()) {
@@ -2068,38 +2088,49 @@ pub const Parser = struct {
                 });
             },
             .kw_await => {
-                const start = self.currentSpan().start;
-                self.advance();
-                const operand = try self.parseUnaryExpression();
-                return try self.ast.addNode(.{
-                    .tag = .await_expression,
-                    .span = .{ .start = start, .end = self.currentSpan().start },
-                    .data = .{ .unary = .{ .operand = operand, .flags = 0 } },
-                });
+                // async 함수 안 또는 module mode(top-level await)에서 await_expression으로 파싱.
+                // 그 외에는 식별자로 fallthrough.
+                if (self.ctx.in_async or self.is_module) {
+                    const start = self.currentSpan().start;
+                    self.advance();
+                    const operand = try self.parseUnaryExpression();
+                    return try self.ast.addNode(.{
+                        .tag = .await_expression,
+                        .span = .{ .start = start, .end = self.currentSpan().start },
+                        .data = .{ .unary = .{ .operand = operand, .flags = 0 } },
+                    });
+                }
+                // async 밖 + script mode에서는 식별자로 파싱
+                return self.parsePostfixExpression();
             },
             .kw_yield => {
-                const start = self.currentSpan().start;
-                self.advance();
-                // yield* delegate
-                var flags: u16 = 0;
-                if (self.eat(.star)) {
-                    flags = 1; // delegate
+                // generator 안에서만 yield_expression, 밖에서는 식별자로 fallthrough
+                if (self.ctx.in_generator) {
+                    const start = self.currentSpan().start;
+                    self.advance();
+                    // yield* delegate
+                    var flags: u16 = 0;
+                    if (self.eat(.star)) {
+                        flags = 1; // delegate
+                    }
+                    var operand = NodeIndex.none;
+                    // yield 뒤에 줄바꿈 없이 expression이 오면 yield의 인자
+                    if (!self.scanner.token.has_newline_before and
+                        self.current() != .semicolon and self.current() != .r_curly and
+                        self.current() != .r_paren and self.current() != .r_bracket and
+                        self.current() != .colon and self.current() != .comma and
+                        self.current() != .eof)
+                    {
+                        operand = try self.parseAssignmentExpression();
+                    }
+                    return try self.ast.addNode(.{
+                        .tag = .yield_expression,
+                        .span = .{ .start = start, .end = self.currentSpan().start },
+                        .data = .{ .unary = .{ .operand = operand, .flags = flags } },
+                    });
                 }
-                var operand = NodeIndex.none;
-                // yield 뒤에 줄바꿈 없이 expression이 오면 yield의 인자
-                if (!self.scanner.token.has_newline_before and
-                    self.current() != .semicolon and self.current() != .r_curly and
-                    self.current() != .r_paren and self.current() != .r_bracket and
-                    self.current() != .colon and self.current() != .comma and
-                    self.current() != .eof)
-                {
-                    operand = try self.parseAssignmentExpression();
-                }
-                return try self.ast.addNode(.{
-                    .tag = .yield_expression,
-                    .span = .{ .start = start, .end = self.currentSpan().start },
-                    .data = .{ .unary = .{ .operand = operand, .flags = flags } },
-                });
+                // generator 밖에서는 식별자로 파싱 (strict mode에서는 에러이지만 파싱은 계속)
+                return self.parsePostfixExpression();
             },
             else => return self.parsePostfixExpression(),
         }
@@ -2536,10 +2567,18 @@ pub const Parser = struct {
                 if (self.current().isKeyword() and !self.current().isReservedKeyword()) {
                     if (self.ctx.is_strict_mode and self.current().isStrictModeReserved()) {
                         self.addError(span, "reserved word in strict mode cannot be used as identifier");
-                    } else if (self.current() == .kw_yield and self.ctx.in_generator) {
-                        self.addError(span, "'yield' cannot be used as identifier in generator");
-                    } else if (self.current() == .kw_await and self.ctx.in_async) {
-                        self.addError(span, "'await' cannot be used as identifier in async function");
+                    } else if (self.current() == .kw_yield) {
+                        if (self.ctx.in_generator) {
+                            self.addError(span, "'yield' cannot be used as identifier in generator");
+                        } else if (self.ctx.is_strict_mode) {
+                            self.addError(span, "'yield' is reserved in strict mode");
+                        }
+                    } else if (self.current() == .kw_await) {
+                        if (self.ctx.in_async) {
+                            self.addError(span, "'await' cannot be used as identifier in async function");
+                        } else if (self.is_module) {
+                            self.addError(span, "'await' is reserved in module code");
+                        }
                     }
                     self.advance();
                     return try self.ast.addNode(.{
