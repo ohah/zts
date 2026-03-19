@@ -56,8 +56,12 @@ pub const SymbolKind = enum(u8) {
     /// 블록 스코프 선언인지 (let/const/class/generator/async function/async generator)
     pub fn isBlockScoped(self: SymbolKind) bool {
         return switch (self) {
-            .variable_let, .variable_const, .class_decl,
-            .generator_decl, .async_function_decl, .async_generator_decl,
+            .variable_let,
+            .variable_const,
+            .class_decl,
+            .generator_decl,
+            .async_function_decl,
+            .async_generator_decl,
             => true,
             else => false,
         };
