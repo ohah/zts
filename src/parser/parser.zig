@@ -270,6 +270,29 @@ pub const Parser = struct {
         return true;
     }
 
+    /// strict mode 또는 non-simple params에서 중복 파라미터를 검사한다.
+    fn checkDuplicateParams(self: *Parser, scratch_top: usize) void {
+        if (!self.is_strict_mode and self.has_simple_params) return;
+        const params = self.scratch.items[scratch_top..];
+        // O(N²)이지만 파라미터 수가 적으므로 (보통 <10) 충분
+        for (params, 0..) |param_idx, i| {
+            if (param_idx.isNone()) continue;
+            const node = self.ast.getNode(param_idx);
+            if (node.tag != .binding_identifier) continue;
+            const name = self.ast.source[node.span.start..node.span.end];
+            for (params[0..i]) |prev_idx| {
+                if (prev_idx.isNone()) continue;
+                const prev = self.ast.getNode(prev_idx);
+                if (prev.tag != .binding_identifier) continue;
+                const prev_name = self.ast.source[prev.span.start..prev.span.end];
+                if (std.mem.eql(u8, name, prev_name)) {
+                    self.addError(node.span, "duplicate parameter name");
+                    break;
+                }
+            }
+        }
+    }
+
     /// 함수 본문을 파싱한다.
     /// block statement와 동일하지만, "use strict" directive를 감지하여 strict mode를 설정한다.
     fn parseFunctionBody(self: *Parser) ParseError2!NodeIndex {
@@ -947,6 +970,7 @@ pub const Parser = struct {
         // 함수 본문 — 컨텍스트 저장/복원
         const saved_ctx = self.enterFunctionContext((flags & 0x01) != 0, (flags & 0x02) != 0);
         self.has_simple_params = self.checkSimpleParams(scratch_top);
+        self.checkDuplicateParams(scratch_top);
         const body = try self.parseFunctionBody();
         self.restoreContext(saved_ctx);
 
@@ -1015,6 +1039,7 @@ pub const Parser = struct {
         // 함수 본문 — 컨텍스트 저장/복원
         const saved_ctx = self.enterFunctionContext((flags & 0x01) != 0, (flags & 0x02) != 0);
         self.has_simple_params = self.checkSimpleParams(scratch_top);
+        self.checkDuplicateParams(scratch_top);
         const body = try self.parseFunctionBody();
         self.restoreContext(saved_ctx);
 
@@ -1222,6 +1247,7 @@ pub const Parser = struct {
                 // 메서드의 async/generator 플래그는 함수와 비트 위치가 다름 (0x08/0x10)
                 const saved_ctx = self.enterFunctionContext((flags & 0x08) != 0, (flags & 0x10) != 0);
                 self.has_simple_params = self.checkSimpleParams(param_top);
+                self.checkDuplicateParams(param_top);
                 body = try self.parseFunctionBody();
                 self.restoreContext(saved_ctx);
             } else {
