@@ -174,13 +174,14 @@ pub fn runTest(allocator: mem.Allocator, source: []const u8, meta: TestMetadata,
     if (verbose and result == .fail and !meta.is_negative_parse and parser.errors.items.len > 0) {
         const err = parser.errors.items[0];
         const stderr = std.io.getStdErr().writer();
-        // 에러 위치부터 20자
+        // 에러 위치 앞 20자 + 뒤 30자
+        const before_start = if (err.span.start > 20) err.span.start - 20 else 0;
         const ctx_end = @min(err.span.start + 30, @as(u32, @intCast(source.len)));
-        const snippet = source[err.span.start..ctx_end];
-        // 개행 전까지만
-        var line_end: usize = 0;
+        const snippet = source[before_start..ctx_end];
+        // 개행 전까지만 (에러 위치부터)
+        var line_end: usize = err.span.start - before_start;
         while (line_end < snippet.len and snippet[line_end] != '\n') : (line_end += 1) {}
-        stderr.print("    error@{d}: {s} | {s}\n", .{ err.span.start, err.message, snippet[0..line_end] }) catch {};
+        stderr.print("    error@{d}: {s} | ...{s}\n", .{ err.span.start, err.message, snippet[0..line_end] }) catch {};
     }
 
     return result;
