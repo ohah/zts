@@ -2541,9 +2541,26 @@ pub const Parser = struct {
                 _ = try self.tryParseTypeAnnotation();
                 return self.tryWrapDefaultValue(pat);
             },
+            .escaped_keyword => {
+                // 이스케이프된 예약어는 식별자로 사용할 수 없음 (ECMAScript 12.1.1)
+                self.addError(self.currentSpan(), "escaped reserved word cannot be used as identifier");
+                const span = self.currentSpan();
+                self.advance();
+                return try self.ast.addNode(.{
+                    .tag = .binding_identifier,
+                    .span = span,
+                    .data = .{ .string_ref = span },
+                });
+            },
             else => {
-                // 키워드도 바인딩 이름으로 사용 가능한 경우 (let, yield 등)
+                // contextual 키워드는 바인딩 이름으로 사용 가능 (let, yield, async 등)
+                // 단, reserved keyword는 불가 (var, function, class, if 등)
                 if (self.current().isKeyword()) {
+                    if (self.current().isReservedKeyword()) {
+                        self.addError(self.currentSpan(), "reserved word cannot be used as identifier");
+                    } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
+                        self.addError(self.currentSpan(), "reserved word in strict mode cannot be used as identifier");
+                    }
                     const span = self.currentSpan();
                     self.advance();
                     const node2 = try self.ast.addNode(.{
@@ -2593,8 +2610,23 @@ pub const Parser = struct {
             },
             .l_bracket => return self.parseArrayPattern(),
             .l_curly => return self.parseObjectPattern(),
+            .escaped_keyword => {
+                self.addError(self.currentSpan(), "escaped reserved word cannot be used as identifier");
+                const span = self.currentSpan();
+                self.advance();
+                return try self.ast.addNode(.{
+                    .tag = .binding_identifier,
+                    .span = span,
+                    .data = .{ .string_ref = span },
+                });
+            },
             else => {
                 if (self.current().isKeyword()) {
+                    if (self.current().isReservedKeyword()) {
+                        self.addError(self.currentSpan(), "reserved word cannot be used as identifier");
+                    } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
+                        self.addError(self.currentSpan(), "reserved word in strict mode cannot be used as identifier");
+                    }
                     const span = self.currentSpan();
                     self.advance();
                     return try self.ast.addNode(.{
@@ -2614,6 +2646,14 @@ pub const Parser = struct {
     fn parseSimpleIdentifier(self: *Parser) ParseError2!NodeIndex {
         const span = self.currentSpan();
         if (self.current() == .identifier or self.current() == .escaped_keyword or self.current().isKeyword()) {
+            // 예약어 체크 (바인딩 위치에서)
+            if (self.current() == .escaped_keyword) {
+                self.addError(span, "escaped reserved word cannot be used as identifier");
+            } else if (self.current().isReservedKeyword()) {
+                self.addError(span, "reserved word cannot be used as identifier");
+            } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
+                self.addError(span, "reserved word in strict mode cannot be used as identifier");
+            }
             self.advance();
             return try self.ast.addNode(.{
                 .tag = .binding_identifier,
@@ -4884,4 +4924,51 @@ test "Parser: module mode is always strict" {
     _ = try parser.parse();
     try std.testing.expect(parser.errors.items.len > 0);
     try std.testing.expectEqualStrings("'with' is not allowed in strict mode", parser.errors.items[0].message);
+}
+
+// ================================================================
+// 예약어 검증 테스트
+// ================================================================
+
+test "Parser: reserved word as variable name is error" {
+    var scanner = Scanner.init(std.testing.allocator, "var var = 123;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "Parser: strict mode reserved word as binding in strict mode is error" {
+    var scanner = Scanner.init(std.testing.allocator,
+        \\"use strict";
+        \\var implements = 1;
+    );
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "Parser: strict mode reserved word as binding in non-strict is valid" {
+    var scanner = Scanner.init(std.testing.allocator, "var implements = 1;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: let as variable name is valid in non-strict" {
+    var scanner = Scanner.init(std.testing.allocator, "var let = 1;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
 }
