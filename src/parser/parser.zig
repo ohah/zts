@@ -181,7 +181,10 @@ pub const Parser = struct {
             .kw_async => self.parseAsyncStatement(),
             .kw_function => self.parseFunctionDeclaration(),
             .kw_class => self.parseClassDeclaration(),
-            .kw_import => self.parseImportDeclaration(),
+            .kw_import => if (self.peekNextKind() == .l_paren or self.peekNextKind() == .dot)
+                self.parseExpressionStatement()
+            else
+                self.parseImportDeclaration(),
             .kw_export => self.parseExportDeclaration(),
             // Decorator: @expr class Foo {}
             .at => self.parseDecoratedStatement(),
@@ -1900,13 +1903,13 @@ pub const Parser = struct {
             .kw_import => {
                 self.advance(); // skip 'import'
                 if (self.current() == .dot) {
-                    // import.meta
+                    // import.meta, import.defer, import.source 등
                     self.advance(); // skip '.'
-                    const meta_span = self.currentSpan();
-                    self.expect(.kw_meta);
+                    const prop_span = self.currentSpan();
+                    _ = try self.parseIdentifierName(); // meta, defer, source 등
                     return try self.ast.addNode(.{
                         .tag = .meta_property,
-                        .span = .{ .start = span.start, .end = meta_span.end },
+                        .span = .{ .start = span.start, .end = prop_span.end },
                         .data = .{ .none = 0 },
                     });
                 }
