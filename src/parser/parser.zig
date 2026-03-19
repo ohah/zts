@@ -276,13 +276,21 @@ pub const Parser = struct {
         const node = self.ast.getNode(idx);
         return switch (node.tag) {
             .identifier_reference, .private_identifier => true,
-            .static_member_expression, .computed_member_expression, .private_field_expression => true,
+            .static_member_expression, .computed_member_expression => {
+                // optional chaining (a?.b, a?.[b])은 assignment target이 아님
+                return node.data.binary.flags == 0; // 0 = normal, 1 = optional
+            },
+            .private_field_expression => true,
             // destructuring assignment: [a, b] = [1, 2], { a } = obj
             .array_expression, .object_expression => true,
             .parenthesized_expression => {
-                // (x) = 1 → x가 valid target이면 OK
-                // (x + y) = 1 → invalid
-                return self.isValidAssignmentTarget(node.data.unary.operand);
+                // (x) = 1 → x가 simple target이면 OK
+                // ({x}) = 1, ([x]) = 1 → parenthesized destructuring 금지
+                const inner = node.data.unary.operand;
+                if (inner.isNone()) return false;
+                const inner_tag = self.ast.getNode(inner).tag;
+                if (inner_tag == .array_expression or inner_tag == .object_expression) return false;
+                return self.isValidAssignmentTarget(inner);
             },
             // super.x, super[x]는 static/computed_member_expression으로 처리됨
             // bare super는 assignment target이 아님
@@ -5632,6 +5640,26 @@ test "Parser: new.target outside function is error" {
 
 test "Parser: object shorthand reserved word is error" {
     var scanner = Scanner.init(std.testing.allocator, "({true});");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "Parser: optional chaining is not assignment target" {
+    var scanner = Scanner.init(std.testing.allocator, "x?.y = 1;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "Parser: parenthesized destructuring is not assignment target" {
+    var scanner = Scanner.init(std.testing.allocator, "({}) = 1;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
