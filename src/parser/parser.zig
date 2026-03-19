@@ -50,6 +50,31 @@ pub const Parser = struct {
     /// 메모리 할당자
     allocator: std.mem.Allocator,
 
+    // ================================================================
+    // 컨텍스트 플래그 (D051: 파서에서 구문 컨텍스트 추적)
+    // ================================================================
+
+    /// strict mode 여부 (D054: "use strict" directive 또는 module mode)
+    is_strict_mode: bool = false,
+
+    /// 함수 본문 안에 있는지 (return 유효성 검증용)
+    in_function: bool = false,
+
+    /// async 함수 안에 있는지 (await 유효성 검증용)
+    in_async: bool = false,
+
+    /// generator 함수 안에 있는지 (yield 유효성 검증용)
+    in_generator: bool = false,
+
+    /// 루프 안에 있는지 (continue 유효성 검증용)
+    in_loop: bool = false,
+
+    /// switch 안에 있는지 (break 유효성 검증용 — break는 loop OR switch에서 허용)
+    in_switch: bool = false,
+
+    /// module 모드인지 (import/export 허용, 항상 strict)
+    is_module: bool = false,
+
     pub fn init(allocator: std.mem.Allocator, scanner: *Scanner) Parser {
         return .{
             .scanner = scanner,
@@ -130,12 +155,99 @@ pub const Parser = struct {
     }
 
     // ================================================================
+    // 컨텍스트 저장/복원 (D051: 함수 경계에서 컨텍스트 리셋)
+    // ================================================================
+    //
+    // 함수 진입 시 saveContext()로 현재 상태를 저장하고,
+    // 함수 본문 파싱 후 restoreContext()로 복원한다.
+    // 이렇게 하는 이유: 함수 안의 break/continue는 함수 밖 loop에 속하지 않고,
+    // 함수마다 독립된 strict/async/generator 컨텍스트를 가진다.
+
+    const SavedContext = struct {
+        is_strict_mode: bool,
+        in_function: bool,
+        in_async: bool,
+        in_generator: bool,
+        in_loop: bool,
+        in_switch: bool,
+    };
+
+    fn saveContext(self: *const Parser) SavedContext {
+        return .{
+            .is_strict_mode = self.is_strict_mode,
+            .in_function = self.in_function,
+            .in_async = self.in_async,
+            .in_generator = self.in_generator,
+            .in_loop = self.in_loop,
+            .in_switch = self.in_switch,
+        };
+    }
+
+    fn restoreContext(self: *Parser, saved: SavedContext) void {
+        self.is_strict_mode = saved.is_strict_mode;
+        self.in_function = saved.in_function;
+        self.in_async = saved.in_async;
+        self.in_generator = saved.in_generator;
+        self.in_loop = saved.in_loop;
+        self.in_switch = saved.in_switch;
+    }
+
+    /// 함수 본문을 파싱한다.
+    /// block statement와 동일하지만, "use strict" directive를 감지하여 strict mode를 설정한다.
+    fn parseFunctionBody(self: *Parser) ParseError2!NodeIndex {
+        const start = self.currentSpan().start;
+        self.expect(.l_curly);
+
+        var stmts = std.ArrayList(NodeIndex).init(self.allocator);
+        defer stmts.deinit();
+
+        // directive prologue 감지: 함수 본문 시작 부분의 문자열 리터럴 expression statement
+        // "use strict"를 만나면 strict mode 설정
+        var in_directive_prologue = true;
+
+        while (self.current() != .r_curly and self.current() != .eof) {
+            // directive prologue: 문자열 리터럴로 시작하는 expression statement
+            if (in_directive_prologue and self.current() == .string_literal) {
+                const text = self.tokenText();
+                // "use strict" 또는 'use strict' 감지
+                // tokenText()는 따옴표를 포함하므로 내부 문자열을 비교
+                if (text.len >= 12) {
+                    const inner = text[1 .. text.len - 1];
+                    if (std.mem.eql(u8, inner, "use strict")) {
+                        self.is_strict_mode = true;
+                    }
+                }
+            } else {
+                in_directive_prologue = false;
+            }
+
+            const stmt = try self.parseStatement();
+            if (!stmt.isNone()) try stmts.append(stmt);
+        }
+
+        const end = self.currentSpan().end;
+        self.expect(.r_curly);
+
+        const list = try self.ast.addNodeList(stmts.items);
+        return try self.ast.addNode(.{
+            .tag = .block_statement,
+            .span = .{ .start = start, .end = end },
+            .data = .{ .list = list },
+        });
+    }
+
+    // ================================================================
     // 프로그램 파싱 (최상위)
     // ================================================================
 
     /// 소스 전체를 파싱하여 AST를 반환한다.
     pub fn parse(self: *Parser) !NodeIndex {
         self.advance(); // 첫 토큰 로드
+
+        // module 모드면 항상 strict (D054)
+        if (self.is_module) {
+            self.is_strict_mode = true;
+        }
 
         // hashbang (#! ...) 건너뛰기
         if (self.current() == .hashbang_comment) {
@@ -145,7 +257,22 @@ pub const Parser = struct {
         var stmts = std.ArrayList(NodeIndex).init(self.allocator);
         defer stmts.deinit();
 
+        // directive prologue 감지: 프로그램 시작 부분의 "use strict"
+        var in_directive_prologue = true;
+
         while (self.current() != .eof) {
+            if (in_directive_prologue and self.current() == .string_literal) {
+                const text = self.tokenText();
+                if (text.len >= 12) {
+                    const inner = text[1 .. text.len - 1];
+                    if (std.mem.eql(u8, inner, "use strict")) {
+                        self.is_strict_mode = true;
+                    }
+                }
+            } else if (in_directive_prologue) {
+                in_directive_prologue = false;
+            }
+
             const stmt = try self.parseStatement();
             if (!stmt.isNone()) {
                 try stmts.append(stmt);
@@ -287,7 +414,11 @@ pub const Parser = struct {
     }
 
     /// with statement: with (expr) statement
+    /// strict mode에서는 SyntaxError (D054)
     fn parseWithStatement(self: *Parser) ParseError2!NodeIndex {
+        if (self.is_strict_mode) {
+            self.addError(self.currentSpan(), "'with' is not allowed in strict mode");
+        }
         const start = self.currentSpan().start;
         self.advance(); // skip 'with'
         self.expect(.l_paren);
@@ -366,6 +497,10 @@ pub const Parser = struct {
     }
 
     fn parseReturnStatement(self: *Parser) ParseError2!NodeIndex {
+        // return은 함수 안에서만 허용
+        if (!self.in_function) {
+            self.addError(self.currentSpan(), "'return' outside of function");
+        }
         const start = self.currentSpan().start;
         self.advance(); // skip 'return'
 
@@ -412,7 +547,11 @@ pub const Parser = struct {
         self.expect(.l_paren);
         const test_expr = try self.parseExpression();
         self.expect(.r_paren);
+
+        const was_in_loop = self.in_loop;
+        self.in_loop = true;
         const body = try self.parseStatement();
+        self.in_loop = was_in_loop;
 
         return try self.ast.addNode(.{
             .tag = .while_statement,
@@ -424,7 +563,11 @@ pub const Parser = struct {
     fn parseDoWhileStatement(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'do'
+
+        const was_in_loop = self.in_loop;
+        self.in_loop = true;
         const body = try self.parseStatement();
+        self.in_loop = was_in_loop;
         self.expect(.kw_while);
         self.expect(.l_paren);
         const test_expr = try self.parseExpression();
@@ -496,7 +639,10 @@ pub const Parser = struct {
         }
         self.expect(.r_paren);
 
+        const was_in_loop = self.in_loop;
+        self.in_loop = true;
         const body = try self.parseStatement();
+        self.in_loop = was_in_loop;
 
         const extra_start = try self.ast.addExtra(@intFromEnum(init_expr));
         _ = try self.ast.addExtra(@intFromEnum(test_expr));
@@ -515,7 +661,11 @@ pub const Parser = struct {
         self.advance(); // skip 'in'
         const right = try self.parseExpression();
         self.expect(.r_paren);
+
+        const was_in_loop = self.in_loop;
+        self.in_loop = true;
         const body = try self.parseStatement();
+        self.in_loop = was_in_loop;
 
         return try self.ast.addNode(.{
             .tag = .for_in_statement,
@@ -529,7 +679,11 @@ pub const Parser = struct {
         self.advance(); // skip 'of'
         const right = try self.parseAssignmentExpression();
         self.expect(.r_paren);
+
+        const was_in_loop = self.in_loop;
+        self.in_loop = true;
         const body = try self.parseStatement();
+        self.in_loop = was_in_loop;
 
         return try self.ast.addNode(.{
             .tag = .for_of_statement,
@@ -540,6 +694,13 @@ pub const Parser = struct {
 
     /// break, continue, debugger 등 키워드 + 세미콜론만으로 구성된 단순 문.
     fn parseSimpleStatement(self: *Parser, tag: Tag) ParseError2!NodeIndex {
+        // break는 loop 또는 switch 안에서만 허용
+        // continue는 loop 안에서만 허용
+        if (tag == .break_statement and !self.in_loop and !self.in_switch) {
+            self.addError(self.currentSpan(), "'break' outside of loop or switch");
+        } else if (tag == .continue_statement and !self.in_loop) {
+            self.addError(self.currentSpan(), "'continue' outside of loop");
+        }
         const start = self.currentSpan().start;
         self.advance(); // skip break/continue/debugger
 
@@ -573,11 +734,16 @@ pub const Parser = struct {
         self.expect(.r_paren);
         self.expect(.l_curly);
 
+        const was_in_switch = self.in_switch;
+        self.in_switch = true;
+
         const scratch_top = self.saveScratch();
         while (self.current() != .r_curly and self.current() != .eof) {
             const case_node = try self.parseSwitchCase();
             try self.scratch.append(case_node);
         }
+
+        self.in_switch = was_in_switch;
 
         const end = self.currentSpan().end;
         self.expect(.r_curly);
@@ -726,8 +892,16 @@ pub const Parser = struct {
         // TS 리턴 타입 어노테이션
         const return_type = try self.tryParseReturnType();
 
-        // 본문
-        const body = try self.parseBlockStatement();
+        // 함수 본문 — 컨텍스트 저장/복원
+        // 함수 경계에서 loop/switch 컨텍스트 리셋 (함수 안의 break/continue는 함수 밖 loop에 속하지 않음)
+        const saved_ctx = self.saveContext();
+        self.in_function = true;
+        self.in_async = (flags & 0x01) != 0;
+        self.in_generator = (flags & 0x02) != 0;
+        self.in_loop = false;
+        self.in_switch = false;
+        const body = try self.parseFunctionBody();
+        self.restoreContext(saved_ctx);
 
         const param_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
         self.restoreScratch(scratch_top);
@@ -791,7 +965,15 @@ pub const Parser = struct {
         // TS 리턴 타입 어노테이션
         _ = try self.tryParseReturnType();
 
-        const body = try self.parseBlockStatement();
+        // 함수 본문 — 컨텍스트 저장/복원
+        const saved_ctx = self.saveContext();
+        self.in_function = true;
+        self.in_async = (flags & 0x01) != 0;
+        self.in_generator = (flags & 0x02) != 0;
+        self.in_loop = false;
+        self.in_switch = false;
+        const body = try self.parseFunctionBody();
+        self.restoreContext(saved_ctx);
 
         const param_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
         self.restoreScratch(scratch_top);
@@ -991,9 +1173,17 @@ pub const Parser = struct {
             _ = try self.tryParseReturnType();
 
             // 바디: abstract 메서드는 바디 없음 (세미콜론으로 끝남)
+            // 메서드도 함수이므로 컨텍스트 설정
             var body = NodeIndex.none;
             if (self.current() == .l_curly) {
-                body = try self.parseBlockStatement();
+                const saved_ctx = self.saveContext();
+                self.in_function = true;
+                self.in_async = (flags & 0x08) != 0;
+                self.in_generator = (flags & 0x10) != 0;
+                self.in_loop = false;
+                self.in_switch = false;
+                body = try self.parseFunctionBody();
+                self.restoreContext(saved_ctx);
             } else {
                 _ = self.eat(.semicolon);
             }
@@ -1435,6 +1625,24 @@ pub const Parser = struct {
         });
     }
 
+    /// arrow function의 body를 파싱한다.
+    /// arrow function은 함수이므로 in_function=true, loop/switch 리셋.
+    /// block body면 parseFunctionBody(), expression body면 parseAssignmentExpression().
+    fn parseArrowBody(self: *Parser, is_async: bool) ParseError2!NodeIndex {
+        const saved_ctx = self.saveContext();
+        self.in_function = true;
+        self.in_async = is_async;
+        self.in_generator = false; // arrow function은 generator가 될 수 없음
+        self.in_loop = false;
+        self.in_switch = false;
+        const body = if (self.current() == .l_curly)
+            try self.parseFunctionBody()
+        else
+            try self.parseAssignmentExpression();
+        self.restoreContext(saved_ctx);
+        return body;
+    }
+
     fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
         // async identifier => body — async arrow (간단한 형태: async x => x + 1)
         if (self.current() == .kw_async) {
@@ -1453,10 +1661,7 @@ pub const Parser = struct {
                         .span = id_span,
                         .data = .{ .string_ref = id_span },
                     });
-                    const body = if (self.current() == .l_curly)
-                        try self.parseBlockStatement()
-                    else
-                        try self.parseAssignmentExpression();
+                    const body = try self.parseArrowBody(true);
                     return try self.ast.addNode(.{
                         .tag = .arrow_function_expression,
                         .span = .{ .start = async_span.start, .end = self.currentSpan().start },
@@ -1481,10 +1686,7 @@ pub const Parser = struct {
                     .span = id_span,
                     .data = .{ .string_ref = id_span },
                 });
-                const body = if (self.current() == .l_curly)
-                    try self.parseBlockStatement()
-                else
-                    try self.parseAssignmentExpression();
+                const body = try self.parseArrowBody(false);
 
                 return try self.ast.addNode(.{
                     .tag = .arrow_function_expression,
@@ -1504,10 +1706,7 @@ pub const Parser = struct {
         if (self.current() == .arrow) {
             const left_start = self.ast.getNode(left).span.start;
             self.advance(); // skip =>
-            const body = if (self.current() == .l_curly)
-                try self.parseBlockStatement()
-            else
-                try self.parseAssignmentExpression();
+            const body = try self.parseArrowBody(false);
 
             return try self.ast.addNode(.{
                 .tag = .arrow_function_expression,
@@ -3600,7 +3799,7 @@ test "Parser: binary expression" {
 }
 
 test "Parser: if statement" {
-    var scanner = Scanner.init(std.testing.allocator, "if (x) { return 1; } else { return 2; }");
+    var scanner = Scanner.init(std.testing.allocator, "function f(x) { if (x) { return 1; } else { return 2; } }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -3691,10 +3890,12 @@ test "Parser: for-of statement" {
 
 test "Parser: switch statement" {
     var scanner = Scanner.init(std.testing.allocator,
-        \\switch (x) {
-        \\  case 1: break;
-        \\  case 2: return 2;
-        \\  default: return 0;
+        \\function f(x) {
+        \\  switch (x) {
+        \\    case 1: break;
+        \\    case 2: return 2;
+        \\    default: return 0;
+        \\  }
         \\}
     );
     defer scanner.deinit();
@@ -4548,4 +4749,156 @@ test "Parser: function call with division in args" {
 
     _ = try parser.parse();
     try std.testing.expect(parser.errors.items.len == 0);
+}
+
+// ================================================================
+// 컨텍스트 검증 테스트 (D051)
+// ================================================================
+
+test "Parser: return outside function is error" {
+    var scanner = Scanner.init(std.testing.allocator, "return 1;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+    try std.testing.expectEqualStrings("'return' outside of function", parser.errors.items[0].message);
+}
+
+test "Parser: return inside function is valid" {
+    var scanner = Scanner.init(std.testing.allocator, "function f() { return 1; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: return inside arrow function is valid" {
+    var scanner = Scanner.init(std.testing.allocator, "const f = () => { return 1; };");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: break outside loop/switch is error" {
+    var scanner = Scanner.init(std.testing.allocator, "break;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+    try std.testing.expectEqualStrings("'break' outside of loop or switch", parser.errors.items[0].message);
+}
+
+test "Parser: break inside loop is valid" {
+    var scanner = Scanner.init(std.testing.allocator, "while (true) { break; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: break inside switch is valid" {
+    var scanner = Scanner.init(std.testing.allocator, "function f(x) { switch (x) { case 1: break; } }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: continue outside loop is error" {
+    var scanner = Scanner.init(std.testing.allocator, "continue;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+    try std.testing.expectEqualStrings("'continue' outside of loop", parser.errors.items[0].message);
+}
+
+test "Parser: continue inside for loop is valid" {
+    var scanner = Scanner.init(std.testing.allocator, "for (var i = 0; i < 10; i++) { continue; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: break in nested function inside loop is error" {
+    // 함수 경계에서 loop 컨텍스트가 리셋되므로, 내부 함수의 break는 에러
+    var scanner = Scanner.init(std.testing.allocator, "while (true) { function f() { break; } }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+    try std.testing.expectEqualStrings("'break' outside of loop or switch", parser.errors.items[0].message);
+}
+
+test "Parser: with statement in strict mode is error" {
+    var scanner = Scanner.init(std.testing.allocator,
+        \\"use strict";
+        \\with (obj) { x; }
+    );
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+    try std.testing.expectEqualStrings("'with' is not allowed in strict mode", parser.errors.items[0].message);
+}
+
+test "Parser: with statement in non-strict mode is valid" {
+    var scanner = Scanner.init(std.testing.allocator, "with (obj) { x; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: use strict in function body" {
+    // 함수 내부 "use strict"가 strict mode를 설정하는지 확인
+    var scanner = Scanner.init(std.testing.allocator,
+        \\function f() {
+        \\  "use strict";
+        \\  with (obj) { x; }
+        \\}
+    );
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+    try std.testing.expectEqualStrings("'with' is not allowed in strict mode", parser.errors.items[0].message);
+}
+
+test "Parser: module mode is always strict" {
+    var scanner = Scanner.init(std.testing.allocator, "with (obj) { x; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    parser.is_module = true;
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+    try std.testing.expectEqualStrings("'with' is not allowed in strict mode", parser.errors.items[0].message);
 }

@@ -82,6 +82,12 @@ references/                 # 레퍼런스 프로젝트 (.gitignore, 로컬만)
 - `\n` 정규화 + CRLF 옵션. 크로스 플랫폼 지원
 - 소스맵 VLQ 자체 구현 (~30줄). 외부 의존성 없음
 
+### Semantic Analysis Design (D051-D055)
+- 파서에서 구문 컨텍스트 추적 (strict/async/generator/loop/switch), Semantic 패스에서 스코프/심볼
+- 스코프: 플랫 배열 + 부모 인덱스 (D004 일관). 심볼: 최소 모델 (name/scope/kind/flags/span)
+- Strict mode는 파서에서 추적 ("use strict" directive + module mode)
+- Test262 early phase는 parse와 통합
+
 ### Advanced Features (Phase 6)
 - ES 다운레벨링: ES2024→ES2016 점진적, ES2015는 그 이후, ES5는 미정
 - WASM 플러그인, WASM 공개 AST API
@@ -164,7 +170,13 @@ main ← feature/lexer-token-enum
 15. ✅ TS 변환 대상 (parameter property, decorator, implements, class generics) — PR #32
 16. ✅ JSX 파싱 (element, fragment, attributes, expression, text) — PR #33
 17. ⬜ 에러 복구 강화 + Test262 파서 통과율 — Phase 2 후반
-18. ⬜ semantic analysis (스코프/심볼, 별도 패스, D038) — Phase 2 후반
+18. 🔄 semantic analysis (D038, D051-D055) — Phase 2 후반
+    - ✅ 파서 컨텍스트 추적 (strict/function/async/generator/loop/switch)
+    - ✅ strict mode 에러 (with문), break/continue/return 검증
+    - ✅ Test262 early phase 통합
+    - ⬜ semantic 모듈 (scope + symbol + analyzer)
+    - ⬜ 변수 재선언 검증
+    - ⬜ 예약어/contextual keyword 검증
 
 ### 트랜스포머 구현 순서 (PR 단위) — Phase 3 진행 중
 1. ✅ Phase 3 의사결정 (D041-D043) — PR #36
