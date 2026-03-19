@@ -23,10 +23,22 @@ const NodeList = ast_mod.NodeList;
 const Ast = ast_mod.Ast;
 const Span = @import("../lexer/token.zig").Span;
 
-/// Transformer 설정. 추후 JSX 모드, 모듈 타입 등 추가 예정.
+/// define 치환 엔트리. key=식별자 텍스트, value=치환 문자열.
+pub const DefineEntry = struct {
+    key: []const u8,
+    value: []const u8,
+};
+
+/// Transformer 설정.
 pub const TransformOptions = struct {
     /// TS 타입 스트리핑 활성화 (기본: true)
     strip_types: bool = true,
+    /// console.* 호출 제거 (--drop=console)
+    drop_console: bool = false,
+    /// debugger 문 제거 (--drop=debugger)
+    drop_debugger: bool = false,
+    /// define 글로벌 치환 (D020). 예: process.env.NODE_ENV → "production"
+    define: []const DefineEntry = &.{},
 };
 
 /// AST-to-AST 변환기.
@@ -97,14 +109,33 @@ pub const Transformer = struct {
         const node = self.old_ast.getNode(idx);
 
         // --------------------------------------------------------
-        // 1단계: TS 타입 전용 노드는 통째로 삭제 (comptime 보조)
+        // 1단계: TS 타입 전용 노드는 통째로 삭제
         // --------------------------------------------------------
         if (self.options.strip_types and isTypeOnlyNode(node.tag)) {
             return .none;
         }
 
         // --------------------------------------------------------
-        // 2단계: 태그별 분기 (switch 기반 visitor)
+        // 2단계: --drop 처리
+        // --------------------------------------------------------
+        if (self.options.drop_debugger and node.tag == .debugger_statement) {
+            return .none;
+        }
+        if (self.options.drop_console and node.tag == .expression_statement) {
+            if (self.isConsoleCall(node)) return .none;
+        }
+
+        // --------------------------------------------------------
+        // 3단계: define 글로벌 치환
+        // --------------------------------------------------------
+        if (self.options.define.len > 0) {
+            if (self.tryDefineReplace(node)) |new_node| {
+                return new_node;
+            }
+        }
+
+        // --------------------------------------------------------
+        // 4단계: 태그별 분기 (switch 기반 visitor)
         // --------------------------------------------------------
         return switch (node.tag) {
             // === TS expressions: 타입 부분만 제거, 값 보존 ===
@@ -370,6 +401,70 @@ pub const Transformer = struct {
     // ================================================================
 
     // ================================================================
+    // --drop 헬퍼
+    // ================================================================
+
+    /// expression_statement가 console.* 호출인지 판별.
+    /// console.log(...), console.warn(...), console.error(...) 등.
+    fn isConsoleCall(self: *const Transformer, node: Node) bool {
+        // expression_statement → unary.operand가 call_expression이어야 함
+        const expr_idx = node.data.unary.operand;
+        if (expr_idx.isNone()) return false;
+        const expr = self.old_ast.getNode(expr_idx);
+        if (expr.tag != .call_expression) return false;
+
+        // call_expression: binary = { left=callee, right=args_start, flags=args_len }
+        const callee_idx = expr.data.binary.left;
+        if (callee_idx.isNone()) return false;
+        const callee = self.old_ast.getNode(callee_idx);
+
+        // callee가 static_member_expression (console.log)이어야 함
+        if (callee.tag != .static_member_expression) return false;
+
+        // left가 identifier "console"
+        const obj_idx = callee.data.binary.left;
+        if (obj_idx.isNone()) return false;
+        const obj = self.old_ast.getNode(obj_idx);
+        if (obj.tag != .identifier_reference) return false;
+
+        const obj_text = self.old_ast.source[obj.data.string_ref.start..obj.data.string_ref.end];
+        return std.mem.eql(u8, obj_text, "console");
+    }
+
+    // ================================================================
+    // define 글로벌 치환
+    // ================================================================
+
+    /// 노드가 define 치환 대상이면 새 string_literal 노드를 반환.
+    /// 대상: identifier_reference 또는 static_member_expression 체인.
+    fn tryDefineReplace(self: *Transformer, node: Node) ?Error!NodeIndex {
+        // 노드의 소스 텍스트를 define key와 비교
+        const text = self.getNodeText(node) orelse return null;
+
+        for (self.options.define) |entry| {
+            if (std.mem.eql(u8, text, entry.key)) {
+                // 치환 문자열을 string_literal로 생성
+                // 값을 소스에서 참조할 수 없으므로 span은 원본 노드의 span 사용
+                return self.new_ast.addNode(.{
+                    .tag = .string_literal,
+                    .span = node.span,
+                    .data = .{ .string_ref = node.span },
+                });
+            }
+        }
+        return null;
+    }
+
+    /// 노드의 소스 텍스트를 반환. identifier_reference와 static_member_expression만 지원.
+    fn getNodeText(self: *const Transformer, node: Node) ?[]const u8 {
+        return switch (node.tag) {
+            .identifier_reference => self.old_ast.source[node.data.string_ref.start..node.data.string_ref.end],
+            .static_member_expression => self.old_ast.source[node.span.start..node.span.end],
+            else => null,
+        };
+    }
+
+    // ================================================================
     // TS enum 변환
     // ================================================================
 
@@ -599,12 +694,20 @@ pub const Transformer = struct {
     }
 
     /// call_expression: extra_data = [callee, args_start, args_len, optional_chain_flag]
+    /// call_expression: binary = { left=callee, right=@enumFromInt(args_start), flags=args_len }
     fn visitCallExpression(self: *Transformer, node: Node) Error!NodeIndex {
-        const e = node.data.extra;
-        const new_callee = try self.visitNode(self.readNodeIdx(e, 0));
-        const new_args = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
-        return self.addExtraNode(.call_expression, node.span, &.{
-            @intFromEnum(new_callee), new_args.start, new_args.len, self.readU32(e, 3),
+        const new_callee = try self.visitNode(node.data.binary.left);
+        const args_start: u32 = @intFromEnum(node.data.binary.right);
+        const args_len: u32 = node.data.binary.flags;
+        const new_args = try self.visitExtraList(args_start, args_len);
+        return self.new_ast.addNode(.{
+            .tag = .call_expression,
+            .span = node.span,
+            .data = .{ .binary = .{
+                .left = new_callee,
+                .right = @enumFromInt(new_args.start),
+                .flags = @intCast(new_args.len),
+            } },
         });
     }
 

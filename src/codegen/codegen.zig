@@ -492,12 +492,11 @@ pub const Codegen = struct {
         try self.writeByte(']');
     }
 
+    /// call_expression: binary = { left=callee, right=@enumFromInt(args_start), flags=args_len }
     fn emitCall(self: *Codegen, node: Node) !void {
-        const e = node.data.extra;
-        const extras = self.ast.extra_data.items[e .. e + 4];
-        const callee: NodeIndex = @enumFromInt(extras[0]);
-        const args_start = extras[1];
-        const args_len = extras[2];
+        const callee = node.data.binary.left;
+        const args_start: u32 = @intFromEnum(node.data.binary.right);
+        const args_len: u32 = node.data.binary.flags;
 
         try self.emitNode(callee);
         try self.writeByte('(');
@@ -1339,7 +1338,9 @@ fn e2eCJS(allocator: std.mem.Allocator, source: []const u8) !TestResult {
     return e2eWithOptions(allocator, source, .{ .module_format = .cjs });
 }
 
-fn e2eWithOptions(allocator: std.mem.Allocator, source: []const u8, cg_options: CodegenOptions) !TestResult {
+const TransformOptions = @import("../transformer/transformer.zig").TransformOptions;
+
+fn e2eFull(allocator: std.mem.Allocator, source: []const u8, t_options: TransformOptions, cg_options: CodegenOptions) !TestResult {
     const scanner_ptr = try allocator.create(Scanner);
     scanner_ptr.* = Scanner.init(allocator, source);
 
@@ -1347,7 +1348,7 @@ fn e2eWithOptions(allocator: std.mem.Allocator, source: []const u8, cg_options: 
     parser_ptr.* = Parser.init(allocator, scanner_ptr);
     _ = try parser_ptr.parse();
 
-    var t = Transformer.init(allocator, &parser_ptr.ast, .{});
+    var t = Transformer.init(allocator, &parser_ptr.ast, t_options);
     const root = try t.transform();
     t.scratch.deinit();
 
@@ -1363,6 +1364,10 @@ fn e2eWithOptions(allocator: std.mem.Allocator, source: []const u8, cg_options: 
         .transformed_ast = t.new_ast,
         .allocator = allocator,
     };
+}
+
+fn e2eWithOptions(allocator: std.mem.Allocator, source: []const u8, cg_options: CodegenOptions) !TestResult {
+    return e2eFull(allocator, source, .{}, cg_options);
 }
 
 test "Codegen: empty program" {
@@ -1424,6 +1429,18 @@ test "Codegen CJS: export default" {
     var r = try e2eCJS(std.testing.allocator, "export default 42;");
     defer r.deinit();
     try std.testing.expectEqualStrings("module.exports=42;", r.output);
+}
+
+test "Codegen: drop debugger" {
+    var r = try e2eFull(std.testing.allocator, "debugger; const x = 1;", .{ .drop_debugger = true }, .{});
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const x=1;", r.output);
+}
+
+test "Codegen: drop console" {
+    var r = try e2eFull(std.testing.allocator, "console.log(1); const x = 1;", .{ .drop_console = true }, .{});
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const x=1;", r.output);
 }
 
 test "Codegen: enum with initializer" {
