@@ -153,6 +153,7 @@ pub const SemanticAnalyzer = struct {
         if (self.class_private_declared.items.len == 0) return;
 
         var declared = self.class_private_declared.pop() orelse return;
+        defer declared.deinit();
         var refs = self.class_private_refs.pop() orelse return;
         defer refs.deinit();
 
@@ -172,8 +173,6 @@ pub const SemanticAnalyzer = struct {
                 }
             }
         }
-
-        declared.deinit();
     }
 
     /// private name을 현재 class scope에 선언 등록한다.
@@ -388,9 +387,8 @@ pub const SemanticAnalyzer = struct {
             },
 
             // ---- private name 참조 ----
-            .private_field_expression, .static_member_expression, .computed_member_expression => {
-                // binary: { left = object, right = property }
-                // right가 private_identifier이면 참조 등록
+            .private_field_expression, .static_member_expression => {
+                // binary: { left = object, right = identifier/private_identifier }
                 const prop_idx = node.data.binary.right;
                 if (!prop_idx.isNone() and @intFromEnum(prop_idx) < self.ast.nodes.items.len) {
                     const prop_node = self.ast.getNode(prop_idx);
@@ -399,8 +397,13 @@ pub const SemanticAnalyzer = struct {
                         self.usePrivateName(name, prop_node.span);
                     }
                 }
-                // object 쪽도 순회
                 self.visitNode(node.data.binary.left);
+            },
+            .computed_member_expression => {
+                // binary: { left = object, right = expression }
+                // right는 임의 expression (a[expr]) — 양쪽 모두 순회
+                self.visitNode(node.data.binary.left);
+                self.visitNode(node.data.binary.right);
             },
 
             // ---- method_definition/property_definition 내부 순회 ----
