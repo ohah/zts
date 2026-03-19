@@ -165,6 +165,7 @@ pub const Parser = struct {
             // (arrow function은 enterFunction을 사용하지 않고 별도로 처리)
             new.allow_super_call = false;
             new.allow_super_property = false;
+            new.in_class_field = false; // 일반 function은 자체 arguments 있음
             return new;
         }
     };
@@ -1558,10 +1559,13 @@ pub const Parser = struct {
         // TS 타입 어노테이션: value: Type
         _ = try self.tryParseTypeAnnotation();
 
-        // 프로퍼티 (= 이니셜라이저)
+        // 프로퍼티 (= 이니셜라이저) — class field에서 arguments 사용 금지
         var init_val = NodeIndex.none;
         if (self.eat(.eq)) {
+            const field_saved = self.ctx;
+            self.ctx.in_class_field = true;
             init_val = try self.parseAssignmentExpression();
+            self.ctx = field_saved;
         }
         _ = self.eat(.semicolon);
 
@@ -2547,6 +2551,13 @@ pub const Parser = struct {
 
         switch (self.current()) {
             .identifier => {
+                // class field 이니셜라이저에서 arguments 사용 금지 (ECMAScript 15.7.1)
+                if (self.ctx.in_class_field) {
+                    const text = self.ast.source[span.start..span.end];
+                    if (std.mem.eql(u8, text, "arguments")) {
+                        self.addError(span, "'arguments' is not allowed in class field initializer");
+                    }
+                }
                 self.advance();
                 return try self.ast.addNode(.{
                     .tag = .identifier_reference,
