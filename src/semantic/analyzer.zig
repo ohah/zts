@@ -1045,8 +1045,7 @@ test "SemanticAnalyzer: nested class private name" {
 }
 
 test "SemanticAnalyzer: inner class can access outer private name" {
-    var scanner = Scanner.init(std.testing.allocator,
-        "class Outer { #x; foo() { class Inner { bar() { this.#x; } } } }");
+    var scanner = Scanner.init(std.testing.allocator, "class Outer { #x; foo() { class Inner { bar() { this.#x; } } } }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
