@@ -814,19 +814,14 @@ pub const Transformer = struct {
     ///   side-effect: unary = { operand=source_node }
     ///   with specs:  extra = [specs.start, specs.len, source_node]
     fn visitImportDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
-        // side-effect import 감지: operand가 유효한 string_literal이면 unary 형태
-        const maybe_operand = node.data.unary.operand;
-        if (!maybe_operand.isNone() and @intFromEnum(maybe_operand) < self.old_ast.nodes.items.len) {
-            const operand_node = self.old_ast.getNode(maybe_operand);
-            if (operand_node.tag == .string_literal) {
-                // side-effect import: 그대로 복사
-                const new_source = try self.visitNode(maybe_operand);
-                return self.new_ast.addNode(.{
-                    .tag = .import_declaration,
-                    .span = node.span,
-                    .data = .{ .unary = .{ .operand = new_source, .flags = 0 } },
-                });
-            }
+        // side-effect import 감지: flags=1이면 unary 형태 (import "module")
+        if (node.data.unary.flags == 1) {
+            const new_source = try self.visitNode(node.data.unary.operand);
+            return self.new_ast.addNode(.{
+                .tag = .import_declaration,
+                .span = node.span,
+                .data = .{ .unary = .{ .operand = new_source, .flags = 1 } },
+            });
         }
 
         // extra 형태: [specs.start, specs.len, source_node]

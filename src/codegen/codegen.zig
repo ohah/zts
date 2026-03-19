@@ -1076,22 +1076,19 @@ pub const Codegen = struct {
     ///   side-effect: unary = { operand=source_node }
     ///   with specs:  extra = [specs.start, specs.len, source_node]
     fn emitImport(self: *Codegen, node: Node) !void {
-        // side-effect import 감지
-        const maybe_operand = node.data.unary.operand;
-        if (!maybe_operand.isNone() and @intFromEnum(maybe_operand) < self.ast.nodes.items.len) {
-            const operand_node = self.ast.getNode(maybe_operand);
-            if (operand_node.tag == .string_literal) {
-                if (self.options.module_format == .cjs) {
-                    try self.write("require(");
-                    try self.emitNode(maybe_operand);
-                    try self.write(");");
-                } else {
-                    try self.write("import ");
-                    try self.emitNode(maybe_operand);
-                    try self.writeByte(';');
-                }
-                return;
+        // side-effect import: flags=1 (import "module")
+        if (node.data.unary.flags == 1) {
+            const source = node.data.unary.operand;
+            if (self.options.module_format == .cjs) {
+                try self.write("require(");
+                try self.emitNode(source);
+                try self.write(");");
+            } else {
+                try self.write("import ");
+                try self.emitNode(source);
+                try self.writeByte(';');
             }
+            return;
         }
 
         // extra: [specs.start, specs.len, source_node]
@@ -1107,11 +1104,75 @@ pub const Codegen = struct {
 
         try self.write("import ");
         if (specs_len > 0) {
-            try self.emitNodeList(specs_start, specs_len, ",");
+            try self.emitImportSpecifiers(specs_start, specs_len);
             try self.write(" from ");
         }
         try self.emitNode(source);
         try self.writeByte(';');
+    }
+
+    /// import specifiers를 타입별로 출력한다.
+    /// default → 이름만, namespace → * as 이름, named → { a, b }
+    fn emitImportSpecifiers(self: *Codegen, specs_start: u32, specs_len: u32) !void {
+        const spec_indices = self.ast.extra_data.items[specs_start .. specs_start + specs_len];
+        var first = true;
+        var has_named = false;
+
+        // 1단계: default, namespace 출력
+        for (spec_indices) |raw_idx| {
+            const spec: NodeIndex = @enumFromInt(raw_idx);
+            if (spec.isNone()) continue;
+            const spec_node = self.ast.getNode(spec);
+            switch (spec_node.tag) {
+                .import_default_specifier => {
+                    if (!first) try self.write(",");
+                    try self.writeNodeSpan(spec_node);
+                    first = false;
+                },
+                .import_namespace_specifier => {
+                    if (!first) try self.write(",");
+                    try self.write("* as ");
+                    try self.writeNodeSpan(spec_node);
+                    first = false;
+                },
+                .import_specifier => {
+                    has_named = true;
+                },
+                else => {},
+            }
+        }
+
+        // 2단계: named specifiers를 { } 감싸서 출력
+        if (has_named) {
+            if (!first) try self.write(",");
+            try self.writeByte('{');
+            var named_first = true;
+            for (spec_indices) |raw_idx| {
+                const spec: NodeIndex = @enumFromInt(raw_idx);
+                if (spec.isNone()) continue;
+                const spec_node = self.ast.getNode(spec);
+                if (spec_node.tag == .import_specifier) {
+                    if (!named_first) try self.write(",");
+                    // binary: { left=imported, right=local }
+                    const imported = spec_node.data.binary.left;
+                    const local = spec_node.data.binary.right;
+                    try self.emitNode(imported);
+                    // imported != local이면 as 출력
+                    if (!local.isNone() and @intFromEnum(local) != @intFromEnum(imported)) {
+                        const imp_node = self.ast.getNode(imported);
+                        const loc_node = self.ast.getNode(local);
+                        const imp_text = self.ast.source[imp_node.span.start..imp_node.span.end];
+                        const loc_text = self.ast.source[loc_node.span.start..loc_node.span.end];
+                        if (!std.mem.eql(u8, imp_text, loc_text)) {
+                            try self.write(" as ");
+                            try self.emitNode(local);
+                        }
+                    }
+                    named_first = false;
+                }
+            }
+            try self.writeByte('}');
+        }
     }
 
     /// CJS: import { foo } from './bar' → const {foo}=require('./bar');

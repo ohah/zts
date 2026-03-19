@@ -550,15 +550,8 @@ pub const SemanticAnalyzer = struct {
     }
 
     fn visitImportDeclaration(self: *SemanticAnalyzer, node: Node) void {
-        // side-effect import (import "module")는 unary 형태 — 바인딩 없음
-        // 나머지: extra: [specifiers.start, specifiers.len, source]
-
-        // side-effect import 감지: unary.operand가 유효한 string_literal 노드이면 skip
-        const maybe_operand = node.data.unary.operand;
-        if (!maybe_operand.isNone() and @intFromEnum(maybe_operand) < self.ast.nodes.items.len) {
-            const operand_node = self.ast.getNode(maybe_operand);
-            if (operand_node.tag == .string_literal) return; // side-effect import
-        }
+        // side-effect import: flags=1 (import "module") — 바인딩 없음
+        if (node.data.unary.flags == 1) return;
 
         // extra_data에서 specifiers 리스트 추출
         const extra_start = node.data.extra;
