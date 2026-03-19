@@ -66,11 +66,26 @@ pub const SemanticAnalyzer = struct {
     /// 메모리 할당자
     allocator: std.mem.Allocator,
 
+    /// class private name 스택 (중첩 class 지원, oxc 방식).
+    /// 각 항목은 해당 class body에서 선언된 private name 집합.
+    class_private_declared: std.ArrayList(std.StringHashMap(Span)),
+
+    /// class private name 참조 스택.
+    /// 각 항목은 해당 class body에서 참조된 private name 목록 (검증 대기).
+    class_private_refs: std.ArrayList(std.ArrayList(PrivateRef)),
+
+    const PrivateRef = struct {
+        name: []const u8,
+        span: Span,
+    };
+
     pub fn init(allocator: std.mem.Allocator, ast: *const Ast) SemanticAnalyzer {
         return .{
             .ast = ast,
             .scopes = std.ArrayList(Scope).init(allocator),
             .symbols = std.ArrayList(Symbol).init(allocator),
+            .class_private_declared = std.ArrayList(std.StringHashMap(Span)).init(allocator),
+            .class_private_refs = std.ArrayList(std.ArrayList(PrivateRef)).init(allocator),
             .errors = std.ArrayList(SemanticError).init(allocator),
             .allocator = allocator,
         };
@@ -84,6 +99,10 @@ pub const SemanticAnalyzer = struct {
         self.scopes.deinit();
         self.symbols.deinit();
         self.errors.deinit();
+        for (self.class_private_declared.items) |*map| map.deinit();
+        self.class_private_declared.deinit();
+        for (self.class_private_refs.items) |*list| list.deinit();
+        self.class_private_refs.deinit();
     }
 
     // ================================================================
@@ -117,6 +136,67 @@ pub const SemanticAnalyzer = struct {
     /// 스코프에서 나간다. enterScope의 반환값을 전달.
     fn exitScope(self: *SemanticAnalyzer, saved_scope: ScopeId) void {
         self.current_scope = saved_scope;
+    }
+
+    // ================================================================
+    // Class Private Name 추적 (oxc 방식)
+    // ================================================================
+
+    /// class body 진입 시 private name 스코프를 push한다.
+    fn pushClassScope(self: *SemanticAnalyzer) void {
+        self.class_private_declared.append(std.StringHashMap(Span).init(self.allocator)) catch @panic("OOM");
+        self.class_private_refs.append(std.ArrayList(PrivateRef).init(self.allocator)) catch @panic("OOM");
+    }
+
+    /// class body 퇴장 시 private name 참조를 검증하고 pop한다.
+    fn popClassScope(self: *SemanticAnalyzer) void {
+        if (self.class_private_declared.items.len == 0) return;
+
+        var declared = self.class_private_declared.pop() orelse return;
+        var refs = self.class_private_refs.pop() orelse return;
+        defer refs.deinit();
+
+        // 참조된 private name이 선언되었는지 확인
+        for (refs.items) |ref| {
+            if (!declared.contains(ref.name)) {
+                // 외부 class에 선언되어 있는지 확인 (중첩 class)
+                var found = false;
+                for (self.class_private_declared.items) |outer| {
+                    if (outer.contains(ref.name)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    self.addPrivateNameError(ref.span, ref.name);
+                }
+            }
+        }
+
+        declared.deinit();
+    }
+
+    /// private name을 현재 class scope에 선언 등록한다.
+    fn declarePrivateName(self: *SemanticAnalyzer, name: []const u8, span: Span) void {
+        if (self.class_private_declared.items.len == 0) return;
+        var current = &self.class_private_declared.items[self.class_private_declared.items.len - 1];
+        current.put(name, span) catch @panic("OOM");
+    }
+
+    /// private name 참조를 기록한다 (class body 퇴장 시 검증).
+    fn usePrivateName(self: *SemanticAnalyzer, name: []const u8, span: Span) void {
+        if (self.class_private_refs.items.len == 0) {
+            // class 밖에서 private name 참조 → 즉시 에러
+            self.addPrivateNameError(span, name);
+            return;
+        }
+        var current = &self.class_private_refs.items[self.class_private_refs.items.len - 1];
+        current.append(.{ .name = name, .span = span }) catch @panic("OOM");
+    }
+
+    /// 현재 class scope 안에 있는지 (private name 참조 가능 여부).
+    fn inClassScope(self: *const SemanticAnalyzer) bool {
+        return self.class_private_declared.items.len > 0;
     }
 
     // ================================================================
@@ -239,7 +319,14 @@ pub const SemanticAnalyzer = struct {
     // ================================================================
 
     fn addError(self: *SemanticAnalyzer, span: Span, name: []const u8) void {
-        const msg = std.fmt.allocPrint(self.allocator, "Identifier '{s}' has already been declared", .{name}) catch @panic("OOM: error message");
+        self.addErrorMsg(span, std.fmt.allocPrint(self.allocator, "Identifier '{s}' has already been declared", .{name}) catch @panic("OOM"));
+    }
+
+    fn addPrivateNameError(self: *SemanticAnalyzer, span: Span, name: []const u8) void {
+        self.addErrorMsg(span, std.fmt.allocPrint(self.allocator, "Private field '{s}' must be declared in an enclosing class", .{name}) catch @panic("OOM"));
+    }
+
+    fn addErrorMsg(self: *SemanticAnalyzer, span: Span, msg: []const u8) void {
         self.errors.append(.{
             .span = span,
             .message = msg,
@@ -297,6 +384,47 @@ pub const SemanticAnalyzer = struct {
             .export_named_declaration => self.visitExportNamedDeclaration(node),
             .export_default_declaration => {
                 // unary: { operand = declaration }
+                self.visitNode(node.data.unary.operand);
+            },
+
+            // ---- private name 참조 ----
+            .private_field_expression, .static_member_expression, .computed_member_expression => {
+                // binary: { left = object, right = property }
+                // right가 private_identifier이면 참조 등록
+                const prop_idx = node.data.binary.right;
+                if (!prop_idx.isNone() and @intFromEnum(prop_idx) < self.ast.nodes.items.len) {
+                    const prop_node = self.ast.getNode(prop_idx);
+                    if (prop_node.tag == .private_identifier) {
+                        const name = self.ast.source[prop_node.span.start..prop_node.span.end];
+                        self.usePrivateName(name, prop_node.span);
+                    }
+                }
+                // object 쪽도 순회
+                self.visitNode(node.data.binary.left);
+            },
+
+            // ---- method_definition/property_definition 내부 순회 ----
+            .method_definition => {
+                // extra: [key, params.start, params.len, body, flags]
+                const extra_start = node.data.extra;
+                const extras = self.ast.extra_data.items;
+                if (extra_start + 3 < extras.len) {
+                    const body_idx: NodeIndex = @enumFromInt(extras[extra_start + 3]);
+                    // 함수 본문을 function scope로 감싸서 순회
+                    const scope_saved = self.enterScope(.function, self.is_strict_mode);
+                    const params_start = extras[extra_start + 1];
+                    const params_len = extras[extra_start + 2];
+                    self.registerParams(params_start, params_len);
+                    self.visitFunctionBodyInner(body_idx);
+                    self.exitScope(scope_saved);
+                }
+            },
+            .property_definition => {
+                // binary: { left = key, right = value }
+                self.visitNode(node.data.binary.right);
+            },
+            .static_block => {
+                // unary: { operand = body }
                 self.visitNode(node.data.unary.operand);
             },
 
@@ -437,16 +565,60 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// class body를 스코프로 감싸서 순회한다.
+    /// private name 수집/검증도 여기서 처리 (oxc 방식).
     fn visitClassBodyNode(self: *SemanticAnalyzer, body_idx: NodeIndex) void {
         // class body는 항상 strict mode (ECMAScript 10.2.1)
         const saved = self.enterScope(.class_body, true);
+        self.pushClassScope();
+
         if (!body_idx.isNone() and @intFromEnum(body_idx) < self.ast.nodes.items.len) {
             const body_node = self.ast.getNode(body_idx);
             if (body_node.tag == .class_body) {
+                // 1차: private name 선언 수집 (멤버 순회)
+                self.collectPrivateNames(body_node.data.list);
+                // 2차: 전체 순회 (참조 검증 포함)
                 self.visitNodeList(body_node.data.list);
             }
         }
+
+        self.popClassScope();
         self.exitScope(saved);
+    }
+
+    /// class body 멤버에서 private name 선언을 수집한다 (1차 패스).
+    fn collectPrivateNames(self: *SemanticAnalyzer, list: NodeList) void {
+        if (list.len == 0) return;
+        if (list.start + list.len > self.ast.extra_data.items.len) return;
+        const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+        for (indices) |raw_idx| {
+            const idx: NodeIndex = @enumFromInt(raw_idx);
+            if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
+            const node = self.ast.getNode(idx);
+            switch (node.tag) {
+                .method_definition => {
+                    // extra: [key, params.start, params.len, body, flags]
+                    const extra_start = node.data.extra;
+                    if (extra_start >= self.ast.extra_data.items.len) continue;
+                    const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[extra_start]);
+                    self.tryRegisterPrivateKey(key_idx);
+                },
+                .property_definition => {
+                    // binary: { left = key, right = value, flags }
+                    self.tryRegisterPrivateKey(node.data.binary.left);
+                },
+                else => {},
+            }
+        }
+    }
+
+    /// key가 private_identifier이면 선언 등록한다.
+    fn tryRegisterPrivateKey(self: *SemanticAnalyzer, key_idx: NodeIndex) void {
+        if (key_idx.isNone() or @intFromEnum(key_idx) >= self.ast.nodes.items.len) return;
+        const key_node = self.ast.getNode(key_idx);
+        if (key_node.tag == .private_identifier) {
+            const name = self.ast.source[key_node.span.start..key_node.span.end];
+            self.declarePrivateName(name, key_node.span);
+        }
     }
 
     fn visitForStatement(self: *SemanticAnalyzer, node: Node) void {
