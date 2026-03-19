@@ -161,6 +161,10 @@ pub const Parser = struct {
             new.in_loop = false;
             new.in_switch = false;
             new.is_top_level = false;
+            // 일반 function은 새로운 super 바인딩 → 메서드가 아니면 super 불가
+            // (arrow function은 enterFunction을 사용하지 않고 별도로 처리)
+            new.allow_super_call = false;
+            new.allow_super_property = false;
             return new;
         }
     };
@@ -1386,6 +1390,8 @@ pub const Parser = struct {
             if (self.current() == .l_curly) {
                 // 메서드의 async/generator 플래그는 함수와 비트 위치가 다름 (0x08/0x10)
                 const saved_ctx = self.enterFunctionContext((flags & 0x08) != 0, (flags & 0x10) != 0);
+                // class 메서드는 super.prop 허용 (ECMAScript 12.3.7)
+                self.ctx.allow_super_property = true;
                 self.ctx.has_simple_params = self.checkSimpleParams(param_top);
                 self.checkDuplicateParams(param_top);
                 body = try self.parseFunctionBody();
@@ -2449,7 +2455,9 @@ pub const Parser = struct {
             .kw_super => {
                 // super expression: super() 또는 super.prop 또는 super[expr]
                 // ECMAScript 12.3.7: super는 메서드 안에서만 허용
-                if (!self.ctx.in_function and !self.ctx.in_class) {
+                // allow_super_property는 메서드 진입 시 true, 일반 함수 진입 시 false로 리셋
+                // arrow function은 외부의 allow_super_property를 상속
+                if (!self.ctx.allow_super_property and !self.ctx.allow_super_call) {
                     self.addError(span, "'super' is not allowed outside of a method");
                 }
                 self.advance();
