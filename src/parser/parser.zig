@@ -2273,15 +2273,7 @@ pub const Parser = struct {
                 _ = self.eat(.question); // optional parameter
                 _ = try self.tryParseTypeAnnotation();
                 // default value: pattern = expr
-                if (self.eat(.eq)) {
-                    const default_val = try self.parseAssignmentExpression();
-                    return try self.ast.addNode(.{
-                        .tag = .assignment_pattern,
-                        .span = .{ .start = span.start, .end = self.currentSpan().start },
-                        .data = .{ .binary = .{ .left = node, .right = default_val, .flags = 0 } },
-                    });
-                }
-                return node;
+                return self.tryWrapDefaultValue(node);
             },
             .l_bracket => return self.parseArrayPattern(),
             .l_curly => return self.parseObjectPattern(),
@@ -2305,6 +2297,19 @@ pub const Parser = struct {
     /// 하위 호환: 식별자만 필요한 곳에서 호출
     fn parseBindingIdentifier(self: *Parser) ParseError2!NodeIndex {
         return self.parseBindingPattern();
+    }
+
+    /// `= expr` 이 있으면 assignment_pattern으로 감싼다. 없으면 원본 반환.
+    fn tryWrapDefaultValue(self: *Parser, node: NodeIndex) ParseError2!NodeIndex {
+        if (self.eat(.eq)) {
+            const default_val = try self.parseAssignmentExpression();
+            return try self.ast.addNode(.{
+                .tag = .assignment_pattern,
+                .span = .{ .start = self.ast.getNode(node).span.start, .end = self.currentSpan().start },
+                .data = .{ .binary = .{ .left = node, .right = default_val, .flags = 0 } },
+            });
+        }
+        return node;
     }
 
     /// 바인딩 이름만 파싱한다 (identifier, [array], {object}).
@@ -2385,16 +2390,9 @@ pub const Parser = struct {
                 try self.scratch.append(rest);
                 break; // rest는 항상 마지막
             }
-            var elem = try self.parseBindingName();
+            const elem_raw = try self.parseBindingName();
             // default value: pattern = expr (배열/객체 패턴 뒤의 = default)
-            if (self.eat(.eq)) {
-                const default_val = try self.parseAssignmentExpression();
-                elem = try self.ast.addNode(.{
-                    .tag = .assignment_pattern,
-                    .span = .{ .start = self.ast.getNode(elem).span.start, .end = self.currentSpan().start },
-                    .data = .{ .binary = .{ .left = elem, .right = default_val, .flags = 0 } },
-                });
-            }
+            var elem = try self.tryWrapDefaultValue(elem_raw);
             // TS: optional (?) + type annotation — 배열 패턴 요소에도 가능
             _ = self.eat(.question);
             _ = try self.tryParseTypeAnnotation();
@@ -2468,16 +2466,7 @@ pub const Parser = struct {
                     .span = id_span,
                     .data = .{ .string_ref = id_span },
                 });
-                var value = key;
-                // default value
-                if (self.eat(.eq)) {
-                    const default_val = try self.parseAssignmentExpression();
-                    value = try self.ast.addNode(.{
-                        .tag = .assignment_pattern,
-                        .span = .{ .start = id_span.start, .end = self.currentSpan().start },
-                        .data = .{ .binary = .{ .left = key, .right = default_val, .flags = 0 } },
-                    });
-                }
+                const value = try self.tryWrapDefaultValue(key);
                 return try self.ast.addNode(.{
                     .tag = .binding_property,
                     .span = .{ .start = start, .end = self.currentSpan().start },
@@ -2489,17 +2478,9 @@ pub const Parser = struct {
         // key: pattern = default
         const key = try self.parsePropertyKey();
         self.expect(.colon);
-        var value = try self.parseBindingPattern();
-
+        const value_raw = try self.parseBindingPattern();
         // { x: pattern = defaultValue } 형태
-        if (self.eat(.eq)) {
-            const default_val = try self.parseAssignmentExpression();
-            value = try self.ast.addNode(.{
-                .tag = .assignment_pattern,
-                .span = .{ .start = self.ast.getNode(value).span.start, .end = self.currentSpan().start },
-                .data = .{ .binary = .{ .left = value, .right = default_val, .flags = 0 } },
-            });
-        }
+        const value = try self.tryWrapDefaultValue(value_raw);
 
         return try self.ast.addNode(.{
             .tag = .binding_property,
