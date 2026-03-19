@@ -2,6 +2,7 @@ const std = @import("std");
 const fs = std.fs;
 const mem = std.mem;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
+const Parser = @import("../parser/parser.zig").Parser;
 
 /// Test262 테스트 파일의 YAML 메타데이터
 /// 각 .js 파일 상단의 /*--- ... ---*/ 블록을 파싱한 결과
@@ -140,47 +141,75 @@ pub fn parseMetadata(source: []const u8) TestMetadata {
 
 /// 단일 Test262 테스트를 실행한다.
 ///
-/// 아직 렉서/파서가 없으므로 placeholder.
-/// 렉서 구현 후 여기에 실제 파싱 로직을 연결한다.
+/// Scanner + Parser를 사용하여 소스를 파싱하고, 에러 발생 여부로 pass/fail을 판정.
 ///
 /// 판정 로직:
-/// - is_negative_parse == true → 파서가 에러를 던지면 pass
-/// - is_negative_parse == false → 파서가 에러 없이 완료되면 pass
-/// 단일 Test262 테스트를 실행한다.
-/// 렉서로 소스를 토크나이즈하고, 에러 발생 여부로 pass/fail을 판정.
-///
-/// 판정 로직:
-/// - is_negative_parse == true → 렉서가 에러를 던지면 pass
-/// - is_negative_parse == false → 렉서가 에러 없이 완료되면 pass
+/// - is_negative_parse == true → 파서/렉서가 에러를 발생시키면 pass
+/// - is_negative_parse == false → 에러 없이 파싱 완료되면 pass
 pub fn runTest(allocator: mem.Allocator, source: []const u8, meta: TestMetadata) TestResult {
-    _ = meta.is_module; // 렉서 단계에서는 module/script 구분 없음
+    return runTestInner(allocator, source, meta, false);
+}
 
-    // 렉서로 전체 토크나이즈
+/// verbose=true이면 실패 시 첫 번째 에러 메시지를 stderr에 출력한다.
+pub fn runTestVerbose(allocator: mem.Allocator, source: []const u8, meta: TestMetadata) TestResult {
+    return runTestInner(allocator, source, meta, true);
+}
+
+fn runTestInner(allocator: mem.Allocator, source: []const u8, meta: TestMetadata, verbose: bool) TestResult {
+    _ = meta.is_module; // TODO: module/script 구분 파싱 (현재 미지원)
+
+    // Scanner → Parser로 파싱
     var scanner = Scanner.init(allocator, source);
     defer scanner.deinit();
 
-    var had_error = false;
-    while (true) {
-        scanner.next();
-        if (scanner.token.kind == .syntax_error) {
-            had_error = true;
-            break;
-        }
-        if (scanner.token.kind == .eof) break;
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+
+    // parse()는 OOM 시 error 반환, 파싱 에러는 parser.errors에 누적
+    _ = parser.parse() catch {
+        // OOM은 테스트 실패가 아니라 인프라 문제 → skip 처리
+        return .skip;
+    };
+
+    // 렉서 에러(syntax_error) + 파서 에러 모두 체크
+    const had_error = scanner.token.kind == .syntax_error or parser.errors.items.len > 0;
+
+    const result: TestResult = if (meta.is_negative_parse)
+        (if (had_error) .pass else .fail)
+    else
+        (if (had_error) .fail else .pass);
+
+    // verbose 모드: 양성 테스트가 에러로 실패한 경우 첫 에러 출력 + 에러 위치의 토큰
+    if (verbose and result == .fail and !meta.is_negative_parse and parser.errors.items.len > 0) {
+        const err = parser.errors.items[0];
+        const stderr = std.io.getStdErr().writer();
+        // 에러 위치부터 20자
+        const ctx_end = @min(err.span.start + 30, @as(u32, @intCast(source.len)));
+        const snippet = source[err.span.start..ctx_end];
+        // 개행 전까지만
+        var line_end: usize = 0;
+        while (line_end < snippet.len and snippet[line_end] != '\n') : (line_end += 1) {}
+        stderr.print("    error@{d}: {s} | {s}\n", .{ err.span.start, err.message, snippet[0..line_end] }) catch {};
     }
 
-    if (meta.is_negative_parse) {
-        return if (had_error) .pass else .fail;
-    } else {
-        return if (had_error) .fail else .pass;
-    }
+    return result;
 }
 
+/// 카테고리별 통과율 (디렉토리 단위)
+pub const CategorySummary = struct {
+    name: []const u8,
+    summary: TestSummary,
+};
+
 /// 디렉토리 내 모든 .js 파일을 재귀적으로 찾아 테스트를 실행한다.
-pub fn runDirectory(allocator: mem.Allocator, dir_path: []const u8) !TestSummary {
+/// show_failures가 true이면 실패한 파일 목록을 stderr에 출력한다.
+pub fn runDirectory(allocator: mem.Allocator, dir_path: []const u8, show_failures: bool) !TestSummary {
     var summary = TestSummary{};
     var failed_list = std.ArrayList([]const u8).init(allocator);
-    defer failed_list.deinit();
+    defer {
+        for (failed_list.items) |path| allocator.free(path);
+        failed_list.deinit();
+    }
 
     var dir = try fs.openDirAbsolute(dir_path, .{ .iterate = true });
     defer dir.close();
@@ -192,6 +221,9 @@ pub fn runDirectory(allocator: mem.Allocator, dir_path: []const u8) !TestSummary
         if (entry.kind != .file) continue;
         if (!mem.endsWith(u8, entry.basename, ".js")) continue;
 
+        // _FIXTURE 파일은 스킵 (Test262 컨벤션: 헬퍼 파일)
+        if (mem.indexOf(u8, entry.path, "_FIXTURE") != null) continue;
+
         // 파일 읽기
         const file = dir.openFile(entry.path, .{}) catch continue;
         defer file.close();
@@ -200,30 +232,62 @@ pub fn runDirectory(allocator: mem.Allocator, dir_path: []const u8) !TestSummary
 
         // 메타데이터 파싱 & 테스트 실행
         const meta = parseMetadata(source);
-        const result = runTest(allocator, source, meta);
+        const result = if (show_failures) runTestVerbose(allocator, source, meta) else runTest(allocator, source, meta);
 
         summary.total += 1;
         switch (result) {
             .pass => summary.passed += 1,
             .fail => {
                 summary.failed += 1;
-                try failed_list.append(try allocator.dupe(u8, entry.path));
+                if (show_failures) {
+                    try failed_list.append(try allocator.dupe(u8, entry.path));
+                }
             },
             .skip => summary.skipped += 1,
         }
     }
 
     // 실패 목록 출력
-    if (failed_list.items.len > 0) {
+    if (show_failures and failed_list.items.len > 0) {
         const stderr = std.io.getStdErr().writer();
-        try stderr.print("\n--- Failed Tests ---\n", .{});
-        for (failed_list.items) |path| {
+        try stderr.print("\n--- Failed Tests ({d}) ---\n", .{failed_list.items.len});
+        // 최대 50개만 출력
+        const limit = @min(failed_list.items.len, 50);
+        for (failed_list.items[0..limit]) |path| {
             try stderr.print("  FAIL: {s}\n", .{path});
-            allocator.free(path);
+        }
+        if (failed_list.items.len > 50) {
+            try stderr.print("  ... and {d} more\n", .{failed_list.items.len - 50});
         }
     }
 
     return summary;
+}
+
+/// 여러 카테고리(서브디렉토리)를 순회하며 각각의 통과율을 계산한다.
+pub fn runCategories(allocator: mem.Allocator, base_dir_path: []const u8) ![]CategorySummary {
+    var categories = std.ArrayList(CategorySummary).init(allocator);
+
+    var dir = try fs.openDirAbsolute(base_dir_path, .{ .iterate = true });
+    defer dir.close();
+
+    var iter = dir.iterate();
+    while (try iter.next()) |entry| {
+        if (entry.kind != .directory) continue;
+        // 절대 경로 조합
+        const sub_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ base_dir_path, entry.name });
+        defer allocator.free(sub_path);
+
+        const summary = runDirectory(allocator, sub_path, false) catch continue;
+        if (summary.total == 0) continue;
+
+        try categories.append(.{
+            .name = try allocator.dupe(u8, entry.name),
+            .summary = summary,
+        });
+    }
+
+    return categories.toOwnedSlice();
 }
 
 // ============================================================

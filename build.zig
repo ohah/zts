@@ -114,9 +114,29 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_lib_unit_tests.step);
     test_step.dependOn(&run_exe_unit_tests.step);
 
-    // Test262 러너 테스트
+    // Test262 러너 테스트 (유닛 테스트)
     // lib_mod에 이미 test262가 포함되어 있으므로 같은 모듈로 테스트.
-    // `zig build test262` = `zig build test` 와 동일하지만 명시적 스텝.
-    const test262_step = b.step("test262", "Run Test262 runner tests");
+    const test262_step = b.step("test262", "Run Test262 runner unit tests");
     test262_step.dependOn(&run_lib_unit_tests.step);
+
+    // Test262 실제 실행 (파서 통과율 측정)
+    // `zig build test262-run` — 전체 카테고리
+    // `zig build test262-run -- expressions` — 특정 카테고리만
+    const test262_run_mod = b.createModule(.{
+        .root_source_file = b.path("src/test262/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    // runner.zig가 lexer/parser를 상대 경로로 import하므로 lib_mod를 추가
+    test262_run_mod.addImport("zts_lib", lib_mod);
+    const test262_exe = b.addExecutable(.{
+        .name = "test262-runner",
+        .root_module = test262_run_mod,
+    });
+    const test262_run_cmd = b.addRunArtifact(test262_exe);
+    if (b.args) |args| {
+        test262_run_cmd.addArgs(args);
+    }
+    const test262_run_step = b.step("test262-run", "Run Test262 parser tests (pass rate)");
+    test262_run_step.dependOn(&test262_run_cmd.step);
 }

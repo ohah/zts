@@ -192,7 +192,8 @@ pub const Parser = struct {
             .kw_namespace, .kw_module => self.parseTsModuleDeclaration(),
             .kw_declare => self.parseTsDeclareStatement(),
             .kw_abstract => self.parseTsAbstractClass(),
-            else => self.parseExpressionStatement(),
+            .kw_with => self.parseWithStatement(),
+            else => self.parseExpressionOrLabeledStatement(),
         };
     }
 
@@ -238,6 +239,53 @@ pub const Parser = struct {
             .tag = .expression_statement,
             .span = .{ .start = start, .end = end },
             .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
+        });
+    }
+
+    /// expression statement 또는 labeled statement를 파싱한다.
+    /// `identifier:` 패턴이면 labeled statement, 아니면 expression statement.
+    fn parseExpressionOrLabeledStatement(self: *Parser) ParseError2!NodeIndex {
+        // identifier: statement — labeled statement 판별
+        if (self.current() == .identifier) {
+            const peek = self.peekNext();
+            if (peek.kind == .colon) {
+                return self.parseLabeledStatement();
+            }
+        }
+        return self.parseExpressionStatement();
+    }
+
+    /// labeled statement: label: statement
+    fn parseLabeledStatement(self: *Parser) ParseError2!NodeIndex {
+        const start = self.currentSpan().start;
+        // label
+        const label = try self.ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = self.currentSpan(),
+            .data = .{ .string_ref = self.currentSpan() },
+        });
+        self.advance(); // skip label
+        self.advance(); // skip ':'
+        const body = try self.parseStatement();
+        return try self.ast.addNode(.{
+            .tag = .labeled_statement,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .binary = .{ .left = label, .right = body, .flags = 0 } },
+        });
+    }
+
+    /// with statement: with (expr) statement
+    fn parseWithStatement(self: *Parser) ParseError2!NodeIndex {
+        const start = self.currentSpan().start;
+        self.advance(); // skip 'with'
+        self.expect(.l_paren);
+        const obj = try self.parseExpression();
+        self.expect(.r_paren);
+        const body = try self.parseStatement();
+        return try self.ast.addNode(.{
+            .tag = .with_statement,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .binary = .{ .left = obj, .right = body, .flags = 0 } },
         });
     }
 
@@ -381,6 +429,10 @@ pub const Parser = struct {
     fn parseForStatement(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'for'
+
+        // for await (...) — async iteration
+        _ = self.eat(.kw_await);
+
         self.expect(.l_paren);
 
         // for문의 init 부분 파싱
@@ -474,10 +526,29 @@ pub const Parser = struct {
 
     /// break, continue, debugger 등 키워드 + 세미콜론만으로 구성된 단순 문.
     fn parseSimpleStatement(self: *Parser, tag: Tag) ParseError2!NodeIndex {
-        const span = self.currentSpan();
-        self.advance();
+        const start = self.currentSpan().start;
+        self.advance(); // skip break/continue/debugger
+
+        // break/continue 뒤에 줄바꿈 없이 identifier가 오면 label로 소비
+        var label = NodeIndex.none;
+        if ((tag == .break_statement or tag == .continue_statement) and
+            self.current() == .identifier and !self.scanner.token.has_newline_before)
+        {
+            label = try self.ast.addNode(.{
+                .tag = .identifier_reference,
+                .span = self.currentSpan(),
+                .data = .{ .string_ref = self.currentSpan() },
+            });
+            self.advance();
+        }
+
+        const end = self.currentSpan().end;
         _ = self.eat(.semicolon);
-        return try self.ast.addNode(.{ .tag = tag, .span = span, .data = .{ .none = 0 } });
+        return try self.ast.addNode(.{
+            .tag = tag,
+            .span = .{ .start = start, .end = end },
+            .data = .{ .unary = .{ .operand = label, .flags = 0 } },
+        });
     }
 
     fn parseSwitchStatement(self: *Parser) ParseError2!NodeIndex {
@@ -675,8 +746,18 @@ pub const Parser = struct {
     }
 
     fn parseFunctionExpression(self: *Parser) ParseError2!NodeIndex {
+        return self.parseFunctionExpressionWithFlags(0);
+    }
+
+    fn parseFunctionExpressionWithFlags(self: *Parser, extra_flags: u32) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'function'
+
+        // generator: function* () {}
+        var flags: u32 = extra_flags;
+        if (self.eat(.star)) {
+            flags |= 0x02; // generator flag
+        }
 
         // 함수 이름 (선택적)
         var name = NodeIndex.none;
@@ -693,6 +774,9 @@ pub const Parser = struct {
         }
         self.expect(.r_paren);
 
+        // TS 리턴 타입 어노테이션
+        _ = try self.tryParseReturnType();
+
         const body = try self.parseBlockStatement();
 
         const param_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
@@ -701,6 +785,7 @@ pub const Parser = struct {
         _ = try self.ast.addExtra(param_list.start);
         _ = try self.ast.addExtra(param_list.len);
         _ = try self.ast.addExtra(@intFromEnum(body));
+        _ = try self.ast.addExtra(flags);
 
         return try self.ast.addNode(.{
             .tag = .function_expression,
@@ -855,6 +940,19 @@ pub const Parser = struct {
         } else if (self.current() == .kw_set and self.peekNextKind() != .l_paren) {
             flags |= 0x04; // setter
             self.advance();
+        }
+
+        // async (선택): async method() {}
+        if (self.current() == .kw_async and self.peekNextKind() != .l_paren and
+            !self.scanner.token.has_newline_before)
+        {
+            flags |= 0x08; // async flag
+            self.advance();
+        }
+
+        // generator (선택): *method() {}
+        if (self.eat(.star)) {
+            flags |= 0x10; // generator flag
         }
 
         // 키
@@ -1554,10 +1652,131 @@ pub const Parser = struct {
                         .data = .{ .binary = .{ .left = expr, .right = prop, .flags = 0 } },
                     });
                 },
+                .question_dot => {
+                    // optional chaining: a?.b, a?.[b], a?.()
+                    self.advance(); // skip ?.
+                    if (self.current() == .l_bracket) {
+                        // a?.[expr]
+                        self.advance();
+                        const prop = try self.parseExpression();
+                        self.expect(.r_bracket);
+                        expr = try self.ast.addNode(.{
+                            .tag = .computed_member_expression,
+                            .span = .{ .start = expr_start, .end = self.currentSpan().start },
+                            .data = .{ .binary = .{ .left = expr, .right = prop, .flags = 1 } }, // 1 = optional
+                        });
+                    } else if (self.current() == .l_paren) {
+                        // a?.()
+                        self.advance();
+                        const scratch_top = self.saveScratch();
+                        while (self.current() != .r_paren and self.current() != .eof) {
+                            const arg = try self.parseSpreadOrAssignment();
+                            try self.scratch.append(arg);
+                            if (!self.eat(.comma)) break;
+                        }
+                        self.expect(.r_paren);
+                        const arg_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+                        self.restoreScratch(scratch_top);
+                        expr = try self.ast.addNode(.{
+                            .tag = .call_expression,
+                            .span = .{ .start = expr_start, .end = self.currentSpan().start },
+                            .data = .{ .binary = .{ .left = expr, .right = @enumFromInt(arg_list.start), .flags = @intCast(arg_list.len | 0x8000) } }, // 0x8000 = optional
+                        });
+                    } else {
+                        // a?.b
+                        const prop = try self.parseIdentifierName();
+                        expr = try self.ast.addNode(.{
+                            .tag = .static_member_expression,
+                            .span = .{ .start = expr_start, .end = self.currentSpan().start },
+                            .data = .{ .binary = .{ .left = expr, .right = prop, .flags = 1 } }, // 1 = optional
+                        });
+                    }
+                },
+                .no_substitution_template, .template_head => {
+                    // tagged template: expr`text` 또는 expr`text${...}...`
+                    const tmpl = if (self.current() == .template_head)
+                        try self.parseTemplateLiteral()
+                    else blk: {
+                        const tmpl_span = self.currentSpan();
+                        self.advance();
+                        break :blk try self.ast.addNode(.{
+                            .tag = .template_literal,
+                            .span = tmpl_span,
+                            .data = .{ .none = 0 },
+                        });
+                    };
+                    expr = try self.ast.addNode(.{
+                        .tag = .tagged_template_expression,
+                        .span = .{ .start = expr_start, .end = self.currentSpan().start },
+                        .data = .{ .binary = .{ .left = expr, .right = tmpl, .flags = 0 } },
+                    });
+                },
                 else => break,
             }
         }
 
+        return expr;
+    }
+
+    /// new 표현식의 callee를 파싱한다.
+    /// new는 중첩 가능하므로 new를 만나면 재귀한다.
+    /// member access (.prop, [expr])만 허용하고 호출 ()은 상위에서 처리.
+    fn parseNewCallee(self: *Parser) ParseError2!NodeIndex {
+        if (self.current() == .kw_new) {
+            const span = self.currentSpan();
+            self.advance(); // skip 'new'
+            const callee = try self.parseNewCallee();
+            if (self.current() == .l_paren) {
+                self.advance();
+                const scratch_top = self.saveScratch();
+                while (self.current() != .r_paren and self.current() != .eof) {
+                    const arg = try self.parseSpreadOrAssignment();
+                    try self.scratch.append(arg);
+                    if (!self.eat(.comma)) break;
+                }
+                self.expect(.r_paren);
+                const arg_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+                self.restoreScratch(scratch_top);
+                return try self.ast.addNode(.{
+                    .tag = .new_expression,
+                    .span = .{ .start = span.start, .end = self.currentSpan().start },
+                    .data = .{ .binary = .{ .left = callee, .right = @enumFromInt(arg_list.start), .flags = @intCast(arg_list.len) } },
+                });
+            }
+            return try self.ast.addNode(.{
+                .tag = .new_expression,
+                .span = .{ .start = span.start, .end = self.currentSpan().start },
+                .data = .{ .binary = .{ .left = callee, .right = NodeIndex.none, .flags = 0 } },
+            });
+        }
+
+        // primary expression + member chain (호출 제외)
+        var expr = try self.parsePrimaryExpression();
+        while (true) {
+            const expr_start = self.ast.getNode(expr).span.start;
+            switch (self.current()) {
+                .dot => {
+                    self.advance();
+                    const prop = try self.parseIdentifierName();
+                    expr = try self.ast.addNode(.{
+                        .tag = .static_member_expression,
+                        .span = .{ .start = expr_start, .end = self.currentSpan().start },
+                        .data = .{ .binary = .{ .left = expr, .right = prop, .flags = 0 } },
+                    });
+                },
+                .l_bracket => {
+                    self.advance();
+                    const prop = try self.parseExpression();
+                    self.expect(.r_bracket);
+                    expr = try self.ast.addNode(.{
+                        .tag = .computed_member_expression,
+                        .span = .{ .start = expr_start, .end = self.currentSpan().start },
+                        .data = .{ .binary = .{ .left = expr, .right = prop, .flags = 0 } },
+                    });
+                },
+                else => break,
+            }
+        }
         return expr;
     }
 
@@ -1577,6 +1796,14 @@ pub const Parser = struct {
                 self.advance();
                 return try self.ast.addNode(.{
                     .tag = .numeric_literal,
+                    .span = span,
+                    .data = .{ .none = 0 },
+                });
+            },
+            .decimal_bigint, .binary_bigint, .octal_bigint, .hex_bigint => {
+                self.advance();
+                return try self.ast.addNode(.{
+                    .tag = .bigint_literal,
                     .span = span,
                     .data = .{ .none = 0 },
                 });
@@ -1609,6 +1836,64 @@ pub const Parser = struct {
                 self.advance();
                 return try self.ast.addNode(.{
                     .tag = .this_expression,
+                    .span = span,
+                    .data = .{ .none = 0 },
+                });
+            },
+            .kw_new => {
+                // new expression: new Callee(args)
+                // new는 중첩 가능: new new Foo()()
+                self.advance(); // skip 'new'
+
+                // new.target — 메타 프로퍼티
+                if (self.current() == .dot) {
+                    const peek = self.peekNextKind();
+                    if (peek == .identifier) {
+                        self.advance(); // skip '.'
+                        const target_span = self.currentSpan();
+                        self.advance(); // skip 'target'
+                        return try self.ast.addNode(.{
+                            .tag = .meta_property,
+                            .span = .{ .start = span.start, .end = target_span.end },
+                            .data = .{ .none = 1 }, // 1 = new.target (0 = import.meta)
+                        });
+                    }
+                }
+
+                // callee: 재귀적으로 new 또는 primary + member chain
+                const callee = try self.parseNewCallee();
+
+                // 인자: (args) — 있으면 소비, 없으면 인자 없는 new (new Foo)
+                if (self.current() == .l_paren) {
+                    self.advance(); // skip (
+                    const scratch_top = self.saveScratch();
+                    while (self.current() != .r_paren and self.current() != .eof) {
+                        const arg = try self.parseSpreadOrAssignment();
+                        try self.scratch.append(arg);
+                        if (!self.eat(.comma)) break;
+                    }
+                    self.expect(.r_paren);
+                    const arg_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+                    self.restoreScratch(scratch_top);
+                    return try self.ast.addNode(.{
+                        .tag = .new_expression,
+                        .span = .{ .start = span.start, .end = self.currentSpan().start },
+                        .data = .{ .binary = .{ .left = callee, .right = @enumFromInt(arg_list.start), .flags = @intCast(arg_list.len) } },
+                    });
+                }
+
+                // 인자 없는 new: new Foo
+                return try self.ast.addNode(.{
+                    .tag = .new_expression,
+                    .span = .{ .start = span.start, .end = self.currentSpan().start },
+                    .data = .{ .binary = .{ .left = callee, .right = NodeIndex.none, .flags = 0 } },
+                });
+            },
+            .kw_super => {
+                // super expression: super() 또는 super.prop 또는 super[expr]
+                self.advance();
+                return try self.ast.addNode(.{
+                    .tag = .super_expression,
                     .span = span,
                     .data = .{ .none = 0 },
                 });
@@ -1664,6 +1949,27 @@ pub const Parser = struct {
                     .data = .{ .unary = .{ .operand = arg, .flags = 0 } },
                 });
             },
+            .no_substitution_template => {
+                // 보간 없는 템플릿 리터럴: `text`
+                self.advance();
+                return try self.ast.addNode(.{
+                    .tag = .template_literal,
+                    .span = span,
+                    .data = .{ .none = 0 },
+                });
+            },
+            .template_head => {
+                // 보간 있는 템플릿 리터럴: `text${expr}...`
+                return self.parseTemplateLiteral();
+            },
+            .regexp => {
+                self.advance();
+                return try self.ast.addNode(.{
+                    .tag = .regexp_literal,
+                    .span = span,
+                    .data = .{ .string_ref = span },
+                });
+            },
             .l_bracket => {
                 // 배열 리터럴
                 return self.parseArrayExpression();
@@ -1672,7 +1978,35 @@ pub const Parser = struct {
                 // 객체 리터럴
                 return self.parseObjectExpression();
             },
+            .kw_async => {
+                // async function expression 또는 async arrow
+                const peek = self.peekNext();
+                if (peek.kind == .kw_function and !peek.has_newline_before) {
+                    // async function expression
+                    self.advance(); // skip 'async'
+                    return self.parseFunctionExpressionWithFlags(0x01); // async flag
+                }
+                // async를 일반 식별자로 취급 (async arrow는 parseAssignmentExpression에서 처리)
+                self.advance();
+                return try self.ast.addNode(.{
+                    .tag = .identifier_reference,
+                    .span = span,
+                    .data = .{ .string_ref = span },
+                });
+            },
             else => {
+                // contextual keyword, strict mode reserved, TS keyword는
+                // expression에서 식별자로 사용 가능 (reserved keyword만 불가)
+                // 예: undefined, of, let, from, as, target, assert, get, set,
+                //     implements, yield, static 등
+                if (self.current().isKeyword() and !self.current().isReservedKeyword()) {
+                    self.advance();
+                    return try self.ast.addNode(.{
+                        .tag = .identifier_reference,
+                        .span = span,
+                        .data = .{ .string_ref = span },
+                    });
+                }
                 // 에러 복구: 알 수 없는 토큰 → 에러 노드 생성 후 건너뜀
                 self.addError(span, "expression expected");
                 self.advance();
@@ -1683,6 +2017,57 @@ pub const Parser = struct {
                 });
             },
         }
+    }
+
+    /// 보간이 있는 템플릿 리터럴을 파싱한다: `head${expr}middle${expr}tail`
+    fn parseTemplateLiteral(self: *Parser) ParseError2!NodeIndex {
+        const start = self.currentSpan().start;
+        const scratch_top = self.saveScratch();
+
+        // template_head: `text${
+        try self.scratch.append(try self.ast.addNode(.{
+            .tag = .template_element,
+            .span = self.currentSpan(),
+            .data = .{ .none = 0 },
+        }));
+        self.advance(); // skip template_head
+
+        while (true) {
+            // expression inside ${}
+            const expr = try self.parseExpression();
+            try self.scratch.append(expr);
+
+            // template_middle: }text${ 또는 template_tail: }text`
+            if (self.current() == .template_middle) {
+                try self.scratch.append(try self.ast.addNode(.{
+                    .tag = .template_element,
+                    .span = self.currentSpan(),
+                    .data = .{ .none = 0 },
+                }));
+                self.advance();
+            } else if (self.current() == .template_tail) {
+                try self.scratch.append(try self.ast.addNode(.{
+                    .tag = .template_element,
+                    .span = self.currentSpan(),
+                    .data = .{ .none = 0 },
+                }));
+                self.advance();
+                break;
+            } else {
+                // 에러 복구: 닫히지 않은 템플릿
+                self.addError(self.currentSpan(), "expected template continuation");
+                break;
+            }
+        }
+
+        const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        self.restoreScratch(scratch_top);
+
+        return try self.ast.addNode(.{
+            .tag = .template_literal,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .list = list },
+        });
     }
 
     fn parseArrayExpression(self: *Parser) ParseError2!NodeIndex {
@@ -1747,11 +2132,65 @@ pub const Parser = struct {
     fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
 
+        // spread: ...expr
+        if (self.current() == .dot3) {
+            self.advance();
+            const expr = try self.parseAssignmentExpression();
+            return try self.ast.addNode(.{
+                .tag = .spread_element,
+                .span = .{ .start = start, .end = self.currentSpan().start },
+                .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
+            });
+        }
+
+        // get/set 메서드 shorthand: { get prop() {}, set prop(v) {} }
+        if ((self.current() == .kw_get or self.current() == .kw_set) and
+            self.peekNextKind() != .colon and self.peekNextKind() != .l_paren and
+            self.peekNextKind() != .comma and self.peekNextKind() != .r_curly)
+        {
+            const flags: u16 = if (self.current() == .kw_get) 0x02 else 0x04; // getter/setter flag
+            _ = flags;
+            self.advance(); // skip get/set
+            const key = try self.parsePropertyKey();
+            // 메서드 shorthand — 바로 파라미터 리스트
+            return self.parseObjectMethodBody(start, key);
+        }
+
+        // async 메서드 shorthand: { async foo() {} }
+        if (self.current() == .kw_async) {
+            const peek = self.peekNext();
+            if (peek.kind != .colon and peek.kind != .comma and
+                peek.kind != .r_curly and !peek.has_newline_before)
+            {
+                self.advance(); // skip 'async'
+                // async generator: { async *foo() {} }
+                _ = self.eat(.star);
+                const key = try self.parsePropertyKey();
+                return self.parseObjectMethodBody(start, key);
+            }
+        }
+
+        // generator 메서드: { *foo() {} }
+        if (self.current() == .star) {
+            self.advance(); // skip '*'
+            const key = try self.parsePropertyKey();
+            return self.parseObjectMethodBody(start, key);
+        }
+
         // 키: identifier, string, number, 또는 computed [expr]
         const key = try self.parsePropertyKey();
 
+        // 메서드 shorthand: { foo() {} }
+        if (self.current() == .l_paren) {
+            return self.parseObjectMethodBody(start, key);
+        }
+
+        // key: value
         var value = NodeIndex.none;
         if (self.eat(.colon)) {
+            value = try self.parseAssignmentExpression();
+        } else if (self.eat(.eq)) {
+            // shorthand with default: { x = 1 }  (destructuring default)
             value = try self.parseAssignmentExpression();
         }
 
@@ -1759,6 +2198,37 @@ pub const Parser = struct {
             .tag = .object_property,
             .span = .{ .start = start, .end = self.currentSpan().start },
             .data = .{ .binary = .{ .left = key, .right = value, .flags = 0 } },
+        });
+    }
+
+    /// 객체 리터럴 메서드의 파라미터와 본문을 파싱한다.
+    fn parseObjectMethodBody(self: *Parser, start: u32, key: NodeIndex) ParseError2!NodeIndex {
+        self.expect(.l_paren);
+        const scratch_top = self.saveScratch();
+        while (self.current() != .r_paren and self.current() != .eof) {
+            const param = try self.parseBindingIdentifier();
+            try self.scratch.append(param);
+            if (!self.eat(.comma)) break;
+        }
+        self.expect(.r_paren);
+
+        // TS 리턴 타입
+        _ = try self.tryParseReturnType();
+
+        const body = try self.parseBlockStatement();
+
+        const param_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        self.restoreScratch(scratch_top);
+
+        const extra_start = try self.ast.addExtra(@intFromEnum(key));
+        _ = try self.ast.addExtra(param_list.start);
+        _ = try self.ast.addExtra(param_list.len);
+        _ = try self.ast.addExtra(@intFromEnum(body));
+
+        return try self.ast.addNode(.{
+            .tag = .method_definition,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .extra = extra_start },
         });
     }
 
@@ -1797,6 +2267,18 @@ pub const Parser = struct {
                     .data = .{ .unary = .{ .operand = inner, .flags = modifier_flags } },
                 });
             }
+        }
+
+        // rest parameter: ...pattern
+        if (self.current() == .dot3) {
+            const rest_start = self.currentSpan().start;
+            self.advance(); // skip '...'
+            const pattern = try self.parseBindingPattern();
+            return try self.ast.addNode(.{
+                .tag = .spread_element,
+                .span = .{ .start = rest_start, .end = self.currentSpan().start },
+                .data = .{ .unary = .{ .operand = pattern, .flags = 0 } },
+            });
         }
 
         switch (self.current()) {
@@ -2078,7 +2560,7 @@ pub const Parser = struct {
     fn parsePropertyKey(self: *Parser) ParseError2!NodeIndex {
         const span = self.currentSpan();
         switch (self.current()) {
-            .identifier, .kw_get, .kw_set, .kw_async, .kw_static => {
+            .identifier => {
                 self.advance();
                 return try self.ast.addNode(.{
                     .tag = .identifier_reference,

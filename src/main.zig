@@ -298,7 +298,7 @@ pub fn main() !void {
         const abs_path = try std.fs.cwd().realpathAlloc(allocator, dir_path);
         defer allocator.free(abs_path);
         try stdout.print("Running Test262: {s}\n", .{abs_path});
-        const summary = try runner.runDirectory(allocator, abs_path);
+        const summary = try runner.runDirectory(allocator, abs_path, false);
         try summary.print(stdout);
         return;
     }
