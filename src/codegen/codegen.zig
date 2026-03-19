@@ -857,9 +857,10 @@ pub const Codegen = struct {
         const body: NodeIndex = @enumFromInt(extras[3]);
         const flags = extras[4];
 
-        if (flags & 2 != 0) try self.write("async ");
+        // flags: 0x01=async, 0x02=generator (파서 기준)
+        if (flags & 0x01 != 0) try self.write("async ");
         try self.write("function");
-        if (flags & 1 != 0) try self.writeByte('*');
+        if (flags & 0x02 != 0) try self.writeByte('*');
         if (!name.isNone()) {
             try self.writeByte(' ');
             try self.emitNode(name);
@@ -870,18 +871,30 @@ pub const Codegen = struct {
         try self.emitNode(body);
     }
 
+    /// arrow_function_expression: binary = { left=params, right=body, flags }
+    /// flags: 0x01 = async
     fn emitArrow(self: *Codegen, node: Node) !void {
-        const e = node.data.extra;
-        const extras = self.ast.extra_data.items[e .. e + 6];
-        const params_start = extras[1];
-        const params_len = extras[2];
-        const body: NodeIndex = @enumFromInt(extras[3]);
-        const flags = extras[4];
+        const params = node.data.binary.left;
+        const body = node.data.binary.right;
+        const flags = node.data.binary.flags;
 
-        if (flags & 2 != 0) try self.write("async ");
-        try self.writeByte('(');
-        try self.emitNodeList(params_start, params_len, ",");
-        try self.write(")=>");
+        if (flags & 0x01 != 0) try self.write("async ");
+
+        // params가 단일 binding_identifier이면 괄호 없이 출력
+        if (!params.isNone()) {
+            const param_node = self.ast.getNode(params);
+            if (param_node.tag == .binding_identifier) {
+                try self.emitNode(params);
+            } else {
+                // parenthesized params나 다른 패턴
+                try self.writeByte('(');
+                try self.emitNode(params);
+                try self.writeByte(')');
+            }
+        } else {
+            try self.write("()");
+        }
+        try self.write("=>");
         try self.emitNode(body);
     }
 
@@ -1056,12 +1069,34 @@ pub const Codegen = struct {
     // Import/Export 출력
     // ================================================================
 
+    /// import_declaration:
+    ///   side-effect: unary = { operand=source_node }
+    ///   with specs:  extra = [specs.start, specs.len, source_node]
     fn emitImport(self: *Codegen, node: Node) !void {
+        // side-effect import 감지
+        const maybe_operand = node.data.unary.operand;
+        if (!maybe_operand.isNone() and @intFromEnum(maybe_operand) < self.ast.nodes.items.len) {
+            const operand_node = self.ast.getNode(maybe_operand);
+            if (operand_node.tag == .string_literal) {
+                if (self.options.module_format == .cjs) {
+                    try self.write("require(");
+                    try self.emitNode(maybe_operand);
+                    try self.write(");");
+                } else {
+                    try self.write("import ");
+                    try self.emitNode(maybe_operand);
+                    try self.writeByte(';');
+                }
+                return;
+            }
+        }
+
+        // extra: [specs.start, specs.len, source_node]
         const e = node.data.extra;
-        const extras = self.ast.extra_data.items[e .. e + 5];
-        const source: NodeIndex = @enumFromInt(extras[0]);
-        const specs_start = extras[1];
-        const specs_len = extras[2];
+        const extras = self.ast.extra_data.items[e .. e + 3];
+        const specs_start = extras[0];
+        const specs_len = extras[1];
+        const source: NodeIndex = @enumFromInt(extras[2]);
 
         if (self.options.module_format == .cjs) {
             return self.emitImportCJS(source, specs_start, specs_len);
