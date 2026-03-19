@@ -1534,6 +1534,22 @@ pub const Parser = struct {
             });
         }
 
+        // class field 이름 검증 (ECMAScript 15.7.1)
+        if (!key.isNone()) {
+            const key_node = self.ast.getNode(key);
+            if (key_node.tag == .identifier_reference) {
+                const key_text = self.ast.source[key_node.span.start..key_node.span.end];
+                // non-static field 이름 'constructor' 금지
+                if ((flags & 0x01) == 0 and std.mem.eql(u8, key_text, "constructor")) {
+                    self.addError(key_node.span, "class field cannot be named 'constructor'");
+                }
+                // static field 이름 'prototype' 금지
+                if ((flags & 0x01) != 0 and std.mem.eql(u8, key_text, "prototype")) {
+                    self.addError(key_node.span, "static class field cannot be named 'prototype'");
+                }
+            }
+        }
+
         // TS 타입 어노테이션: value: Type
         _ = try self.tryParseTypeAnnotation();
 
