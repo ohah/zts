@@ -88,13 +88,59 @@ references/                 # 레퍼런스 프로젝트 (.gitignore, 로컬만)
 - Strict mode는 파서에서 추적 ("use strict" directive + module mode)
 - Test262 early phase는 parse와 통합
 
-### Advanced Features (Phase 6)
-- ES 다운레벨링: ES2024→ES2016 점진적, ES2015는 그 이후, ES5는 미정
-- WASM 플러그인, WASM 공개 AST API
-- .d.ts 생성 (isolatedDeclarations)
+### Phase 5.5: ES2020+ 파이프라인 안정화 (다운레벨링 선행)
+ES2020+ 코드가 transformer/codegen에서 crash 없이 통과(pass-through)되어야 다운레벨링 가능.
+- ✅ nullish coalescing (??) — pass-through 정상
+- ✅ optional chaining (?.) — PR #89에서 crash 수정 + codegen 출력
+- ✅ logical assignment (&&=, ||=, ??=) — pass-through 정상
+- ❌ class fields (x = 1) — transformer crash → 수정 필요
+- ❌ private class fields (#x = 1) — transformer crash → 수정 필요
+- ✅ class static block — pass-through 정상
+- ⚠️ async function codegen — async→generator 출력 버그 → 별도 확인
+
+### Phase 6 구현 순서 (D057, D058)
+
+#### 6-1. ES 다운레벨링 — ES2024→ES2016 (파이프라인 Pass 2)
+- 기존 transformer(Pass 1) 수정 없이 새 Downleveler 모듈 추가
+- feature 단위 PR: nullish coalescing → optional chaining → logical assignment → class fields → ...
+- --target CLI 옵션 → 내부 feature별 bool 매핑
+- ⬜ Downleveler 기본 구조 + nullish coalescing (??)
+- ⬜ optional chaining (?.)
+- ⬜ logical assignment (&&=, ||=, ??=)
+- ⬜ class fields (public)
+- ⬜ private class fields (#x)
+- ⬜ class static block
+- ⬜ --target CLI + target→features 매핑 테이블
+
+#### 6-2. ES 다운레벨링 — ES2015→ES5 (헬퍼 필요)
+- 런타임 헬퍼 인프라 구축 (bundled/external 모드)
+- ⬜ arrow function → regular function (this 캡처)
+- ⬜ template literal → string concatenation
+- ⬜ destructuring → variable assignment
+- ⬜ let/const → var
+- ⬜ class → prototype chain
+- ⬜ for-of → for loop
+- ⬜ spread/rest → Array.prototype.slice
+- ⬜ default parameters → conditional
+
+#### 6-3. 미니파이어
+- ⬜ whitespace/syntax (codegen 옵션)
+- ⬜ identifier 축약 (scope/symbol + references 필요)
+
+#### 6-4. .d.ts 생성 (isolatedDeclarations)
+
+#### 6-5. 번들러
+- import resolution (paths/baseUrl/node_modules)
+- 의존성 그래프 + 청크 분할 + tree-shaking
+- strictExecutionOrder (RN/Metro 지원)
+  - 모듈 래핑 (lazy evaluation) + DFS 실행 순서
+  - side effect 추적
+
+#### 6-6. 기타
+- transform API: oxc/Rolldown 방식 `transform(source, options)` (bungae 연동)
+- --supported override (개별 feature 제어)
 - React Fast Refresh
-- 미니파이어 (whitespace/syntax/identifiers 개별)
-- 번들러 (paths/baseUrl/moduleResolution 활성화)
+- WASM 플러그인, WASM 공개 AST API
 
 ## Commands
 ```bash
