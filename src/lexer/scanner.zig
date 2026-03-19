@@ -376,6 +376,21 @@ pub const Scanner = struct {
                     if (isAsciiIdentStart(c)) {
                         self.scanIdentifierTail();
                         const text = self.tokenText();
+                        // escape가 포함되어 있으면 디코딩 후 키워드 매칭
+                        if (std.mem.indexOfScalar(u8, text, '\\') != null) {
+                            const decoded = self.decodeIdentifierEscapes(text);
+                            if (decoded) |name| {
+                                if (token.keywords.get(name)) |kw| {
+                                    // reserved keyword → escaped_keyword (항상 식별자 사용 불가)
+                                    // strict mode reserved/contextual → identifier (strict에서만 불가, 파서가 판별)
+                                    break :blk if (kw.isReservedKeyword() or kw.isLiteralKeyword())
+                                        .escaped_keyword
+                                    else
+                                        .identifier;
+                                }
+                            }
+                            break :blk .identifier;
+                        }
                         break :blk token.keywords.get(text) orelse .identifier;
                     }
                     // \u 유니코드 이스케이프로 시작하는 식별자
@@ -384,8 +399,20 @@ pub const Scanner = struct {
                         self.current -= 1; // put back '\'
                         if (self.scanIdentifierEscape()) {
                             self.scanIdentifierTail();
-                            // 이스케이프 키워드는 키워드가 아닌 식별자로 취급
-                            break :blk .escaped_keyword;
+                            // 이스케이프를 디코딩하여 키워드인지 판별.
+                            // 키워드면 escaped_keyword (식별자로 사용 불가),
+                            // 아니면 일반 identifier.
+                            const raw = self.tokenText();
+                            const decoded = self.decodeIdentifierEscapes(raw);
+                            if (decoded) |name| {
+                                if (token.keywords.get(name)) |kw| {
+                                    break :blk if (kw.isReservedKeyword() or kw.isLiteralKeyword())
+                                        .escaped_keyword
+                                    else
+                                        .identifier;
+                                }
+                            }
+                            break :blk .identifier;
                         }
                         self.current += 1; // re-consume '\'
                         break :blk .syntax_error;
@@ -1403,6 +1430,59 @@ pub const Scanner = struct {
             self.skipHexEscape(4);
         }
         return true;
+    }
+
+    /// 이스케이프가 포함된 식별자 텍스트를 디코딩하여 실제 문자열을 반환한다.
+    /// \uXXXX 와 \u{XXXX} 형태를 처리. BMP 문자만 지원 (키워드 매칭에 충분).
+    /// 스택 버퍼 사용 (할당 없음). 키워드 최대 길이 이내만 처리.
+    fn decodeIdentifierEscapes(self: *const Scanner, raw: []const u8) ?[]const u8 {
+        _ = self;
+        // 이스케이프가 없으면 그대로 반환
+        if (std.mem.indexOfScalar(u8, raw, '\\') == null) return raw;
+
+        // 스택 버퍼: 키워드는 최대 ~12자 (implements) 이므로 충분
+        var buf: [64]u8 = undefined;
+        var out: usize = 0;
+        var i: usize = 0;
+
+        while (i < raw.len) {
+            if (raw[i] == '\\' and i + 1 < raw.len and raw[i + 1] == 'u') {
+                i += 2; // skip \u
+                var codepoint: u32 = 0;
+                if (i < raw.len and raw[i] == '{') {
+                    i += 1; // skip {
+                    while (i < raw.len and raw[i] != '}') {
+                        const digit = std.fmt.charToDigit(raw[i], 16) catch return null;
+                        codepoint = codepoint * 16 + digit;
+                        i += 1;
+                    }
+                    if (i < raw.len) i += 1; // skip }
+                } else {
+                    // \uXXXX — 4자리 고정
+                    var j: usize = 0;
+                    while (j < 4 and i < raw.len) : (j += 1) {
+                        const digit = std.fmt.charToDigit(raw[i], 16) catch return null;
+                        codepoint = codepoint * 16 + digit;
+                        i += 1;
+                    }
+                }
+                // BMP 문자만 (키워드는 전부 ASCII)
+                if (codepoint < 0x80) {
+                    if (out >= buf.len) return null;
+                    buf[out] = @intCast(codepoint);
+                    out += 1;
+                } else {
+                    return null; // non-ASCII codepoint → 키워드 아님
+                }
+            } else {
+                if (out >= buf.len) return null;
+                buf[out] = raw[i];
+                out += 1;
+                i += 1;
+            }
+        }
+
+        return buf[0..out];
     }
 
     // ====================================================================
