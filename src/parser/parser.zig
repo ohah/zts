@@ -257,6 +257,17 @@ pub const Parser = struct {
         }
     }
 
+    /// strict mode에서 eval/arguments에 할당하면 에러 (ECMAScript 13.15.1).
+    fn checkStrictAssignmentTarget(self: *Parser, idx: NodeIndex) void {
+        if (idx.isNone()) return;
+        const node = self.ast.getNode(idx);
+        if (node.tag == .identifier_reference) {
+            self.checkStrictBinding(node.span);
+        } else if (node.tag == .parenthesized_expression) {
+            self.checkStrictAssignmentTarget(node.data.unary.operand);
+        }
+    }
+
     /// assignment target이 유효한지 검증한다.
     /// valid: identifier, member expression, parenthesized(valid target)
     /// invalid: literal, binary, call, arrow, etc.
@@ -2051,6 +2062,10 @@ pub const Parser = struct {
             if (!self.isValidAssignmentTarget(left)) {
                 self.addError(self.ast.getNode(left).span, "invalid assignment target");
             }
+            // strict mode: eval/arguments에 할당 금지 (ECMAScript 13.15.1)
+            if (self.ctx.is_strict_mode) {
+                self.checkStrictAssignmentTarget(left);
+            }
             const left_start = self.ast.getNode(left).span.start;
             const flags: u16 = @intFromEnum(self.current());
             self.advance();
@@ -2153,6 +2168,8 @@ pub const Parser = struct {
                 const start = self.currentSpan().start;
                 self.advance();
                 const operand = try self.parseUnaryExpression();
+                // strict mode: eval/arguments에 ++/-- 금지
+                if (self.ctx.is_strict_mode) self.checkStrictAssignmentTarget(operand);
                 return try self.ast.addNode(.{
                     .tag = .update_expression,
                     .span = .{ .start = start, .end = self.currentSpan().start },
@@ -2215,6 +2232,8 @@ pub const Parser = struct {
         if ((self.current() == .plus2 or self.current() == .minus2) and
             !self.scanner.token.has_newline_before)
         {
+            // strict mode: eval/arguments에 ++/-- 금지
+            if (self.ctx.is_strict_mode) self.checkStrictAssignmentTarget(expr);
             const expr_start = self.ast.getNode(expr).span.start;
             const kind = self.current();
             self.advance();
