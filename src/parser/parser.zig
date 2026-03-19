@@ -1352,8 +1352,13 @@ pub const Parser = struct {
             }
         }
 
-        // 클래스 본문
+        // 클래스 본문 — extends 있으면 has_super_class 설정 (super() 허용 판단)
+        const class_ctx_saved = self.ctx;
+        if (!super_class.isNone()) {
+            self.ctx.has_super_class = true;
+        }
         const body = try self.parseClassBody();
+        self.ctx = class_ctx_saved;
 
         const none = @intFromEnum(NodeIndex.none);
         const extra_start = try self.ast.addExtras(&.{
@@ -1543,7 +1548,10 @@ pub const Parser = struct {
                     else
                         @as([]const u8, "");
                     if (std.mem.eql(u8, kt, "constructor")) {
-                        self.ctx.allow_super_call = true;
+                        // extends가 있는 class의 constructor에서만 super() 허용
+                        if (self.ctx.has_super_class) {
+                            self.ctx.allow_super_call = true;
+                        }
                     }
                 }
                 self.ctx.has_simple_params = self.checkSimpleParams(param_top);
