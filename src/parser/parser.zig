@@ -1724,15 +1724,20 @@ pub const Parser = struct {
 
         // import defer / import source — Stage 3 proposals
         // defer/source를 스킵하고 나머지는 일반 import로 처리
+        var has_phase_modifier = false;
         if (self.current() == .kw_defer or
             (self.current() == .identifier and
             std.mem.eql(u8, self.ast.source[self.currentSpan().start..self.currentSpan().end], "source")))
         {
+            has_phase_modifier = true;
             self.advance(); // skip defer/source
         }
 
         // import "module" — side-effect import
         if (self.current() == .string_literal) {
+            if (has_phase_modifier) {
+                self.addError(self.currentSpan(), "'import defer/source' requires a binding");
+            }
             const source_node = try self.parseModuleSource();
             _ = self.eat(.semicolon);
             return try self.ast.addNode(.{
@@ -2838,7 +2843,10 @@ pub const Parser = struct {
                         });
                     }
 
-                    // import.xxx (인자 없음) — meta_property로 처리
+                    // import.source/defer without () → 에러
+                    if (std.mem.eql(u8, prop_text, "source") or std.mem.eql(u8, prop_text, "defer")) {
+                        self.addError(.{ .start = span.start, .end = prop_span.end }, "import.source/defer requires arguments");
+                    }
                     return try self.ast.addNode(.{
                         .tag = .meta_property,
                         .span = .{ .start = span.start, .end = prop_span.end },
