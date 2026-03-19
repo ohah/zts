@@ -922,10 +922,20 @@ pub const Parser = struct {
             self.restoreContext(for_saved);
             // parseVariableDeclaration이 세미콜론을 소비했으면 for(;;)
             // 'in' 또는 'of'가 보이면 for-in/for-of
-            if (self.current() == .kw_in) {
-                return self.parseForIn(start, init_expr);
-            }
-            if (self.current() == .kw_of) {
+            if (self.current() == .kw_in or self.current() == .kw_of) {
+                // for-in/for-of에서 let/const 여러 바인딩 금지 (ECMAScript 14.7.5.1)
+                if (!init_expr.isNone()) {
+                    const init_node = self.ast.getNode(init_expr);
+                    if (init_node.tag == .variable_declaration) {
+                        const decl_len = self.ast.extra_data.items[init_node.data.extra + 2];
+                        if (decl_len > 1) {
+                            self.addError(init_node.span, "only a single variable declaration is allowed in a for-in/for-of statement");
+                        }
+                    }
+                }
+                if (self.current() == .kw_in) {
+                    return self.parseForIn(start, init_expr);
+                }
                 return self.parseForOf(start, init_expr);
             }
             return self.parseForRest(start, init_expr);
