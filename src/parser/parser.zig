@@ -1537,13 +1537,18 @@ pub const Parser = struct {
         // class field 이름 검증 (ECMAScript 15.7.1)
         if (!key.isNone()) {
             const key_node = self.ast.getNode(key);
-            if (key_node.tag == .identifier_reference) {
-                const key_text = self.ast.source[key_node.span.start..key_node.span.end];
-                // non-static field 이름 'constructor' 금지
+            // identifier 또는 string literal 키에서 이름 추출
+            const key_text = if (key_node.tag == .identifier_reference)
+                self.ast.source[key_node.span.start..key_node.span.end]
+            else if (key_node.tag == .string_literal and key_node.span.end > key_node.span.start + 2)
+                self.ast.source[key_node.span.start + 1 .. key_node.span.end - 1] // 따옴표 제거
+            else
+                @as([]const u8, "");
+
+            if (key_text.len > 0) {
                 if ((flags & 0x01) == 0 and std.mem.eql(u8, key_text, "constructor")) {
                     self.addError(key_node.span, "class field cannot be named 'constructor'");
                 }
-                // static field 이름 'prototype' 금지
                 if ((flags & 0x01) != 0 and std.mem.eql(u8, key_text, "prototype")) {
                     self.addError(key_node.span, "static class field cannot be named 'prototype'");
                 }
