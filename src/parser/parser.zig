@@ -780,6 +780,7 @@ pub const Parser = struct {
     fn parseExpressionOrLabeledStatement(self: *Parser) ParseError2!NodeIndex {
         // identifier/keyword: statement — labeled statement 판별
         if (self.current() == .identifier or self.current() == .escaped_keyword or
+            self.current() == .escaped_strict_reserved or
             (self.current().isKeyword() and !self.current().isReservedKeyword() and !self.current().isLiteralKeyword()))
         {
             const peek = self.peekNext();
@@ -788,6 +789,8 @@ pub const Parser = struct {
                 self.checkYieldAwaitUse(self.currentSpan(), "label");
                 if (self.current() == .escaped_keyword) {
                     self.addError(self.currentSpan(), "escaped reserved word cannot be used as label");
+                } else if (self.current() == .escaped_strict_reserved and self.ctx.is_strict_mode) {
+                    self.addError(self.currentSpan(), "escaped reserved word cannot be used as label in strict mode");
                 } else if (self.ctx.is_strict_mode and self.current().isStrictModeReserved()) {
                     self.addError(self.currentSpan(), "reserved word in strict mode cannot be used as label");
                 }
@@ -3045,11 +3048,20 @@ pub const Parser = struct {
                 });
             },
             else => {
+                // escaped strict reserved → strict mode에서 에러, non-strict에서 identifier
+                if (self.current() == .escaped_strict_reserved) {
+                    if (self.ctx.is_strict_mode) {
+                        self.addError(span, "escaped reserved word cannot be used as identifier in strict mode");
+                    }
+                    self.advance();
+                    return try self.ast.addNode(.{
+                        .tag = .identifier_reference,
+                        .span = span,
+                        .data = .{ .string_ref = span },
+                    });
+                }
                 // contextual keyword, strict mode reserved, TS keyword는
                 // expression에서 식별자로 사용 가능 (reserved keyword만 불가)
-                // 단, yield/await는 generator/async 내부에서, strict mode reserved는 strict에서 불가
-                // await/yield는 조건부 예약어 — parseUnaryExpression에서 이미 처리했으므로
-                // 여기에 도달하면 식별자로 사용 가능한 컨텍스트
                 if (self.current().isKeyword() and
                     (!self.current().isReservedKeyword() or self.current() == .kw_await or self.current() == .kw_yield))
                 {
@@ -3404,7 +3416,6 @@ pub const Parser = struct {
                 return self.tryWrapDefaultValue(pat);
             },
             .escaped_keyword => {
-                // 이스케이프된 예약어는 식별자로 사용할 수 없음 (ECMAScript 12.1.1)
                 self.addError(self.currentSpan(), "escaped reserved word cannot be used as identifier");
                 const span = self.currentSpan();
                 self.advance();
@@ -3413,6 +3424,21 @@ pub const Parser = struct {
                     .span = span,
                     .data = .{ .string_ref = span },
                 });
+            },
+            .escaped_strict_reserved => {
+                if (self.ctx.is_strict_mode) {
+                    self.addError(self.currentSpan(), "escaped reserved word cannot be used as identifier in strict mode");
+                }
+                const span = self.currentSpan();
+                self.advance();
+                const node = try self.ast.addNode(.{
+                    .tag = .binding_identifier,
+                    .span = span,
+                    .data = .{ .string_ref = span },
+                });
+                _ = self.eat(.question);
+                _ = try self.tryParseTypeAnnotation();
+                return self.tryWrapDefaultValue(node);
             },
             else => {
                 // contextual 키워드는 바인딩 이름으로 사용 가능 (let, yield, async 등)
@@ -3482,6 +3508,18 @@ pub const Parser = struct {
                     .data = .{ .string_ref = span },
                 });
             },
+            .escaped_strict_reserved => {
+                if (self.ctx.is_strict_mode) {
+                    self.addError(self.currentSpan(), "escaped reserved word cannot be used as identifier in strict mode");
+                }
+                const span = self.currentSpan();
+                self.advance();
+                return try self.ast.addNode(.{
+                    .tag = .binding_identifier,
+                    .span = span,
+                    .data = .{ .string_ref = span },
+                });
+            },
             else => {
                 if (self.current().isKeyword()) {
                     self.checkKeywordBinding();
@@ -3503,10 +3541,13 @@ pub const Parser = struct {
     /// type alias, interface, enum 등 선언 이름에 사용.
     fn parseSimpleIdentifier(self: *Parser) ParseError2!NodeIndex {
         const span = self.currentSpan();
-        if (self.current() == .identifier or self.current() == .escaped_keyword or self.current().isKeyword()) {
-            // 예약어 체크 (바인딩 위치에서)
+        if (self.current() == .identifier or self.current() == .escaped_keyword or
+            self.current() == .escaped_strict_reserved or self.current().isKeyword())
+        {
             if (self.current() == .escaped_keyword) {
                 self.addError(span, "escaped reserved word cannot be used as identifier");
+            } else if (self.current() == .escaped_strict_reserved and self.ctx.is_strict_mode) {
+                self.addError(span, "escaped reserved word cannot be used as identifier in strict mode");
             } else {
                 self.checkKeywordBinding();
             }
@@ -3654,7 +3695,10 @@ pub const Parser = struct {
 
     fn parseIdentifierName(self: *Parser) ParseError2!NodeIndex {
         const span = self.currentSpan();
-        if (self.current() == .identifier or self.current() == .escaped_keyword or self.current().isKeyword()) {
+        if (self.current() == .identifier or self.current() == .escaped_keyword or
+            self.current() == .escaped_strict_reserved or self.current().isKeyword())
+        {
+            // IdentifierName: 예약어도 property name으로 사용 가능 (escaped 포함)
             self.advance();
             return try self.ast.addNode(.{
                 .tag = .identifier_reference,
@@ -3714,7 +3758,8 @@ pub const Parser = struct {
     fn parsePropertyKey(self: *Parser) ParseError2!NodeIndex {
         const span = self.currentSpan();
         switch (self.current()) {
-            .identifier, .escaped_keyword => {
+            .identifier, .escaped_keyword, .escaped_strict_reserved => {
+                // property key: 예약어도 사용 가능 (obj.let, class { yield() {} })
                 self.advance();
                 return try self.ast.addNode(.{
                     .tag = .identifier_reference,

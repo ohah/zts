@@ -93,6 +93,10 @@ pub const Scanner = struct {
     /// codegen에서 주석 보존에 사용한다.
     comments: std.ArrayList(Comment),
 
+    /// 이스케이프 디코딩 버퍼 (decodeIdentifierEscapes에서 사용).
+    /// Scanner 필드에 두어 dangling pointer 방지. 키워드 최대 길이(~12)+여유.
+    decode_buf: [64]u8 = undefined,
+
     /// 소스를 UTF-8로 읽고 Scanner를 초기화한다.
     /// BOM이 있으면 스킵한다 (D019).
     pub fn init(allocator: std.mem.Allocator, source: []const u8) Scanner {
@@ -418,10 +422,13 @@ pub const Scanner = struct {
                             const decoded = self.decodeIdentifierEscapes(text);
                             if (decoded) |name| {
                                 if (token.keywords.get(name)) |kw| {
-                                    // reserved keyword → escaped_keyword (항상 식별자 사용 불가)
-                                    // strict mode reserved/contextual → identifier (strict에서만 불가, 파서가 판별)
+                                    // reserved keyword/literal → escaped_keyword (항상 식별자 사용 불가)
+                                    // strict mode reserved (let, yield, implements 등) → escaped_strict_reserved
+                                    // contextual keyword (async, from 등) → identifier
                                     break :blk if (kw.isReservedKeyword() or kw.isLiteralKeyword())
                                         .escaped_keyword
+                                    else if (kw.isStrictModeReserved() or kw == .kw_let or kw == .kw_yield)
+                                        .escaped_strict_reserved
                                     else
                                         .identifier;
                                 }
@@ -457,6 +464,8 @@ pub const Scanner = struct {
                                 if (token.keywords.get(name)) |kw| {
                                     break :blk if (kw.isReservedKeyword() or kw.isLiteralKeyword())
                                         .escaped_keyword
+                                    else if (kw.isStrictModeReserved() or kw == .kw_let or kw == .kw_yield)
+                                        .escaped_strict_reserved
                                     else
                                         .identifier;
                                 }
@@ -1483,14 +1492,11 @@ pub const Scanner = struct {
 
     /// 이스케이프가 포함된 식별자 텍스트를 디코딩하여 실제 문자열을 반환한다.
     /// \uXXXX 와 \u{XXXX} 형태를 처리. BMP 문자만 지원 (키워드 매칭에 충분).
-    /// 스택 버퍼 사용 (할당 없음). 키워드 최대 길이 이내만 처리.
-    fn decodeIdentifierEscapes(self: *const Scanner, raw: []const u8) ?[]const u8 {
-        _ = self;
-        // 이스케이프가 없으면 그대로 반환
+    /// 인스턴스의 decode_buf를 사용하여 dangling pointer 방지.
+    fn decodeIdentifierEscapes(self: *Scanner, raw: []const u8) ?[]const u8 {
+        // 이스케이프가 없으면 그대로 반환 (소스 텍스트 포인터, 항상 유효)
         if (std.mem.indexOfScalar(u8, raw, '\\') == null) return raw;
 
-        // 스택 버퍼: 키워드는 최대 ~12자 (implements) 이므로 충분
-        var buf: [64]u8 = undefined;
         var out: usize = 0;
         var i: usize = 0;
 
@@ -1517,21 +1523,21 @@ pub const Scanner = struct {
                 }
                 // BMP 문자만 (키워드는 전부 ASCII)
                 if (codepoint < 0x80) {
-                    if (out >= buf.len) return null;
-                    buf[out] = @intCast(codepoint);
+                    if (out >= self.decode_buf.len) return null;
+                    self.decode_buf[out] = @intCast(codepoint);
                     out += 1;
                 } else {
                     return null; // non-ASCII codepoint → 키워드 아님
                 }
             } else {
-                if (out >= buf.len) return null;
-                buf[out] = raw[i];
+                if (out >= self.decode_buf.len) return null;
+                self.decode_buf[out] = raw[i];
                 out += 1;
                 i += 1;
             }
         }
 
-        return buf[0..out];
+        return self.decode_buf[0..out];
     }
 
     // ====================================================================
