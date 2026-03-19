@@ -66,6 +66,8 @@ pub const Codegen = struct {
     comments: []const Comment = &.{},
     /// 다음으로 출력할 주석의 인덱스
     next_comment_idx: usize = 0,
+    /// for문 init 위치에서 variable_declaration 출력 시 세미콜론 생략
+    in_for_init: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, ast: *const Ast) Codegen {
         return initWithOptions(allocator, ast, .{});
@@ -512,7 +514,12 @@ pub const Codegen = struct {
         const e = node.data.extra;
         const extras = self.ast.extra_data.items[e .. e + 4];
         try self.write("for(");
+        // init이 variable_declaration일 때 세미콜론 중복 방지:
+        // emitVariableDeclaration이 자체적으로 ';'를 붙이므로,
+        // in_for_init 플래그로 해당 세미콜론을 억제한다.
+        self.in_for_init = true;
         try self.emitNode(@enumFromInt(extras[0]));
+        self.in_for_init = false;
         try self.writeByte(';');
         try self.emitNode(@enumFromInt(extras[1]));
         try self.writeByte(';');
@@ -534,15 +541,60 @@ pub const Codegen = struct {
     }
 
     fn emitSwitch(self: *Codegen, node: Node) !void {
-        // switch_statement uses list: [discriminant, ...cases]
-        // 실제로는 extra로 저장됨 — 구현에 따라 다름
-        // 현재 파서에서 list로 저장: [discriminant_expr, case1, case2, ...]
-        // TODO: 파서의 실제 구조 확인 필요
-        try self.writeNodeSpan(node);
+        // 파서 구조: extra = [discriminant, cases_start, cases_len]
+        const e = node.data.extra;
+        const extras = self.ast.extra_data.items[e .. e + 3];
+        const discriminant: NodeIndex = @enumFromInt(extras[0]);
+        const cases_start = extras[1];
+        const cases_len = extras[2];
+
+        try self.write("switch(");
+        try self.emitNode(discriminant);
+        try self.writeByte(')');
+        try self.writeSpace();
+        try self.writeByte('{');
+        if (cases_len > 0) {
+            self.indent_level += 1;
+            const case_indices = self.ast.extra_data.items[cases_start .. cases_start + cases_len];
+            for (case_indices) |raw_idx| {
+                try self.writeNewline();
+                try self.writeIndent();
+                try self.emitNode(@enumFromInt(raw_idx));
+            }
+            self.indent_level -= 1;
+            try self.writeNewline();
+            try self.writeIndent();
+        }
+        try self.writeByte('}');
     }
 
     fn emitSwitchCase(self: *Codegen, node: Node) !void {
-        try self.writeNodeSpan(node);
+        // 파서 구조: extra = [test_expr, stmts_start, stmts_len]
+        // test_expr가 none이면 default:
+        const e = node.data.extra;
+        const extras = self.ast.extra_data.items[e .. e + 3];
+        const test_expr: NodeIndex = @enumFromInt(extras[0]);
+        const stmts_start = extras[1];
+        const stmts_len = extras[2];
+
+        if (test_expr.isNone()) {
+            try self.write("default:");
+        } else {
+            try self.write("case ");
+            try self.emitNode(test_expr);
+            try self.writeByte(':');
+        }
+
+        if (stmts_len > 0) {
+            self.indent_level += 1;
+            const stmt_indices = self.ast.extra_data.items[stmts_start .. stmts_start + stmts_len];
+            for (stmt_indices) |raw_idx| {
+                try self.writeNewline();
+                try self.writeIndent();
+                try self.emitNode(@enumFromInt(raw_idx));
+            }
+            self.indent_level -= 1;
+        }
     }
 
     fn emitSimpleStmt(self: *Codegen, node: Node, keyword: []const u8) !void {
@@ -836,23 +888,45 @@ pub const Codegen = struct {
     }
 
     fn emitMethodDef(self: *Codegen, node: Node) !void {
+        // 파서 구조: extra = [key, params_start, params_len, body, flags]
         const e = node.data.extra;
         const extras = self.ast.extra_data.items[e .. e + 5];
         const key: NodeIndex = @enumFromInt(extras[0]);
-        const value: NodeIndex = @enumFromInt(extras[1]);
-        _ = extras[2]; // flags — static/getter/setter 등
+        const params_start = extras[1];
+        const params_len = extras[2];
+        const body: NodeIndex = @enumFromInt(extras[3]);
+        const flags = extras[4];
+
+        // flags: bit0=static, bit1=getter, bit2=setter, bit3=async, bit4=generator(*), bit5=computed
+        if (flags & 0x01 != 0) try self.write("static ");
+        if (flags & 0x08 != 0) try self.write("async ");
+        if (flags & 0x02 != 0) {
+            try self.write("get ");
+        } else if (flags & 0x04 != 0) {
+            try self.write("set ");
+        }
+        if (flags & 0x10 != 0) try self.writeByte('*');
+
         try self.emitNode(key);
-        try self.emitNode(value);
+        try self.writeByte('(');
+        try self.emitNodeList(params_start, params_len, ",");
+        try self.writeByte(')');
+        try self.emitNode(body);
     }
 
     fn emitPropertyDef(self: *Codegen, node: Node) !void {
-        const e = node.data.extra;
-        const extras = self.ast.extra_data.items[e .. e + 6];
-        const key: NodeIndex = @enumFromInt(extras[0]);
-        const value: NodeIndex = @enumFromInt(extras[1]);
+        // 파서 구조: binary = { left=key, right=init_val, flags }
+        // flags: bit0=static
+        const key = node.data.binary.left;
+        const value = node.data.binary.right;
+        const flags = node.data.binary.flags;
+
+        if (flags & 0x01 != 0) try self.write("static ");
         try self.emitNode(key);
         if (!value.isNone()) {
+            try self.writeSpace();
             try self.writeByte('=');
+            try self.writeSpace();
             try self.emitNode(value);
         }
         try self.writeByte(';');
@@ -910,7 +984,10 @@ pub const Codegen = struct {
         };
         try self.write(keyword);
         try self.emitNodeList(list_start, list_len, ",");
-        try self.writeByte(';');
+        // for문 init 위치에서는 세미콜론을 emitFor가 직접 출력하므로 생략
+        if (!self.in_for_init) {
+            try self.writeByte(';');
+        }
     }
 
     fn emitVariableDeclarator(self: *Codegen, node: Node) !void {
