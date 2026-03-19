@@ -1254,6 +1254,10 @@ pub const Parser = struct {
         const start = self.currentSpan().start;
         self.expect(.l_curly);
 
+        // class body 안에서는 in_class=true (super 허용 등)
+        const class_saved = self.ctx;
+        self.ctx.in_class = true;
+
         const scratch_top = self.saveScratch();
         while (self.current() != .r_curly and self.current() != .eof) {
             // 세미콜론 스킵 (클래스 본문에서 허용)
@@ -1264,6 +1268,8 @@ pub const Parser = struct {
             const member = try self.parseClassMember();
             if (!member.isNone()) try self.scratch.append(member);
         }
+
+        self.ctx = class_saved;
 
         const end = self.currentSpan().end;
         self.expect(.r_curly);
@@ -2400,13 +2406,17 @@ pub const Parser = struct {
                 // new는 중첩 가능: new new Foo()()
                 self.advance(); // skip 'new'
 
-                // new.target — 메타 프로퍼티
+                // new.target — 메타 프로퍼티 (함수 안에서만 유효)
                 if (self.current() == .dot) {
                     const peek = self.peekNextKind();
                     if (peek == .identifier or peek == .kw_target) {
                         self.advance(); // skip '.'
                         const target_span = self.currentSpan();
                         self.advance(); // skip 'target'
+                        // ECMAScript 15.1.1: new.target은 함수 본문 안에서만 허용
+                        if (!self.ctx.in_function) {
+                            self.addError(.{ .start = span.start, .end = target_span.end }, "'new.target' is not allowed outside of functions");
+                        }
                         return try self.ast.addNode(.{
                             .tag = .meta_property,
                             .span = .{ .start = span.start, .end = target_span.end },
@@ -2438,6 +2448,10 @@ pub const Parser = struct {
             },
             .kw_super => {
                 // super expression: super() 또는 super.prop 또는 super[expr]
+                // ECMAScript 12.3.7: super는 메서드 안에서만 허용
+                if (!self.ctx.in_function and !self.ctx.in_class) {
+                    self.addError(span, "'super' is not allowed outside of a method");
+                }
                 self.advance();
                 return try self.ast.addNode(.{
                     .tag = .super_expression,

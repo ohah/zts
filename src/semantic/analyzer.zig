@@ -57,8 +57,11 @@ pub const SemanticAnalyzer = struct {
     /// 현재 스코프 (스코프 스택 대신 인덱스 하나로 추적)
     current_scope: ScopeId = .none,
 
-    /// strict mode 여부 (파서에서 전달받음)
+    /// strict mode 여부 (파서에서 전달받음, 스코프 진입 시 전파)
     is_strict_mode: bool = false,
+
+    /// module 모드 여부 (파서에서 전달받음)
+    is_module: bool = false,
 
     /// 메모리 할당자
     allocator: std.mem.Allocator,
@@ -125,16 +128,27 @@ pub const SemanticAnalyzer = struct {
     /// let/const/class는 현재 블록 스코프에 등록.
     /// 중복 선언이면 에러를 추가한다.
     fn declareSymbol(self: *SemanticAnalyzer, name_span: Span, kind: SymbolKind, decl_span: Span) void {
-        // var는 호이스팅 — 가장 가까운 var scope까지 올라감
-        const target_scope = if (kind == .variable_var or kind == .function_decl)
+        const name_text = self.ast.source[name_span.start..name_span.end];
+
+        // function_decl의 스코핑 규칙:
+        // - var scope(global/function/module) 안에서 직접 선언: var scope에 등록 (호이스팅)
+        // - 블록 스코프 안에서 선언: 블록 스코프에 등록 (ECMAScript B.3.2, 13.2.14)
+        //   블록 안의 function은 LexicallyDeclaredNames에 포함되어 let/const와 충돌 감지
+        const target_scope = if (kind == .variable_var)
             self.findVarScope()
-        else
-            self.current_scope;
+        else if (kind == .function_decl) blk: {
+            // 현재 스코프가 var scope이면 그대로, 아니면 현재 블록 스코프에 등록
+            if (!self.current_scope.isNone()) {
+                const current = self.scopes.items[self.current_scope.toIndex()];
+                if (!current.kind.isVarScope()) {
+                    break :blk self.current_scope;
+                }
+            }
+            break :blk self.findVarScope();
+        } else self.current_scope;
 
         // 재선언 검증: 같은 스코프에서 같은 이름의 심볼이 있는지 확인
-        const name_text = self.ast.source[name_span.start..name_span.end];
         if (self.findSymbolInScope(target_scope, name_text)) |existing| {
-            // 재선언 가능 여부 체크
             if (!self.canRedeclare(existing.kind, kind)) {
                 self.addError(decl_span, name_text);
                 return;
@@ -154,7 +168,6 @@ pub const SemanticAnalyzer = struct {
             .declaration_span = decl_span,
         }) catch @panic("OOM: symbol list");
 
-        // 스코프의 심볼 카운트 증가
         if (!target_scope.isNone()) {
             self.scopes.items[target_scope.toIndex()].symbol_count += 1;
         }
@@ -307,16 +320,15 @@ pub const SemanticAnalyzer = struct {
     // ================================================================
 
     fn visitProgram(self: *SemanticAnalyzer, node: Node) void {
-        // 프로그램은 global 스코프 (module이면 module 스코프)
-        // 파서가 이미 strict mode를 설정했으므로 여기선 스코프 종류만 결정
-        // TODO: module/script 구분은 파서의 is_module 플래그로 판단해야 함
-        const saved = self.enterScope(.global, false);
+        // module이면 module 스코프 (항상 strict), 아니면 global 스코프
+        const scope_kind: ScopeKind = if (self.is_module) .module else .global;
+        const saved = self.enterScope(scope_kind, self.is_strict_mode);
         self.visitNodeList(node.data.list);
         self.exitScope(saved);
     }
 
     fn visitBlockStatement(self: *SemanticAnalyzer, node: Node) void {
-        const saved = self.enterScope(.block, false);
+        const saved = self.enterScope(.block, self.is_strict_mode);
         self.visitNodeList(node.data.list);
         self.exitScope(saved);
     }
@@ -335,8 +347,8 @@ pub const SemanticAnalyzer = struct {
             self.declareSymbol(name_node.span, .function_decl, node.span);
         }
 
-        // 함수 본문 — 새 function 스코프
-        const saved = self.enterScope(.function, false);
+        // 함수 본문 — 새 function 스코프 (부모의 strict mode 상속)
+        const saved = self.enterScope(.function, self.is_strict_mode);
 
         // 파라미터를 function 스코프에 등록
         const params_start = extras[extra_start + 1];
@@ -355,7 +367,7 @@ pub const SemanticAnalyzer = struct {
         if (extra_start + 4 >= extras.len) return;
         const body_idx: NodeIndex = @enumFromInt(extras[extra_start + 3]);
 
-        const saved = self.enterScope(.function, false);
+        const saved = self.enterScope(.function, self.is_strict_mode);
 
         // 함수 표현식의 이름은 자체 스코프에만 등록 (외부에서 접근 불가)
         const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
@@ -374,7 +386,7 @@ pub const SemanticAnalyzer = struct {
 
     fn visitArrowFunction(self: *SemanticAnalyzer, node: Node) void {
         // binary: { left = param/params, right = body, flags }
-        const saved = self.enterScope(.function, false);
+        const saved = self.enterScope(.function, self.is_strict_mode);
         const body_idx = node.data.binary.right;
 
         // left가 단일 파라미터(binding_identifier) 또는 파라미터 리스트일 수 있음
@@ -426,7 +438,8 @@ pub const SemanticAnalyzer = struct {
 
     /// class body를 스코프로 감싸서 순회한다.
     fn visitClassBodyNode(self: *SemanticAnalyzer, body_idx: NodeIndex) void {
-        const saved = self.enterScope(.class_body, false);
+        // class body는 항상 strict mode (ECMAScript 10.2.1)
+        const saved = self.enterScope(.class_body, true);
         if (!body_idx.isNone() and @intFromEnum(body_idx) < self.ast.nodes.items.len) {
             const body_node = self.ast.getNode(body_idx);
             if (body_node.tag == .class_body) {
@@ -443,7 +456,7 @@ pub const SemanticAnalyzer = struct {
         if (extra_start + 3 >= extras.len) return;
 
         // for문은 블록 스코프를 생성 (for(let i=0; ...) 의 i가 블록 스코프)
-        const saved = self.enterScope(.block, false);
+        const saved = self.enterScope(.block, self.is_strict_mode);
         self.visitNode(@enumFromInt(extras[extra_start])); // init
         self.visitNode(@enumFromInt(extras[extra_start + 1])); // test
         self.visitNode(@enumFromInt(extras[extra_start + 2])); // update
@@ -453,7 +466,7 @@ pub const SemanticAnalyzer = struct {
 
     fn visitForInOf(self: *SemanticAnalyzer, node: Node) void {
         // ternary: { a = left, b = right, c = body }
-        const saved = self.enterScope(.block, false);
+        const saved = self.enterScope(.block, self.is_strict_mode);
         self.visitNode(node.data.ternary.a);
         self.visitNode(node.data.ternary.b);
         self.visitNode(node.data.ternary.c);
@@ -468,7 +481,7 @@ pub const SemanticAnalyzer = struct {
         self.visitNode(@enumFromInt(extras[extra_start])); // discriminant
 
         // switch body는 하나의 블록 스코프 (모든 case가 같은 스코프)
-        const saved = self.enterScope(.switch_block, false);
+        const saved = self.enterScope(.switch_block, self.is_strict_mode);
         const cases_start = extras[extra_start + 1];
         const cases_len = extras[extra_start + 2];
         const case_list = NodeList{ .start = cases_start, .len = cases_len };
@@ -478,7 +491,7 @@ pub const SemanticAnalyzer = struct {
 
     fn visitCatchClause(self: *SemanticAnalyzer, node: Node) void {
         // binary: { left = param, right = body, flags }
-        const saved = self.enterScope(.catch_clause, false);
+        const saved = self.enterScope(.catch_clause, self.is_strict_mode);
         const param_idx = node.data.binary.left;
         if (!param_idx.isNone()) {
             const param_node = self.ast.getNode(param_idx);
