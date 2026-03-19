@@ -604,6 +604,10 @@ pub const Parser = struct {
         const start = self.currentSpan().start;
         self.expect(.l_curly);
 
+        // 블록 안에서는 top-level이 아님 (import/export 금지)
+        const block_saved = self.ctx;
+        self.ctx.is_top_level = false;
+
         var stmts = std.ArrayList(NodeIndex).init(self.allocator);
         defer stmts.deinit();
 
@@ -611,6 +615,8 @@ pub const Parser = struct {
             const stmt = try self.parseStatement();
             if (!stmt.isNone()) try stmts.append(stmt);
         }
+
+        self.ctx = block_saved;
 
         const end = self.currentSpan().end;
         self.expect(.r_curly);
@@ -1586,9 +1592,11 @@ pub const Parser = struct {
 
     fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
-        // ECMAScript 15.2: import 선언은 module code에서만 허용
+        // ECMAScript 15.2: import 선언은 module의 top-level에서만 허용
         if (!self.is_module) {
             self.addError(self.currentSpan(), "'import' declaration is only allowed in module code");
+        } else if (!self.ctx.is_top_level) {
+            self.addError(self.currentSpan(), "'import' declaration must be at the top level");
         }
         self.advance(); // skip 'import'
 
@@ -1729,9 +1737,11 @@ pub const Parser = struct {
 
     fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
-        // ECMAScript 15.2: export 선언은 module code에서만 허용
+        // ECMAScript 15.2: export 선언은 module의 top-level에서만 허용
         if (!self.is_module) {
             self.addError(self.currentSpan(), "'export' declaration is only allowed in module code");
+        } else if (!self.ctx.is_top_level) {
+            self.addError(self.currentSpan(), "'export' declaration must be at the top level");
         }
         self.advance(); // skip 'export'
 
