@@ -1117,16 +1117,7 @@ pub const Parser = struct {
             // parseVariableDeclaration이 세미콜론을 소비했으면 for(;;)
             // 'in' 또는 'of'가 보이면 for-in/for-of
             if (self.current() == .kw_in or self.current() == .kw_of) {
-                // for-in/for-of에서 let/const 여러 바인딩 금지 (ECMAScript 14.7.5.1)
-                if (!init_expr.isNone()) {
-                    const init_node = self.ast.getNode(init_expr);
-                    if (init_node.tag == .variable_declaration) {
-                        const decl_len = self.ast.extra_data.items[init_node.data.extra + 2];
-                        if (decl_len > 1) {
-                            self.addError(init_node.span, "only a single variable declaration is allowed in a for-in/for-of statement");
-                        }
-                    }
-                }
+                self.validateForInOfDeclaration(init_expr);
                 if (self.current() == .kw_in) {
                     return self.parseForIn(start, init_expr);
                 }
@@ -1134,6 +1125,10 @@ pub const Parser = struct {
             }
             return self.parseForRest(start, init_expr);
         }
+
+        // for-in/for-of의 variable declaration 검증 (ECMAScript 14.7.5.1)
+        // - 단일 바인딩만 허용, initializer 금지
+        // - 예외: sloppy mode의 var + for-in은 initializer 허용 (Annex B.3.5)
 
         // 일반 표현식 init
         const init_expr = try self.parseExpression();
@@ -1150,6 +1145,41 @@ pub const Parser = struct {
         }
         _ = self.eat(.semicolon);
         return self.parseForRest(start, init_expr);
+    }
+
+    /// for-in/for-of의 variable declaration을 검증한다.
+    /// - 단일 바인딩만 허용 (ECMAScript 14.7.5.1)
+    /// - initializer 금지 (for-of는 항상, for-in은 strict + let/const)
+    /// - Annex B.3.5: sloppy mode의 var + for-in은 initializer 허용
+    fn validateForInOfDeclaration(self: *Parser, init_expr: NodeIndex) void {
+        if (init_expr.isNone()) return;
+        const init_node = self.ast.getNode(init_expr);
+        if (init_node.tag != .variable_declaration) return;
+
+        const extras = self.ast.extra_data.items;
+        const kind_flags = extras[init_node.data.extra];
+        const list_start = extras[init_node.data.extra + 1];
+        const decl_len = extras[init_node.data.extra + 2];
+
+        if (decl_len > 1) {
+            self.addError(init_node.span, "only a single variable declaration is allowed in a for-in/for-of statement");
+        }
+        if (decl_len == 0) return;
+
+        // 첫 번째 declarator의 initializer 체크
+        const first_decl: NodeIndex = @enumFromInt(extras[list_start]);
+        if (first_decl.isNone()) return;
+        const decl_node = self.ast.getNode(first_decl);
+        if (decl_node.tag != .variable_declarator) return;
+
+        const decl_init: NodeIndex = @enumFromInt(extras[decl_node.data.extra + 2]);
+        if (decl_init.isNone()) return;
+
+        // initializer가 있으면 에러 (예외: sloppy var + for-in)
+        const is_var = kind_flags == 0;
+        const is_for_in = self.current() == .kw_in;
+        if (is_for_in and is_var and !self.ctx.is_strict_mode) return; // Annex B.3.5
+        self.addError(decl_node.span, "for-in/for-of loop variable declaration may not have an initializer");
     }
 
     /// for(init; test; update) body — 나머지 파싱
