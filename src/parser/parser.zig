@@ -1387,7 +1387,7 @@ pub const Parser = struct {
             return try self.ast.addNode(.{
                 .tag = .import_declaration,
                 .span = .{ .start = start, .end = self.currentSpan().start },
-                .data = .{ .unary = .{ .operand = source_node, .flags = 0 } },
+                .data = .{ .unary = .{ .operand = source_node, .flags = 1 } }, // flags=1: side-effect import
             });
         }
 
