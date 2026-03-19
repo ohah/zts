@@ -2175,7 +2175,10 @@ pub const Parser = struct {
                 const start = self.currentSpan().start;
                 self.advance();
                 const operand = try self.parseUnaryExpression();
-                // strict mode: eval/arguments에 ++/-- 금지
+                // ++/-- operand는 유효한 assignment target이어야 함
+                if (!self.isValidAssignmentTarget(operand)) {
+                    self.addError(self.ast.getNode(operand).span, "invalid assignment target");
+                }
                 if (self.ctx.is_strict_mode) self.checkStrictAssignmentTarget(operand);
                 return try self.ast.addNode(.{
                     .tag = .update_expression,
@@ -2239,7 +2242,10 @@ pub const Parser = struct {
         if ((self.current() == .plus2 or self.current() == .minus2) and
             !self.scanner.token.has_newline_before)
         {
-            // strict mode: eval/arguments에 ++/-- 금지
+            // ++/-- operand는 유효한 assignment target이어야 함
+            if (!self.isValidAssignmentTarget(expr)) {
+                self.addError(self.ast.getNode(expr).span, "invalid assignment target");
+            }
             if (self.ctx.is_strict_mode) self.checkStrictAssignmentTarget(expr);
             const expr_start = self.ast.getNode(expr).span.start;
             const kind = self.current();
