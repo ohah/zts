@@ -154,6 +154,16 @@ pub const Parser = struct {
         return self.scanner.tokenText();
     }
 
+    /// strict mode에서 eval/arguments를 바인딩 이름으로 사용하면 에러.
+    /// 식별자 토큰이 "eval" 또는 "arguments"인지 확인한다.
+    fn checkStrictBinding(self: *Parser, span: Span) void {
+        if (!self.is_strict_mode) return;
+        const text = self.ast.source[span.start..span.end];
+        if (std.mem.eql(u8, text, "eval") or std.mem.eql(u8, text, "arguments")) {
+            self.addError(span, "assignment to 'eval' or 'arguments' is not allowed in strict mode");
+        }
+    }
+
     // ================================================================
     // 컨텍스트 저장/복원 (D051: 함수 경계에서 컨텍스트 리셋)
     // ================================================================
@@ -2517,6 +2527,7 @@ pub const Parser = struct {
         switch (self.current()) {
             .identifier => {
                 const span = self.currentSpan();
+                self.checkStrictBinding(span);
                 self.advance();
                 const node = try self.ast.addNode(.{
                     .tag = .binding_identifier,
@@ -2601,6 +2612,7 @@ pub const Parser = struct {
         switch (self.current()) {
             .identifier => {
                 const span = self.currentSpan();
+                self.checkStrictBinding(span);
                 self.advance();
                 return try self.ast.addNode(.{
                     .tag = .binding_identifier,

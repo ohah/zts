@@ -57,6 +57,9 @@ pub const SemanticAnalyzer = struct {
     /// 현재 스코프 (스코프 스택 대신 인덱스 하나로 추적)
     current_scope: ScopeId = .none,
 
+    /// strict mode 여부 (파서에서 전달받음)
+    is_strict_mode: bool = false,
+
     /// 메모리 할당자
     allocator: std.mem.Allocator,
 
@@ -198,7 +201,7 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// 두 심볼 종류의 재선언 가능 여부를 판단한다.
-    fn canRedeclare(_: *const SemanticAnalyzer, existing: SymbolKind, new: SymbolKind) bool {
+    fn canRedeclare(self: *const SemanticAnalyzer, existing: SymbolKind, new: SymbolKind) bool {
         // import는 항상 재선언 불가
         if (existing == .import_binding) return false;
 
@@ -206,9 +209,10 @@ pub const SemanticAnalyzer = struct {
         if (existing.allowsRedeclaration() and new.allowsRedeclaration()) return true;
 
         // parameter + var/function → 허용 (var/function이 parameter를 덮어씀)
-        // function f(x) { var x = 1; } — 항상 허용
-        // function f(x) { function x() {} } — non-strict에서 허용
         if (existing == .parameter and new.allowsRedeclaration()) return true;
+
+        // parameter + parameter → non-strict에서만 허용 (function f(a, a) {})
+        if (existing == .parameter and new == .parameter and !self.is_strict_mode) return true;
 
         // catch_binding + var → 허용 (var가 catch 스코프 밖으로 호이스팅)
         if (existing == .catch_binding and new == .variable_var) return true;
