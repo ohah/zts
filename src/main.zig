@@ -30,6 +30,7 @@ pub fn main() !void {
     var drop_console = false;
     var drop_debugger = false;
     var sourcemap = false;
+    var ascii_only = false;
     var is_test262 = false;
     var is_tokenize = false;
     var test262_dir: ?[]const u8 = null;
@@ -60,6 +61,8 @@ pub fn main() !void {
             drop_console = true;
         } else if (std.mem.eql(u8, arg, "--drop=debugger")) {
             drop_debugger = true;
+        } else if (std.mem.eql(u8, arg, "--ascii-only")) {
+            ascii_only = true;
         } else if (std.mem.eql(u8, arg, "--sourcemap")) {
             sourcemap = true;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
@@ -165,6 +168,7 @@ pub fn main() !void {
         .module_format = module_format,
         .minify = minify,
         .sourcemap = sourcemap,
+        .ascii_only = ascii_only,
     });
     if (sourcemap) {
         cg.addSourceFile(file_path) catch {};
@@ -219,6 +223,7 @@ fn printUsage(writer: anytype) !void {
         \\  --drop=console               Remove console.* calls
         \\  --drop=debugger              Remove debugger statements
         \\  --sourcemap                  Generate source map (.js.map)
+        \\  --ascii-only                 Escape non-ASCII to \uXXXX
         \\  --tokenize                   Print tokens instead of transpiling
         \\  --test262 <dir>              Run Test262 tests
         \\  -h, --help                   Show this help
