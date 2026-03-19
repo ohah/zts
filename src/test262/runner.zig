@@ -176,13 +176,9 @@ pub fn runTest(allocator: mem.Allocator, source: []const u8, meta: TestMetadata,
     var semantic_error_count: usize = 0;
     if (scanner.token.kind != .syntax_error and parser.errors.items.len == 0) {
         var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
-        defer analyzer.deinit();
+        defer analyzer.deinit(); // deinit이 에러 메시지 메모리도 해제
         analyzer.analyze();
         semantic_error_count = analyzer.errors.items.len;
-        // 에러 메시지 메모리 해제
-        for (analyzer.errors.items) |err| {
-            allocator.free(err.message);
-        }
     }
 
     // 렉서 에러 + 파서 에러 + semantic 에러 모두 체크
