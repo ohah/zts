@@ -75,6 +75,9 @@ pub const Parser = struct {
     /// module 모드인지 (import/export 허용, 항상 strict)
     is_module: bool = false,
 
+    /// 현재 파싱 중인 함수의 파라미터가 simple인지 (non-simple이면 "use strict" 금지)
+    has_simple_params: bool = true,
+
     pub fn init(allocator: std.mem.Allocator, scanner: *Scanner) Parser {
         return .{
             .scanner = scanner,
@@ -195,6 +198,7 @@ pub const Parser = struct {
         in_generator: bool,
         in_loop: bool,
         in_switch: bool,
+        has_simple_params: bool,
     };
 
     fn saveContext(self: *const Parser) SavedContext {
@@ -205,6 +209,7 @@ pub const Parser = struct {
             .in_generator = self.in_generator,
             .in_loop = self.in_loop,
             .in_switch = self.in_switch,
+            .has_simple_params = self.has_simple_params,
         };
     }
 
@@ -215,6 +220,7 @@ pub const Parser = struct {
         self.in_generator = saved.in_generator;
         self.in_loop = saved.in_loop;
         self.in_switch = saved.in_switch;
+        self.has_simple_params = saved.has_simple_params;
     }
 
     /// 함수 컨텍스트를 설정한다 (saveContext + 플래그 세팅).
@@ -249,6 +255,21 @@ pub const Parser = struct {
         return body;
     }
 
+    /// 파라미터 리스트가 simple인지 검사한다.
+    /// simple = 모든 파라미터가 binding_identifier (destructuring, default, rest 없음)
+    fn checkSimpleParams(self: *const Parser, scratch_top: usize) bool {
+        const params = self.scratch.items[scratch_top..];
+        for (params) |param_idx| {
+            if (param_idx.isNone()) continue;
+            const node = self.ast.getNode(param_idx);
+            switch (node.tag) {
+                .binding_identifier => {}, // simple
+                else => return false, // destructuring, default, rest, formal_parameter 등
+            }
+        }
+        return true;
+    }
+
     /// 함수 본문을 파싱한다.
     /// block statement와 동일하지만, "use strict" directive를 감지하여 strict mode를 설정한다.
     fn parseFunctionBody(self: *Parser) ParseError2!NodeIndex {
@@ -264,6 +285,12 @@ pub const Parser = struct {
         while (self.current() != .r_curly and self.current() != .eof) {
             if (in_directive_prologue) {
                 if (self.isUseStrictDirective()) {
+                    // non-simple parameters + "use strict" → 에러
+                    // ECMAScript 14.1.2: function with non-simple parameter list
+                    // shall not contain a Use Strict Directive
+                    if (!self.has_simple_params) {
+                        self.addError(self.currentSpan(), "\"use strict\" not allowed in function with non-simple parameters");
+                    }
                     self.is_strict_mode = true;
                 } else {
                     in_directive_prologue = false;
@@ -919,6 +946,7 @@ pub const Parser = struct {
 
         // 함수 본문 — 컨텍스트 저장/복원
         const saved_ctx = self.enterFunctionContext((flags & 0x01) != 0, (flags & 0x02) != 0);
+        self.has_simple_params = self.checkSimpleParams(scratch_top);
         const body = try self.parseFunctionBody();
         self.restoreContext(saved_ctx);
 
@@ -986,6 +1014,7 @@ pub const Parser = struct {
 
         // 함수 본문 — 컨텍스트 저장/복원
         const saved_ctx = self.enterFunctionContext((flags & 0x01) != 0, (flags & 0x02) != 0);
+        self.has_simple_params = self.checkSimpleParams(scratch_top);
         const body = try self.parseFunctionBody();
         self.restoreContext(saved_ctx);
 
@@ -1192,6 +1221,7 @@ pub const Parser = struct {
             if (self.current() == .l_curly) {
                 // 메서드의 async/generator 플래그는 함수와 비트 위치가 다름 (0x08/0x10)
                 const saved_ctx = self.enterFunctionContext((flags & 0x08) != 0, (flags & 0x10) != 0);
+                self.has_simple_params = self.checkSimpleParams(param_top);
                 body = try self.parseFunctionBody();
                 self.restoreContext(saved_ctx);
             } else {
