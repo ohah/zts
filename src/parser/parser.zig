@@ -1722,6 +1722,15 @@ pub const Parser = struct {
         }
         self.advance(); // skip 'import'
 
+        // import defer / import source — Stage 3 proposals
+        // defer/source를 스킵하고 나머지는 일반 import로 처리
+        if (self.current() == .kw_defer or
+            (self.current() == .identifier and
+            std.mem.eql(u8, self.ast.source[self.currentSpan().start..self.currentSpan().end], "source")))
+        {
+            self.advance(); // skip defer/source
+        }
+
         // import "module" — side-effect import
         if (self.current() == .string_literal) {
             const source_node = try self.parseModuleSource();
@@ -2791,13 +2800,45 @@ pub const Parser = struct {
             .kw_import => {
                 self.advance(); // skip 'import'
                 if (self.current() == .dot) {
-                    // import.meta — module code에서만 허용 (ECMAScript 13.3.12.1)
                     self.advance(); // skip '.'
                     const prop_span = self.currentSpan();
-                    _ = try self.parseIdentifierName(); // meta, defer, source 등
-                    if (!self.is_module) {
-                        self.addError(.{ .start = span.start, .end = prop_span.end }, "'import.meta' is only allowed in module code");
+                    const prop_name = try self.parseIdentifierName();
+                    _ = prop_name;
+
+                    // import.meta — module code에서만 허용
+                    // import.source(...), import.defer(...) — script에서도 허용 (dynamic import)
+                    const prop_text = self.ast.source[prop_span.start..prop_span.end];
+                    if (std.mem.eql(u8, prop_text, "meta")) {
+                        if (!self.is_module) {
+                            self.addError(.{ .start = span.start, .end = prop_span.end }, "'import.meta' is only allowed in module code");
+                        }
+                        return try self.ast.addNode(.{
+                            .tag = .meta_property,
+                            .span = .{ .start = span.start, .end = prop_span.end },
+                            .data = .{ .none = 0 },
+                        });
                     }
+
+                    // import.source(...) / import.defer(...) — dynamic import 변형
+                    // 인자가 있으면 call expression처럼 처리
+                    if (self.current() == .l_paren) {
+                        self.advance(); // skip (
+                        const arg = try self.parseAssignmentExpression();
+                        if (self.eat(.comma)) {
+                            if (self.current() != .r_paren) {
+                                _ = try self.parseAssignmentExpression();
+                                _ = self.eat(.comma);
+                            }
+                        }
+                        self.expect(.r_paren);
+                        return try self.ast.addNode(.{
+                            .tag = .import_expression,
+                            .span = .{ .start = span.start, .end = self.currentSpan().start },
+                            .data = .{ .unary = .{ .operand = arg, .flags = 0 } },
+                        });
+                    }
+
+                    // import.xxx (인자 없음) — meta_property로 처리
                     return try self.ast.addNode(.{
                         .tag = .meta_property,
                         .span = .{ .start = span.start, .end = prop_span.end },
