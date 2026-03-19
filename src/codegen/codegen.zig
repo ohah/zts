@@ -43,6 +43,8 @@ pub const CodegenOptions = struct {
     minify: bool = false,
     /// 소스맵 생성 활성화
     sourcemap: bool = false,
+    /// non-ASCII 문자를 \uXXXX로 이스케이프 (D031)
+    ascii_only: bool = false,
 };
 
 const SourceMapBuilder = @import("sourcemap.zig").SourceMapBuilder;
@@ -181,7 +183,58 @@ pub const Codegen = struct {
 
     /// 소스 코드의 span 범위를 그대로 출력 (zero-copy).
     fn writeSpan(self: *Codegen, span: Span) !void {
-        try self.buf.appendSlice(self.ast.source[span.start..span.end]);
+        const text = self.ast.source[span.start..span.end];
+        if (self.options.ascii_only) {
+            try self.writeAsciiOnly(text);
+        } else {
+            try self.write(text);
+        }
+    }
+
+    /// non-ASCII 문자를 \uXXXX로 이스케이프하여 출력.
+    fn writeAsciiOnly(self: *Codegen, text: []const u8) !void {
+        var i: usize = 0;
+        while (i < text.len) {
+            const b = text[i];
+            if (b < 0x80) {
+                // ASCII
+                try self.writeByte(b);
+                i += 1;
+            } else {
+                // UTF-8 → codepoint → \uXXXX
+                const cp_len = std.unicode.utf8ByteSequenceLength(b) catch 1;
+                if (i + cp_len <= text.len) {
+                    const cp = std.unicode.utf8Decode(text[i..][0..cp_len]) catch {
+                        try self.writeByte(b);
+                        i += 1;
+                        continue;
+                    };
+                    if (cp <= 0xFFFF) {
+                        var hex_buf: [6]u8 = undefined;
+                        _ = std.fmt.bufPrint(&hex_buf, "\\u{x:0>4}", .{cp}) catch unreachable;
+                        try self.buf.appendSlice(&hex_buf);
+                    } else {
+                        // 서로게이트 페어
+                        const adjusted = cp - 0x10000;
+                        const high: u16 = @intCast((adjusted >> 10) + 0xD800);
+                        const low: u16 = @intCast((adjusted & 0x3FF) + 0xDC00);
+                        var hex_buf: [12]u8 = undefined;
+                        _ = std.fmt.bufPrint(&hex_buf, "\\u{x:0>4}\\u{x:0>4}", .{ high, low }) catch unreachable;
+                        try self.buf.appendSlice(&hex_buf);
+                    }
+                    // 줄/열 추적
+                    if (cp <= 0xFFFF) {
+                        self.gen_col += 6;
+                    } else {
+                        self.gen_col += 12;
+                    }
+                    i += cp_len;
+                } else {
+                    try self.writeByte(b);
+                    i += 1;
+                }
+            }
+        }
     }
 
     /// 노드의 소스 텍스트를 출력.
