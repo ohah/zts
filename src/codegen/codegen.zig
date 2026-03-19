@@ -273,23 +273,14 @@ pub const Codegen = struct {
 
     /// 현재 노드의 소스 위치(pos) 이전에 위치한 주석들을 출력한다.
     /// minify 모드에서는 주석을 출력하지 않는다.
-    fn emitPendingComments(self: *Codegen, pos: u32) !void {
+    /// 주석 출력. pos가 null이면 남은 모든 주석 출력 (trailing).
+    fn emitComments(self: *Codegen, pos: ?u32) !void {
         if (self.options.minify) return;
         while (self.next_comment_idx < self.comments.len) {
             const comment = self.comments[self.next_comment_idx];
-            if (comment.start >= pos) break;
-            // 소스에서 주석 텍스트를 그대로 출력 (// ... 또는 /* ... */)
-            try self.write(self.ast.source[comment.start..comment.end]);
-            try self.writeNewline();
-            self.next_comment_idx += 1;
-        }
-    }
-
-    /// 파일 끝에 남은 주석들(trailing comments)을 출력한다.
-    fn emitTrailingComments(self: *Codegen) !void {
-        if (self.options.minify) return;
-        while (self.next_comment_idx < self.comments.len) {
-            const comment = self.comments[self.next_comment_idx];
+            if (pos) |p| {
+                if (comment.start >= p) break;
+            }
             try self.write(self.ast.source[comment.start..comment.end]);
             try self.writeNewline();
             self.next_comment_idx += 1;
@@ -309,7 +300,7 @@ pub const Codegen = struct {
 
         // 이 노드 이전에 위치한 주석들을 출력
         if (node.span.start != node.span.end) {
-            try self.emitPendingComments(node.span.start);
+            try self.emitComments(node.span.start);
         }
 
         // 소스맵 매핑: 유의미한 노드 출력 시 원본 위치 기록
@@ -454,7 +445,7 @@ pub const Codegen = struct {
         }
         if (indices.len > 0) try self.writeNewline();
         // 파일 끝에 남은 주석들 출력
-        try self.emitTrailingComments();
+        try self.emitComments(null);
     }
 
     fn emitBlock(self: *Codegen, node: Node) !void {
@@ -536,8 +527,8 @@ pub const Codegen = struct {
         // emitVariableDeclaration이 자체적으로 ';'를 붙이므로,
         // in_for_init 플래그로 해당 세미콜론을 억제한다.
         self.in_for_init = true;
+        defer self.in_for_init = false;
         try self.emitNode(@enumFromInt(extras[0]));
-        self.in_for_init = false;
         try self.writeByte(';');
         try self.emitNode(@enumFromInt(extras[1]));
         try self.writeByte(';');
@@ -549,6 +540,8 @@ pub const Codegen = struct {
     fn emitForInOf(self: *Codegen, node: Node, keyword: []const u8) !void {
         const t = node.data.ternary;
         try self.write("for(");
+        self.in_for_init = true;
+        defer self.in_for_init = false;
         try self.emitNode(t.a);
         try self.writeByte(' ');
         try self.write(keyword);
@@ -628,10 +621,16 @@ pub const Codegen = struct {
     fn emitTry(self: *Codegen, node: Node) !void {
         const t = node.data.ternary;
         try self.write("try");
+        try self.writeSpace();
         try self.emitNode(t.a); // block
-        if (!t.b.isNone()) try self.emitNode(t.b); // catch
+        if (!t.b.isNone()) {
+            try self.writeSpace();
+            try self.emitNode(t.b); // catch
+        }
         if (!t.c.isNone()) {
+            try self.writeSpace();
             try self.write("finally");
+            try self.writeSpace();
             try self.emitNode(t.c);
         }
     }
