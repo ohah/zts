@@ -1511,6 +1511,16 @@ pub const Parser = struct {
                 const saved_ctx = self.enterFunctionContext((flags & 0x08) != 0, (flags & 0x10) != 0);
                 // class 메서드는 super.prop 허용 (ECMAScript 12.3.7)
                 self.ctx.allow_super_property = true;
+                // constructor에서는 super() 호출도 허용
+                if (!key.isNone() and (flags & 0x01) == 0) { // non-static
+                    const mk = self.ast.getNode(key);
+                    if (mk.tag == .identifier_reference) {
+                        const kt = self.ast.source[mk.span.start..mk.span.end];
+                        if (std.mem.eql(u8, kt, "constructor")) {
+                            self.ctx.allow_super_call = true;
+                        }
+                    }
+                }
                 self.ctx.has_simple_params = self.checkSimpleParams(param_top);
                 self.checkDuplicateParams(param_top);
                 body = try self.parseFunctionBody();
@@ -2389,6 +2399,10 @@ pub const Parser = struct {
             const expr_start = self.ast.getNode(expr).span.start;
             switch (self.current()) {
                 .l_paren => {
+                    // super() 호출은 constructor에서만 허용
+                    if (self.ast.getNode(expr).tag == .super_expression and !self.ctx.allow_super_call) {
+                        self.addError(self.ast.getNode(expr).span, "'super()' is only allowed in a class constructor");
+                    }
                     // 함수 호출
                     self.advance();
                     const arg_list = try self.parseArgumentList();
