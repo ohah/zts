@@ -790,8 +790,14 @@ pub const Parser = struct {
             return self.parseForRest(start, init_expr);
         }
 
-        // 일반 표현식 init
+        // 일반 표현식 init — `in` 연산자를 비활성화한다 (ECMAScript 13.7.4).
+        // `for (x in obj)`에서 `in`이 for-in 키워드로 인식되어야 하고,
+        // `for (a in b;;)` 처럼 이항 연산자로 파싱되면 안 된다.
+        // 변수 선언 경로에는 적용하지 않는다 — 디스트럭처링 기본값에서 `in`이 필요.
+        const saved = self.ctx;
+        self.ctx.allow_in = false;
         const init_expr = try self.parseExpression();
+        self.ctx = saved;
         if (self.current() == .kw_in) {
             return self.parseForIn(start, init_expr);
         }
@@ -1958,9 +1964,13 @@ pub const Parser = struct {
 
         if (self.eat(.question)) {
             const expr_start = self.ast.getNode(expr).span.start;
+            // 조건 연산자의 consequent/alternate에서는 `in` 연산자 항상 허용
+            const cond_saved = self.ctx;
+            self.ctx.allow_in = true;
             const consequent = try self.parseAssignmentExpression();
             self.expect(.colon);
             const alternate = try self.parseAssignmentExpression();
+            self.ctx = cond_saved;
             return try self.ast.addNode(.{
                 .tag = .conditional_expression,
                 .span = .{ .start = expr_start, .end = self.currentSpan().start },
@@ -1980,6 +1990,10 @@ pub const Parser = struct {
         var has_logical_or_and = false;
 
         while (true) {
+            // allow_in이 false면 `in`을 이항 연산자로 취급하지 않는다.
+            // ECMAScript 13.7.4: for 초기화절에서 `in`은 for-in 키워드이지 연산자가 아니다.
+            if (self.current() == .kw_in and !self.ctx.allow_in) break;
+
             const prec = getBinaryPrecedence(self.current());
             if (prec == 0 or prec <= min_prec) break;
 
@@ -2391,9 +2405,7 @@ pub const Parser = struct {
             },
             .l_paren => {
                 // 괄호 표현식 또는 arrow function 파라미터 리스트.
-                // parseExpression()이 콤마 연산자를 sequence_expression으로 처리하므로,
-                // 여기서는 단순히 parseExpression() 호출 후 parenthesized_expression으로 감싼다.
-                // arrow function 감지는 호출자(parseAssignmentExpression)에서 => 토큰으로 판별.
+                // 괄호 안에서는 `in` 연산자가 항상 허용된다 (ECMAScript: [+In] 컨텍스트).
                 self.advance(); // skip (
 
                 // 빈 괄호: () → arrow function의 빈 파라미터 리스트
@@ -2406,7 +2418,10 @@ pub const Parser = struct {
                     });
                 }
 
+                const paren_saved = self.ctx;
+                self.ctx.allow_in = true;
                 const expr = try self.parseExpression();
+                self.ctx = paren_saved;
                 self.expect(.r_paren);
                 return try self.ast.addNode(.{
                     .tag = .parenthesized_expression,
@@ -2469,12 +2484,20 @@ pub const Parser = struct {
                 });
             },
             .l_bracket => {
-                // 배열 리터럴
-                return self.parseArrayExpression();
+                // 배열 리터럴 — 내부에서 `in` 연산자 항상 허용
+                const arr_saved = self.ctx;
+                self.ctx.allow_in = true;
+                const arr = try self.parseArrayExpression();
+                self.ctx = arr_saved;
+                return arr;
             },
             .l_curly => {
-                // 객체 리터럴
-                return self.parseObjectExpression();
+                // 객체 리터럴 — 내부에서 `in` 연산자 항상 허용
+                const obj_saved = self.ctx;
+                self.ctx.allow_in = true;
+                const obj = try self.parseObjectExpression();
+                self.ctx = obj_saved;
+                return obj;
             },
             .kw_async => {
                 // async function expression 또는 async arrow
@@ -2859,9 +2882,13 @@ pub const Parser = struct {
     }
 
     /// `= expr` 이 있으면 assignment_pattern으로 감싼다. 없으면 원본 반환.
+    /// 기본값 표현식에서는 `in` 연산자가 항상 허용된다 (ECMAScript: Initializer[+In]).
     fn tryWrapDefaultValue(self: *Parser, node: NodeIndex) ParseError2!NodeIndex {
         if (self.eat(.eq)) {
+            const def_saved = self.ctx;
+            self.ctx.allow_in = true;
             const default_val = try self.parseAssignmentExpression();
+            self.ctx = def_saved;
             return try self.ast.addNode(.{
                 .tag = .assignment_pattern,
                 .span = .{ .start = self.ast.getNode(node).span.start, .end = self.currentSpan().start },
