@@ -166,6 +166,28 @@ pub const Parser = struct {
         }
     }
 
+    /// assignment target이 유효한지 검증한다.
+    /// valid: identifier, member expression, parenthesized(valid target)
+    /// invalid: literal, binary, call, arrow, etc.
+    fn isValidAssignmentTarget(self: *const Parser, idx: NodeIndex) bool {
+        if (idx.isNone()) return false;
+        const node = self.ast.getNode(idx);
+        return switch (node.tag) {
+            .identifier_reference, .private_identifier => true,
+            .static_member_expression, .computed_member_expression, .private_field_expression => true,
+            // destructuring assignment: [a, b] = [1, 2], { a } = obj
+            .array_expression, .object_expression => true,
+            .parenthesized_expression => {
+                // (x) = 1 → x가 valid target이면 OK
+                // (x + y) = 1 → invalid
+                return self.isValidAssignmentTarget(node.data.unary.operand);
+            },
+            // super.x, super[x] 는 valid
+            .super_expression => true,
+            else => false,
+        };
+    }
+
     /// 키워드를 바인딩 위치에서 사용할 때의 검증.
     /// reserved keyword, strict mode reserved, generator 내 yield, async 내 await.
     fn checkKeywordBinding(self: *Parser) void {
@@ -1845,6 +1867,10 @@ pub const Parser = struct {
         }
 
         if (self.current().isAssignment()) {
+            // assignment target 검증 (ECMAScript 13.15.1)
+            if (!self.isValidAssignmentTarget(left)) {
+                self.addError(self.ast.getNode(left).span, "invalid assignment target");
+            }
             const left_start = self.ast.getNode(left).span.start;
             const flags: u16 = @intFromEnum(self.current());
             self.advance();
