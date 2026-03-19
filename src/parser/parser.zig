@@ -137,6 +137,11 @@ pub const Parser = struct {
     pub fn parse(self: *Parser) !NodeIndex {
         self.advance(); // 첫 토큰 로드
 
+        // hashbang (#! ...) 건너뛰기
+        if (self.current() == .hashbang_comment) {
+            self.advance();
+        }
+
         var stmts = std.ArrayList(NodeIndex).init(self.allocator);
         defer stmts.deinit();
 
