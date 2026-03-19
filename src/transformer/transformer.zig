@@ -154,7 +154,6 @@ pub const Transformer = struct {
             .sequence_expression,
             .class_body,
             .formal_parameters,
-            .switch_statement,
             .template_literal,
             // JSX
             .jsx_element,
@@ -213,12 +212,13 @@ pub const Transformer = struct {
             .function_declaration,
             .function_expression,
             .function,
-            .arrow_function_expression,
             => self.visitFunction(node),
+            .arrow_function_expression => self.visitArrowFunction(node),
             .class_declaration,
             .class_expression,
             => self.visitClass(node),
             .for_statement => self.visitForStatement(node),
+            .switch_statement => self.visitSwitchStatement(node),
             .switch_case => self.visitSwitchCase(node),
             .call_expression => self.visitCallExpression(node),
             .new_expression => self.visitNewExpression(node),
@@ -665,6 +665,22 @@ pub const Transformer = struct {
         });
     }
 
+    /// arrow_function_expression: binary = { left=params, right=body, flags }
+    /// flags: 0x01 = async
+    fn visitArrowFunction(self: *Transformer, node: Node) Error!NodeIndex {
+        const new_params = try self.visitNode(node.data.binary.left);
+        const new_body = try self.visitNode(node.data.binary.right);
+        return self.new_ast.addNode(.{
+            .tag = .arrow_function_expression,
+            .span = node.span,
+            .data = .{ .binary = .{
+                .left = new_params,
+                .right = new_body,
+                .flags = node.data.binary.flags,
+            } },
+        });
+    }
+
     /// class_declaration / class_expression
     /// extra_data = [name, super_class, body, type_params, implements_start, implements_len]
     /// class: extra = [name, super, body, type_params, impl_start, impl_len, deco_start, deco_len]
@@ -692,6 +708,16 @@ pub const Transformer = struct {
         const new_body = try self.visitNode(self.readNodeIdx(e, 3));
         return self.addExtraNode(.for_statement, node.span, &.{
             @intFromEnum(new_init), @intFromEnum(new_test), @intFromEnum(new_update), @intFromEnum(new_body),
+        });
+    }
+
+    /// switch_statement: extra = [discriminant, cases.start, cases.len]
+    fn visitSwitchStatement(self: *Transformer, node: Node) Error!NodeIndex {
+        const e = node.data.extra;
+        const new_disc = try self.visitNode(self.readNodeIdx(e, 0));
+        const new_cases = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
+        return self.addExtraNode(.switch_statement, node.span, &.{
+            @intFromEnum(new_disc), new_cases.start, new_cases.len,
         });
     }
 
@@ -733,13 +759,14 @@ pub const Transformer = struct {
     }
 
     /// method_definition: extra_data = [key, value, flags, decorators_start, decorators_len]
+    /// method_definition: extra = [key, params.start, params.len, body, flags]
     fn visitMethodDefinition(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
         const new_key = try self.visitNode(self.readNodeIdx(e, 0));
-        const new_value = try self.visitNode(self.readNodeIdx(e, 1));
-        const new_decos = try self.visitExtraList(self.readU32(e, 3), self.readU32(e, 4));
+        const new_params = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
+        const new_body = try self.visitNode(self.readNodeIdx(e, 3));
         return self.addExtraNode(.method_definition, node.span, &.{
-            @intFromEnum(new_key), @intFromEnum(new_value), self.readU32(e, 2), new_decos.start, new_decos.len,
+            @intFromEnum(new_key), new_params.start, new_params.len, @intFromEnum(new_body), self.readU32(e, 4),
         });
     }
 
@@ -782,14 +809,31 @@ pub const Transformer = struct {
         });
     }
 
-    /// import_declaration: extra_data = [source, specifiers_start, specifiers_len, attributes_start, attributes_len]
+    /// import_declaration:
+    ///   side-effect: unary = { operand=source_node }
+    ///   with specs:  extra = [specs.start, specs.len, source_node]
     fn visitImportDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
+        // side-effect import 감지: operand가 유효한 string_literal이면 unary 형태
+        const maybe_operand = node.data.unary.operand;
+        if (!maybe_operand.isNone() and @intFromEnum(maybe_operand) < self.old_ast.nodes.items.len) {
+            const operand_node = self.old_ast.getNode(maybe_operand);
+            if (operand_node.tag == .string_literal) {
+                // side-effect import: 그대로 복사
+                const new_source = try self.visitNode(maybe_operand);
+                return self.new_ast.addNode(.{
+                    .tag = .import_declaration,
+                    .span = node.span,
+                    .data = .{ .unary = .{ .operand = new_source, .flags = 0 } },
+                });
+            }
+        }
+
+        // extra 형태: [specs.start, specs.len, source_node]
         const e = node.data.extra;
-        const new_source = try self.visitNode(self.readNodeIdx(e, 0));
-        const new_specs = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
-        const new_attrs = try self.visitExtraList(self.readU32(e, 3), self.readU32(e, 4));
+        const new_specs = try self.visitExtraList(self.readU32(e, 0), self.readU32(e, 1));
+        const new_source = try self.visitNode(self.readNodeIdx(e, 2));
         return self.addExtraNode(.import_declaration, node.span, &.{
-            @intFromEnum(new_source), new_specs.start, new_specs.len, new_attrs.start, new_attrs.len,
+            new_specs.start, new_specs.len, @intFromEnum(new_source),
         });
     }
 
