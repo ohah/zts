@@ -1589,6 +1589,13 @@ pub const Parser = struct {
                     self.addError(key_node.span, "static class field cannot be named 'prototype'");
                 }
             }
+            // private field '#constructor' 금지
+            if (key_node.tag == .private_identifier) {
+                const pn = self.ast.source[key_node.span.start..key_node.span.end];
+                if (std.mem.eql(u8, pn, "#constructor")) {
+                    self.addError(key_node.span, "class member cannot be named '#constructor'");
+                }
+            }
         }
 
         // TS 타입 어노테이션: value: Type
