@@ -1503,6 +1503,28 @@ pub const Parser = struct {
             // TS 리턴 타입 어노테이션: (): Type
             _ = try self.tryParseReturnType();
 
+            // static method 'prototype' 금지 (ECMAScript 15.7.1)
+            // private method '#constructor' 금지
+            if (!key.isNone()) {
+                const mk = self.ast.getNode(key);
+                const method_name = if (mk.tag == .identifier_reference)
+                    self.ast.source[mk.span.start..mk.span.end]
+                else if (mk.tag == .string_literal and mk.span.end > mk.span.start + 2)
+                    self.ast.source[mk.span.start + 1 .. mk.span.end - 1]
+                else
+                    @as([]const u8, "");
+                if ((flags & 0x01) != 0 and std.mem.eql(u8, method_name, "prototype")) {
+                    self.addError(mk.span, "static class method cannot be named 'prototype'");
+                }
+                // private name '#constructor' 금지
+                if (mk.tag == .private_identifier) {
+                    const pn = self.ast.source[mk.span.start..mk.span.end];
+                    if (std.mem.eql(u8, pn, "#constructor")) {
+                        self.addError(mk.span, "class member cannot be named '#constructor'");
+                    }
+                }
+            }
+
             // 바디: abstract 메서드는 바디 없음 (세미콜론으로 끝남)
             // 메서드도 함수이므로 컨텍스트 설정
             var body = NodeIndex.none;
