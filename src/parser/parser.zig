@@ -1899,7 +1899,7 @@ pub const Parser = struct {
                 // new.target — 메타 프로퍼티
                 if (self.current() == .dot) {
                     const peek = self.peekNextKind();
-                    if (peek == .identifier) {
+                    if (peek == .identifier or peek == .kw_target) {
                         self.advance(); // skip '.'
                         const target_span = self.currentSpan();
                         self.advance(); // skip 'target'
