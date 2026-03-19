@@ -397,7 +397,19 @@ pub const Scanner = struct {
                     if (c == '\\') {
                         // advance()에서 이미 \ 를 소비했으므로 current-1 부터
                         self.current -= 1; // put back '\'
+                        const esc_start = self.current;
                         if (self.scanIdentifierEscape()) {
+                            // 식별자 시작: 디코딩된 코드포인트가 ID_Start인지 검증
+                            const esc_text = self.source[esc_start..self.current];
+                            if (self.decodeIdentifierEscapes(esc_text)) |decoded_name| {
+                                if (decoded_name.len > 0 and decoded_name[0] < 0x80) {
+                                    if (!isAsciiIdentStart(decoded_name[0])) {
+                                        // 유효한 식별자 시작 문자가 아님 (예: \u007B = '{')
+                                        self.current = esc_start + 1; // re-consume '\'
+                                        break :blk .syntax_error;
+                                    }
+                                }
+                            }
                             self.scanIdentifierTail();
                             // 이스케이프를 디코딩하여 키워드인지 판별.
                             // 키워드면 escaped_keyword (식별자로 사용 불가),
