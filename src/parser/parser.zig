@@ -437,7 +437,7 @@ pub const Parser = struct {
                         self.addError(self.currentSpan(), "\"use strict\" not allowed in function with non-simple parameters");
                     }
                     self.ctx.is_strict_mode = true;
-                } else {
+                } else if (self.current() != .string_literal) {
                     in_directive_prologue = false;
                 }
             }
@@ -485,7 +485,8 @@ pub const Parser = struct {
             if (in_directive_prologue) {
                 if (self.isUseStrictDirective()) {
                     self.ctx.is_strict_mode = true;
-                } else {
+                } else if (self.current() != .string_literal) {
+                    // directive prologue는 문자열 expression statement가 연속되는 동안 유효
                     in_directive_prologue = false;
                 }
             }
