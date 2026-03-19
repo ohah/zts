@@ -1520,6 +1520,13 @@ pub const Parser = struct {
                 if ((flags & 0x01) != 0 and std.mem.eql(u8, method_name, "prototype")) {
                     self.addError(mk.span, "static class method cannot be named 'prototype'");
                 }
+                // constructor는 일반 method만 가능 — getter/setter/generator/async 금지
+                if ((flags & 0x01) == 0 and std.mem.eql(u8, method_name, "constructor")) {
+                    // flags: 0x02=getter, 0x04=setter, 0x08=async, 0x10=generator
+                    if ((flags & 0x1E) != 0) {
+                        self.addError(mk.span, "class constructor cannot be a getter, setter, generator, or async");
+                    }
+                }
                 // private name '#constructor' 금지
                 if (mk.tag == .private_identifier) {
                     const pn = self.ast.source[mk.span.start..mk.span.end];
