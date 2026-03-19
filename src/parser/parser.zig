@@ -1514,11 +1514,14 @@ pub const Parser = struct {
                 // constructor에서는 super() 호출도 허용
                 if (!key.isNone() and (flags & 0x01) == 0) { // non-static
                     const mk = self.ast.getNode(key);
-                    if (mk.tag == .identifier_reference) {
-                        const kt = self.ast.source[mk.span.start..mk.span.end];
-                        if (std.mem.eql(u8, kt, "constructor")) {
-                            self.ctx.allow_super_call = true;
-                        }
+                    const kt = if (mk.tag == .identifier_reference)
+                        self.ast.source[mk.span.start..mk.span.end]
+                    else if (mk.tag == .string_literal and mk.span.end > mk.span.start + 2)
+                        self.ast.source[mk.span.start + 1 .. mk.span.end - 1]
+                    else
+                        @as([]const u8, "");
+                    if (std.mem.eql(u8, kt, "constructor")) {
+                        self.ctx.allow_super_call = true;
                     }
                 }
                 self.ctx.has_simple_params = self.checkSimpleParams(param_top);
