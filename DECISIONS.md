@@ -248,11 +248,24 @@
 - **구현 세부**: sign bit은 bit 0, 값은 5bit씩 분할, continuation bit은 bit 5, base64 인코딩
 - **참고**: oxc도 `oxc_sourcemap` 크레이트를 자체 개발 (외부 의존 아님)
 
-### Phase 5 (CLI) 시작 시
-- 설정 파일 (tsconfig만? zts.config.json 별도?)
-- watch 구현 방식 (polling vs fsevents/inotify)
-- 출력 디렉토리 전략 (rootDir/outDir 미러링 세부 규칙)
-- stdin/stdout 프로토콜 (JSON-RPC? 단순 파이프?)
+### Phase 5 (CLI) — 결정 완료
+
+### D047: 설정 파일
+- **결정**: tsconfig.json만 지원 (별도 zts.config.json 없음)
+- **이유**: 기존 TS 프로젝트와 호환성. tsconfig.json은 이미 표준. esbuild/oxc/SWC 모두 tsconfig.json 사용. 별도 설정 파일은 사용자 혼란만 야기
+- **참고**: tsconfig.json의 extends, compilerOptions만 파싱. paths/baseUrl은 Phase 6(번들러)에서 활성화 (D010)
+
+### D048: watch 구현 방식
+- **결정**: polling 기본 + 플랫폼 네이티브 옵션 (추후)
+- **이유**: Zig 표준 라이브러리에 fsevents/inotify 바인딩 없음. polling이 가장 이식성 높음. 성능이 필요하면 추후 플랫폼별 네이티브 추가. esbuild도 polling 폴백 있음
+
+### D049: 출력 디렉토리 전략
+- **결정**: rootDir/outDir 미러링 (tsc 방식)
+- **이유**: rootDir 기준으로 소스 디렉토리 구조를 outDir에 복제. src/a/b.ts → dist/a/b.js. tsc/SWC와 동일한 동작. rootDir 미지정 시 모든 소스의 공통 조상 디렉토리를 자동 계산
+
+### D050: stdin/stdout 프로토콜
+- **결정**: 단순 파이프 (stdin → stdout, 추후 JSON-RPC)
+- **이유**: `cat input.ts | zts > output.js` 형태의 파이프 지원이 1순위. JSON-RPC는 에디터 통합 시 추가. esbuild도 단순 stdin/stdout 먼저, serve API 나중에 추가
 
 ### Phase 6 (Advanced) 시작 시
 - 번들러 아키텍처 (의존성 그래프, 청크 분할)
