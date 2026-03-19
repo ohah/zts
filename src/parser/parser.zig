@@ -284,8 +284,8 @@ pub const Parser = struct {
                 // (x + y) = 1 → invalid
                 return self.isValidAssignmentTarget(node.data.unary.operand);
             },
-            // super.x, super[x] 는 valid
-            .super_expression => true,
+            // super.x, super[x]는 static/computed_member_expression으로 처리됨
+            // bare super는 assignment target이 아님
             else => false,
         };
     }
@@ -2167,10 +2167,17 @@ pub const Parser = struct {
                 self.advance();
                 const operand = try self.parseUnaryExpression();
                 // strict mode: delete identifier → SyntaxError (ECMAScript 12.5.3.1)
+                // delete (x) 도 괄호를 통과하여 체크
                 if (is_delete and self.ctx.is_strict_mode and !operand.isNone()) {
-                    const op_node = self.ast.getNode(operand);
-                    if (op_node.tag == .identifier_reference) {
-                        self.addError(op_node.span, "delete of an identifier is not allowed in strict mode");
+                    var target = operand;
+                    while (!target.isNone()) {
+                        const t = self.ast.getNode(target);
+                        if (t.tag == .identifier_reference) {
+                            self.addError(t.span, "delete of an identifier is not allowed in strict mode");
+                            break;
+                        } else if (t.tag == .parenthesized_expression) {
+                            target = t.data.unary.operand;
+                        } else break;
                     }
                 }
                 return try self.ast.addNode(.{
