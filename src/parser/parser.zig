@@ -2455,6 +2455,10 @@ pub const Parser = struct {
     /// new는 중첩 가능하므로 new를 만나면 재귀한다.
     /// member access (.prop, [expr])만 허용하고 호출 ()은 상위에서 처리.
     fn parseNewCallee(self: *Parser) ParseError2!NodeIndex {
+        // ECMAScript: new import(...) 는 금지
+        if (self.current() == .kw_import) {
+            self.addError(self.currentSpan(), "'import' cannot be used with 'new'");
+        }
         if (self.current() == .kw_new) {
             const span = self.currentSpan();
             self.advance(); // skip 'new'
