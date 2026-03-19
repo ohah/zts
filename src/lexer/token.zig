@@ -369,9 +369,10 @@ pub const Kind = enum(u8) {
         return self.inRange(.kw_await, .kw_with);
     }
 
-    /// Strict mode reserved word인지 (implements..yield)
+    /// Strict mode reserved word인지 (ECMAScript 12.1.1)
+    /// implements, interface, let, package, private, protected, public, static, yield
     pub fn isStrictModeReserved(self: Kind) bool {
-        return self.inRange(.kw_implements, .kw_yield);
+        return self.inRange(.kw_implements, .kw_yield) or self == .kw_let or self == .kw_static;
     }
 
     /// TypeScript contextual keyword인지 (abstract..override)
@@ -743,7 +744,8 @@ test "Kind.isStrictModeReserved" {
     try std.testing.expect(Kind.kw_yield.isStrictModeReserved());
     try std.testing.expect(Kind.kw_public.isStrictModeReserved());
     // 경계값
-    try std.testing.expect(!Kind.kw_let.isStrictModeReserved()); // kw_implements 직전
+    try std.testing.expect(Kind.kw_let.isStrictModeReserved()); // ECMAScript 12.1.1: let은 strict mode reserved
+    try std.testing.expect(Kind.kw_static.isStrictModeReserved()); // ECMAScript 12.1.1: static도 strict mode reserved
     try std.testing.expect(!Kind.kw_true.isStrictModeReserved()); // kw_yield 직후
 }
 
