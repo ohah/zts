@@ -967,3 +967,80 @@ test "SemanticAnalyzer: const redeclaration is error" {
 
     try std.testing.expect(ana.errors.items.len > 0);
 }
+
+// ============================================================
+// Private Name 검증 테스트
+// ============================================================
+
+test "SemanticAnalyzer: declared private name is valid" {
+    var scanner = Scanner.init(std.testing.allocator, "class C { #x = 1; foo() { this.#x; } }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len == 0);
+}
+
+test "SemanticAnalyzer: undeclared private name is error" {
+    var scanner = Scanner.init(std.testing.allocator, "class C { foo() { this.#x; } }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len > 0);
+}
+
+test "SemanticAnalyzer: private name outside class is error" {
+    var scanner = Scanner.init(std.testing.allocator, "this.#x;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len > 0);
+}
+
+test "SemanticAnalyzer: private method is valid" {
+    var scanner = Scanner.init(std.testing.allocator, "class C { #foo() {} bar() { this.#foo(); } }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len == 0);
+}
+
+test "SemanticAnalyzer: nested class private name" {
+    // 내부 class에서 외부 class의 private name 접근은 불가
+    var scanner = Scanner.init(std.testing.allocator,
+        "class Outer { #x; foo() { class Inner { bar() { this.#y; } } } }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    // #y는 어디에도 선언 안 됨 → 에러
+    try std.testing.expect(ana.errors.items.len > 0);
+}
