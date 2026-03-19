@@ -11,6 +11,7 @@ pub const Token = token.Token;
 pub const Kind = token.Kind;
 pub const Span = token.Span;
 pub const Scanner = scanner.Scanner;
+pub const Comment = scanner.Comment;
 pub const keywords = token.keywords;
 
 test {

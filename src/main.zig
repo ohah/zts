@@ -170,6 +170,8 @@ pub fn main() !void {
         .sourcemap = sourcemap,
         .ascii_only = ascii_only,
     });
+    // 스캐너에서 수집한 주석을 codegen에 전달 (주석 보존)
+    cg.comments = scanner.comments.items;
     if (sourcemap) {
         cg.addSourceFile(file_path) catch {};
     }

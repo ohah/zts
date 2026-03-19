@@ -18,6 +18,7 @@ const NodeList = ast_mod.NodeList;
 const Ast = ast_mod.Ast;
 const Span = @import("../lexer/token.zig").Span;
 const Kind = @import("../lexer/token.zig").Kind;
+const Comment = @import("../lexer/scanner.zig").Comment;
 
 /// 모듈 출력 형식
 pub const ModuleFormat = enum {
@@ -61,6 +62,10 @@ pub const Codegen = struct {
     /// 출력의 현재 줄/열 (소스맵 매핑용)
     gen_line: u32 = 0,
     gen_col: u32 = 0,
+    /// 소스에서 수집한 주석 리스트 (소스 순서, scanner.comments.items)
+    comments: []const Comment = &.{},
+    /// 다음으로 출력할 주석의 인덱스
+    next_comment_idx: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, ast: *const Ast) Codegen {
         return initWithOptions(allocator, ast, .{});
@@ -243,6 +248,35 @@ pub const Codegen = struct {
     }
 
     // ================================================================
+    // 주석 출력
+    // ================================================================
+
+    /// 현재 노드의 소스 위치(pos) 이전에 위치한 주석들을 출력한다.
+    /// minify 모드에서는 주석을 출력하지 않는다.
+    fn emitPendingComments(self: *Codegen, pos: u32) !void {
+        if (self.options.minify) return;
+        while (self.next_comment_idx < self.comments.len) {
+            const comment = self.comments[self.next_comment_idx];
+            if (comment.start >= pos) break;
+            // 소스에서 주석 텍스트를 그대로 출력 (// ... 또는 /* ... */)
+            try self.write(self.ast.source[comment.start..comment.end]);
+            try self.writeNewline();
+            self.next_comment_idx += 1;
+        }
+    }
+
+    /// 파일 끝에 남은 주석들(trailing comments)을 출력한다.
+    fn emitTrailingComments(self: *Codegen) !void {
+        if (self.options.minify) return;
+        while (self.next_comment_idx < self.comments.len) {
+            const comment = self.comments[self.next_comment_idx];
+            try self.write(self.ast.source[comment.start..comment.end]);
+            try self.writeNewline();
+            self.next_comment_idx += 1;
+        }
+    }
+
+    // ================================================================
     // 노드 출력
     // ================================================================
 
@@ -252,6 +286,11 @@ pub const Codegen = struct {
         if (idx.isNone()) return;
 
         const node = self.ast.getNode(idx);
+
+        // 이 노드 이전에 위치한 주석들을 출력
+        if (node.span.start != node.span.end) {
+            try self.emitPendingComments(node.span.start);
+        }
 
         // 소스맵 매핑: 유의미한 노드 출력 시 원본 위치 기록
         if (self.sm_builder != null and node.span.start != node.span.end) {
@@ -394,6 +433,8 @@ pub const Codegen = struct {
             try self.emitNode(@enumFromInt(raw_idx));
         }
         if (indices.len > 0) try self.writeNewline();
+        // 파일 끝에 남은 주석들 출력
+        try self.emitTrailingComments();
     }
 
     fn emitBlock(self: *Codegen, node: Node) !void {

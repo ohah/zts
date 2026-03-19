@@ -19,6 +19,17 @@ const Token = token.Token;
 const Kind = token.Kind;
 const Span = token.Span;
 
+/// 스캔 중 발견된 주석 하나를 나타낸다.
+/// start/end는 소스 코드의 byte offset이며, 구분자(// 또는 /* */)를 포함한다.
+pub const Comment = struct {
+    /// 주석 시작 byte offset (첫 번째 `/` 위치)
+    start: u32,
+    /// 주석 끝 byte offset (single-line: 줄바꿈 직전, multi-line: `*/` 직후)
+    end: u32,
+    /// true이면 `/* ... */`, false이면 `// ...`
+    is_multiline: bool,
+};
+
 /// 소스 코드를 토큰으로 분리하는 렉서.
 ///
 /// 사용법:
@@ -75,6 +86,10 @@ pub const Scanner = struct {
     /// `@jsxImportSource preact` → jsx_import_source_pragma = "preact"
     jsx_import_source_pragma: ?[]const u8 = null,
 
+    /// 스캔 중 발견된 주석 리스트 (소스 순서).
+    /// codegen에서 주석 보존에 사용한다.
+    comments: std.ArrayList(Comment),
+
     /// 소스를 UTF-8로 읽고 Scanner를 초기화한다.
     /// BOM이 있으면 스킵한다 (D019).
     pub fn init(allocator: std.mem.Allocator, source: []const u8) Scanner {
@@ -89,6 +104,7 @@ pub const Scanner = struct {
             .source = source,
             .line_offsets = line_offsets,
             .template_depth_stack = std.ArrayList(u32).init(allocator),
+            .comments = std.ArrayList(Comment).init(allocator),
         };
 
         // UTF-8 BOM 스킵 (0xEF 0xBB 0xBF)
@@ -106,6 +122,7 @@ pub const Scanner = struct {
     pub fn deinit(self: *Scanner) void {
         self.line_offsets.deinit();
         self.template_depth_stack.deinit();
+        self.comments.deinit();
     }
 
     // ====================================================================
@@ -693,6 +710,13 @@ pub const Scanner = struct {
 
         const comment_text = self.source[comment_start..self.current];
         self.checkPureComment(comment_text);
+
+        // 주석을 기록한다 (start = 첫 번째 '/' 위치, end = 줄바꿈 직전)
+        self.comments.append(.{
+            .start = self.start,
+            .end = self.current,
+            .is_multiline = false,
+        }) catch @panic("OOM: comments");
     }
 
     /// multi-line comment를 스캔한다 (/* ... */).
@@ -710,6 +734,14 @@ pub const Scanner = struct {
                 const comment_text = self.source[comment_start..self.current];
                 self.current += 2; // skip */
                 self.checkPureComment(comment_text);
+
+                // 주석을 기록한다 (start = 첫 번째 '/' 위치, end = '*/' 직후)
+                self.comments.append(.{
+                    .start = self.start,
+                    .end = self.current,
+                    .is_multiline = true,
+                }) catch @panic("OOM: comments");
+
                 return false; // 정상 종료
             }
             // 줄바꿈 추적 (소스맵 정확성)
