@@ -13,6 +13,7 @@ const Scanner = @import("../lexer/scanner.zig").Scanner;
 const token_mod = @import("../lexer/token.zig");
 const Kind = token_mod.Kind;
 const Span = token_mod.Span;
+const Token = token_mod.Token;
 const ast_mod = @import("ast.zig");
 const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
@@ -1028,16 +1029,52 @@ pub const Parser = struct {
 
     const PeekResult = struct { kind: Kind, has_newline_before: bool };
 
+    /// 스캐너 상태를 저장한다. lookahead 후 restoreState로 되돌릴 때 사용.
+    const ScannerState = struct {
+        current: u32,
+        start: u32,
+        token: Token,
+        line: u32,
+        line_start: u32,
+        brace_depth: u32,
+        prev_token_kind: Kind,
+        template_depth_len: usize,
+    };
+
+    fn saveState(self: *const Parser) ScannerState {
+        return .{
+            .current = self.scanner.current,
+            .start = self.scanner.start,
+            .token = self.scanner.token,
+            .line = self.scanner.line,
+            .line_start = self.scanner.line_start,
+            .brace_depth = self.scanner.brace_depth,
+            .prev_token_kind = self.scanner.prev_token_kind,
+            .template_depth_len = self.scanner.template_depth_stack.items.len,
+        };
+    }
+
+    fn restoreState(self: *Parser, s: ScannerState) void {
+        self.scanner.current = s.current;
+        self.scanner.start = s.start;
+        self.scanner.token = s.token;
+        self.scanner.line = s.line;
+        self.scanner.line_start = s.line_start;
+        self.scanner.brace_depth = s.brace_depth;
+        self.scanner.prev_token_kind = s.prev_token_kind;
+        // template_depth_stack은 lookahead 중 push(grow) 또는 pop(shrink) 가능.
+        // pop으로 줄어든 경우 saved 길이가 현재보다 크지만, capacity 내이므로
+        // items.len 직접 설정으로 안전하게 복구할 수 있다.
+        if (s.template_depth_len <= self.scanner.template_depth_stack.items.len) {
+            self.scanner.template_depth_stack.shrinkRetainingCapacity(s.template_depth_len);
+        } else {
+            self.scanner.template_depth_stack.items.len = s.template_depth_len;
+        }
+    }
+
     /// 다음 토큰의 Kind와 줄바꿈 여부를 미리 본다 (현재 토큰을 소비하지 않음).
     fn peekNext(self: *Parser) PeekResult {
-        const saved_pos = self.scanner.current;
-        const saved_start = self.scanner.start;
-        const saved_token = self.scanner.token;
-        const saved_line = self.scanner.line;
-        const saved_line_start = self.scanner.line_start;
-        const saved_brace_depth = self.scanner.brace_depth;
-        const saved_prev_token = self.scanner.prev_token_kind;
-        const saved_template_len = self.scanner.template_depth_stack.items.len;
+        const saved = self.saveState();
 
         self.scanner.next();
         const result = PeekResult{
@@ -1045,15 +1082,7 @@ pub const Parser = struct {
             .has_newline_before = self.scanner.token.has_newline_before,
         };
 
-        self.scanner.current = saved_pos;
-        self.scanner.start = saved_start;
-        self.scanner.token = saved_token;
-        self.scanner.line = saved_line;
-        self.scanner.line_start = saved_line_start;
-        self.scanner.brace_depth = saved_brace_depth;
-        self.scanner.prev_token_kind = saved_prev_token;
-        self.scanner.template_depth_stack.shrinkRetainingCapacity(saved_template_len);
-
+        self.restoreState(saved);
         return result;
     }
 
@@ -1066,23 +1095,10 @@ pub const Parser = struct {
     /// JSX children 파싱 중 '<' 다음이 '/'인지 판별할 때 사용.
     /// normal 모드에서는 '/'가 regex로 해석될 수 있으므로 JSX 전용 peek이 필요하다.
     fn peekNextKindJSX(self: *Parser) Kind {
-        const saved_pos = self.scanner.current;
-        const saved_start = self.scanner.start;
-        const saved_token = self.scanner.token;
-        const saved_line = self.scanner.line;
-        const saved_line_start = self.scanner.line_start;
-        const saved_prev = self.scanner.prev_token_kind;
-
+        const saved = self.saveState();
         self.scanner.nextInsideJSXElement();
         const peek_kind = self.scanner.token.kind;
-
-        self.scanner.current = saved_pos;
-        self.scanner.start = saved_start;
-        self.scanner.token = saved_token;
-        self.scanner.line = saved_line;
-        self.scanner.line_start = saved_line_start;
-        self.scanner.prev_token_kind = saved_prev;
-
+        self.restoreState(saved);
         return peek_kind;
     }
 
@@ -1391,18 +1407,44 @@ pub const Parser = struct {
     }
 
     fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
+        // async identifier => body — async arrow (간단한 형태: async x => x + 1)
+        if (self.current() == .kw_async) {
+            const async_span = self.currentSpan();
+            const peek = self.peekNext();
+            if ((peek.kind == .identifier or (peek.kind.isKeyword() and !peek.kind.isReservedKeyword())) and !peek.has_newline_before) {
+                // async 뒤에 줄바꿈 없이 식별자 → async arrow 가능성
+                const saved = self.saveState();
+                self.advance(); // skip 'async'
+                const id_span = self.currentSpan();
+                self.advance(); // skip identifier
+                if (self.current() == .arrow and !self.scanner.token.has_newline_before) {
+                    self.advance(); // skip =>
+                    const param = try self.ast.addNode(.{
+                        .tag = .binding_identifier,
+                        .span = id_span,
+                        .data = .{ .string_ref = id_span },
+                    });
+                    const body = if (self.current() == .l_curly)
+                        try self.parseBlockStatement()
+                    else
+                        try self.parseAssignmentExpression();
+                    return try self.ast.addNode(.{
+                        .tag = .arrow_function_expression,
+                        .span = .{ .start = async_span.start, .end = self.currentSpan().start },
+                        .data = .{ .binary = .{ .left = param, .right = body, .flags = 0x01 } }, // 0x01 = async
+                    });
+                }
+                self.restoreState(saved);
+            }
+        }
+
         // 단일 식별자 + => → arrow function (간단한 형태: x => x + 1)
         if (self.current() == .identifier) {
             const id_span = self.currentSpan();
-            const saved_pos = self.scanner.current;
-            const saved_start = self.scanner.start;
-            const saved_token = self.scanner.token;
-            const saved_line = self.scanner.line;
-            const saved_line_start = self.scanner.line_start;
-            const saved_prev_token = self.scanner.prev_token_kind;
+            const saved = self.saveState();
 
             self.advance(); // skip identifier
-            if (self.current() == .arrow) {
+            if (self.current() == .arrow and !self.scanner.token.has_newline_before) {
                 // identifier => body
                 self.advance(); // skip =>
                 const param = try self.ast.addNode(.{
@@ -1423,12 +1465,7 @@ pub const Parser = struct {
             }
 
             // arrow가 아님 → 되돌리기
-            self.scanner.current = saved_pos;
-            self.scanner.start = saved_start;
-            self.scanner.token = saved_token;
-            self.scanner.line = saved_line;
-            self.scanner.line_start = saved_line_start;
-            self.scanner.prev_token_kind = saved_prev_token;
+            self.restoreState(saved);
         }
 
         const left = try self.parseConditionalExpression();
