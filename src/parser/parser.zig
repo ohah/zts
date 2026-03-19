@@ -358,7 +358,7 @@ pub const Parser = struct {
     fn parseLoopBody(self: *Parser) ParseError2!NodeIndex {
         const saved = self.ctx;
         self.ctx.in_loop = true;
-        const body = try self.parseStatement();
+        const body = try self.parseStatementNoLexical();
         self.ctx = saved;
         return body;
     }
@@ -494,6 +494,26 @@ pub const Parser = struct {
     // Statement 파싱
     // ================================================================
 
+    /// statement position에서 lexical declaration 금지를 체크한 뒤 parseStatement 호출.
+    /// if/else/while/do-while/for/with/labeled 의 body에서 사용.
+    /// ECMAScript 13.6/13.7: lexical declaration(let/const/class)은 statement position에서 금지.
+    fn parseStatementNoLexical(self: *Parser) ParseError2!NodeIndex {
+        switch (self.current()) {
+            .kw_let, .kw_const => {
+                self.addError(self.currentSpan(), "lexical declaration is not allowed in statement position");
+            },
+            .kw_class => {
+                // class declaration은 strict mode에서 statement position 금지
+                // non-strict에서는 Annex B로 허용되지만 Test262는 strict로 테스트
+                if (self.ctx.is_strict_mode) {
+                    self.addError(self.currentSpan(), "class declaration is not allowed in statement position in strict mode");
+                }
+            },
+            else => {},
+        }
+        return self.parseStatement();
+    }
+
     fn parseStatement(self: *Parser) ParseError2!NodeIndex {
         return switch (self.current()) {
             .l_curly => self.parseBlockStatement(),
@@ -617,7 +637,7 @@ pub const Parser = struct {
         });
         self.advance(); // skip label
         self.advance(); // skip ':'
-        const body = try self.parseStatement();
+        const body = try self.parseStatementNoLexical();
         return try self.ast.addNode(.{
             .tag = .labeled_statement,
             .span = .{ .start = start, .end = self.currentSpan().start },
@@ -636,7 +656,7 @@ pub const Parser = struct {
         self.expect(.l_paren);
         const obj = try self.parseExpression();
         self.expect(.r_paren);
-        const body = try self.parseStatement();
+        const body = try self.parseStatementNoLexical();
         return try self.ast.addNode(.{
             .tag = .with_statement,
             .span = .{ .start = start, .end = self.currentSpan().start },
@@ -742,11 +762,11 @@ pub const Parser = struct {
         self.expect(.l_paren);
         const test_expr = try self.parseExpression();
         self.expect(.r_paren);
-        const consequent = try self.parseStatement();
+        const consequent = try self.parseStatementNoLexical();
 
         var alternate = NodeIndex.none;
         if (self.eat(.kw_else)) {
-            alternate = try self.parseStatement();
+            alternate = try self.parseStatementNoLexical();
         }
 
         return try self.ast.addNode(.{
@@ -1514,6 +1534,10 @@ pub const Parser = struct {
 
     fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
+        // ECMAScript 15.2: import 선언은 module code에서만 허용
+        if (!self.is_module) {
+            self.addError(self.currentSpan(), "'import' declaration is only allowed in module code");
+        }
         self.advance(); // skip 'import'
 
         // import "module" — side-effect import
@@ -1653,6 +1677,10 @@ pub const Parser = struct {
 
     fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
+        // ECMAScript 15.2: export 선언은 module code에서만 허용
+        if (!self.is_module) {
+            self.addError(self.currentSpan(), "'export' declaration is only allowed in module code");
+        }
         self.advance(); // skip 'export'
 
         // export default
@@ -2808,6 +2836,8 @@ pub const Parser = struct {
 
         // object method도 함수이므로 컨텍스트 설정 (return/break/continue 검증)
         const saved_ctx = self.enterFunctionContext((flags & 0x08) != 0, (flags & 0x10) != 0);
+        // ECMAScript 12.3.7: 객체 리터럴 메서드에서도 super.prop 허용
+        self.ctx.allow_super_property = true;
         self.ctx.has_simple_params = self.checkSimpleParams(scratch_top);
         self.checkDuplicateParams(scratch_top);
         const body = try self.parseFunctionBody();
@@ -4566,6 +4596,7 @@ test "Parser: import side-effect" {
     var scanner = Scanner.init(std.testing.allocator, "import 'module';");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
+    parser.is_module = true;
     defer parser.deinit();
 
     _ = try parser.parse();
@@ -4576,6 +4607,7 @@ test "Parser: import default" {
     var scanner = Scanner.init(std.testing.allocator, "import foo from 'module';");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
+    parser.is_module = true;
     defer parser.deinit();
 
     _ = try parser.parse();
@@ -4586,6 +4618,7 @@ test "Parser: import named" {
     var scanner = Scanner.init(std.testing.allocator, "import { a, b as c } from 'module';");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
+    parser.is_module = true;
     defer parser.deinit();
 
     _ = try parser.parse();
@@ -4596,6 +4629,7 @@ test "Parser: import namespace" {
     var scanner = Scanner.init(std.testing.allocator, "import * as ns from 'module';");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
+    parser.is_module = true;
     defer parser.deinit();
 
     _ = try parser.parse();
@@ -4606,6 +4640,7 @@ test "Parser: import default + named" {
     var scanner = Scanner.init(std.testing.allocator, "import React, { useState } from 'react';");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
+    parser.is_module = true;
     defer parser.deinit();
 
     _ = try parser.parse();
@@ -4616,6 +4651,7 @@ test "Parser: export default" {
     var scanner = Scanner.init(std.testing.allocator, "export default 42;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
+    parser.is_module = true;
     defer parser.deinit();
 
     _ = try parser.parse();
@@ -4626,6 +4662,7 @@ test "Parser: export named" {
     var scanner = Scanner.init(std.testing.allocator, "export { a, b as c };");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
+    parser.is_module = true;
     defer parser.deinit();
 
     _ = try parser.parse();
@@ -4636,6 +4673,7 @@ test "Parser: export declaration" {
     var scanner = Scanner.init(std.testing.allocator, "export const x = 1;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
+    parser.is_module = true;
     defer parser.deinit();
 
     _ = try parser.parse();
@@ -4646,6 +4684,7 @@ test "Parser: export all re-export" {
     var scanner = Scanner.init(std.testing.allocator, "export * from 'module';");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
+    parser.is_module = true;
     defer parser.deinit();
 
     _ = try parser.parse();
@@ -4656,6 +4695,7 @@ test "Parser: export named re-export" {
     var scanner = Scanner.init(std.testing.allocator, "export { foo } from 'module';");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
+    parser.is_module = true;
     defer parser.deinit();
 
     _ = try parser.parse();
@@ -4666,6 +4706,7 @@ test "Parser: export default function" {
     var scanner = Scanner.init(std.testing.allocator, "export default function foo() { }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
+    parser.is_module = true;
     defer parser.deinit();
 
     _ = try parser.parse();
