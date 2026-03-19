@@ -178,6 +178,7 @@ pub fn runTest(allocator: mem.Allocator, source: []const u8, meta: TestMetadata,
         var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
         defer analyzer.deinit(); // deinit이 에러 메시지 메모리도 해제
         analyzer.is_strict_mode = parser.ctx.is_strict_mode;
+        analyzer.is_module = parser.is_module;
         analyzer.analyze();
         semantic_error_count = analyzer.errors.items.len;
     }
