@@ -488,12 +488,9 @@ pub const Parser = struct {
     /// strict mode에서도 항상 에러
     /// sloppy mode + simple params인 일반 function만 허용
     fn checkDuplicateParams(self: *Parser, scratch_top: usize) void {
-        // generator/async에서는 항상 체크 (ECMAScript 15.4.1, 15.5.1, 15.6.1)
-        // strict mode에서도 항상 체크
-        // non-simple params면 항상 체크
-        // sloppy mode + simple params + 일반 function만 건너뜀
-        if (!self.ctx.is_strict_mode and self.ctx.has_simple_params and
-            !self.ctx.in_generator and !self.ctx.in_async) return;
+        const must_check = self.ctx.is_strict_mode or !self.ctx.has_simple_params or
+            self.ctx.in_generator or self.ctx.in_async;
+        if (!must_check) return;
         const params = self.scratch.items[scratch_top..];
         // O(N²)이지만 파라미터 수가 적으므로 (보통 <10) 충분
         for (params, 0..) |param_idx, i| {
@@ -525,7 +522,7 @@ pub const Parser = struct {
             .formal_parameter => self.extractParamName(node.data.unary.operand),
             // rest parameter (...x) → operand가 binding
             .spread_element => self.extractParamName(node.data.unary.operand),
-            // destructuring은 단일 이름이 아니므로 null (별도 처리 필요)
+            // TODO: destructuring([a,b], {a})은 collectBoundNames로 여러 이름을 수집해야 함
             else => null,
         };
     }
@@ -1312,16 +1309,20 @@ pub const Parser = struct {
             flags |= ast_mod.FunctionFlags.is_generator;
         }
 
-        // 함수 이름
+        const is_async = (flags & ast_mod.FunctionFlags.is_async) != 0;
+        const is_generator = (flags & ast_mod.FunctionFlags.is_generator) != 0;
+
+        // 함수 컨텍스트 진입 — 이름/파라미터/본문 모두 이 컨텍스트에서 파싱
+        // ECMAScript: BindingIdentifier[?Yield, ?Await], FormalParameters[+Yield, +Await]
+        const saved_ctx = self.enterFunctionContext(is_async, is_generator);
+
         const name = try self.parseBindingIdentifier();
 
-        // 파라미터
         self.expect(.l_paren);
         const scratch_top = self.saveScratch();
         while (self.current() != .r_paren and self.current() != .eof) {
             const param = try self.parseBindingIdentifier();
             try self.scratch.append(param);
-            // rest parameter 뒤에 comma가 오면 에러 (ECMAScript 14.1)
             if (!param.isNone() and self.ast.getNode(param).tag == .spread_element and self.current() == .comma) {
                 self.addError(self.currentSpan(), "rest parameter must be last formal parameter");
             }
@@ -1332,8 +1333,6 @@ pub const Parser = struct {
         // TS 리턴 타입 어노테이션
         const return_type = try self.tryParseReturnType();
 
-        // 함수 본문 — 컨텍스트 저장/복원
-        const saved_ctx = self.enterFunctionContext((flags & 0x01) != 0, (flags & 0x02) != 0);
         self.ctx.has_simple_params = self.checkSimpleParams(scratch_top);
         self.checkDuplicateParams(scratch_top);
         const body = try self.parseFunctionBody();
@@ -1383,9 +1382,14 @@ pub const Parser = struct {
             flags |= ast_mod.FunctionFlags.is_generator;
         }
 
-        // 함수 이름 (선택적)
+        const is_async = (flags & ast_mod.FunctionFlags.is_async) != 0;
+        const is_generator = (flags & ast_mod.FunctionFlags.is_generator) != 0;
+
+        // 함수 컨텍스트 진입 — 이름/파라미터/본문 모두 이 컨텍스트에서 파싱
+        const saved_ctx = self.enterFunctionContext(is_async, is_generator);
+
         var name = NodeIndex.none;
-        if (self.current() == .identifier) {
+        if (self.current() == .identifier or self.current() == .kw_yield or self.current() == .kw_await) {
             name = try self.parseBindingIdentifier();
         }
 
@@ -1403,9 +1407,6 @@ pub const Parser = struct {
 
         // TS 리턴 타입 어노테이션
         _ = try self.tryParseReturnType();
-
-        // 함수 본문 — 컨텍스트 저장/복원
-        const saved_ctx = self.enterFunctionContext((flags & 0x01) != 0, (flags & 0x02) != 0);
         self.ctx.has_simple_params = self.checkSimpleParams(scratch_top);
         self.checkDuplicateParams(scratch_top);
         const body = try self.parseFunctionBody();
@@ -2319,10 +2320,12 @@ pub const Parser = struct {
             }
             var operand = NodeIndex.none;
             // yield 뒤에 줄바꿈 없이 expression이 오면 yield의 인자
+            // 뒤따르는 토큰이 expression 시작이 아니면 bare yield (operand 없음)
             if (!self.scanner.token.has_newline_before and
                 self.current() != .semicolon and self.current() != .r_curly and
                 self.current() != .r_paren and self.current() != .r_bracket and
                 self.current() != .colon and self.current() != .comma and
+                self.current() != .kw_in and self.current() != .kw_of and
                 self.current() != .eof)
             {
                 operand = try self.parseAssignmentExpression();
@@ -3281,6 +3284,12 @@ pub const Parser = struct {
     /// 객체 리터럴 메서드의 파라미터와 본문을 파싱한다.
     /// flags: 0x02=getter, 0x04=setter, 0x08=async, 0x10=generator
     fn parseObjectMethodBody(self: *Parser, start: u32, key: NodeIndex, flags: u16) ParseError2!NodeIndex {
+        // 메서드 컨텍스트 진입 — 파라미터/본문 모두 이 컨텍스트에서 파싱
+        // flags: 0x02=getter, 0x04=setter, 0x08=async, 0x10=generator
+        const saved_ctx = self.enterFunctionContext((flags & 0x08) != 0, (flags & 0x10) != 0);
+        // ECMAScript 12.3.7: 객체 리터럴 메서드에서도 super.prop 허용
+        self.ctx.allow_super_property = true;
+
         self.expect(.l_paren);
         const scratch_top = self.saveScratch();
         while (self.current() != .r_paren and self.current() != .eof) {
@@ -3295,11 +3304,6 @@ pub const Parser = struct {
 
         // TS 리턴 타입
         _ = try self.tryParseReturnType();
-
-        // object method도 함수이므로 컨텍스트 설정 (return/break/continue 검증)
-        const saved_ctx = self.enterFunctionContext((flags & 0x08) != 0, (flags & 0x10) != 0);
-        // ECMAScript 12.3.7: 객체 리터럴 메서드에서도 super.prop 허용
-        self.ctx.allow_super_property = true;
         self.ctx.has_simple_params = self.checkSimpleParams(scratch_top);
         self.checkDuplicateParams(scratch_top);
         const body = try self.parseFunctionBody();
