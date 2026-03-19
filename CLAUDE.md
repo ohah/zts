@@ -191,13 +191,13 @@ main ← feature/lexer-token-enum
 5. ✅ --ascii-only (D031) — PR #54
 6. ⬜ legal comments (@license, @preserve) — 렉서 수정 필요, 후순위
 
-### CLI 고급 기능 (PR 단위) — Phase 5 진행 중
-1. ⬜ Phase 5 의사결정 (D047-D050)
-2. ⬜ tsconfig.json 읽기
-3. ⬜ 디렉토리 단위 변환 (rootDir → outDir)
-4. ⬜ stdin 파이프 지원
-5. ⬜ 에러 코드 프레임 출력 (D012)
-6. ⬜ watch 모드
+### CLI 고급 기능 (PR 단위) — Phase 5 완료
+1. ✅ Phase 5 의사결정 (D047-D050) — PR #60
+2. ✅ stdin 파이프 지원 — PR #61
+3. ✅ 에러 코드 프레임 출력 (D012) — PR #62
+4. ✅ 디렉토리 단위 변환 (--outdir) — PR #63
+5. ✅ tsconfig.json 읽기 (--project) — PR #64
+6. ✅ watch 모드 (--watch) — PR #65
 
 ## References
 - Bun JS Parser: github.com/oven-sh/bun (src/js_parser.zig, src/js_lexer.zig)
