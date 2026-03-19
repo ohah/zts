@@ -521,8 +521,11 @@ pub const Parser = struct {
                 if (self.ctx.is_strict_mode) {
                     self.addError(self.currentSpan(), "lexical declaration is not allowed in statement position");
                 } else {
-                    const next = self.peekNextKind();
-                    if (next == .identifier or next == .l_bracket or next == .l_curly) {
+                    const next = self.peekNext();
+                    // let 뒤에 줄바꿈 없이 identifier/[/{가 오면 lexical declaration
+                    if (!next.has_newline_before and
+                        (next.kind == .identifier or next.kind == .l_bracket or next.kind == .l_curly))
+                    {
                         self.addError(self.currentSpan(), "lexical declaration is not allowed in statement position");
                     }
                 }
