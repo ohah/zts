@@ -960,6 +960,10 @@ pub const Parser = struct {
         while (self.current() != .r_paren and self.current() != .eof) {
             const param = try self.parseBindingIdentifier();
             try self.scratch.append(param);
+            // rest parameter 뒤에 comma가 오면 에러 (ECMAScript 14.1)
+            if (!param.isNone() and self.ast.getNode(param).tag == .spread_element and self.current() == .comma) {
+                self.addError(self.currentSpan(), "rest parameter must be last formal parameter");
+            }
             if (!self.eat(.comma)) break;
         }
         self.expect(.r_paren);
@@ -1029,6 +1033,9 @@ pub const Parser = struct {
         while (self.current() != .r_paren and self.current() != .eof) {
             const param = try self.parseBindingIdentifier();
             try self.scratch.append(param);
+            if (!param.isNone() and self.ast.getNode(param).tag == .spread_element and self.current() == .comma) {
+                self.addError(self.currentSpan(), "rest parameter must be last formal parameter");
+            }
             if (!self.eat(.comma)) break;
         }
         self.expect(.r_paren);
@@ -1233,6 +1240,9 @@ pub const Parser = struct {
             while (self.current() != .r_paren and self.current() != .eof) {
                 const param = try self.parseBindingIdentifier();
                 try self.scratch.append(param);
+                if (!param.isNone() and self.ast.getNode(param).tag == .spread_element and self.current() == .comma) {
+                    self.addError(self.currentSpan(), "rest parameter must be last formal parameter");
+                }
                 if (!self.eat(.comma)) break;
             }
             self.expect(.r_paren);
@@ -1814,6 +1824,10 @@ pub const Parser = struct {
     fn parseBinaryExpression(self: *Parser, min_prec: u8) ParseError2!NodeIndex {
         var left = try self.parseUnaryExpression();
 
+        // ?? 와 &&/|| 혼합 감지용 — 괄호 없이 혼합하면 SyntaxError
+        var has_coalesce = false;
+        var has_logical_or_and = false;
+
         while (true) {
             const prec = getBinaryPrecedence(self.current());
             if (prec == 0 or prec <= min_prec) break;
@@ -1821,6 +1835,20 @@ pub const Parser = struct {
             const left_start = self.ast.getNode(left).span.start;
             const op_kind = self.current();
             const is_logical = (op_kind == .amp2 or op_kind == .pipe2 or op_kind == .question2);
+
+            // ?? 와 &&/|| 혼합 감지 (ECMAScript: 괄호 없이 혼합 금지)
+            if (op_kind == .question2) {
+                if (has_logical_or_and) {
+                    self.addError(self.currentSpan(), "cannot mix '??' with '&&' or '||' without parentheses");
+                }
+                has_coalesce = true;
+            } else if (op_kind == .amp2 or op_kind == .pipe2) {
+                if (has_coalesce) {
+                    self.addError(self.currentSpan(), "cannot mix '??' with '&&' or '||' without parentheses");
+                }
+                has_logical_or_and = true;
+            }
+
             self.advance();
 
             // ** (star2)는 우결합: prec - 1로 재귀하여 같은 우선순위를 오른쪽에 허용
@@ -1945,6 +1973,7 @@ pub const Parser = struct {
 
     fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
         var expr = try self.parsePrimaryExpression();
+        var after_optional_chain = false;
 
         while (true) {
             const expr_start = self.ast.getNode(expr).span.start;
@@ -2011,8 +2040,14 @@ pub const Parser = struct {
                             .data = .{ .binary = .{ .left = expr, .right = prop, .flags = 1 } }, // 1 = optional
                         });
                     }
+                    after_optional_chain = true;
+                    continue;
                 },
                 .no_substitution_template, .template_head => {
+                    // tagged template 금지: a?.b`template` (ECMAScript 12.3.1.1)
+                    if (after_optional_chain) {
+                        self.addError(self.currentSpan(), "tagged template cannot be used in optional chain");
+                    }
                     // tagged template: expr`text` 또는 expr`text${...}...`
                     const tmpl = if (self.current() == .template_head)
                         try self.parseTemplateLiteral()
@@ -2033,6 +2068,7 @@ pub const Parser = struct {
                 },
                 else => break,
             }
+            after_optional_chain = false;
         }
 
         return expr;
