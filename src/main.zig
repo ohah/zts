@@ -29,6 +29,7 @@ pub fn main() !void {
     var module_format: lib.codegen.codegen.ModuleFormat = .esm;
     var drop_console = false;
     var drop_debugger = false;
+    var sourcemap = false;
     var is_test262 = false;
     var is_tokenize = false;
     var test262_dir: ?[]const u8 = null;
@@ -59,6 +60,8 @@ pub fn main() !void {
             drop_console = true;
         } else if (std.mem.eql(u8, arg, "--drop=debugger")) {
             drop_debugger = true;
+        } else if (std.mem.eql(u8, arg, "--sourcemap")) {
+            sourcemap = true;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try printUsage(stdout);
             return;
@@ -161,7 +164,11 @@ pub fn main() !void {
     var cg = Codegen.initWithOptions(allocator, &transformer.new_ast, .{
         .module_format = module_format,
         .minify = minify,
+        .sourcemap = sourcemap,
     });
+    if (sourcemap) {
+        cg.addSourceFile(file_path) catch {};
+    }
     defer cg.deinit();
     const output = cg.generate(root) catch |err| {
         try stderr.print("zts: codegen error: {}\n", .{err});
@@ -177,8 +184,23 @@ pub fn main() !void {
             try stderr.print("zts: cannot write '{s}': {}\n", .{ out_path, err });
             return;
         };
+
+        // 소스맵 파일 출력 (.js.map)
+        if (sourcemap) {
+            if (cg.generateSourceMap(out_path) catch null) |sm_json| {
+                const map_path = try std.fmt.allocPrint(allocator, "{s}.map", .{out_path});
+                defer allocator.free(map_path);
+                std.fs.cwd().writeFile(.{
+                    .sub_path = map_path,
+                    .data = sm_json,
+                }) catch |err| {
+                    try stderr.print("zts: cannot write '{s}': {}\n", .{ map_path, err });
+                };
+            }
+        }
     } else {
         try stdout.writeAll(output);
+        // stdout에 소스맵은 inline으로 출력하지 않음 (별도 옵션 필요)
     }
 }
 
@@ -196,6 +218,7 @@ fn printUsage(writer: anytype) !void {
         \\  --format=esm|cjs             Module format (default: esm)
         \\  --drop=console               Remove console.* calls
         \\  --drop=debugger              Remove debugger statements
+        \\  --sourcemap                  Generate source map (.js.map)
         \\  --tokenize                   Print tokens instead of transpiling
         \\  --test262 <dir>              Run Test262 tests
         \\  -h, --help                   Show this help
