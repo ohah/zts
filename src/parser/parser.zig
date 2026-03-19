@@ -1353,10 +1353,9 @@ pub const Parser = struct {
         }
 
         // 클래스 본문 — extends 있으면 has_super_class 설정 (super() 허용 판단)
+        // 중첩 class에서 외부 has_super_class를 상속하지 않도록 명시적 설정
         const class_ctx_saved = self.ctx;
-        if (!super_class.isNone()) {
-            self.ctx.has_super_class = true;
-        }
+        self.ctx.has_super_class = !super_class.isNone();
         const body = try self.parseClassBody();
         self.ctx = class_ctx_saved;
 
