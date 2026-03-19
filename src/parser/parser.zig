@@ -1910,9 +1910,16 @@ pub const Parser = struct {
                         .data = .{ .none = 0 },
                     });
                 }
-                // dynamic import: import("module")
+                // dynamic import: import("module") or import("module", options)
                 self.expect(.l_paren);
                 const arg = try self.parseAssignmentExpression();
+                // 두 번째 인자 (import assertions/options) — 있으면 파싱하고 무시
+                if (self.eat(.comma)) {
+                    if (self.current() != .r_paren) {
+                        _ = try self.parseAssignmentExpression();
+                        _ = self.eat(.comma); // trailing comma
+                    }
+                }
                 self.expect(.r_paren);
                 return try self.ast.addNode(.{
                     .tag = .import_expression,
@@ -2378,7 +2385,19 @@ pub const Parser = struct {
                 try self.scratch.append(rest);
                 break; // rest는 항상 마지막
             }
-            const elem = try self.parseBindingPattern();
+            var elem = try self.parseBindingName();
+            // default value: pattern = expr (배열/객체 패턴 뒤의 = default)
+            if (self.eat(.eq)) {
+                const default_val = try self.parseAssignmentExpression();
+                elem = try self.ast.addNode(.{
+                    .tag = .assignment_pattern,
+                    .span = .{ .start = self.ast.getNode(elem).span.start, .end = self.currentSpan().start },
+                    .data = .{ .binary = .{ .left = elem, .right = default_val, .flags = 0 } },
+                });
+            }
+            // TS: optional (?) + type annotation — 배열 패턴 요소에도 가능
+            _ = self.eat(.question);
+            _ = try self.tryParseTypeAnnotation();
             if (!elem.isNone()) try self.scratch.append(elem);
             if (!self.eat(.comma)) break;
         }
