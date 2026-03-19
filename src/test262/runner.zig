@@ -3,6 +3,7 @@ const fs = std.fs;
 const mem = std.mem;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
+const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
 
 /// Test262 테스트 파일의 YAML 메타데이터
 /// 각 .js 파일 상단의 /*--- ... ---*/ 블록을 파싱한 결과
@@ -171,8 +172,21 @@ pub fn runTest(allocator: mem.Allocator, source: []const u8, meta: TestMetadata,
         return .skip;
     };
 
-    // 렉서 에러(syntax_error) + 파서 에러 모두 체크
-    const had_error = scanner.token.kind == .syntax_error or parser.errors.items.len > 0;
+    // Semantic analysis (D038): 파서 에러가 없을 때만 실행
+    var semantic_error_count: usize = 0;
+    if (scanner.token.kind != .syntax_error and parser.errors.items.len == 0) {
+        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+        defer analyzer.deinit();
+        analyzer.analyze();
+        semantic_error_count = analyzer.errors.items.len;
+        // 에러 메시지 메모리 해제
+        for (analyzer.errors.items) |err| {
+            allocator.free(err.message);
+        }
+    }
+
+    // 렉서 에러 + 파서 에러 + semantic 에러 모두 체크
+    const had_error = scanner.token.kind == .syntax_error or parser.errors.items.len > 0 or semantic_error_count > 0;
 
     const result: TestResult = if (meta.is_negative_parse)
         (if (had_error) .pass else .fail)
