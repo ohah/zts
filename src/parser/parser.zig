@@ -528,9 +528,8 @@ pub const Parser = struct {
                 }
             },
             .kw_class => {
-                if (self.ctx.is_strict_mode or is_loop_body) {
-                    self.addError(self.currentSpan(), "class declaration is not allowed in statement position");
-                }
+                // class declaration은 statement position에서 항상 금지 (Annex B에 class 예외 없음)
+                self.addError(self.currentSpan(), "class declaration is not allowed in statement position");
             },
             .kw_function => {
                 if (self.peekNextKind() == .star) {
@@ -730,6 +729,12 @@ pub const Parser = struct {
             else => 0,
         };
         self.advance(); // skip var/let/const
+
+        // let/const 선언에서 바인딩 이름 'let'은 금지 (ECMAScript 14.3.1.1)
+        // 'let let = 1' → SyntaxError (non-strict에서도)
+        if (kind_flags != 0 and self.current() == .kw_let) {
+            self.addError(self.currentSpan(), "'let' is not allowed as variable name in lexical declaration");
+        }
 
         const scratch_top = self.saveScratch();
         while (true) {
