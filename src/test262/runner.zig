@@ -263,13 +263,8 @@ pub fn runDirectory(allocator: mem.Allocator, dir_path: []const u8, show_failure
     if (show_failures and failed_list.items.len > 0) {
         const stderr = std.io.getStdErr().writer();
         try stderr.print("\n--- Failed Tests ({d}) ---\n", .{failed_list.items.len});
-        // 최대 50개만 출력
-        const limit = @min(failed_list.items.len, 50);
-        for (failed_list.items[0..limit]) |path| {
+        for (failed_list.items) |path| {
             try stderr.print("  FAIL: {s}\n", .{path});
-        }
-        if (failed_list.items.len > 50) {
-            try stderr.print("  ... and {d} more\n", .{failed_list.items.len - 50});
         }
     }
 
