@@ -1493,7 +1493,7 @@ pub const Scanner = struct {
     /// 이스케이프가 포함된 식별자 텍스트를 디코딩하여 실제 문자열을 반환한다.
     /// \uXXXX 와 \u{XXXX} 형태를 처리. BMP 문자만 지원 (키워드 매칭에 충분).
     /// 인스턴스의 decode_buf를 사용하여 dangling pointer 방지.
-    fn decodeIdentifierEscapes(self: *Scanner, raw: []const u8) ?[]const u8 {
+    pub fn decodeIdentifierEscapes(self: *Scanner, raw: []const u8) ?[]const u8 {
         // 이스케이프가 없으면 그대로 반환 (소스 텍스트 포인터, 항상 유효)
         if (std.mem.indexOfScalar(u8, raw, '\\') == null) return raw;
 

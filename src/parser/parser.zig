@@ -411,6 +411,22 @@ pub const Parser = struct {
             } else if (self.is_module) {
                 self.addError(span, "'await' cannot be used as " ++ context_noun ++ " in module code");
             }
+        } else if (self.current() == .escaped_strict_reserved) {
+            // escaped yield/await도 generator/async에서 금지 (ECMAScript 12.1.1)
+            const decoded = self.scanner.decodeIdentifierEscapes(self.tokenText());
+            if (decoded) |name| {
+                if (std.mem.eql(u8, name, "yield")) {
+                    if (self.ctx.in_generator) {
+                        self.addError(span, "'yield' cannot be used as " ++ context_noun ++ " in generator");
+                    }
+                } else if (std.mem.eql(u8, name, "await")) {
+                    if (self.ctx.in_async) {
+                        self.addError(span, "'await' cannot be used as " ++ context_noun ++ " in async function");
+                    } else if (self.is_module) {
+                        self.addError(span, "'await' cannot be used as " ++ context_noun ++ " in module code");
+                    }
+                }
+            }
         }
     }
 
@@ -3053,6 +3069,7 @@ pub const Parser = struct {
                     if (self.ctx.is_strict_mode) {
                         self.addError(span, "escaped reserved word cannot be used as identifier in strict mode");
                     }
+                    self.checkYieldAwaitUse(span, "identifier");
                     self.advance();
                     return try self.ast.addNode(.{
                         .tag = .identifier_reference,
@@ -3429,6 +3446,7 @@ pub const Parser = struct {
                 if (self.ctx.is_strict_mode) {
                     self.addError(self.currentSpan(), "escaped reserved word cannot be used as identifier in strict mode");
                 }
+                self.checkYieldAwaitUse(self.currentSpan(), "identifier");
                 const span = self.currentSpan();
                 self.advance();
                 const node = try self.ast.addNode(.{
@@ -3512,6 +3530,7 @@ pub const Parser = struct {
                 if (self.ctx.is_strict_mode) {
                     self.addError(self.currentSpan(), "escaped reserved word cannot be used as identifier in strict mode");
                 }
+                self.checkYieldAwaitUse(self.currentSpan(), "identifier");
                 const span = self.currentSpan();
                 self.advance();
                 return try self.ast.addNode(.{
