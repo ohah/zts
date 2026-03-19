@@ -162,7 +162,11 @@ pub const Parser = struct {
         return switch (self.current()) {
             .l_curly => self.parseBlockStatement(),
             .semicolon => self.parseEmptyStatement(),
-            .kw_var, .kw_let, .kw_const => self.parseVariableDeclaration(),
+            .kw_var, .kw_let => self.parseVariableDeclaration(),
+            .kw_const => if (self.peekNextKind() == .kw_enum)
+                self.parseConstEnum()
+            else
+                self.parseVariableDeclaration(),
             .kw_return => self.parseReturnStatement(),
             .kw_if => self.parseIfStatement(),
             .kw_while => self.parseWhileStatement(),
@@ -2450,8 +2454,21 @@ pub const Parser = struct {
         });
     }
 
+    /// const enum Foo { A, B, C }
+    /// const enum은 일반 enum과 동일하게 파싱하되, flags=1로 표시.
+    fn parseConstEnum(self: *Parser) ParseError2!NodeIndex {
+        self.advance(); // skip 'const'
+        return self.parseTsEnumDeclarationWithFlags(1);
+    }
+
     /// enum Foo { A, B, C }
     fn parseTsEnumDeclaration(self: *Parser) ParseError2!NodeIndex {
+        return self.parseTsEnumDeclarationWithFlags(0);
+    }
+
+    /// enum 파싱. flags: 0=일반 enum, 1=const enum.
+    /// extra = [name, members_start, members_len, flags]
+    fn parseTsEnumDeclarationWithFlags(self: *Parser, flags: u32) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'enum'
 
@@ -2471,9 +2488,9 @@ pub const Parser = struct {
         const members = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
         self.restoreScratch(scratch_top);
 
-        const extra_start = try self.ast.addExtra(@intFromEnum(name));
-        _ = try self.ast.addExtra(members.start);
-        _ = try self.ast.addExtra(members.len);
+        const extra_start = try self.ast.addExtras(&.{
+            @intFromEnum(name), members.start, members.len, flags,
+        });
 
         return try self.ast.addNode(.{
             .tag = .ts_enum_declaration,

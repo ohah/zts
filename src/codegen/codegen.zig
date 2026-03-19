@@ -1383,10 +1383,10 @@ pub const Codegen = struct {
     /// var Color;(function(Color){Color[Color["Red"]=0]="Red";Color[Color["Green"]=5]="Green";Color[Color["Blue"]=6]="Blue";})(Color||(Color={}));
     fn emitEnumIIFE(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
-        const extras = self.ast.extra_data.items[e .. e + 3];
-        const name_idx: NodeIndex = @enumFromInt(extras[0]);
-        const members_start = extras[1];
-        const members_len = extras[2];
+        const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+        const members_start = self.ast.extra_data.items[e + 1];
+        const members_len = self.ast.extra_data.items[e + 2];
+        // extras[3] = flags (0=일반, 1=const). const enum은 transformer에서 삭제됨.
 
         // enum 이름 텍스트 가져오기
         const name_node = self.ast.getNode(name_idx);
@@ -1792,4 +1792,10 @@ test "Codegen: enum with initializer" {
         "var Status;(function(Status){Status[Status[\"Active\"]=1]=\"Active\";Status[Status[\"Inactive\"]=0]=\"Inactive\";})(Status||(Status={}));",
         r.output,
     );
+}
+
+test "Codegen: const enum removed" {
+    var r = try e2e(std.testing.allocator, "const enum Dir { Up, Down }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("", r.output);
 }
