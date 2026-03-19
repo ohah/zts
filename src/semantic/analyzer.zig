@@ -264,6 +264,7 @@ pub const SemanticAnalyzer = struct {
             .name = name_span,
             .scope_id = target_scope,
             .kind = kind,
+            .decl_flags = kind.declFlags(),
             .declaration_span = decl_span,
             .origin_scope = self.current_scope,
         }) catch @panic("OOM: symbol list");
@@ -352,45 +353,38 @@ pub const SemanticAnalyzer = struct {
         return false;
     }
 
+    /// 두 심볼 종류의 재선언 가능 여부를 판단한다.
+    /// DeclFlags.excludes() 비트마스크를 사용하여 O(1) 판단 후, 특수 규칙만 추가 체크.
     fn canRedeclare(self: *const SemanticAnalyzer, existing: SymbolKind, new: SymbolKind, target_scope: ScopeId) bool {
-        // import는 항상 재선언 불가
-        if (existing == .import_binding) return false;
+        const existing_flags = existing.declFlags();
+        const new_flags = new.declFlags();
+
+        // 기본 규칙: 비트플래그 excludes로 충돌 판단
+        // existing의 flags가 new의 excludes와 겹치면 재선언 불가
+        if (existing_flags.intersects(new_flags.excludes())) {
+            // 특수 케이스: parameter + parameter → non-strict에서 허용 (function f(a, a) {})
+            if (existing == .parameter and new == .parameter and !self.is_strict_mode) {
+                return true;
+            }
+            return false;
+        }
 
         // block scope에서의 특별 규칙:
-        // generator/async function/async generator는 항상 재선언 불가 (lexical)
-        // function + function은 sloppy mode에서만 허용 (strict에서는 duplicate lexical)
+        // function + function → sloppy mode block에서만 허용 (ECMAScript B.3.2)
+        // strict mode block에서는 duplicate lexical → 에러
         const in_block_scope = if (!target_scope.isNone()) blk: {
             break :blk !self.scopes.items[target_scope.toIndex()].kind.isVarScope();
         } else false;
 
-        if (in_block_scope) {
-            // block scope에서 function-like + 어떤 것이든 재선언 시:
-            // - function + function → sloppy mode에서만 허용 (ECMAScript B.3.2)
-            // - function + var 또는 var + function → 에러 (LexicallyDeclaredNames ∩ VarDeclaredNames)
-            // - generator/async + anything → 에러
-            if (existing.isFunctionLike() or new.isFunctionLike()) {
-                // 양쪽 다 plain function이고 sloppy mode일 때만 허용
-                if (existing == .function_decl and new == .function_decl and !self.isCurrentStrict()) {
-                    return true;
-                }
-                return false;
+        if (in_block_scope and existing.isFunctionLike() and new.isFunctionLike()) {
+            // 양쪽 다 plain function이고 sloppy mode일 때만 허용
+            if (existing == .function_decl and new == .function_decl and !self.isCurrentStrict()) {
+                return true;
             }
+            return false;
         }
 
-        // 기존이 재선언 가능(var/function)이고 새것도 재선언 가능이면 허용
-        if (existing.allowsRedeclaration() and new.allowsRedeclaration()) return true;
-
-        // parameter + var/function → 허용 (var/function이 parameter를 덮어씀)
-        if (existing == .parameter and new.allowsRedeclaration()) return true;
-
-        // parameter + parameter → non-strict에서만 허용 (function f(a, a) {})
-        if (existing == .parameter and new == .parameter and !self.is_strict_mode) return true;
-
-        // catch_binding + var → 허용 (var가 catch 스코프 밖으로 호이스팅)
-        if (existing == .catch_binding and new == .variable_var) return true;
-
-        // 그 외는 모두 에러
-        return false;
+        return true;
     }
 
     // ================================================================
