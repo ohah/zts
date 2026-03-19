@@ -119,10 +119,8 @@ fn isUnicodeIdStart(cp: u21) bool {
     if (cp == 0x1885 or cp == 0x1886 or cp == 0x2118 or cp == 0x212E or
         cp == 0x309B or cp == 0x309C) return true;
 
-    // Letter Number (Nl) — 로마 숫자 등
+    // Letter Number (Nl) — 로마 숫자 Ⅰ-ⅿ 등
     if (cp >= 0x2160 and cp <= 0x2188) return true;
-    // Letterlike Symbols
-    if (cp >= 0x2100 and cp <= 0x214F) return true;
 
     return false;
 }
