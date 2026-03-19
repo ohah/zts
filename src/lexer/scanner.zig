@@ -254,17 +254,49 @@ pub const Scanner = struct {
                     self.token.has_newline_before = true;
                 },
                 0xE2 => {
-                    // U+2028 (LS), U+2029 (PS) — handleNewline()에 위임
+                    // U+2028 (LS), U+2029 (PS) — 줄바꿈
                     if (self.handleNewline()) {
                         self.token.has_newline_before = true;
+                    } else if (self.current + 2 < self.source.len) {
+                        // Unicode Space_Separator (USP): U+2000-U+200A, U+202F, U+205F
+                        const b1 = self.source[self.current + 1];
+                        const b2 = self.source[self.current + 2];
+                        if (b1 == 0x80 and b2 >= 0x80 and b2 <= 0x8A) {
+                            // U+2000-U+200A (EN QUAD, EM QUAD, EN SPACE, EM SPACE, etc.)
+                            self.current += 3;
+                        } else if (b1 == 0x80 and b2 == 0xAF) {
+                            // U+202F (NARROW NO-BREAK SPACE)
+                            self.current += 3;
+                        } else if (b1 == 0x81 and b2 == 0x9F) {
+                            // U+205F (MEDIUM MATHEMATICAL SPACE)
+                            self.current += 3;
+                        } else {
+                            return;
+                        }
                     } else {
-                        return; // E2로 시작하지만 줄바꿈이 아님
+                        return;
                     }
                 },
                 0xC2 => {
                     // U+00A0 (NBSP) = C2 A0
                     if (self.peekAt(1) == 0xA0) {
                         self.current += 2;
+                    } else {
+                        return;
+                    }
+                },
+                0xE3 => {
+                    // U+3000 (IDEOGRAPHIC SPACE) = E3 80 80
+                    if (self.peekAt(1) == 0x80 and self.peekAt(2) == 0x80) {
+                        self.current += 3;
+                    } else {
+                        return;
+                    }
+                },
+                0xE1 => {
+                    // U+1680 (OGHAM SPACE MARK) = E1 9A 80
+                    if (self.peekAt(1) == 0x9A and self.peekAt(2) == 0x80) {
+                        self.current += 3;
                     } else {
                         return;
                     }
