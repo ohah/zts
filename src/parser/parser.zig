@@ -1589,7 +1589,8 @@ pub const Parser = struct {
                 @as([]const u8, "");
 
             if (key_text.len > 0) {
-                if ((flags & 0x01) == 0 and std.mem.eql(u8, key_text, "constructor")) {
+                // class field 이름 'constructor' 금지 — static/non-static 모두 (ECMAScript 15.7.1)
+                if (std.mem.eql(u8, key_text, "constructor")) {
                     self.addError(key_node.span, "class field cannot be named 'constructor'");
                 }
                 if ((flags & 0x01) != 0 and std.mem.eql(u8, key_text, "prototype")) {
