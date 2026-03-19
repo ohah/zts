@@ -607,7 +607,7 @@ pub const Transformer = struct {
 
         const none = @intFromEnum(NodeIndex.none);
         return self.addExtraNode(node.tag, node.span, &.{
-            @intFromEnum(new_name), new_params.start, new_params.len,
+            @intFromEnum(new_name), new_params.start,   new_params.len,
             @intFromEnum(new_body), self.readU32(e, 4), none,
         });
     }
@@ -678,7 +678,7 @@ pub const Transformer = struct {
         const none = @intFromEnum(NodeIndex.none);
         return self.addExtraNode(node.tag, node.span, &.{
             @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
-            none, 0, 0, // type_params, implements 제거
+            none,            0,             0, // type_params, implements 제거
             new_decos.start, new_decos.len,
         });
     }
@@ -750,7 +750,8 @@ pub const Transformer = struct {
         return self.addExtraNode(.property_definition, node.span, &.{
             @intFromEnum(new_key), @intFromEnum(new_value), self.readU32(e, 2),
             none, // type_ann 제거
-            new_decos.start, new_decos.len,
+            new_decos.start,
+            new_decos.len,
         });
     }
 
@@ -772,8 +773,8 @@ pub const Transformer = struct {
         const new_decos = try self.visitExtraList(self.readU32(e, 3), self.readU32(e, 4));
         const none = @intFromEnum(NodeIndex.none);
         return self.addExtraNode(.formal_parameter, node.span, &.{
-            @intFromEnum(new_pattern), none, @intFromEnum(new_default), // type_ann 제거
-            new_decos.start, new_decos.len,
+            @intFromEnum(new_pattern), none,          @intFromEnum(new_default), // type_ann 제거
+            new_decos.start,           new_decos.len,
         });
     }
 
