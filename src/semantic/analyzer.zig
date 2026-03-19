@@ -1043,3 +1043,19 @@ test "SemanticAnalyzer: nested class private name" {
     // #y는 어디에도 선언 안 됨 → 에러
     try std.testing.expect(ana.errors.items.len > 0);
 }
+
+test "SemanticAnalyzer: inner class can access outer private name" {
+    var scanner = Scanner.init(std.testing.allocator,
+        "class Outer { #x; foo() { class Inner { bar() { this.#x; } } } }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    // #x는 Outer에 선언됨 → 에러 없음
+    try std.testing.expect(ana.errors.items.len == 0);
+}
