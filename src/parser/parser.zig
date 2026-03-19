@@ -2204,9 +2204,9 @@ pub const Parser = struct {
                 if (self.ctx.in_generator) {
                     const start = self.currentSpan().start;
                     self.advance();
-                    // yield* delegate
+                    // yield* delegate — * 전에 줄바꿈이 있으면 delegate 아님
                     var flags: u16 = 0;
-                    if (self.eat(.star)) {
+                    if (!self.scanner.token.has_newline_before and self.eat(.star)) {
                         flags = 1; // delegate
                     }
                     var operand = NodeIndex.none;
