@@ -1727,7 +1727,7 @@ pub const Parser = struct {
         var has_phase_modifier = false;
         if (self.current() == .kw_defer or
             (self.current() == .identifier and
-            std.mem.eql(u8, self.ast.source[self.currentSpan().start..self.currentSpan().end], "source")))
+                std.mem.eql(u8, self.ast.source[self.currentSpan().start..self.currentSpan().end], "source")))
         {
             has_phase_modifier = true;
             self.advance(); // skip defer/source
