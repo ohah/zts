@@ -146,16 +146,7 @@ pub fn parseMetadata(source: []const u8) TestMetadata {
 /// 판정 로직:
 /// - is_negative_parse == true → 파서/렉서가 에러를 발생시키면 pass
 /// - is_negative_parse == false → 에러 없이 파싱 완료되면 pass
-pub fn runTest(allocator: mem.Allocator, source: []const u8, meta: TestMetadata) TestResult {
-    return runTestInner(allocator, source, meta, false);
-}
-
-/// verbose=true이면 실패 시 첫 번째 에러 메시지를 stderr에 출력한다.
-pub fn runTestVerbose(allocator: mem.Allocator, source: []const u8, meta: TestMetadata) TestResult {
-    return runTestInner(allocator, source, meta, true);
-}
-
-fn runTestInner(allocator: mem.Allocator, source: []const u8, meta: TestMetadata, verbose: bool) TestResult {
+pub fn runTest(allocator: mem.Allocator, source: []const u8, meta: TestMetadata, verbose: bool) TestResult {
     _ = meta.is_module; // TODO: module/script 구분 파싱 (현재 미지원)
 
     // Scanner → Parser로 파싱
@@ -232,7 +223,7 @@ pub fn runDirectory(allocator: mem.Allocator, dir_path: []const u8, show_failure
 
         // 메타데이터 파싱 & 테스트 실행
         const meta = parseMetadata(source);
-        const result = if (show_failures) runTestVerbose(allocator, source, meta) else runTest(allocator, source, meta);
+        const result = runTest(allocator, source, meta, show_failures);
 
         summary.total += 1;
         switch (result) {

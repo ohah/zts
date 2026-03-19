@@ -431,7 +431,9 @@ pub const Parser = struct {
         self.advance(); // skip 'for'
 
         // for await (...) — async iteration
-        _ = self.eat(.kw_await);
+        // TODO: for-of 노드에 await 플래그 전달 (현재 파서 통과만 보장)
+        const _is_await = self.eat(.kw_await);
+        _ = _is_await;
 
         self.expect(.l_paren);
 
@@ -1615,16 +1617,7 @@ pub const Parser = struct {
                 .l_paren => {
                     // 함수 호출
                     self.advance();
-                    const scratch_top = self.saveScratch();
-                    while (self.current() != .r_paren and self.current() != .eof) {
-                        const arg = try self.parseSpreadOrAssignment();
-                        try self.scratch.append(arg);
-                        if (!self.eat(.comma)) break;
-                    }
-                    self.expect(.r_paren);
-
-                    const arg_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-                    self.restoreScratch(scratch_top);
+                    const arg_list = try self.parseArgumentList();
                     expr = try self.ast.addNode(.{
                         .tag = .call_expression,
                         .span = .{ .start = expr_start, .end = self.currentSpan().start },
@@ -1668,15 +1661,7 @@ pub const Parser = struct {
                     } else if (self.current() == .l_paren) {
                         // a?.()
                         self.advance();
-                        const scratch_top = self.saveScratch();
-                        while (self.current() != .r_paren and self.current() != .eof) {
-                            const arg = try self.parseSpreadOrAssignment();
-                            try self.scratch.append(arg);
-                            if (!self.eat(.comma)) break;
-                        }
-                        self.expect(.r_paren);
-                        const arg_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-                        self.restoreScratch(scratch_top);
+                        const arg_list = try self.parseArgumentList();
                         expr = try self.ast.addNode(.{
                             .tag = .call_expression,
                             .span = .{ .start = expr_start, .end = self.currentSpan().start },
@@ -1728,15 +1713,7 @@ pub const Parser = struct {
             const callee = try self.parseNewCallee();
             if (self.current() == .l_paren) {
                 self.advance();
-                const scratch_top = self.saveScratch();
-                while (self.current() != .r_paren and self.current() != .eof) {
-                    const arg = try self.parseSpreadOrAssignment();
-                    try self.scratch.append(arg);
-                    if (!self.eat(.comma)) break;
-                }
-                self.expect(.r_paren);
-                const arg_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-                self.restoreScratch(scratch_top);
+                const arg_list = try self.parseArgumentList();
                 return try self.ast.addNode(.{
                     .tag = .new_expression,
                     .span = .{ .start = span.start, .end = self.currentSpan().start },
@@ -1866,15 +1843,7 @@ pub const Parser = struct {
                 // 인자: (args) — 있으면 소비, 없으면 인자 없는 new (new Foo)
                 if (self.current() == .l_paren) {
                     self.advance(); // skip (
-                    const scratch_top = self.saveScratch();
-                    while (self.current() != .r_paren and self.current() != .eof) {
-                        const arg = try self.parseSpreadOrAssignment();
-                        try self.scratch.append(arg);
-                        if (!self.eat(.comma)) break;
-                    }
-                    self.expect(.r_paren);
-                    const arg_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-                    self.restoreScratch(scratch_top);
+                    const arg_list = try self.parseArgumentList();
                     return try self.ast.addNode(.{
                         .tag = .new_expression,
                         .span = .{ .start = span.start, .end = self.currentSpan().start },
@@ -2144,16 +2113,14 @@ pub const Parser = struct {
         }
 
         // get/set 메서드 shorthand: { get prop() {}, set prop(v) {} }
-        if ((self.current() == .kw_get or self.current() == .kw_set) and
-            self.peekNextKind() != .colon and self.peekNextKind() != .l_paren and
-            self.peekNextKind() != .comma and self.peekNextKind() != .r_curly)
-        {
-            const flags: u16 = if (self.current() == .kw_get) 0x02 else 0x04; // getter/setter flag
-            _ = flags;
-            self.advance(); // skip get/set
-            const key = try self.parsePropertyKey();
-            // 메서드 shorthand — 바로 파라미터 리스트
-            return self.parseObjectMethodBody(start, key);
+        if (self.current() == .kw_get or self.current() == .kw_set) {
+            const peek = self.peekNextKind();
+            if (peek != .colon and peek != .l_paren and peek != .comma and peek != .r_curly) {
+                const method_flags: u16 = if (self.current() == .kw_get) 0x02 else 0x04;
+                self.advance(); // skip get/set
+                const key = try self.parsePropertyKey();
+                return self.parseObjectMethodBody(start, key, method_flags);
+            }
         }
 
         // async 메서드 shorthand: { async foo() {} }
@@ -2162,11 +2129,12 @@ pub const Parser = struct {
             if (peek.kind != .colon and peek.kind != .comma and
                 peek.kind != .r_curly and !peek.has_newline_before)
             {
+                var method_flags: u16 = 0x08; // async
                 self.advance(); // skip 'async'
                 // async generator: { async *foo() {} }
-                _ = self.eat(.star);
+                if (self.eat(.star)) method_flags |= 0x10;
                 const key = try self.parsePropertyKey();
-                return self.parseObjectMethodBody(start, key);
+                return self.parseObjectMethodBody(start, key, method_flags);
             }
         }
 
@@ -2174,7 +2142,7 @@ pub const Parser = struct {
         if (self.current() == .star) {
             self.advance(); // skip '*'
             const key = try self.parsePropertyKey();
-            return self.parseObjectMethodBody(start, key);
+            return self.parseObjectMethodBody(start, key, 0x10); // generator
         }
 
         // 키: identifier, string, number, 또는 computed [expr]
@@ -2182,7 +2150,7 @@ pub const Parser = struct {
 
         // 메서드 shorthand: { foo() {} }
         if (self.current() == .l_paren) {
-            return self.parseObjectMethodBody(start, key);
+            return self.parseObjectMethodBody(start, key, 0);
         }
 
         // key: value
@@ -2202,7 +2170,8 @@ pub const Parser = struct {
     }
 
     /// 객체 리터럴 메서드의 파라미터와 본문을 파싱한다.
-    fn parseObjectMethodBody(self: *Parser, start: u32, key: NodeIndex) ParseError2!NodeIndex {
+    /// flags: 0x02=getter, 0x04=setter, 0x08=async, 0x10=generator
+    fn parseObjectMethodBody(self: *Parser, start: u32, key: NodeIndex, flags: u16) ParseError2!NodeIndex {
         self.expect(.l_paren);
         const scratch_top = self.saveScratch();
         while (self.current() != .r_paren and self.current() != .eof) {
@@ -2224,6 +2193,7 @@ pub const Parser = struct {
         _ = try self.ast.addExtra(param_list.start);
         _ = try self.ast.addExtra(param_list.len);
         _ = try self.ast.addExtra(@intFromEnum(body));
+        _ = try self.ast.addExtra(flags);
 
         return try self.ast.addNode(.{
             .tag = .method_definition,
@@ -2543,6 +2513,22 @@ pub const Parser = struct {
     /// 객체 프로퍼티 키를 파싱한다.
     /// 허용: identifier, string literal, numeric literal, computed [expr].
     /// spread (...expr) 또는 assignment expression을 파싱. ...가 있으면 spread_element로 감싼다.
+    /// 인자 리스트를 파싱한다: (arg1, arg2, ...) → NodeList
+    /// 여는 괄호 `(`는 이미 소비된 상태에서 호출.
+    /// 닫는 괄호 `)`까지 소비한다.
+    fn parseArgumentList(self: *Parser) ParseError2!NodeList {
+        const scratch_top = self.saveScratch();
+        while (self.current() != .r_paren and self.current() != .eof) {
+            const arg = try self.parseSpreadOrAssignment();
+            try self.scratch.append(arg);
+            if (!self.eat(.comma)) break;
+        }
+        self.expect(.r_paren);
+        const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        self.restoreScratch(scratch_top);
+        return list;
+    }
+
     fn parseSpreadOrAssignment(self: *Parser) ParseError2!NodeIndex {
         if (self.current() == .dot3) {
             const start = self.currentSpan().start;
