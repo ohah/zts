@@ -267,6 +267,32 @@
 - **결정**: 단순 파이프 (stdin → stdout, 추후 JSON-RPC)
 - **이유**: `cat input.ts | zts > output.js` 형태의 파이프 지원이 1순위. JSON-RPC는 에디터 통합 시 추가. esbuild도 단순 stdin/stdout 먼저, serve API 나중에 추가
 
+### Semantic Analysis — 결정 완료
+
+### D051: 파서 vs Semantic 패스 경계
+- **결정**: 파서에 풍부한 컨텍스트 추적 (strict mode + async/generator/loop/switch), Semantic 패스에 스코프/심볼
+- **이유**: 파서가 이미 아는 구문 컨텍스트(loop/function/switch)를 버리지 않음. break/continue/return 검증은 파서가 자연스럽게 처리. Semantic 패스는 "이름 해결" 관련(스코프/심볼/재선언/예약어)만 담당. oxc도 이 방식
+- **파서 담당**: strict mode, async/generator/loop/switch 컨텍스트, break/continue/return 유효성
+- **Semantic 담당**: 스코프 구축, 심볼 수집, 재선언 검증, 예약어 검증, 미선언 export 검증
+
+### D052: 스코프 모델
+- **결정**: 플랫 배열 + 부모 인덱스 (oxc 방식)
+- **이유**: D004 인덱스 참조 원칙과 일관. 캐시 효율 좋음. use-after-free 없음. Phase 6(minifier/bundler)에서 스코프 정보 재사용 가능
+- **비교**: 포인터 기반 트리(A)는 use-after-free 위험, 스택만(C)은 Phase 6 차단
+
+### D053: 심볼 모델
+- **결정**: 최소 심볼 (name + scope_id + kind + flags + declaration_span)
+- **이유**: 재선언 검증에 필요한 최소 정보만. references(참조 추적)는 Phase 6(minifier/bundler)에서 추가
+- **SymbolKind**: var/let/const/function/class/parameter/catch_binding/import_binding (8가지). 재선언 규칙이 kind별로 다르므로 세분화
+
+### D054: Strict Mode 추적
+- **결정**: 파서에서 추적 ("use strict" directive + module mode)
+- **이유**: directive는 구문 수준이므로 파서가 자연스럽게 처리. with문, 8진수 리터럴 등 strict 위반을 즉시 에러로 보고 가능. 함수 경계에서 strict 상태 저장/복원
+
+### D055: Test262 early phase 통합
+- **결정**: parse + early 통합 (is_negative_parse 하나로 처리)
+- **이유**: ECMAScript에서 early error는 실행 전 검출 대상. 트랜스파일러 관점에서 parse/early 구분 불필요. oxc/SWC도 같은 파이프라인에서 처리
+
 ### Phase 6 (Advanced) 시작 시
 - 번들러 아키텍처 (의존성 그래프, 청크 분할)
 - 트리쉐이킹 수준 (문/식/프로퍼티)

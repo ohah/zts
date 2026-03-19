@@ -104,7 +104,8 @@ pub fn parseMetadata(source: []const u8) TestMetadata {
         if (in_negative) {
             if (mem.startsWith(u8, trimmed, "phase:")) {
                 const value = mem.trim(u8, trimmed["phase:".len..], " \t");
-                if (mem.eql(u8, value, "parse")) {
+                // parse + early 통합 (D055): 둘 다 "파싱/분석 시 에러가 나야 하는 테스트"
+                if (mem.eql(u8, value, "parse") or mem.eql(u8, value, "early")) {
                     meta.is_negative_parse = true;
                 }
             } else if (mem.startsWith(u8, trimmed, "type:")) {
@@ -147,14 +148,22 @@ pub fn parseMetadata(source: []const u8) TestMetadata {
 /// - is_negative_parse == true → 파서/렉서가 에러를 발생시키면 pass
 /// - is_negative_parse == false → 에러 없이 파싱 완료되면 pass
 pub fn runTest(allocator: mem.Allocator, source: []const u8, meta: TestMetadata, verbose: bool) TestResult {
-    _ = meta.is_module; // TODO: module/script 구분 파싱 (현재 미지원)
-
     // Scanner → Parser로 파싱
     var scanner = Scanner.init(allocator, source);
     defer scanner.deinit();
 
     var parser = Parser.init(allocator, &scanner);
     defer parser.deinit();
+
+    // module 모드 설정 — module은 항상 strict mode (D054)
+    if (meta.is_module) {
+        parser.is_module = true;
+    }
+
+    // onlyStrict 플래그 — strict mode로 파싱
+    if (meta.is_only_strict) {
+        parser.is_strict_mode = true;
+    }
 
     // parse()는 OOM 시 error 반환, 파싱 에러는 parser.errors에 누적
     _ = parser.parse() catch {
@@ -347,6 +356,21 @@ test "parseMetadata: multiple flags" {
     const meta = parseMetadata(source);
     try std.testing.expect(meta.is_module);
     try std.testing.expect(meta.is_no_strict);
+}
+
+test "parseMetadata: early phase treated as parse (D055)" {
+    const source =
+        \\/*---
+        \\negative:
+        \\  phase: early
+        \\  type: SyntaxError
+        \\---*/
+        \\var x = 1;
+    ;
+    const meta = parseMetadata(source);
+    // early phase는 parse와 동일하게 is_negative_parse = true (D055)
+    try std.testing.expect(meta.is_negative_parse);
+    try std.testing.expectEqualStrings("SyntaxError", meta.negative_type.?);
 }
 
 test "passRate calculation" {
