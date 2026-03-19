@@ -550,6 +550,16 @@ pub const Parser = struct {
                     self.addError(self.currentSpan(), "async function declaration is not allowed in statement position");
                 }
             },
+            .kw_export => {
+                self.addError(self.currentSpan(), "'export' is not allowed in statement position");
+            },
+            .kw_import => {
+                // import()와 import.meta는 expression이므로 제외
+                const peek = self.peekNextKind();
+                if (peek != .l_paren and peek != .dot) {
+                    self.addError(self.currentSpan(), "'import' is not allowed in statement position");
+                }
+            },
             else => {},
         }
         return self.parseStatement();
