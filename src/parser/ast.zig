@@ -449,6 +449,18 @@ pub const Ast = struct {
 };
 
 // ============================================================
+// Function Declaration Flags (extra_data에 저장되는 비트 플래그)
+// parser와 semantic analyzer가 공유.
+// ============================================================
+
+/// function declaration/expression의 flags 비트.
+/// extra: [name, params.start, params.len, body, flags, return_type]
+pub const FunctionFlags = struct {
+    pub const is_async: u32 = 0x01;
+    pub const is_generator: u32 = 0x02;
+};
+
+// ============================================================
 // Tests
 // ============================================================
 
