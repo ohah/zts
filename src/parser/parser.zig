@@ -2933,14 +2933,21 @@ pub const Parser = struct {
             value = try self.parseAssignmentExpression();
         } else {
             // shorthand: { x } — key가 identifier shorthand로 사용 가능한지 검증
-            // reserved word (true, false, null 등)는 shorthand 불가
             if (!key.isNone()) {
                 const key_node = self.ast.getNode(key);
                 if (key_node.tag == .identifier_reference) {
                     const key_text = self.ast.source[key_node.span.start..key_node.span.end];
                     if (token_mod.keywords.get(key_text)) |kw| {
                         if (kw.isReservedKeyword() or kw.isLiteralKeyword()) {
+                            // reserved word (true, false, null, if, for 등)
                             self.addError(key_node.span, "reserved word cannot be used as shorthand property");
+                        } else if (self.ctx.is_strict_mode and kw.isStrictModeReserved()) {
+                            // strict mode reserved (yield, let, static, implements 등)
+                            self.addError(key_node.span, "reserved word in strict mode cannot be used as shorthand property");
+                        } else if (kw == .kw_yield and self.ctx.in_generator) {
+                            self.addError(key_node.span, "'yield' cannot be used as shorthand property in generator");
+                        } else if (kw == .kw_await and (self.ctx.in_async or self.is_module)) {
+                            self.addError(key_node.span, "'await' cannot be used as shorthand property in async/module");
                         }
                     }
                 }
