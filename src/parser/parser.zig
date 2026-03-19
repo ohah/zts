@@ -2318,18 +2318,29 @@ pub const Parser = struct {
                 // default value: pattern = expr
                 return self.tryWrapDefaultValue(node);
             },
-            .l_bracket => return self.parseArrayPattern(),
-            .l_curly => return self.parseObjectPattern(),
+            .l_bracket => {
+                const pat = try self.parseArrayPattern();
+                _ = self.eat(.question);
+                _ = try self.tryParseTypeAnnotation();
+                return self.tryWrapDefaultValue(pat);
+            },
+            .l_curly => {
+                const pat = try self.parseObjectPattern();
+                _ = self.eat(.question);
+                _ = try self.tryParseTypeAnnotation();
+                return self.tryWrapDefaultValue(pat);
+            },
             else => {
                 // 키워드도 바인딩 이름으로 사용 가능한 경우 (let, yield 등)
                 if (self.current().isKeyword()) {
                     const span = self.currentSpan();
                     self.advance();
-                    return try self.ast.addNode(.{
+                    const node2 = try self.ast.addNode(.{
                         .tag = .binding_identifier,
                         .span = span,
                         .data = .{ .string_ref = span },
                     });
+                    return self.tryWrapDefaultValue(node2);
                 }
                 self.addError(self.currentSpan(), "binding pattern expected");
                 return NodeIndex.none;
