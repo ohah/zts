@@ -113,7 +113,16 @@ fn isUnicodeIdStart(cp: u21) bool {
     if (cp >= 0x3040 and cp <= 0x30FF) return true;
     // CJK Extension B
     if (cp >= 0x20000 and cp <= 0x2A6DF) return true;
-    // Emoji는 ID_Start가 아님
+
+    // Other_ID_Start (ECMAScript 특별 예외 문자)
+    // U+1885..U+1886 (Mongolian), U+2118 (℘), U+212E (℮), U+309B..U+309C (゛゜)
+    if (cp == 0x1885 or cp == 0x1886 or cp == 0x2118 or cp == 0x212E or
+        cp == 0x309B or cp == 0x309C) return true;
+
+    // Letter Number (Nl) — 로마 숫자 등
+    if (cp >= 0x2160 and cp <= 0x2188) return true;
+    // Letterlike Symbols
+    if (cp >= 0x2100 and cp <= 0x214F) return true;
 
     return false;
 }
