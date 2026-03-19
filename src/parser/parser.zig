@@ -1393,6 +1393,7 @@ pub const Parser = struct {
             const saved_token = self.scanner.token;
             const saved_line = self.scanner.line;
             const saved_line_start = self.scanner.line_start;
+            const saved_prev_token = self.scanner.prev_token_kind;
 
             self.advance(); // skip identifier
             if (self.current() == .arrow) {
@@ -1421,6 +1422,7 @@ pub const Parser = struct {
             self.scanner.token = saved_token;
             self.scanner.line = saved_line;
             self.scanner.line_start = saved_line_start;
+            self.scanner.prev_token_kind = saved_prev_token;
         }
 
         const left = try self.parseConditionalExpression();
@@ -4444,6 +4446,19 @@ test "Parser: JSX with expression" {
     var scanner = Scanner.init(std.testing.allocator,
         \\const x = <span>{name}</span>;
     );
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: function call with division in args" {
+    // arrow lookahead가 prev_token_kind를 복구하지 않으면
+    // / 가 regex로 해석되어 실패하던 버그 테스트
+    const source = "truncate(x / y)";
+    var scanner = Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
