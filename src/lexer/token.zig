@@ -50,6 +50,10 @@ pub const Token = struct {
 
     /// 이 토큰 직전에 @__PURE__ 또는 @__NO_SIDE_EFFECTS__ 주석이 있었는지 (D025)
     has_pure_comment_before: bool = false,
+
+    /// 이 토큰이 유니코드 이스케이프를 포함하는지 (oxc 방식).
+    /// escaped keyword 감지에 사용: advance()에서 escaped && is_keyword → 에러.
+    has_escape: bool = false,
 };
 
 /// ECMAScript / TypeScript / JSX 토큰 종류.
