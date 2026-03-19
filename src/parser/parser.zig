@@ -1097,14 +1097,8 @@ pub const Parser = struct {
 
     /// break, continue, debugger 등 키워드 + 세미콜론만으로 구성된 단순 문.
     fn parseSimpleStatement(self: *Parser, tag: Tag) ParseError2!NodeIndex {
-        // break는 loop 또는 switch 안에서만 허용
-        // continue는 loop 안에서만 허용
-        if (tag == .break_statement and !self.ctx.in_loop and !self.ctx.in_switch) {
-            self.addError(self.currentSpan(), "'break' outside of loop or switch");
-        } else if (tag == .continue_statement and !self.ctx.in_loop) {
-            self.addError(self.currentSpan(), "'continue' outside of loop");
-        }
-        const start = self.currentSpan().start;
+        const keyword_span = self.currentSpan();
+        const start = keyword_span.start;
         self.advance(); // skip break/continue/debugger
 
         // break/continue 뒤에 줄바꿈 없이 identifier가 오면 label로 소비
@@ -1118,6 +1112,22 @@ pub const Parser = struct {
                 .data = .{ .string_ref = self.currentSpan() },
             });
             self.advance();
+        }
+
+        // label이 없는 break → loop 또는 switch 안에서만 허용
+        // label이 있는 break → labelled statement 안에서 유효 (loop/switch 불필요)
+        // continue → label 유무와 관계없이 loop 안에서만 허용
+        if (label.isNone()) {
+            if (tag == .break_statement and !self.ctx.in_loop and !self.ctx.in_switch) {
+                self.addError(keyword_span, "'break' outside of loop or switch");
+            } else if (tag == .continue_statement and !self.ctx.in_loop) {
+                self.addError(keyword_span, "'continue' outside of loop");
+            }
+        } else {
+            // label이 있는 continue는 여전히 loop 안이어야 함
+            if (tag == .continue_statement and !self.ctx.in_loop) {
+                self.addError(keyword_span, "'continue' outside of loop");
+            }
         }
 
         const end = self.currentSpan().end;
