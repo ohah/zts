@@ -1030,8 +1030,7 @@ test "SemanticAnalyzer: private method is valid" {
 
 test "SemanticAnalyzer: nested class private name" {
     // 내부 class에서 외부 class의 private name 접근은 불가
-    var scanner = Scanner.init(std.testing.allocator,
-        "class Outer { #x; foo() { class Inner { bar() { this.#y; } } } }");
+    var scanner = Scanner.init(std.testing.allocator, "class Outer { #x; foo() { class Inner { bar() { this.#y; } } } }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
