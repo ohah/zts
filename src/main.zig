@@ -68,7 +68,7 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try printUsage(stdout);
             return;
-        } else if (arg[0] != '-') {
+        } else if (arg[0] != '-' or (arg.len == 1 and arg[0] == '-')) {
             input_file = arg;
         } else {
             try stderr.print("zts: unknown option: {s}\n", .{arg});
@@ -117,14 +117,24 @@ pub fn main() !void {
     }
 
     // 트랜스파일
-    const file_path = input_file orelse {
+    // 입력 소스 읽기: 파일 또는 stdin
+    const is_stdin = if (input_file) |f| std.mem.eql(u8, f, "-") else false;
+    const file_path = if (is_stdin) "<stdin>" else (input_file orelse {
         try printUsage(stdout);
         return;
-    };
+    });
 
-    const source = std.fs.cwd().readFileAlloc(allocator, file_path, 100 * 1024 * 1024) catch |err| {
-        try stderr.print("zts: cannot read '{s}': {}\n", .{ file_path, err });
-        return;
+    const source = if (is_stdin) blk: {
+        // stdin에서 읽기
+        break :blk std.io.getStdIn().readToEndAlloc(allocator, 100 * 1024 * 1024) catch |err| {
+            try stderr.print("zts: cannot read stdin: {}\n", .{err});
+            return;
+        };
+    } else blk: {
+        break :blk std.fs.cwd().readFileAlloc(allocator, file_path, 100 * 1024 * 1024) catch |err| {
+            try stderr.print("zts: cannot read '{s}': {}\n", .{ file_path, err });
+            return;
+        };
     };
     defer allocator.free(source);
 
@@ -218,6 +228,7 @@ fn printUsage(writer: anytype) !void {
         \\Usage:
         \\  zts <file.ts>                Transpile to stdout
         \\  zts <file.ts> -o <out.js>    Transpile to file
+        \\  zts - < input.ts             Read from stdin
         \\
         \\Options:
         \\  -o, --out-file <path>        Output file path
