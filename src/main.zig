@@ -230,6 +230,7 @@ pub fn main() !void {
     var drop_debugger = false;
     var sourcemap = false;
     var ascii_only = false;
+    var watch = false;
     var is_test262 = false;
     var is_tokenize = false;
     var test262_dir: ?[]const u8 = null;
@@ -275,6 +276,8 @@ pub fn main() !void {
                 i += 1;
                 project_path = args[i];
             }
+        } else if (std.mem.eql(u8, arg, "--watch") or std.mem.eql(u8, arg, "-w")) {
+            watch = true;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try printUsage(stdout);
             return;
@@ -395,6 +398,9 @@ pub fn main() !void {
                 return;
             };
             try walkAndTranspile(allocator, input_path_str, out_dir, options);
+            if (watch) {
+                try watchDirectory(allocator, input_path_str, out_dir, options, stderr);
+            }
             return;
         };
 
@@ -404,6 +410,9 @@ pub fn main() !void {
                 return;
             };
             try walkAndTranspile(allocator, input_path_str, out_dir, options);
+            if (watch) {
+                try watchDirectory(allocator, input_path_str, out_dir, options, stderr);
+            }
             return;
         }
     }
@@ -420,6 +429,173 @@ pub fn main() !void {
         try transpileFile(allocator, file_path, source, output_file, options);
     } else {
         try transpileFile(allocator, file_path, null, output_file, options);
+        if (watch) {
+            try watchFile(allocator, file_path, output_file, options, stderr);
+        }
+    }
+}
+
+/// 단일 파일을 폴링 방식으로 감시한다 (D048).
+/// 파일의 mtime을 500ms마다 확인하여 변경되면 재트랜스파일한다.
+/// Ctrl+C로 종료될 때까지 무한 루프를 돈다.
+fn watchFile(
+    allocator: std.mem.Allocator,
+    file_path: []const u8,
+    output_path: ?[]const u8,
+    options: TranspileOptions,
+    stderr: anytype,
+) !void {
+    const stdout = std.io.getStdOut().writer();
+
+    // 초기 mtime 저장
+    var last_mtime = getFileMtime(file_path) catch |err| {
+        try stderr.print("zts: cannot stat '{s}': {}\n", .{ file_path, err });
+        return;
+    };
+
+    try stdout.print("[watch] Watching for file changes...\n", .{});
+
+    while (true) {
+        std.time.sleep(500 * std.time.ns_per_ms);
+
+        const current_mtime = getFileMtime(file_path) catch continue;
+
+        if (current_mtime != last_mtime) {
+            last_mtime = current_mtime;
+            try stdout.print("[watch] File changed: {s}\n", .{file_path});
+            transpileFile(allocator, file_path, null, output_path, options) catch |err| {
+                try stderr.print("zts: watch re-transpile error: {}\n", .{err});
+            };
+        }
+    }
+}
+
+/// 디렉토리를 폴링 방식으로 감시한다 (D048).
+/// 매 500ms마다 디렉토리를 재순회하여 .ts/.tsx 파일의 mtime을 확인하고,
+/// 변경된 파일만 재트랜스파일한다.
+fn watchDirectory(
+    allocator: std.mem.Allocator,
+    input_dir: []const u8,
+    output_dir: []const u8,
+    options: TranspileOptions,
+    stderr: anytype,
+) !void {
+    const stdout = std.io.getStdOut().writer();
+
+    // mtime 맵: 파일 경로(소유) -> mtime
+    var mtime_map = std.StringHashMap(i128).init(allocator);
+    defer {
+        var it = mtime_map.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+        }
+        mtime_map.deinit();
+    }
+
+    // 초기 mtime 수집
+    try collectMtimes(allocator, input_dir, &mtime_map);
+
+    try stdout.print("[watch] Watching for file changes...\n", .{});
+
+    while (true) {
+        std.time.sleep(500 * std.time.ns_per_ms);
+
+        // 현재 파일 상태 수집
+        var current_mtimes = std.StringHashMap(i128).init(allocator);
+        defer {
+            var it = current_mtimes.iterator();
+            while (it.next()) |entry| {
+                allocator.free(entry.key_ptr.*);
+            }
+            current_mtimes.deinit();
+        }
+
+        collectMtimes(allocator, input_dir, &current_mtimes) catch continue;
+
+        // 변경된 파일 찾기
+        var it = current_mtimes.iterator();
+        while (it.next()) |entry| {
+            const path = entry.key_ptr.*;
+            const current_mtime = entry.value_ptr.*;
+
+            const old_mtime = mtime_map.get(path);
+            if (old_mtime == null or old_mtime.? != current_mtime) {
+                try stdout.print("[watch] File changed: {s}\n", .{path});
+
+                // 출력 경로 계산
+                // path는 input_dir/relative 형태이므로 input_dir 접두사를 제거
+                const rel_path = if (std.mem.startsWith(u8, path, input_dir))
+                    path[input_dir.len + 1 ..] // +1 for path separator
+                else
+                    path;
+
+                const is_tsx = std.mem.endsWith(u8, rel_path, ".tsx");
+                const basename_no_ext = if (is_tsx)
+                    rel_path[0 .. rel_path.len - 4]
+                else
+                    rel_path[0 .. rel_path.len - 3];
+                const output_rel = try std.fmt.allocPrint(allocator, "{s}.js", .{basename_no_ext});
+                defer allocator.free(output_rel);
+                const out_path = try std.fs.path.join(allocator, &.{ output_dir, output_rel });
+                defer allocator.free(out_path);
+
+                transpileFile(allocator, path, null, out_path, options) catch |err| {
+                    try stderr.print("zts: watch re-transpile error: {}\n", .{err});
+                };
+
+                // mtime 맵 업데이트 - 키를 복제하여 저장
+                const owned_key = try allocator.dupe(u8, path);
+                if (mtime_map.fetchPut(owned_key, current_mtime) catch null) |old| {
+                    allocator.free(old.key);
+                }
+            }
+        }
+    }
+}
+
+/// 파일의 mtime(수정 시각)을 i128 나노초 단위로 반환한다.
+fn getFileMtime(path: []const u8) !i128 {
+    const stat = try std.fs.cwd().statFile(path);
+    return stat.mtime;
+}
+
+/// 디렉토리를 순회하며 .ts/.tsx 파일의 mtime을 수집한다.
+/// mtime_map에 파일 전체 경로(소유) -> mtime을 저장한다.
+fn collectMtimes(
+    allocator: std.mem.Allocator,
+    input_dir: []const u8,
+    mtime_map: *std.StringHashMap(i128),
+) !void {
+    var dir = try std.fs.cwd().openDir(input_dir, .{ .iterate = true });
+    defer dir.close();
+
+    var walker = try dir.walk(allocator);
+    defer walker.deinit();
+
+    while (try walker.next()) |entry| {
+        if (entry.kind != .file) continue;
+
+        const path = entry.path;
+        if (std.mem.indexOf(u8, path, "node_modules") != null) continue;
+
+        const is_ts = std.mem.endsWith(u8, path, ".ts");
+        const is_tsx = std.mem.endsWith(u8, path, ".tsx");
+        if (!is_ts and !is_tsx) continue;
+        if (std.mem.endsWith(u8, path, ".d.ts")) continue;
+
+        // 전체 경로 구성
+        const full_path = try std.fs.path.join(allocator, &.{ input_dir, path });
+
+        const mtime = getFileMtime(full_path) catch {
+            allocator.free(full_path);
+            continue;
+        };
+
+        // full_path를 키로 소유권 이전
+        mtime_map.put(full_path, mtime) catch {
+            allocator.free(full_path);
+            continue;
+        };
     }
 }
 
@@ -508,6 +684,7 @@ fn printUsage(writer: anytype) !void {
         \\  --drop=debugger              Remove debugger statements
         \\  --sourcemap                  Generate source map (.js.map)
         \\  --ascii-only                 Escape non-ASCII to \uXXXX
+        \\  -w, --watch                  Watch for file changes and re-transpile
         \\  -p, --project <path>         Path to tsconfig.json directory
         \\  --tokenize                   Print tokens instead of transpiling
         \\  --test262 <dir>              Run Test262 tests
