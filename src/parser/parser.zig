@@ -2156,6 +2156,15 @@ pub const Parser = struct {
             const prec = getBinaryPrecedence(self.current());
             if (prec == 0 or prec <= min_prec) break;
 
+            // ECMAScript 12.6: unary expression ** exponentiation → SyntaxError
+            // delete/void/typeof/+/-/~/! 의 결과에 **를 적용할 수 없음
+            if (self.current() == .star2 and !left.isNone()) {
+                const left_tag = self.ast.getNode(left).tag;
+                if (left_tag == .unary_expression) {
+                    self.addError(self.currentSpan(), "unary expression cannot be the left operand of '**'");
+                }
+            }
+
             const left_start = self.ast.getNode(left).span.start;
             const op_kind = self.current();
             const is_logical = (op_kind == .amp2 or op_kind == .pipe2 or op_kind == .question2);
