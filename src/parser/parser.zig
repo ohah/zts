@@ -2431,7 +2431,7 @@ pub const Parser = struct {
     /// type alias, interface, enum 등 선언 이름에 사용.
     fn parseSimpleIdentifier(self: *Parser) ParseError2!NodeIndex {
         const span = self.currentSpan();
-        if (self.current() == .identifier or self.current().isKeyword()) {
+        if (self.current() == .identifier or self.current() == .escaped_keyword or self.current().isKeyword()) {
             self.advance();
             return try self.ast.addNode(.{
                 .tag = .binding_identifier,
@@ -2574,7 +2574,7 @@ pub const Parser = struct {
 
     fn parseIdentifierName(self: *Parser) ParseError2!NodeIndex {
         const span = self.currentSpan();
-        if (self.current() == .identifier or self.current().isKeyword()) {
+        if (self.current() == .identifier or self.current() == .escaped_keyword or self.current().isKeyword()) {
             self.advance();
             return try self.ast.addNode(.{
                 .tag = .identifier_reference,
@@ -2631,7 +2631,7 @@ pub const Parser = struct {
     fn parsePropertyKey(self: *Parser) ParseError2!NodeIndex {
         const span = self.currentSpan();
         switch (self.current()) {
-            .identifier => {
+            .identifier, .escaped_keyword => {
                 self.advance();
                 return try self.ast.addNode(.{
                     .tag = .identifier_reference,
