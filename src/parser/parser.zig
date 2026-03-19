@@ -53,30 +53,117 @@ pub const Parser = struct {
     // ================================================================
     // 컨텍스트 플래그 (D051: 파서에서 구문 컨텍스트 추적)
     // ================================================================
+    //
+    // Context는 packed struct(u32)로 구현된 bitflags다.
+    // 함수 진입/퇴장 시 save/restore 대상이 되는 모든 플래그를 하나로 묶어,
+    // 저장/복원을 단순 대입으로 처리한다 (oxc/Babel/Bun 공통 패턴).
+    //
+    // is_module은 파싱 시작 시 한 번 결정되고 변하지 않는 불변 설정이므로
+    // Context에 포함하지 않고 별도 필드로 관리한다 (oxc/Babel/Hermes 방식).
 
-    /// strict mode 여부 (D054: "use strict" directive 또는 module mode)
-    is_strict_mode: bool = false,
+    /// 파싱 컨텍스트 bitflags. 함수/블록 경계에서 save/restore 대상.
+    ctx: Context = Context.default,
 
-    /// 함수 본문 안에 있는지 (return 유효성 검증용)
-    in_function: bool = false,
-
-    /// async 함수 안에 있는지 (await 유효성 검증용)
-    in_async: bool = false,
-
-    /// generator 함수 안에 있는지 (yield 유효성 검증용)
-    in_generator: bool = false,
-
-    /// 루프 안에 있는지 (continue 유효성 검증용)
-    in_loop: bool = false,
-
-    /// switch 안에 있는지 (break 유효성 검증용 — break는 loop OR switch에서 허용)
-    in_switch: bool = false,
-
-    /// module 모드인지 (import/export 허용, 항상 strict)
+    /// module 모드인지 (import/export 허용, 항상 strict).
+    /// 파싱 시작 시 한 번 결정되는 불변 설정이므로 Context에 포함하지 않음.
     is_module: bool = false,
 
-    /// 현재 파싱 중인 함수의 파라미터가 simple인지 (non-simple이면 "use strict" 금지)
-    has_simple_params: bool = true,
+    // ================================================================
+    // Context packed struct 정의
+    // ================================================================
+
+    /// 파서의 구문 컨텍스트를 추적하는 bitflags.
+    ///
+    /// packed struct(u32)를 사용하면:
+    /// - 22개 bool 필드가 4바이트 하나에 들어감 (개별 bool이면 22바이트)
+    /// - save/restore가 u32 대입 한 번으로 끝남 (구조체 필드 7개 복사 → 1개)
+    /// - 비트 연산으로 여러 플래그를 한꺼번에 조작 가능
+    ///
+    /// 기본값 주의: has_simple_params, allow_in, is_top_level은 기본값이 true.
+    pub const Context = packed struct(u32) {
+        // --- 기본 ECMAScript 컨텍스트 (비트 0~7) ---
+
+        /// strict mode 여부 (D054: "use strict" directive 또는 module mode)
+        is_strict_mode: bool = false,
+        /// 함수 본문 안에 있는지 (return 유효성 검증용)
+        in_function: bool = false,
+        /// async 함수 안에 있는지 (await 키워드 유효성 검증용)
+        in_async: bool = false,
+        /// generator 함수 안에 있는지 (yield 키워드 유효성 검증용)
+        in_generator: bool = false,
+        /// 루프 안에 있는지 (continue 유효성 검증용)
+        in_loop: bool = false,
+        /// switch 안에 있는지 (break 유효성 검증용 — break는 loop OR switch에서 허용)
+        in_switch: bool = false,
+        /// 현재 파싱 중인 함수의 파라미터가 simple인지 (non-simple이면 "use strict" 금지)
+        has_simple_params: bool = true,
+        /// `in` 연산자 허용 여부 (for-in/for-of 초기화절에서는 false로 설정하여
+        /// `in`을 관계 연산자가 아닌 for-in 키워드로 파싱)
+        allow_in: bool = true,
+
+        // --- 추가 ECMAScript 컨텍스트 (비트 8~12) ---
+
+        /// 최상위 레벨인지 (top-level await 감지용)
+        is_top_level: bool = true,
+        /// decorator 파싱 중인지
+        in_decorator: bool = false,
+        /// for 초기화절 안인지 (for-in/for-of 구분)
+        for_loop_init: bool = false,
+        /// 함수 파라미터 안인지
+        in_parameters: bool = false,
+
+        // --- class 관련 컨텍스트 (비트 12~17) ---
+
+        /// class 본문 안인지
+        in_class: bool = false,
+        /// class field 초기값 안인지
+        in_class_field: bool = false,
+        /// static block 안인지
+        in_static_block: bool = false,
+        /// extends 있는 class인지 (super() 허용 판단)
+        has_super_class: bool = false,
+        /// super() 호출 허용 여부 (constructor + extends)
+        allow_super_call: bool = false,
+        /// super.x / super[x] 허용 여부
+        allow_super_property: bool = false,
+
+        // --- TypeScript 컨텍스트 (비트 18~21) ---
+
+        /// TS 타입 어노테이션 안인지 (렉서 동작 변경: `<`/`>`를 타입 구분자로)
+        in_type: bool = false,
+        /// TS declare 블록 또는 .d.ts 파일 안인지
+        in_ambient: bool = false,
+        /// TS 조건부 타입 금지 (infer 절에서 extends를 제약으로 파싱)
+        disallow_conditional_types: bool = false,
+
+        // --- 기타 (비트 21~) ---
+
+        /// new.target 허용 여부
+        allow_new_target: bool = false,
+        /// constructor 안인지
+        is_constructor: bool = false,
+
+        // 남은 비트는 padding (향후 확장용)
+        _padding: u9 = 0,
+
+        /// 기본값: has_simple_params=true, allow_in=true, is_top_level=true, 나머지 false.
+        pub const default: Context = .{};
+
+        /// 함수 진입 시 컨텍스트를 설정한다.
+        /// in_function=true, in_loop/in_switch=false (함수 안의 break/continue는 함수 밖 loop에 속하지 않음),
+        /// is_top_level=false, async/generator는 인자로 설정.
+        /// 나머지 플래그(is_strict_mode 등)는 유지한다.
+        pub fn enterFunction(self: Context, is_async: bool, is_generator: bool) Context {
+            var new = self;
+            new.in_function = true;
+            new.in_async = is_async;
+            new.in_generator = is_generator;
+            new.in_loop = false;
+            new.in_switch = false;
+            new.is_top_level = false;
+            return new;
+        }
+    };
 
     pub fn init(allocator: std.mem.Allocator, scanner: *Scanner) Parser {
         return .{
@@ -159,7 +246,7 @@ pub const Parser = struct {
 
     /// strict mode에서 eval/arguments를 바인딩 이름으로 사용하면 에러.
     fn checkStrictBinding(self: *Parser, span: Span) void {
-        if (!self.is_strict_mode) return;
+        if (!self.ctx.is_strict_mode) return;
         const text = self.ast.source[span.start..span.end];
         if (std.mem.eql(u8, text, "eval") or std.mem.eql(u8, text, "arguments")) {
             self.addError(span, "assignment to 'eval' or 'arguments' is not allowed in strict mode");
@@ -193,11 +280,11 @@ pub const Parser = struct {
     fn checkKeywordBinding(self: *Parser) void {
         if (self.current().isReservedKeyword()) {
             self.addError(self.currentSpan(), "reserved word cannot be used as identifier");
-        } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
+        } else if (self.ctx.is_strict_mode and self.current().isStrictModeReserved()) {
             self.addError(self.currentSpan(), "reserved word in strict mode cannot be used as identifier");
-        } else if (self.current() == .kw_yield and self.in_generator) {
+        } else if (self.current() == .kw_yield and self.ctx.in_generator) {
             self.addError(self.currentSpan(), "'yield' cannot be used as identifier in generator");
-        } else if (self.current() == .kw_await and self.in_async) {
+        } else if (self.current() == .kw_await and self.ctx.in_async) {
             self.addError(self.currentSpan(), "'await' cannot be used as identifier in async function");
         }
     }
@@ -206,55 +293,24 @@ pub const Parser = struct {
     // 컨텍스트 저장/복원 (D051: 함수 경계에서 컨텍스트 리셋)
     // ================================================================
     //
-    // 함수 진입 시 saveContext()로 현재 상태를 저장하고,
-    // 함수 본문 파싱 후 restoreContext()로 복원한다.
-    // 이렇게 하는 이유: 함수 안의 break/continue는 함수 밖 loop에 속하지 않고,
-    // 함수마다 독립된 strict/async/generator 컨텍스트를 가진다.
+    // Context가 packed struct(u32)이므로 저장/복원이 단순 대입이다.
+    // 함수 진입: saved = self.ctx; self.ctx = self.ctx.enterFunction(...)
+    // 함수 퇴장: self.ctx = saved;
+    //
+    // enterFunctionContext()는 이 패턴을 함수로 감싸 실수를 방지한다.
 
-    /// SavedContext: 함수 경계에서 저장/복원할 컨텍스트.
-    /// is_module은 제외 — 파싱 시작 시 한 번 설정되고 변경되지 않음 (ECMA-262: module/script 구분은 호스트가 결정).
-    const SavedContext = struct {
-        is_strict_mode: bool,
-        in_function: bool,
-        in_async: bool,
-        in_generator: bool,
-        in_loop: bool,
-        in_switch: bool,
-        has_simple_params: bool,
-    };
-
-    fn saveContext(self: *const Parser) SavedContext {
-        return .{
-            .is_strict_mode = self.is_strict_mode,
-            .in_function = self.in_function,
-            .in_async = self.in_async,
-            .in_generator = self.in_generator,
-            .in_loop = self.in_loop,
-            .in_switch = self.in_switch,
-            .has_simple_params = self.has_simple_params,
-        };
-    }
-
-    fn restoreContext(self: *Parser, saved: SavedContext) void {
-        self.is_strict_mode = saved.is_strict_mode;
-        self.in_function = saved.in_function;
-        self.in_async = saved.in_async;
-        self.in_generator = saved.in_generator;
-        self.in_loop = saved.in_loop;
-        self.in_switch = saved.in_switch;
-        self.has_simple_params = saved.has_simple_params;
-    }
-
-    /// 함수 컨텍스트를 설정한다 (saveContext + 플래그 세팅).
-    /// 함수/메서드/arrow 진입 시 호출하고, 본문 파싱 후 restoreContext로 복원.
-    fn enterFunctionContext(self: *Parser, is_async: bool, is_generator: bool) SavedContext {
-        const saved = self.saveContext();
-        self.in_function = true;
-        self.in_async = is_async;
-        self.in_generator = is_generator;
-        self.in_loop = false;
-        self.in_switch = false;
+    /// 함수 컨텍스트를 설정한다.
+    /// 현재 ctx를 반환(저장)하고, ctx를 함수 진입 상태로 변경한다.
+    /// 함수/메서드/arrow 진입 시 호출하고, 본문 파싱 후 restoreContext()로 복원.
+    fn enterFunctionContext(self: *Parser, is_async: bool, is_generator: bool) Context {
+        const saved = self.ctx;
+        self.ctx = self.ctx.enterFunction(is_async, is_generator);
         return saved;
+    }
+
+    /// 저장된 컨텍스트를 복원한다.
+    fn restoreContext(self: *Parser, saved: Context) void {
+        self.ctx = saved;
     }
 
     /// 현재 토큰이 "use strict" directive인지 확인한다.
@@ -270,10 +326,10 @@ pub const Parser = struct {
 
     /// 루프 본문을 파싱한다. in_loop 컨텍스트를 설정/복원.
     fn parseLoopBody(self: *Parser) ParseError2!NodeIndex {
-        const was_in_loop = self.in_loop;
-        self.in_loop = true;
+        const was_in_loop = self.ctx.in_loop;
+        self.ctx.in_loop = true;
         const body = try self.parseStatement();
-        self.in_loop = was_in_loop;
+        self.ctx.in_loop = was_in_loop;
         return body;
     }
 
@@ -294,7 +350,7 @@ pub const Parser = struct {
 
     /// strict mode 또는 non-simple params에서 중복 파라미터를 검사한다.
     fn checkDuplicateParams(self: *Parser, scratch_top: usize) void {
-        if (!self.is_strict_mode and self.has_simple_params) return;
+        if (!self.ctx.is_strict_mode and self.ctx.has_simple_params) return;
         const params = self.scratch.items[scratch_top..];
         // O(N²)이지만 파라미터 수가 적으므로 (보통 <10) 충분
         for (params, 0..) |param_idx, i| {
@@ -333,10 +389,10 @@ pub const Parser = struct {
                     // non-simple parameters + "use strict" → 에러
                     // ECMAScript 14.1.2: function with non-simple parameter list
                     // shall not contain a Use Strict Directive
-                    if (!self.has_simple_params) {
+                    if (!self.ctx.has_simple_params) {
                         self.addError(self.currentSpan(), "\"use strict\" not allowed in function with non-simple parameters");
                     }
-                    self.is_strict_mode = true;
+                    self.ctx.is_strict_mode = true;
                 } else {
                     in_directive_prologue = false;
                 }
@@ -367,7 +423,7 @@ pub const Parser = struct {
 
         // module 모드면 항상 strict (D054)
         if (self.is_module) {
-            self.is_strict_mode = true;
+            self.ctx.is_strict_mode = true;
         }
 
         // hashbang (#! ...) 건너뛰기
@@ -384,7 +440,7 @@ pub const Parser = struct {
         while (self.current() != .eof) {
             if (in_directive_prologue) {
                 if (self.isUseStrictDirective()) {
-                    self.is_strict_mode = true;
+                    self.ctx.is_strict_mode = true;
                 } else {
                     in_directive_prologue = false;
                 }
@@ -508,13 +564,13 @@ pub const Parser = struct {
             const peek = self.peekNext();
             if (peek.kind == .colon) {
                 // yield/await를 label로 사용하면 generator/async에서 에러
-                if (self.current() == .kw_yield and self.in_generator) {
+                if (self.current() == .kw_yield and self.ctx.in_generator) {
                     self.addError(self.currentSpan(), "'yield' cannot be used as label in generator");
-                } else if (self.current() == .kw_await and self.in_async) {
+                } else if (self.current() == .kw_await and self.ctx.in_async) {
                     self.addError(self.currentSpan(), "'await' cannot be used as label in async function");
                 } else if (self.current() == .escaped_keyword) {
                     self.addError(self.currentSpan(), "escaped reserved word cannot be used as label");
-                } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
+                } else if (self.ctx.is_strict_mode and self.current().isStrictModeReserved()) {
                     self.addError(self.currentSpan(), "reserved word in strict mode cannot be used as label");
                 }
                 return self.parseLabeledStatement();
@@ -545,7 +601,7 @@ pub const Parser = struct {
     /// with statement: with (expr) statement
     /// strict mode에서는 SyntaxError (D054)
     fn parseWithStatement(self: *Parser) ParseError2!NodeIndex {
-        if (self.is_strict_mode) {
+        if (self.ctx.is_strict_mode) {
             self.addError(self.currentSpan(), "'with' is not allowed in strict mode");
         }
         const start = self.currentSpan().start;
@@ -627,7 +683,7 @@ pub const Parser = struct {
 
     fn parseReturnStatement(self: *Parser) ParseError2!NodeIndex {
         // return은 함수 안에서만 허용
-        if (!self.in_function) {
+        if (!self.ctx.in_function) {
             self.addError(self.currentSpan(), "'return' outside of function");
         }
         const start = self.currentSpan().start;
@@ -805,9 +861,9 @@ pub const Parser = struct {
     fn parseSimpleStatement(self: *Parser, tag: Tag) ParseError2!NodeIndex {
         // break는 loop 또는 switch 안에서만 허용
         // continue는 loop 안에서만 허용
-        if (tag == .break_statement and !self.in_loop and !self.in_switch) {
+        if (tag == .break_statement and !self.ctx.in_loop and !self.ctx.in_switch) {
             self.addError(self.currentSpan(), "'break' outside of loop or switch");
-        } else if (tag == .continue_statement and !self.in_loop) {
+        } else if (tag == .continue_statement and !self.ctx.in_loop) {
             self.addError(self.currentSpan(), "'continue' outside of loop");
         }
         const start = self.currentSpan().start;
@@ -843,8 +899,8 @@ pub const Parser = struct {
         self.expect(.r_paren);
         self.expect(.l_curly);
 
-        const was_in_switch = self.in_switch;
-        self.in_switch = true;
+        const was_in_switch = self.ctx.in_switch;
+        self.ctx.in_switch = true;
 
         const scratch_top = self.saveScratch();
         while (self.current() != .r_curly and self.current() != .eof) {
@@ -852,7 +908,7 @@ pub const Parser = struct {
             try self.scratch.append(case_node);
         }
 
-        self.in_switch = was_in_switch;
+        self.ctx.in_switch = was_in_switch;
 
         const end = self.currentSpan().end;
         self.expect(.r_curly);
@@ -1007,7 +1063,7 @@ pub const Parser = struct {
 
         // 함수 본문 — 컨텍스트 저장/복원
         const saved_ctx = self.enterFunctionContext((flags & 0x01) != 0, (flags & 0x02) != 0);
-        self.has_simple_params = self.checkSimpleParams(scratch_top);
+        self.ctx.has_simple_params = self.checkSimpleParams(scratch_top);
         self.checkDuplicateParams(scratch_top);
         const body = try self.parseFunctionBody();
         self.restoreContext(saved_ctx);
@@ -1079,7 +1135,7 @@ pub const Parser = struct {
 
         // 함수 본문 — 컨텍스트 저장/복원
         const saved_ctx = self.enterFunctionContext((flags & 0x01) != 0, (flags & 0x02) != 0);
-        self.has_simple_params = self.checkSimpleParams(scratch_top);
+        self.ctx.has_simple_params = self.checkSimpleParams(scratch_top);
         self.checkDuplicateParams(scratch_top);
         const body = try self.parseFunctionBody();
         self.restoreContext(saved_ctx);
@@ -1290,7 +1346,7 @@ pub const Parser = struct {
             if (self.current() == .l_curly) {
                 // 메서드의 async/generator 플래그는 함수와 비트 위치가 다름 (0x08/0x10)
                 const saved_ctx = self.enterFunctionContext((flags & 0x08) != 0, (flags & 0x10) != 0);
-                self.has_simple_params = self.checkSimpleParams(param_top);
+                self.ctx.has_simple_params = self.checkSimpleParams(param_top);
                 self.checkDuplicateParams(param_top);
                 body = try self.parseFunctionBody();
                 self.restoreContext(saved_ctx);
@@ -2441,11 +2497,11 @@ pub const Parser = struct {
                 // expression에서 식별자로 사용 가능 (reserved keyword만 불가)
                 // 단, yield/await는 generator/async 내부에서, strict mode reserved는 strict에서 불가
                 if (self.current().isKeyword() and !self.current().isReservedKeyword()) {
-                    if (self.is_strict_mode and self.current().isStrictModeReserved()) {
+                    if (self.ctx.is_strict_mode and self.current().isStrictModeReserved()) {
                         self.addError(span, "reserved word in strict mode cannot be used as identifier");
-                    } else if (self.current() == .kw_yield and self.in_generator) {
+                    } else if (self.current() == .kw_yield and self.ctx.in_generator) {
                         self.addError(span, "'yield' cannot be used as identifier in generator");
-                    } else if (self.current() == .kw_await and self.in_async) {
+                    } else if (self.current() == .kw_await and self.ctx.in_async) {
                         self.addError(span, "'await' cannot be used as identifier in async function");
                     }
                     self.advance();
@@ -2668,7 +2724,7 @@ pub const Parser = struct {
 
         // object method도 함수이므로 컨텍스트 설정 (return/break/continue 검증)
         const saved_ctx = self.enterFunctionContext((flags & 0x08) != 0, (flags & 0x10) != 0);
-        self.has_simple_params = self.checkSimpleParams(scratch_top);
+        self.ctx.has_simple_params = self.checkSimpleParams(scratch_top);
         self.checkDuplicateParams(scratch_top);
         const body = try self.parseFunctionBody();
         self.restoreContext(saved_ctx);
