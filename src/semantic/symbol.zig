@@ -38,6 +38,12 @@ pub const SymbolKind = enum(u8) {
     variable_const,
     /// function 선언 — 함수 스코프로 호이스팅, 재선언 조건부 허용
     function_decl,
+    /// generator function 선언 (function*) — 블록 스코프에서 lexical
+    generator_decl,
+    /// async function 선언 — 블록 스코프에서 lexical
+    async_function_decl,
+    /// async generator function 선언 (async function*) — 블록 스코프에서 lexical
+    async_generator_decl,
     /// class 선언 — 블록 스코프, 재선언 불가
     class_decl,
     /// 함수 파라미터
@@ -47,18 +53,29 @@ pub const SymbolKind = enum(u8) {
     /// import { x }의 x — 재선언 불가, 재할당 불가
     import_binding,
 
-    /// 블록 스코프 선언인지 (let/const/class)
+    /// 블록 스코프 선언인지 (let/const/class/generator/async function/async generator)
     pub fn isBlockScoped(self: SymbolKind) bool {
         return switch (self) {
-            .variable_let, .variable_const, .class_decl => true,
+            .variable_let, .variable_const, .class_decl,
+            .generator_decl, .async_function_decl, .async_generator_decl,
+            => true,
             else => false,
         };
     }
 
     /// 같은 스코프에서 재선언 가능한지 (var, function만)
+    /// generator/async function/async generator는 항상 블록 스코프에서 lexical이므로 재선언 불가
     pub fn allowsRedeclaration(self: SymbolKind) bool {
         return switch (self) {
             .variable_var, .function_decl => true,
+            else => false,
+        };
+    }
+
+    /// function-like 선언인지 (function, generator, async function, async generator)
+    pub fn isFunctionLike(self: SymbolKind) bool {
+        return switch (self) {
+            .function_decl, .generator_decl, .async_function_decl, .async_generator_decl => true,
             else => false,
         };
     }
@@ -80,8 +97,13 @@ pub const Symbol = struct {
     /// 심볼 이름 — 소스 코드의 byte offset 범위 (zero-copy)
     name: Span,
 
-    /// 선언된 스코프
+    /// 심볼이 등록된 스코프 (var는 호이스팅된 var scope)
     scope_id: ScopeId,
+
+    /// 원래 선언이 작성된 스코프 (var는 호이스팅 전 block scope).
+    /// let/const/class 선언 시 같은 block의 var를 찾는 데 사용.
+    /// var가 아닌 경우 scope_id와 동일.
+    origin_scope: ScopeId = ScopeId.none,
 
     /// 선언 종류
     kind: SymbolKind,

@@ -133,6 +133,15 @@ pub const SemanticAnalyzer = struct {
         return parent;
     }
 
+    /// 현재 스코프가 strict mode인지 확인한다.
+    fn isCurrentStrict(self: *const SemanticAnalyzer) bool {
+        if (self.is_strict_mode or self.is_module) return true;
+        if (!self.current_scope.isNone()) {
+            return self.scopes.items[self.current_scope.toIndex()].is_strict;
+        }
+        return false;
+    }
+
     /// 스코프에서 나간다. enterScope의 반환값을 전달.
     fn exitScope(self: *SemanticAnalyzer, saved_scope: ScopeId) void {
         self.current_scope = saved_scope;
@@ -211,13 +220,13 @@ pub const SemanticAnalyzer = struct {
     fn declareSymbol(self: *SemanticAnalyzer, name_span: Span, kind: SymbolKind, decl_span: Span) void {
         const name_text = self.ast.source[name_span.start..name_span.end];
 
-        // function_decl의 스코핑 규칙:
+        // function-like 선언의 스코핑 규칙:
         // - var scope(global/function/module) 안에서 직접 선언: var scope에 등록 (호이스팅)
         // - 블록 스코프 안에서 선언: 블록 스코프에 등록 (ECMAScript B.3.2, 13.2.14)
-        //   블록 안의 function은 LexicallyDeclaredNames에 포함되어 let/const와 충돌 감지
+        //   블록 안의 function/generator/async function은 LexicallyDeclaredNames에 포함
         const target_scope = if (kind == .variable_var)
             self.findVarScope()
-        else if (kind == .function_decl) blk: {
+        else if (kind.isFunctionLike()) blk: {
             // 현재 스코프가 var scope이면 그대로, 아니면 현재 블록 스코프에 등록
             if (!self.current_scope.isNone()) {
                 const current = self.scopes.items[self.current_scope.toIndex()];
@@ -230,16 +239,25 @@ pub const SemanticAnalyzer = struct {
 
         // 재선언 검증: 같은 스코프에서 같은 이름의 심볼이 있는지 확인
         if (self.findSymbolInScope(target_scope, name_text)) |existing| {
-            if (!self.canRedeclare(existing.kind, kind)) {
+            if (!self.canRedeclare(existing.kind, kind, target_scope)) {
                 self.addError(decl_span, name_text);
                 return;
             }
         }
 
-        // var의 경우 블록 스코프 체인에서도 충돌 체크
+        // var/function-like의 경우 블록 스코프 체인에서도 충돌 체크
         // let x; { var x; } → 에러 (var가 호이스팅되어 let과 같은 스코프에 도달)
-        if (kind == .variable_var or kind == .function_decl) {
+        if (kind == .variable_var or kind.isFunctionLike()) {
             if (self.checkVarHoistingConflict(target_scope, name_text, decl_span)) return;
+        }
+
+        // 역방향: let/const/class/function-like 선언 시,
+        // 같은 block 경로에서 선언된 var가 있으면 충돌 (LexicallyDeclaredNames ∩ VarDeclaredNames)
+        // { var f; let f; } → 에러, but { let f; } 밖의 var f → 충돌 아님
+        if (kind.isBlockScoped() or (kind.isFunctionLike() and !target_scope.isNone() and
+            !self.scopes.items[target_scope.toIndex()].kind.isVarScope()))
+        {
+            if (self.checkLexicalVarConflict(target_scope, name_text, decl_span)) return;
         }
 
         self.symbols.append(.{
@@ -247,6 +265,7 @@ pub const SemanticAnalyzer = struct {
             .scope_id = target_scope,
             .kind = kind,
             .declaration_span = decl_span,
+            .origin_scope = self.current_scope,
         }) catch @panic("OOM: symbol list");
 
         if (!target_scope.isNone()) {
@@ -284,7 +303,9 @@ pub const SemanticAnalyzer = struct {
         var scope_id = self.current_scope;
         while (!scope_id.isNone() and @intFromEnum(scope_id) != @intFromEnum(var_scope)) {
             if (self.findSymbolInScope(scope_id, name)) |existing| {
-                if (existing.kind.isBlockScoped()) {
+                // block scope의 let/const/class와 충돌하거나,
+                // block scope의 function-like 선언과도 충돌
+                if (existing.kind.isBlockScoped() or existing.kind.isFunctionLike()) {
                     self.addError(decl_span, name);
                     return true;
                 }
@@ -295,9 +316,66 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// 두 심볼 종류의 재선언 가능 여부를 판단한다.
-    fn canRedeclare(self: *const SemanticAnalyzer, existing: SymbolKind, new: SymbolKind) bool {
+    /// target_scope: 심볼이 등록되는 대상 스코프 (block/var scope 구분에 필요)
+    /// let/const/class/function-like 선언 시, 같은 block 경로에서 선언된 var가 있으면 충돌.
+    /// origin_scope를 사용하여 var가 실제로 현재 scope 경로에서 선언되었는지 확인.
+    /// ECMAScript: "LexicallyDeclaredNames ∩ VarDeclaredNames of StatementList"
+    fn checkLexicalVarConflict(self: *SemanticAnalyzer, lexical_scope: ScopeId, name: []const u8, decl_span: Span) bool {
+        const var_scope = self.findVarScope();
+        // var scope에서 같은 이름의 var를 찾는다
+        for (self.symbols.items) |sym| {
+            if (@intFromEnum(sym.scope_id) != @intFromEnum(var_scope)) continue;
+            if (sym.kind != .variable_var) continue;
+            const sym_name = self.ast.source[sym.name.start..sym.name.end];
+            if (!std.mem.eql(u8, sym_name, name)) continue;
+
+            // var의 origin_scope가 현재 lexical_scope의 ancestor 경로에 있는지 확인
+            // { var f; let f; } → var의 origin=block, let의 scope=block → 같으므로 충돌
+            // { { var f; } let f; } → var의 origin=inner, let의 scope=outer → inner는 outer의 자식이므로 충돌
+            // { let f; } 밖의 var f → var의 origin=global, let의 scope=block → 충돌 아님
+            if (self.isScopeDescendantOf(sym.origin_scope, lexical_scope)) {
+                self.addError(decl_span, name);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// child_scope가 parent_scope와 같거나 그 자손인지 확인한다.
+    fn isScopeDescendantOf(self: *const SemanticAnalyzer, child: ScopeId, parent: ScopeId) bool {
+        if (@intFromEnum(child) == @intFromEnum(parent)) return true;
+        var scope_id = child;
+        while (!scope_id.isNone()) {
+            if (@intFromEnum(scope_id) == @intFromEnum(parent)) return true;
+            scope_id = self.scopes.items[scope_id.toIndex()].parent;
+        }
+        return false;
+    }
+
+    fn canRedeclare(self: *const SemanticAnalyzer, existing: SymbolKind, new: SymbolKind, target_scope: ScopeId) bool {
         // import는 항상 재선언 불가
         if (existing == .import_binding) return false;
+
+        // block scope에서의 특별 규칙:
+        // generator/async function/async generator는 항상 재선언 불가 (lexical)
+        // function + function은 sloppy mode에서만 허용 (strict에서는 duplicate lexical)
+        const in_block_scope = if (!target_scope.isNone()) blk: {
+            break :blk !self.scopes.items[target_scope.toIndex()].kind.isVarScope();
+        } else false;
+
+        if (in_block_scope) {
+            // block scope에서 function-like + 어떤 것이든 재선언 시:
+            // - function + function → sloppy mode에서만 허용 (ECMAScript B.3.2)
+            // - function + var 또는 var + function → 에러 (LexicallyDeclaredNames ∩ VarDeclaredNames)
+            // - generator/async + anything → 에러
+            if (existing.isFunctionLike() or new.isFunctionLike()) {
+                // 양쪽 다 plain function이고 sloppy mode일 때만 허용
+                if (existing == .function_decl and new == .function_decl and !self.isCurrentStrict()) {
+                    return true;
+                }
+                return false;
+            }
+        }
 
         // 기존이 재선언 가능(var/function)이고 새것도 재선언 가능이면 허용
         if (existing.allowsRedeclaration() and new.allowsRedeclaration()) return true;
@@ -473,11 +551,25 @@ pub const SemanticAnalyzer = struct {
         if (extra_start + 5 >= extras.len) return;
         const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
         const body_idx: NodeIndex = @enumFromInt(extras[extra_start + 3]);
+        const flags = extras[extra_start + 4];
+
+        // flags에서 async/generator 판별하여 적절한 SymbolKind 결정
+        // 0x01 = async, 0x02 = generator
+        const is_async = (flags & 0x01) != 0;
+        const is_generator = (flags & 0x02) != 0;
+        const symbol_kind: SymbolKind = if (is_async and is_generator)
+            .async_generator_decl
+        else if (is_async)
+            .async_function_decl
+        else if (is_generator)
+            .generator_decl
+        else
+            .function_decl;
 
         // 함수 이름을 현재 스코프(외부)에 등록
         if (!name_idx.isNone()) {
             const name_node = self.ast.getNode(name_idx);
-            self.declareSymbol(name_node.span, .function_decl, node.span);
+            self.declareSymbol(name_node.span, symbol_kind, node.span);
         }
 
         // 함수 본문 — 새 function 스코프 (부모의 strict mode 상속)
