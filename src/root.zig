@@ -8,11 +8,13 @@ pub const lexer = @import("lexer/mod.zig");
 pub const parser = @import("parser/mod.zig");
 pub const transformer = @import("transformer/mod.zig");
 pub const codegen = @import("codegen/mod.zig");
+pub const config = @import("config.zig");
 pub const test262 = @import("test262/mod.zig");
 
 test {
     _ = lexer;
     _ = transformer;
     _ = codegen;
+    _ = config;
     _ = test262;
 }

@@ -4,6 +4,7 @@ const Scanner = lib.lexer.Scanner;
 const Parser = lib.parser.Parser;
 const Transformer = lib.transformer.Transformer;
 const Codegen = lib.codegen.Codegen;
+const TsConfig = lib.config.TsConfig;
 const runner = lib.test262.runner;
 
 /// 트랜스파일 옵션을 담는 구조체.
@@ -232,6 +233,7 @@ pub fn main() !void {
     var is_test262 = false;
     var is_tokenize = false;
     var test262_dir: ?[]const u8 = null;
+    var project_path: ?[]const u8 = null;
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -268,6 +270,11 @@ pub fn main() !void {
             ascii_only = true;
         } else if (std.mem.eql(u8, arg, "--sourcemap")) {
             sourcemap = true;
+        } else if (std.mem.eql(u8, arg, "--project") or std.mem.eql(u8, arg, "-p")) {
+            if (i + 1 < args.len) {
+                i += 1;
+                project_path = args[i];
+            }
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try printUsage(stdout);
             return;
@@ -319,6 +326,46 @@ pub fn main() !void {
         return;
     }
 
+    // 입력 경로가 디렉토리인지 확인
+    const input_path_str = input_file orelse {
+        try printUsage(stdout);
+        return;
+    };
+
+    // tsconfig.json 로드.
+    // 우선순위: --project 경로 > 입력이 디렉토리면 그 디렉토리 > 입력 파일의 부모 디렉토리
+    const tsconfig_dir: []const u8 = if (project_path) |pp|
+        pp
+    else if (!std.mem.eql(u8, input_path_str, "-"))
+        // 파일이면 dirname, 디렉토리면 그대로
+        std.fs.path.dirname(input_path_str) orelse "."
+    else
+        ".";
+
+    var tsconfig = TsConfig.load(allocator, tsconfig_dir) catch TsConfig{};
+    defer tsconfig.deinit();
+
+    // tsconfig 값을 기본값으로 사용하되, CLI 옵션이 우선한다.
+    // CLI에서 명시적으로 설정하지 않은 옵션만 tsconfig에서 가져온다.
+    // module_format: tsconfig의 module이 "commonjs"이면 cjs 사용
+    if (module_format == .esm) { // CLI에서 --format=cjs를 안 했으면
+        if (tsconfig.module) |mod| {
+            if (std.ascii.eqlIgnoreCase(mod, "commonjs")) {
+                module_format = .cjs;
+            }
+        }
+    }
+    // sourcemap: tsconfig에서 true이면 적용 (CLI --sourcemap이 이미 true면 그대로)
+    if (!sourcemap and tsconfig.source_map) {
+        sourcemap = true;
+    }
+    // output_dir: tsconfig의 outDir를 기본값으로 사용
+    if (output_dir == null) {
+        if (tsconfig.out_dir) |od| {
+            output_dir = od;
+        }
+    }
+
     // 트랜스파일 옵션 구성
     const options = TranspileOptions{
         .module_format = module_format,
@@ -327,12 +374,6 @@ pub fn main() !void {
         .drop_debugger = drop_debugger,
         .sourcemap = sourcemap,
         .ascii_only = ascii_only,
-    };
-
-    // 입력 경로가 디렉토리인지 확인
-    const input_path_str = input_file orelse {
-        try printUsage(stdout);
-        return;
     };
 
     const is_stdin = std.mem.eql(u8, input_path_str, "-");
@@ -467,6 +508,7 @@ fn printUsage(writer: anytype) !void {
         \\  --drop=debugger              Remove debugger statements
         \\  --sourcemap                  Generate source map (.js.map)
         \\  --ascii-only                 Escape non-ASCII to \uXXXX
+        \\  -p, --project <path>         Path to tsconfig.json directory
         \\  --tokenize                   Print tokens instead of transpiling
         \\  --test262 <dir>              Run Test262 tests
         \\  -h, --help                   Show this help
