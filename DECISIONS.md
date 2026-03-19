@@ -293,8 +293,18 @@
 - **결정**: parse + early 통합 (is_negative_parse 하나로 처리)
 - **이유**: ECMAScript에서 early error는 실행 전 검출 대상. 트랜스파일러 관점에서 parse/early 구분 불필요. oxc/SWC도 같은 파이프라인에서 처리
 
-### Phase 6 (Advanced) 시작 시
+### Phase 6 (Advanced) — 의사결정 필요
+
+#### 확정 예정
+- D057: 트랜스포머 패스 전략 (단일 패스 vs 파이프라인 vs feature별)
+- D058: 다운레벨링 타겟 설정 방식 (target 버전 vs 개별 feature vs 둘 다)
+
+#### 추가 의사결정 필요
+- transform API 설계: oxc/Rolldown 방식 단일 API. bungae에서 라이브러리로 호출하는 구조
+- 런타임 헬퍼 전략: ES 다운레벨링 + 번들러에서 헬퍼 주입 (bundled vs external)
 - 번들러 아키텍처 (의존성 그래프, 청크 분할)
+- strictExecutionOrder: ESM→CJS 번들 시 모듈 실행 순서 보장 (RN/Metro 지원)
+  - 모듈 래핑 (lazy evaluation), DFS 실행 순서, side effect 추적
 - 트리쉐이킹 수준 (문/식/프로퍼티)
 - WASM 플러그인 인터페이스 (ABI 설계, 데이터 직렬화)
 - WASM AST API 직렬화 (ESTree 호환? 자체 포맷?)

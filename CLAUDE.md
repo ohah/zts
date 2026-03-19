@@ -89,12 +89,19 @@ references/                 # 레퍼런스 프로젝트 (.gitignore, 로컬만)
 - Test262 early phase는 parse와 통합
 
 ### Advanced Features (Phase 6)
-- ES 다운레벨링: ES2024→ES2016 점진적, ES2015는 그 이후, ES5는 미정
-- WASM 플러그인, WASM 공개 AST API
+- ES 다운레벨링: ES2024→ES2016 먼저, ES2015→ES5는 이후 (헬퍼 함수 인프라 필요)
+- transform API: oxc/Rolldown처럼 단일 `transform(source, options)` API로 모든 변환 제어
+  - typescript, jsx, target, define, inject, decorator 옵션
+  - bungae(번들러)에서 ZTS transform을 라이브러리로 호출하는 구조
+- 런타임 헬퍼 인프라: ES 다운레벨링 + 번들러에서 헬퍼 함수 주입 (bundled/external 모드)
 - .d.ts 생성 (isolatedDeclarations)
 - React Fast Refresh
 - 미니파이어 (whitespace/syntax/identifiers 개별)
 - 번들러 (paths/baseUrl/moduleResolution 활성화)
+  - strictExecutionOrder: ESM→CJS 번들링 시 모듈 실행 순서 보장 (RN/Metro 지원용)
+  - 모듈 래핑 (lazy evaluation) + DFS 실행 순서 계산
+  - side effect 추적 (tree-shaking과 실행 순서 충돌 시 순서 우선)
+- WASM 플러그인, WASM 공개 AST API
 
 ## Commands
 ```bash
