@@ -771,24 +771,36 @@ pub const Codegen = struct {
 
     fn emitStaticMember(self: *Codegen, node: Node) !void {
         try self.emitNode(node.data.binary.left);
-        try self.writeByte('.');
+        // flags=1 → optional chaining (a?.b)
+        if (node.data.binary.flags == 1) {
+            try self.write("?.");
+        } else {
+            try self.writeByte('.');
+        }
         try self.emitNode(node.data.binary.right);
     }
 
     fn emitComputedMember(self: *Codegen, node: Node) !void {
         try self.emitNode(node.data.binary.left);
+        // flags=1 → optional chaining (a?.[b])
+        if (node.data.binary.flags == 1) {
+            try self.write("?.");
+        }
         try self.writeByte('[');
         try self.emitNode(node.data.binary.right);
         try self.writeByte(']');
     }
 
-    /// call_expression: binary = { left=callee, right=@enumFromInt(args_start), flags=args_len }
+    /// call_expression: binary = { left=callee, right=@enumFromInt(args_start), flags=args_len|0x8000(optional) }
     fn emitCall(self: *Codegen, node: Node) !void {
         const callee = node.data.binary.left;
         const args_start: u32 = @intFromEnum(node.data.binary.right);
-        const args_len: u32 = node.data.binary.flags;
+        // flags 하위 15비트 = args_len, bit 15 = optional chaining (0x8000)
+        const args_len: u32 = node.data.binary.flags & 0x7FFF;
+        const is_optional = (node.data.binary.flags & 0x8000) != 0;
 
         try self.emitNode(callee);
+        if (is_optional) try self.write("?.");
         try self.writeByte('(');
         try self.emitNodeList(args_start, args_len, ",");
         try self.writeByte(')');

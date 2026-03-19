@@ -708,7 +708,10 @@ pub const Transformer = struct {
     fn visitCallExpression(self: *Transformer, node: Node) Error!NodeIndex {
         const new_callee = try self.visitNode(node.data.binary.left);
         const args_start: u32 = @intFromEnum(node.data.binary.right);
-        const args_len: u32 = node.data.binary.flags;
+        // flags의 하위 15비트 = args_len, bit 15 = optional chaining 플래그 (0x8000)
+        const raw_flags = node.data.binary.flags;
+        const args_len: u32 = raw_flags & 0x7FFF;
+        const is_optional: u16 = raw_flags & 0x8000;
         const new_args = try self.visitExtraList(args_start, args_len);
         return self.new_ast.addNode(.{
             .tag = .call_expression,
@@ -716,7 +719,7 @@ pub const Transformer = struct {
             .data = .{ .binary = .{
                 .left = new_callee,
                 .right = @enumFromInt(new_args.start),
-                .flags = @intCast(new_args.len),
+                .flags = @intCast(new_args.len | is_optional),
             } },
         });
     }
