@@ -470,12 +470,22 @@ pub const Transformer = struct {
 
     /// ts_enum_declaration: extra = [name, members_start, members_len]
     /// enum 노드를 새 AST에 복사. codegen에서 IIFE 패턴으로 출력.
+    /// extra = [name, members_start, members_len, flags]
+    /// flags: 0=일반 enum, 1=const enum
     fn visitEnumDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
+        const flags = self.readU32(e, 3);
+
+        // const enum (flags=1): isolatedModules 모드에서는 삭제 (D011)
+        // 같은 파일 내 인라이닝은 향후 구현
+        if (flags == 1) {
+            return .none; // const enum 선언 삭제
+        }
+
         const new_name = try self.visitNode(self.readNodeIdx(e, 0));
         const new_members = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
         return self.addExtraNode(.ts_enum_declaration, node.span, &.{
-            @intFromEnum(new_name), new_members.start, new_members.len,
+            @intFromEnum(new_name), new_members.start, new_members.len, flags,
         });
     }
 
