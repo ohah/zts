@@ -499,14 +499,41 @@ pub const Parser = struct {
     /// ECMAScript 13.6/13.7: lexical declaration(let/const/class)은 statement position에서 금지.
     fn parseStatementNoLexical(self: *Parser) ParseError2!NodeIndex {
         switch (self.current()) {
-            .kw_let, .kw_const => {
+            .kw_const => {
                 self.addError(self.currentSpan(), "lexical declaration is not allowed in statement position");
             },
-            .kw_class => {
-                // class declaration은 strict mode에서 statement position 금지
-                // non-strict에서는 Annex B로 허용되지만 Test262는 strict로 테스트
+            .kw_let => {
+                // let은 non-strict에서 식별자로 사용 가능 (let = 5 등).
+                // let 뒤에 identifier/[/{가 오면 lexical declaration이므로 에러.
+                // 그 외(let =, let; 등)는 식별자 사용이므로 허용.
                 if (self.ctx.is_strict_mode) {
-                    self.addError(self.currentSpan(), "class declaration is not allowed in statement position in strict mode");
+                    self.addError(self.currentSpan(), "lexical declaration is not allowed in statement position");
+                } else {
+                    const next = self.peekNextKind();
+                    if (next == .identifier or next == .l_bracket or next == .l_curly) {
+                        self.addError(self.currentSpan(), "lexical declaration is not allowed in statement position");
+                    }
+                }
+            },
+            .kw_class => {
+                // class declaration은 statement position에서 금지.
+                // V8/SpiderMonkey는 non-strict에서 허용 (web compat) — 스펙에 Annex B 규정은 없음.
+                if (self.ctx.is_strict_mode) {
+                    self.addError(self.currentSpan(), "class declaration is not allowed in statement position");
+                }
+            },
+            .kw_function => {
+                // strict mode에서 function declaration도 statement position 금지 (ECMAScript 14.6).
+                // Annex B (B.3.3)는 non-strict에서만 허용.
+                if (self.ctx.is_strict_mode) {
+                    self.addError(self.currentSpan(), "function declaration is not allowed in statement position in strict mode");
+                }
+            },
+            .kw_async => {
+                // async function declaration도 statement position 금지 (Annex B 적용 안 됨)
+                const peek = self.peekNext();
+                if (peek.kind == .kw_function and !peek.has_newline_before) {
+                    self.addError(self.currentSpan(), "async function declaration is not allowed in statement position");
                 }
             },
             else => {},
