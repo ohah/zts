@@ -174,6 +174,7 @@ pub fn main() !void {
     cg.comments = scanner.comments.items;
     if (sourcemap) {
         cg.addSourceFile(file_path) catch {};
+        cg.line_offsets = scanner.line_offsets.items;
     }
     defer cg.deinit();
     const output = cg.generate(root) catch |err| {

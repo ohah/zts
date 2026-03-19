@@ -59,6 +59,8 @@ pub const Codegen = struct {
     indent_level: u32 = 0,
     /// 소스맵 빌더 (sourcemap 옵션 활성화 시)
     sm_builder: ?SourceMapBuilder = null,
+    /// 소스의 줄 오프셋 테이블 (Scanner에서 전달, 소스맵 줄/열 계산용)
+    line_offsets: []const u32 = &.{},
     /// 출력의 현재 줄/열 (소스맵 매핑용)
     gen_line: u32 = 0,
     gen_col: u32 = 0,
@@ -96,6 +98,27 @@ pub const Codegen = struct {
         try self.buf.ensureTotalCapacity(self.ast.source.len);
         try self.emitNode(root);
         return self.buf.items;
+    }
+
+    /// byte offset → 소스 줄/열 변환 (이진 탐색).
+    fn getOriginalLineColumn(self: *const Codegen, offset: u32) struct { line: u32, column: u32 } {
+        const offsets = self.line_offsets;
+        if (offsets.len == 0) return .{ .line = 0, .column = offset };
+        var lo: u32 = 0;
+        var hi: u32 = @intCast(offsets.len);
+        while (lo < hi) {
+            const mid = lo + (hi - lo) / 2;
+            if (offsets[mid] <= offset) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        const line_idx = if (lo > 0) lo - 1 else 0;
+        return .{
+            .line = line_idx,
+            .column = offset - offsets[line_idx],
+        };
     }
 
     /// 소스맵에 소스 파일을 등록한다. generate() 전에 호출.
@@ -143,19 +166,14 @@ pub const Codegen = struct {
     /// 소스맵 매핑 추가. 노드의 소스 span과 현재 출력 위치를 매핑.
     fn addSourceMapping(self: *Codegen, span: Span) !void {
         if (self.sm_builder) |*sm| {
-            // span의 byte offset → 소스의 줄/열 변환
-            // 현재는 Scanner의 line offset table이 없으므로 byte offset을 직접 사용
-            // TODO: Scanner에서 line offset table을 가져와 정확한 줄/열 계산
-            const src_line = span.start; // 임시: byte offset을 줄로 사용
-            const src_col: u32 = 0; // 임시
-            _ = src_line;
-            _ = src_col;
+            // byte offset → 줄/열 변환 (Scanner의 line_offsets 사용)
+            const lc = self.getOriginalLineColumn(span.start);
             try sm.addMapping(.{
                 .generated_line = self.gen_line,
                 .generated_column = self.gen_col,
                 .source_index = 0,
-                .original_line = 0, // TODO: 정확한 줄/열 계산
-                .original_column = span.start,
+                .original_line = lc.line,
+                .original_column = lc.column,
             });
         }
     }
