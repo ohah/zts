@@ -81,8 +81,11 @@ pub const Kind = enum(u8) {
     identifier,
     /// private 식별자 (`#name`)
     private_identifier,
-    /// 유니코드 이스케이프로 작성된 키워드 (키워드가 아닌 식별자로 취급)
+    /// 유니코드 이스케이프로 작성된 reserved keyword (항상 식별자로 사용 불가)
     escaped_keyword,
+    /// 유니코드 이스케이프로 작성된 strict mode reserved word (strict에서만 불가)
+    /// let, yield, implements, interface, package, private, protected, public, static
+    escaped_strict_reserved,
 
     // ========================================================================
     // ECMAScript Reserved Keywords (ES2024)
@@ -427,6 +430,7 @@ pub const Kind = enum(u8) {
             .identifier,
             .private_identifier,
             .escaped_keyword,
+            .escaped_strict_reserved,
             .kw_this,
             .kw_true,
             .kw_false,
@@ -625,6 +629,7 @@ const token_names = blk: {
             .identifier => "<identifier>",
             .private_identifier => "<private identifier>",
             .escaped_keyword => "<escaped keyword>",
+            .escaped_strict_reserved => "<escaped strict reserved>",
             // Punctuators
             .l_paren => "(",
             .r_paren => ")",
