@@ -155,12 +155,25 @@ pub const Parser = struct {
     }
 
     /// strict mode에서 eval/arguments를 바인딩 이름으로 사용하면 에러.
-    /// 식별자 토큰이 "eval" 또는 "arguments"인지 확인한다.
     fn checkStrictBinding(self: *Parser, span: Span) void {
         if (!self.is_strict_mode) return;
         const text = self.ast.source[span.start..span.end];
         if (std.mem.eql(u8, text, "eval") or std.mem.eql(u8, text, "arguments")) {
             self.addError(span, "assignment to 'eval' or 'arguments' is not allowed in strict mode");
+        }
+    }
+
+    /// 키워드를 바인딩 위치에서 사용할 때의 검증.
+    /// reserved keyword, strict mode reserved, generator 내 yield, async 내 await.
+    fn checkKeywordBinding(self: *Parser) void {
+        if (self.current().isReservedKeyword()) {
+            self.addError(self.currentSpan(), "reserved word cannot be used as identifier");
+        } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
+            self.addError(self.currentSpan(), "reserved word in strict mode cannot be used as identifier");
+        } else if (self.current() == .kw_yield and self.in_generator) {
+            self.addError(self.currentSpan(), "'yield' cannot be used as identifier in generator");
+        } else if (self.current() == .kw_await and self.in_async) {
+            self.addError(self.currentSpan(), "'await' cannot be used as identifier in async function");
         }
     }
 
@@ -2565,13 +2578,9 @@ pub const Parser = struct {
             },
             else => {
                 // contextual 키워드는 바인딩 이름으로 사용 가능 (let, yield, async 등)
-                // 단, reserved keyword는 불가 (var, function, class, if 등)
+                // 단, reserved keyword / yield in generator / await in async 는 불가
                 if (self.current().isKeyword()) {
-                    if (self.current().isReservedKeyword()) {
-                        self.addError(self.currentSpan(), "reserved word cannot be used as identifier");
-                    } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
-                        self.addError(self.currentSpan(), "reserved word in strict mode cannot be used as identifier");
-                    }
+                    self.checkKeywordBinding();
                     const span = self.currentSpan();
                     self.advance();
                     const node2 = try self.ast.addNode(.{
@@ -2634,11 +2643,7 @@ pub const Parser = struct {
             },
             else => {
                 if (self.current().isKeyword()) {
-                    if (self.current().isReservedKeyword()) {
-                        self.addError(self.currentSpan(), "reserved word cannot be used as identifier");
-                    } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
-                        self.addError(self.currentSpan(), "reserved word in strict mode cannot be used as identifier");
-                    }
+                    self.checkKeywordBinding();
                     const span = self.currentSpan();
                     self.advance();
                     return try self.ast.addNode(.{
@@ -2661,10 +2666,8 @@ pub const Parser = struct {
             // 예약어 체크 (바인딩 위치에서)
             if (self.current() == .escaped_keyword) {
                 self.addError(span, "escaped reserved word cannot be used as identifier");
-            } else if (self.current().isReservedKeyword()) {
-                self.addError(span, "reserved word cannot be used as identifier");
-            } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
-                self.addError(span, "reserved word in strict mode cannot be used as identifier");
+            } else {
+                self.checkKeywordBinding();
             }
             self.advance();
             return try self.ast.addNode(.{
