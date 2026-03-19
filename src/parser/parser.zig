@@ -293,12 +293,15 @@ pub const Parser = struct {
     /// 키워드를 바인딩 위치에서 사용할 때의 검증.
     /// ECMAScript 12.1.1: reserved keyword, strict mode reserved, contextual keywords.
     fn checkKeywordBinding(self: *Parser) void {
-        if (self.current().isReservedKeyword() or self.current().isLiteralKeyword()) {
+        // await는 조건부 예약어 — async/module에서만 금지, script에서는 식별자로 사용 가능
+        // yield도 조건부 — generator/strict에서만 금지
+        // 둘 다 checkYieldAwaitUse에서 처리
+        if (self.current() == .kw_await or self.current() == .kw_yield) {
+            self.checkYieldAwaitUse(self.currentSpan(), "identifier");
+        } else if (self.current().isReservedKeyword() or self.current().isLiteralKeyword()) {
             self.addError(self.currentSpan(), "reserved word cannot be used as identifier");
         } else if (self.ctx.is_strict_mode and self.current().isStrictModeReserved()) {
             self.addError(self.currentSpan(), "reserved word in strict mode cannot be used as identifier");
-        } else {
-            self.checkYieldAwaitUse(self.currentSpan(), "identifier");
         }
     }
 
@@ -650,7 +653,7 @@ pub const Parser = struct {
     fn parseExpressionOrLabeledStatement(self: *Parser) ParseError2!NodeIndex {
         // identifier/keyword: statement — labeled statement 판별
         if (self.current() == .identifier or self.current() == .escaped_keyword or
-            (self.current().isKeyword() and !self.current().isReservedKeyword()))
+            (self.current().isKeyword() and !self.current().isReservedKeyword() and !self.current().isLiteralKeyword()))
         {
             const peek = self.peekNext();
             if (peek.kind == .colon) {
@@ -2671,7 +2674,11 @@ pub const Parser = struct {
                 // contextual keyword, strict mode reserved, TS keyword는
                 // expression에서 식별자로 사용 가능 (reserved keyword만 불가)
                 // 단, yield/await는 generator/async 내부에서, strict mode reserved는 strict에서 불가
-                if (self.current().isKeyword() and !self.current().isReservedKeyword()) {
+                // await/yield는 조건부 예약어 — parseUnaryExpression에서 이미 처리했으므로
+                // 여기에 도달하면 식별자로 사용 가능한 컨텍스트
+                if (self.current().isKeyword() and
+                    (!self.current().isReservedKeyword() or self.current() == .kw_await or self.current() == .kw_yield))
+                {
                     if (self.ctx.is_strict_mode and self.current().isStrictModeReserved()) {
                         self.addError(span, "reserved word in strict mode cannot be used as identifier");
                     } else {
