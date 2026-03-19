@@ -400,8 +400,7 @@ pub const Parser = struct {
                 if (elem.tag == .identifier_reference) {
                     self.checkIdentifierEscapedKeyword(elem.span);
                 } else if (elem.tag == .assignment_expression) {
-                    // [v\u0061r = 1] — left가 escaped keyword이면 에러
-                    self.checkIdentifierEscapedKeyword(self.ast.getNode(elem.data.binary.left).span);
+                    // [v\u0061r = 1] — left를 재귀 체크 (identifier 또는 nested pattern)
                     self.checkEscapedKeywordInPattern(elem.data.binary.left);
                 } else if (elem.tag == .spread_element) {
                     self.checkEscapedKeywordInPattern(elem.data.unary.operand);
@@ -417,14 +416,20 @@ pub const Parser = struct {
     /// identifier의 소스 텍스트가 escaped reserved keyword인지 확인.
     /// 소스에 `\`가 있고, 디코딩하면 reserved keyword이면 에러.
     fn checkIdentifierEscapedKeyword(self: *Parser, span: Span) void {
-        const text = self.ast.source[span.start..span.end];
-        if (std.mem.indexOfScalar(u8, text, '\\') == null) return;
-        const decoded = self.scanner.decodeIdentifierEscapes(text) orelse return;
-        if (token_mod.keywords.get(decoded)) |kw| {
+        const text = self.resolveIdentifierText(span);
+        if (token_mod.keywords.get(text)) |kw| {
             if (kw.isReservedKeyword() or kw.isLiteralKeyword()) {
                 self.addError(span, "keywords cannot contain escape characters");
             }
         }
+    }
+
+    /// identifier span의 소스 텍스트를 반환. escape가 있으면 디코딩한 결과를 반환.
+    /// 키워드 매칭에 사용 — escape 유무와 관계없이 동일한 resolved text 반환.
+    fn resolveIdentifierText(self: *Parser, span: Span) []const u8 {
+        const text = self.ast.source[span.start..span.end];
+        if (std.mem.indexOfScalar(u8, text, '\\') == null) return text;
+        return self.scanner.decodeIdentifierEscapes(text) orelse text;
     }
 
     /// arrow function 파라미터에서 rest-init 검증.
@@ -3352,13 +3357,8 @@ pub const Parser = struct {
             if (!key.isNone()) {
                 const key_node = self.ast.getNode(key);
                 if (key_node.tag == .identifier_reference) {
-                    const key_text = self.ast.source[key_node.span.start..key_node.span.end];
-                    // escaped keyword도 디코딩 후 체크 (v\u0061r → var)
-                    const resolved = if (std.mem.indexOfScalar(u8, key_text, '\\') != null)
-                        self.scanner.decodeIdentifierEscapes(key_text) orelse key_text
-                    else
-                        key_text;
-                    if (token_mod.keywords.get(resolved)) |kw| {
+                    const key_text = self.resolveIdentifierText(key_node.span);
+                    if (token_mod.keywords.get(key_text)) |kw| {
                         if (kw.isReservedKeyword() or kw.isLiteralKeyword()) {
                             self.addError(key_node.span, "reserved word cannot be used as shorthand property");
                         } else if (self.ctx.is_strict_mode and kw.isStrictModeReserved()) {
