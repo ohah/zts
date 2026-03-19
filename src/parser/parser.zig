@@ -360,6 +360,73 @@ pub const Parser = struct {
         }
     }
 
+    /// assignment destructuring에서 escaped keyword를 identifier로 사용하면 에러.
+    /// `({ v\u0061r }) = x` 또는 `({ v\u0061r }) => {}` — escaped reserved word는 binding 불가.
+    /// Token.has_escape 대신 소스 텍스트에서 `\`를 확인 (O(L), identifier 길이만큼).
+    /// arrow params / for-in/of / assignment에서 호출.
+    fn checkEscapedKeywordInPattern(self: *Parser, idx: NodeIndex) void {
+        if (idx.isNone()) return;
+        const node = self.ast.getNode(idx);
+        if (node.tag == .object_expression) {
+            const list = node.data.list;
+            var i: u32 = 0;
+            while (i < list.len) : (i += 1) {
+                const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+                if (elem_idx.isNone()) continue;
+                const elem = self.ast.getNode(elem_idx);
+                if (elem.tag == .object_property) {
+                    if (!elem.data.binary.left.isNone() and !elem.data.binary.right.isNone()) {
+                        // shorthand: key와 value가 같은 span이면 shorthand
+                        const key_span = self.ast.getNode(elem.data.binary.left).span;
+                        const val_node = self.ast.getNode(elem.data.binary.right);
+                        const is_shorthand = key_span.start == val_node.span.start and key_span.end == val_node.span.end;
+                        if (is_shorthand) {
+                            self.checkIdentifierEscapedKeyword(key_span);
+                        }
+                        // value가 nested pattern이면 재귀
+                        self.checkEscapedKeywordInPattern(elem.data.binary.right);
+                    }
+                } else if (elem.tag == .spread_element) {
+                    self.checkEscapedKeywordInPattern(elem.data.unary.operand);
+                }
+            }
+        } else if (node.tag == .array_expression) {
+            const list = node.data.list;
+            var i: u32 = 0;
+            while (i < list.len) : (i += 1) {
+                const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+                if (elem_idx.isNone()) continue;
+                const elem = self.ast.getNode(elem_idx);
+                if (elem.tag == .identifier_reference) {
+                    self.checkIdentifierEscapedKeyword(elem.span);
+                } else if (elem.tag == .assignment_expression) {
+                    // [v\u0061r = 1] — left가 escaped keyword이면 에러
+                    self.checkIdentifierEscapedKeyword(self.ast.getNode(elem.data.binary.left).span);
+                    self.checkEscapedKeywordInPattern(elem.data.binary.left);
+                } else if (elem.tag == .spread_element) {
+                    self.checkEscapedKeywordInPattern(elem.data.unary.operand);
+                } else {
+                    self.checkEscapedKeywordInPattern(elem_idx);
+                }
+            }
+        } else if (node.tag == .identifier_reference) {
+            self.checkIdentifierEscapedKeyword(node.span);
+        }
+    }
+
+    /// identifier의 소스 텍스트가 escaped reserved keyword인지 확인.
+    /// 소스에 `\`가 있고, 디코딩하면 reserved keyword이면 에러.
+    fn checkIdentifierEscapedKeyword(self: *Parser, span: Span) void {
+        const text = self.ast.source[span.start..span.end];
+        if (std.mem.indexOfScalar(u8, text, '\\') == null) return;
+        const decoded = self.scanner.decodeIdentifierEscapes(text) orelse return;
+        if (token_mod.keywords.get(decoded)) |kw| {
+            if (kw.isReservedKeyword() or kw.isLiteralKeyword()) {
+                self.addError(span, "keywords cannot contain escape characters");
+            }
+        }
+    }
+
     /// arrow function 파라미터에서 rest-init 검증.
     /// `([...x = 1]) => {}` — 파라미터가 expression으로 파싱된 경우,
     /// parenthesized/sequence를 풀어 내부 패턴을 검증한다.
@@ -374,9 +441,11 @@ pub const Parser = struct {
             while (i < list.len) : (i += 1) {
                 const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
                 self.checkRestInitInAssignmentPattern(elem_idx);
+                self.checkEscapedKeywordInPattern(elem_idx);
             }
         } else {
             self.checkRestInitInAssignmentPattern(idx);
+            self.checkEscapedKeywordInPattern(idx);
         }
     }
 
@@ -1065,13 +1134,13 @@ pub const Parser = struct {
         const init_expr = try self.parseExpression();
         self.restoreContext(for_saved);
         if (self.current() == .kw_in) {
-            // for-in LHS가 assignment destructuring이면 rest-init 검증
             self.checkRestInitInAssignmentPattern(init_expr);
+            self.checkEscapedKeywordInPattern(init_expr);
             return self.parseForIn(start, init_expr);
         }
         if (self.current() == .kw_of) {
-            // for-of LHS가 assignment destructuring이면 rest-init 검증
             self.checkRestInitInAssignmentPattern(init_expr);
+            self.checkEscapedKeywordInPattern(init_expr);
             return self.parseForOf(start, init_expr);
         }
         _ = self.eat(.semicolon);
@@ -2376,8 +2445,9 @@ pub const Parser = struct {
             if (!self.isValidAssignmentTarget(left)) {
                 self.addError(self.ast.getNode(left).span, "invalid assignment target");
             }
-            // assignment destructuring에서 rest element에 initializer 금지
+            // assignment destructuring 검증
             self.checkRestInitInAssignmentPattern(left);
+            self.checkEscapedKeywordInPattern(left);
             // strict mode: eval/arguments에 할당 금지 (ECMAScript 13.15.1)
             if (self.ctx.is_strict_mode) {
                 self.checkStrictAssignmentTarget(left);
@@ -3283,12 +3353,15 @@ pub const Parser = struct {
                 const key_node = self.ast.getNode(key);
                 if (key_node.tag == .identifier_reference) {
                     const key_text = self.ast.source[key_node.span.start..key_node.span.end];
-                    if (token_mod.keywords.get(key_text)) |kw| {
+                    // escaped keyword도 디코딩 후 체크 (v\u0061r → var)
+                    const resolved = if (std.mem.indexOfScalar(u8, key_text, '\\') != null)
+                        self.scanner.decodeIdentifierEscapes(key_text) orelse key_text
+                    else
+                        key_text;
+                    if (token_mod.keywords.get(resolved)) |kw| {
                         if (kw.isReservedKeyword() or kw.isLiteralKeyword()) {
-                            // reserved word (true, false, null, if, for 등)
                             self.addError(key_node.span, "reserved word cannot be used as shorthand property");
                         } else if (self.ctx.is_strict_mode and kw.isStrictModeReserved()) {
-                            // strict mode reserved (yield, let, static, implements 등)
                             self.addError(key_node.span, "reserved word in strict mode cannot be used as shorthand property");
                         } else if (kw == .kw_yield and self.ctx.in_generator) {
                             self.addError(key_node.span, "'yield' cannot be used as shorthand property in generator");

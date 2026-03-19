@@ -327,6 +327,7 @@ pub const Scanner = struct {
     pub fn next(self: *Scanner) void {
         self.token.has_newline_before = false;
         self.token.has_pure_comment_before = false;
+        self.token.has_escape = false;
 
         // 주석을 만나면 스킵하고 다시 스캔해야 하므로 루프
         while (true) {
@@ -419,6 +420,7 @@ pub const Scanner = struct {
                         const text = self.tokenText();
                         // escape가 포함되어 있으면 디코딩 후 키워드 매칭
                         if (std.mem.indexOfScalar(u8, text, '\\') != null) {
+                            self.token.has_escape = true;
                             const decoded = self.decodeIdentifierEscapes(text);
                             if (decoded) |name| {
                                 if (token.keywords.get(name)) |kw| {
@@ -439,6 +441,7 @@ pub const Scanner = struct {
                     }
                     // \u 유니코드 이스케이프로 시작하는 식별자
                     if (c == '\\') {
+                        self.token.has_escape = true;
                         // advance()에서 이미 \ 를 소비했으므로 current-1 부터
                         self.current -= 1; // put back '\'
                         const esc_start = self.current;
