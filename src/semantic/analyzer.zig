@@ -28,6 +28,8 @@ const Symbol = symbol_mod.Symbol;
 const checker = @import("checker.zig");
 pub const Diagnostic = @import("../diagnostic.zig").Diagnostic;
 
+const AllocError = std.mem.Allocator.Error;
+
 /// Semantic Analyzer.
 ///
 /// 사용법:
@@ -160,10 +162,10 @@ pub const SemanticAnalyzer = struct {
     // ================================================================
 
     /// 분석을 실행한다. AST의 루트(마지막 노드 = program)부터 시작.
-    pub fn analyze(self: *SemanticAnalyzer) void {
+    pub fn analyze(self: *SemanticAnalyzer) AllocError!void {
         if (self.ast.nodes.items.len == 0) return;
         const root_idx: NodeIndex = @enumFromInt(@as(u32, @intCast(self.ast.nodes.items.len - 1)));
-        self.visitNode(root_idx);
+        try self.visitNode(root_idx);
     }
 
     // ================================================================
@@ -171,16 +173,16 @@ pub const SemanticAnalyzer = struct {
     // ================================================================
 
     /// 새 스코프를 생성하고 진입한다. 반환값: 이전 스코프 ID (나갈 때 복원용).
-    fn enterScope(self: *SemanticAnalyzer, kind: ScopeKind, is_strict: bool) ScopeId {
+    fn enterScope(self: *SemanticAnalyzer, kind: ScopeKind, is_strict: bool) AllocError!ScopeId {
         const parent = self.current_scope;
         const new_id: ScopeId = @enumFromInt(@as(u32, @intCast(self.scopes.items.len)));
-        self.scopes.append(.{
+        try self.scopes.append(.{
             .parent = parent,
             .kind = kind,
             .is_strict = is_strict,
-        }) catch @panic("OOM: scope list");
+        });
         // scope_maps는 scopes와 동일 인덱스를 공유 — 빈 HashMap 추가
-        self.scope_maps.append(std.StringHashMap(usize).init(self.allocator)) catch @panic("OOM: scope_maps");
+        try self.scope_maps.append(std.StringHashMap(usize).init(self.allocator));
         self.current_scope = new_id;
         return parent;
     }
@@ -236,13 +238,13 @@ pub const SemanticAnalyzer = struct {
     // ================================================================
 
     /// class body 진입 시 private name 스코프를 push한다.
-    fn pushClassScope(self: *SemanticAnalyzer) void {
-        self.class_private_declared.append(std.StringHashMap(PrivateNameInfo).init(self.allocator)) catch @panic("OOM: class_private_declared");
-        self.class_private_refs.append(std.ArrayList(PrivateRef).init(self.allocator)) catch @panic("OOM: class_private_refs");
+    fn pushClassScope(self: *SemanticAnalyzer) AllocError!void {
+        try self.class_private_declared.append(std.StringHashMap(PrivateNameInfo).init(self.allocator));
+        try self.class_private_refs.append(std.ArrayList(PrivateRef).init(self.allocator));
     }
 
     /// class body 퇴장 시 private name 참조를 검증하고 pop한다.
-    fn popClassScope(self: *SemanticAnalyzer) void {
+    fn popClassScope(self: *SemanticAnalyzer) AllocError!void {
         if (self.class_private_declared.items.len == 0) return;
 
         var declared = self.class_private_declared.pop() orelse return;
@@ -262,14 +264,14 @@ pub const SemanticAnalyzer = struct {
                     }
                 }
                 if (!found) {
-                    self.addPrivateNameError(ref.span, ref.name);
+                    try self.addPrivateNameError(ref.span, ref.name);
                 }
             }
         }
     }
 
     /// private name을 현재 class scope에 선언 등록한다.
-    fn declarePrivateName(self: *SemanticAnalyzer, name: []const u8, span: Span, kind: PrivateNameKind) void {
+    fn declarePrivateName(self: *SemanticAnalyzer, name: []const u8, span: Span, kind: PrivateNameKind) AllocError!void {
         if (self.class_private_declared.items.len == 0) return;
         var current = &self.class_private_declared.items[self.class_private_declared.items.len - 1];
 
@@ -278,15 +280,15 @@ pub const SemanticAnalyzer = struct {
             const is_accessor_pair = (existing.kind == .getter and kind == .setter) or
                 (existing.kind == .setter and kind == .getter);
             if (!is_accessor_pair) {
-                self.addErrorMsg(span, std.fmt.allocPrint(
+                try self.addErrorMsg(span, try std.fmt.allocPrint(
                     self.allocator,
                     "Private field '{s}' has already been declared",
                     .{name},
-                ) catch @panic("OOM: duplicate_private_field"));
+                ));
                 return;
             }
         }
-        current.put(name, .{ .span = span, .kind = kind }) catch @panic("OOM: class_private_declared");
+        try current.put(name, .{ .span = span, .kind = kind });
     }
 
     /// identifier 텍스트에서 unicode escape sequence를 해석하여 StringValue를 반환한다.
@@ -294,7 +296,7 @@ pub const SemanticAnalyzer = struct {
     /// `#\u{6F}`와 `#o`는 같은 이름이다.
     /// escape가 없으면 원본 슬라이스를 그대로 반환 (할당 없음).
     /// escape가 있으면 allocator로 새 문자열을 할당하여 반환한다.
-    fn resolvePrivateName(self: *SemanticAnalyzer, raw: []const u8) []const u8 {
+    fn resolvePrivateName(self: *SemanticAnalyzer, raw: []const u8) AllocError![]const u8 {
         // escape가 없으면 그대로 반환
         if (std.mem.indexOfScalar(u8, raw, '\\') == null) return raw;
 
@@ -329,28 +331,28 @@ pub const SemanticAnalyzer = struct {
                 if (codepoint > 0x10FFFF) return raw;
                 var encode_buf: [4]u8 = undefined;
                 const len = std.unicode.utf8Encode(@intCast(codepoint), &encode_buf) catch return raw;
-                buf.appendSlice(encode_buf[0..len]) catch @panic("OOM: resolvePrivateName");
+                try buf.appendSlice(encode_buf[0..len]);
             } else {
-                buf.append(raw[i]) catch @panic("OOM: resolvePrivateName");
+                try buf.append(raw[i]);
                 i += 1;
             }
         }
 
-        const result = self.allocator.dupe(u8, buf.items) catch @panic("OOM: resolvePrivateName");
+        const result = try self.allocator.dupe(u8, buf.items);
         // 할당된 문자열을 추적하여 deinit에서 해제
-        self.resolved_names.append(result) catch @panic("OOM: resolvePrivateName tracking");
+        try self.resolved_names.append(result);
         return result;
     }
 
     /// private name 참조를 기록한다 (class body 퇴장 시 검증).
-    fn usePrivateName(self: *SemanticAnalyzer, name: []const u8, span: Span) void {
+    fn usePrivateName(self: *SemanticAnalyzer, name: []const u8, span: Span) AllocError!void {
         if (self.class_private_refs.items.len == 0) {
             // class 밖에서 private name 참조 → 즉시 에러
-            self.addPrivateNameError(span, name);
+            try self.addPrivateNameError(span, name);
             return;
         }
         var current = &self.class_private_refs.items[self.class_private_refs.items.len - 1];
-        current.append(.{ .name = name, .span = span }) catch @panic("OOM: class_private_refs");
+        try current.append(.{ .name = name, .span = span });
     }
 
     /// 현재 class scope 안에 있는지 (private name 참조 가능 여부).
@@ -366,7 +368,7 @@ pub const SemanticAnalyzer = struct {
     /// var는 가장 가까운 var scope(function/global/module)에 등록.
     /// let/const/class는 현재 블록 스코프에 등록.
     /// 중복 선언이면 에러를 추가한다.
-    fn declareSymbol(self: *SemanticAnalyzer, name_span: Span, kind: SymbolKind, decl_span: Span) void {
+    fn declareSymbol(self: *SemanticAnalyzer, name_span: Span, kind: SymbolKind, decl_span: Span) AllocError!void {
         const name_text = self.ast.source[name_span.start..name_span.end];
 
         // function-like 선언의 스코핑 규칙:
@@ -389,7 +391,7 @@ pub const SemanticAnalyzer = struct {
         // 재선언 검증: 같은 스코프에서 같은 이름의 심볼이 있는지 확인
         if (self.findSymbolInScope(target_scope, name_text)) |existing| {
             if (!self.canRedeclare(existing.kind, kind, target_scope)) {
-                self.addError(decl_span, name_text);
+                try self.addError(decl_span, name_text);
                 return;
             }
         }
@@ -397,7 +399,7 @@ pub const SemanticAnalyzer = struct {
         // var/function-like의 경우 블록 스코프 체인에서도 충돌 체크
         // let x; { var x; } → 에러 (var가 호이스팅되어 let과 같은 스코프에 도달)
         if (kind == .variable_var or kind.isFunctionLike()) {
-            if (self.checkVarHoistingConflict(target_scope, name_text, decl_span)) return;
+            if (try self.checkVarHoistingConflict(target_scope, name_text, decl_span)) return;
         }
 
         // 역방향: let/const/class/function-like 선언 시,
@@ -406,23 +408,23 @@ pub const SemanticAnalyzer = struct {
         if (kind.isBlockScoped() or (kind.isFunctionLike() and !target_scope.isNone() and
             !self.scopes.items[target_scope.toIndex()].kind.isVarScope()))
         {
-            if (self.checkLexicalVarConflict(target_scope, name_text, decl_span)) return;
+            if (try self.checkLexicalVarConflict(target_scope, name_text, decl_span)) return;
         }
 
         const sym_index = self.symbols.items.len;
-        self.symbols.append(.{
+        try self.symbols.append(.{
             .name = name_span,
             .scope_id = target_scope,
             .kind = kind,
             .decl_flags = kind.declFlags(),
             .declaration_span = decl_span,
             .origin_scope = self.current_scope,
-        }) catch @panic("OOM: symbol list");
+        });
 
         // per-scope HashMap에도 등록 (O(1) 검색용)
         if (!target_scope.isNone()) {
             self.scopes.items[target_scope.toIndex()].symbol_count += 1;
-            self.scope_maps.items[target_scope.toIndex()].put(name_text, sym_index) catch @panic("OOM: scope_map put");
+            try self.scope_maps.items[target_scope.toIndex()].put(name_text, sym_index);
         }
     }
 
@@ -449,7 +451,7 @@ pub const SemanticAnalyzer = struct {
 
     /// var 호이스팅이 블록 스코프의 let/const와 충돌하는지 체크.
     /// 예: let x = 1; { var x = 2; } → 에러 (var x가 함수 스코프로 호이스팅되면서 let x와 충돌)
-    fn checkVarHoistingConflict(self: *SemanticAnalyzer, var_scope: ScopeId, name: []const u8, decl_span: Span) bool {
+    fn checkVarHoistingConflict(self: *SemanticAnalyzer, var_scope: ScopeId, name: []const u8, decl_span: Span) AllocError!bool {
         // current_scope부터 var_scope까지의 중간 블록 스코프에서 let/const 선언을 찾는다
         var scope_id = self.current_scope;
         while (!scope_id.isNone() and @intFromEnum(scope_id) != @intFromEnum(var_scope)) {
@@ -457,7 +459,7 @@ pub const SemanticAnalyzer = struct {
                 // block scope의 let/const/class와 충돌하거나,
                 // block scope의 function-like 선언과도 충돌
                 if (existing.kind.isBlockScoped() or existing.kind.isFunctionLike()) {
-                    self.addError(decl_span, name);
+                    try self.addError(decl_span, name);
                     return true;
                 }
             }
@@ -471,7 +473,7 @@ pub const SemanticAnalyzer = struct {
     /// let/const/class/function-like 선언 시, 같은 block 경로에서 선언된 var가 있으면 충돌.
     /// origin_scope를 사용하여 var가 실제로 현재 scope 경로에서 선언되었는지 확인.
     /// ECMAScript: "LexicallyDeclaredNames ∩ VarDeclaredNames of StatementList"
-    fn checkLexicalVarConflict(self: *SemanticAnalyzer, lexical_scope: ScopeId, name: []const u8, decl_span: Span) bool {
+    fn checkLexicalVarConflict(self: *SemanticAnalyzer, lexical_scope: ScopeId, name: []const u8, decl_span: Span) AllocError!bool {
         const var_scope = self.findVarScope();
         // scope_maps O(1) 조회로 var scope에서 같은 이름의 심볼을 찾는다
         const sym = self.findSymbolInScope(var_scope, name) orelse return false;
@@ -482,7 +484,7 @@ pub const SemanticAnalyzer = struct {
         // { { var f; } let f; } → var의 origin=inner, let의 scope=outer → inner는 outer의 자식이므로 충돌
         // { let f; } 밖의 var f → var의 origin=global, let의 scope=block → 충돌 아님
         if (self.isScopeDescendantOf(sym.origin_scope, lexical_scope)) {
-            self.addError(decl_span, name);
+            try self.addError(decl_span, name);
             return true;
         }
         return false;
@@ -602,27 +604,27 @@ pub const SemanticAnalyzer = struct {
     // 에러 추가
     // ================================================================
 
-    fn addError(self: *SemanticAnalyzer, span: Span, name: []const u8) void {
-        self.addErrorMsg(span, std.fmt.allocPrint(self.allocator, "Identifier '{s}' has already been declared", .{name}) catch @panic("OOM: redeclaration"));
+    fn addError(self: *SemanticAnalyzer, span: Span, name: []const u8) AllocError!void {
+        try self.addErrorMsg(span, try std.fmt.allocPrint(self.allocator, "Identifier '{s}' has already been declared", .{name}));
     }
 
-    fn addPrivateNameError(self: *SemanticAnalyzer, span: Span, name: []const u8) void {
-        self.addErrorMsg(span, std.fmt.allocPrint(self.allocator, "Private field '{s}' must be declared in an enclosing class", .{name}) catch @panic("OOM: private_field_undeclared"));
+    fn addPrivateNameError(self: *SemanticAnalyzer, span: Span, name: []const u8) AllocError!void {
+        try self.addErrorMsg(span, try std.fmt.allocPrint(self.allocator, "Private field '{s}' must be declared in an enclosing class", .{name}));
     }
 
-    fn addErrorMsg(self: *SemanticAnalyzer, span: Span, msg: []const u8) void {
-        self.errors.append(.{
+    fn addErrorMsg(self: *SemanticAnalyzer, span: Span, msg: []const u8) AllocError!void {
+        try self.errors.append(.{
             .span = span,
             .message = msg,
             .kind = .semantic,
-        }) catch @panic("OOM: semantic error list");
+        });
     }
 
     // ================================================================
     // AST Visitor — switch 기반 (D042)
     // ================================================================
 
-    fn visitNode(self: *SemanticAnalyzer, idx: NodeIndex) void {
+    fn visitNode(self: *SemanticAnalyzer, idx: NodeIndex) AllocError!void {
         if (idx.isNone()) return;
         // 바운드 체크: 잘못된 인덱스 방어
         if (@intFromEnum(idx) >= self.ast.nodes.items.len) return;
@@ -630,47 +632,47 @@ pub const SemanticAnalyzer = struct {
         const node = self.ast.getNode(idx);
         switch (node.tag) {
             // ---- 스코프 생성 노드 ----
-            .program => self.visitProgram(node),
-            .block_statement => self.visitBlockStatement(node),
-            .function_declaration => self.visitFunctionDeclaration(node),
-            .function_expression => self.visitFunctionExpression(node),
-            .arrow_function_expression => self.visitArrowFunction(node),
-            .class_declaration => self.visitClassDeclaration(node),
-            .class_expression => self.visitClassExpression(node),
-            .for_statement => self.visitForStatement(node),
-            .for_in_statement => self.visitForInOf(node),
-            .for_of_statement => self.visitForInOf(node),
-            .switch_statement => self.visitSwitchStatement(node),
-            .catch_clause => self.visitCatchClause(node),
+            .program => try self.visitProgram(node),
+            .block_statement => try self.visitBlockStatement(node),
+            .function_declaration => try self.visitFunctionDeclaration(node),
+            .function_expression => try self.visitFunctionExpression(node),
+            .arrow_function_expression => try self.visitArrowFunction(node),
+            .class_declaration => try self.visitClassDeclaration(node),
+            .class_expression => try self.visitClassExpression(node),
+            .for_statement => try self.visitForStatement(node),
+            .for_in_statement => try self.visitForInOf(node),
+            .for_of_statement => try self.visitForInOf(node),
+            .switch_statement => try self.visitSwitchStatement(node),
+            .catch_clause => try self.visitCatchClause(node),
 
             // ---- 선언 노드 ----
-            .variable_declaration => self.visitVariableDeclaration(node),
-            .import_declaration => self.visitImportDeclaration(node),
+            .variable_declaration => try self.visitVariableDeclaration(node),
+            .import_declaration => try self.visitImportDeclaration(node),
 
             // ---- 자식 순회만 필요한 노드 ----
-            .expression_statement => self.visitNode(node.data.unary.operand),
-            .return_statement => self.visitNode(node.data.unary.operand),
-            .throw_statement => self.visitNode(node.data.unary.operand),
+            .expression_statement => try self.visitNode(node.data.unary.operand),
+            .return_statement => try self.visitNode(node.data.unary.operand),
+            .throw_statement => try self.visitNode(node.data.unary.operand),
             .if_statement => {
-                self.visitNode(node.data.ternary.a);
-                self.visitNode(node.data.ternary.b);
-                self.visitNode(node.data.ternary.c);
+                try self.visitNode(node.data.ternary.a);
+                try self.visitNode(node.data.ternary.b);
+                try self.visitNode(node.data.ternary.c);
             },
             .while_statement, .do_while_statement => {
-                self.visitNode(node.data.binary.left);
-                self.visitNode(node.data.binary.right);
+                try self.visitNode(node.data.binary.left);
+                try self.visitNode(node.data.binary.right);
             },
-            .labeled_statement => self.visitLabeledStatement(node),
-            .break_statement, .continue_statement => self.visitBreakContinue(node),
+            .labeled_statement => try self.visitLabeledStatement(node),
+            .break_statement, .continue_statement => try self.visitBreakContinue(node),
             .with_statement => {
-                self.visitNode(node.data.binary.left);
-                self.visitNode(node.data.binary.right);
+                try self.visitNode(node.data.binary.left);
+                try self.visitNode(node.data.binary.right);
             },
-            .switch_case => self.visitSwitchCase(node),
-            .try_statement => self.visitTryStatement(node),
-            .export_named_declaration => self.visitExportNamedDeclaration(node),
-            .export_default_declaration => self.visitExportDefaultDeclaration(node),
-            .export_all_declaration => self.visitExportAllDeclaration(node),
+            .switch_case => try self.visitSwitchCase(node),
+            .try_statement => try self.visitTryStatement(node),
+            .export_named_declaration => try self.visitExportNamedDeclaration(node),
+            .export_default_declaration => try self.visitExportDefaultDeclaration(node),
+            .export_all_declaration => try self.visitExportAllDeclaration(node),
 
             // ---- private name 참조 ----
             .private_field_expression, .static_member_expression => {
@@ -680,17 +682,17 @@ pub const SemanticAnalyzer = struct {
                     const prop_node = self.ast.getNode(prop_idx);
                     if (prop_node.tag == .private_identifier) {
                         const raw = self.ast.source[prop_node.span.start..prop_node.span.end];
-                        const name = self.resolvePrivateName(raw);
-                        self.usePrivateName(name, prop_node.span);
+                        const name = try self.resolvePrivateName(raw);
+                        try self.usePrivateName(name, prop_node.span);
                     }
                 }
-                self.visitNode(node.data.binary.left);
+                try self.visitNode(node.data.binary.left);
             },
             .computed_member_expression => {
                 // binary: { left = object, right = expression }
                 // right는 임의 expression (a[expr]) — 양쪽 모두 순회
-                self.visitNode(node.data.binary.left);
-                self.visitNode(node.data.binary.right);
+                try self.visitNode(node.data.binary.left);
+                try self.visitNode(node.data.binary.right);
             },
 
             // ---- method_definition/property_definition 내부 순회 ----
@@ -703,20 +705,20 @@ pub const SemanticAnalyzer = struct {
                     // (class body에서는 collectPrivateNames가 이미 선언을 등록하므로
                     //  여기서 usePrivateName이 호출되어도 정상 통과)
                     const key_idx: NodeIndex = @enumFromInt(extras[extra_start]);
-                    self.visitNode(key_idx);
+                    try self.visitNode(key_idx);
 
                     // getter/setter 파라미터 개수 검증
-                    checker.checkGetterSetterParams(self.ast, node, &self.errors, self.allocator);
+                    try checker.checkGetterSetterParams(self.ast, node, &self.errors, self.allocator);
 
                     const body_idx: NodeIndex = @enumFromInt(extras[extra_start + 3]);
                     // 함수 본문을 function scope로 감싸서 순회
-                    const scope_saved = self.enterScope(.function, self.is_strict_mode);
+                    const scope_saved = try self.enterScope(.function, self.is_strict_mode);
                     const params_start = extras[extra_start + 1];
                     const params_len = extras[extra_start + 2];
-                    self.registerParams(params_start, params_len);
+                    try self.registerParams(params_start, params_len);
                     // 메서드는 항상 UniqueFormalParameters — 중복 금지
-                    checker.checkDuplicateParams(self.ast, params_start, params_len, &self.errors, self.allocator);
-                    self.visitFunctionBodyInner(body_idx);
+                    try checker.checkDuplicateParams(self.ast, params_start, params_len, &self.errors, self.allocator);
+                    try self.visitFunctionBodyInner(body_idx);
                     self.exitScope(scope_saved);
                 }
             },
@@ -725,14 +727,14 @@ pub const SemanticAnalyzer = struct {
                 // key도 순회 (computed property의 표현식, class 밖 private name 검출)
                 const e = node.data.extra;
                 if (e + 1 < self.ast.extra_data.items.len) {
-                    self.visitNode(@enumFromInt(self.ast.extra_data.items[e]));
-                    self.visitNode(@enumFromInt(self.ast.extra_data.items[e + 1]));
+                    try self.visitNode(@enumFromInt(self.ast.extra_data.items[e]));
+                    try self.visitNode(@enumFromInt(self.ast.extra_data.items[e + 1]));
                 }
             },
             .static_block => {
                 // static block은 함수와 같은 경계 — label은 넘지 못함
                 const saved_labels = self.saveLabelLen();
-                self.visitNode(node.data.unary.operand);
+                try self.visitNode(node.data.unary.operand);
                 self.restoreLabelLen(saved_labels);
             },
 
@@ -750,28 +752,28 @@ pub const SemanticAnalyzer = struct {
                 const lhs_idx = node.data.binary.left;
                 if (!self.tryResolveNodeAsRef(lhs_idx)) {
                     // LHS가 멤버 표현식 등 — 일반 순회
-                    self.visitNode(lhs_idx);
+                    try self.visitNode(lhs_idx);
                 }
                 // RHS는 항상 순회 (내부에 식별자 참조 등이 있을 수 있음)
-                self.visitNode(node.data.binary.right);
+                try self.visitNode(node.data.binary.right);
             },
             .binary_expression,
             .logical_expression,
             => {
-                self.visitNode(node.data.binary.left);
-                self.visitNode(node.data.binary.right);
+                try self.visitNode(node.data.binary.left);
+                try self.visitNode(node.data.binary.right);
             },
             .conditional_expression => {
                 // ternary: { a = condition, b = consequent, c = alternate }
-                self.visitNode(node.data.ternary.a);
-                self.visitNode(node.data.ternary.b);
-                self.visitNode(node.data.ternary.c);
+                try self.visitNode(node.data.ternary.a);
+                try self.visitNode(node.data.ternary.b);
+                try self.visitNode(node.data.ternary.c);
             },
             .update_expression => {
                 // ++x, x++ — 읽고 쓰기 모두 수행
                 const operand_idx = node.data.unary.operand;
                 if (!self.tryResolveNodeAsRef(operand_idx)) {
-                    self.visitNode(operand_idx);
+                    try self.visitNode(operand_idx);
                 }
             },
             .unary_expression,
@@ -780,47 +782,47 @@ pub const SemanticAnalyzer = struct {
             .parenthesized_expression,
             .spread_element,
             => {
-                self.visitNode(node.data.unary.operand);
+                try self.visitNode(node.data.unary.operand);
             },
             .call_expression,
             .new_expression,
             => {
                 // binary: { left = callee, right = @enumFromInt(args_start), flags = args_len }
                 // callee 순회
-                self.visitNode(node.data.binary.left);
+                try self.visitNode(node.data.binary.left);
                 // 인자 순회 — visitNodeList 재활용
                 // flags 하위 15비트가 인자 개수 (상위 비트는 optional chaining 플래그)
-                self.visitNodeList(.{
+                try self.visitNodeList(.{
                     .start = @intFromEnum(node.data.binary.right),
                     .len = node.data.binary.flags & 0x7FFF,
                 });
             },
             .tagged_template_expression => {
                 // binary: { left = tag, right = template, flags = 0 }
-                self.visitNode(node.data.binary.left);
-                self.visitNode(node.data.binary.right);
+                try self.visitNode(node.data.binary.left);
+                try self.visitNode(node.data.binary.right);
             },
             .sequence_expression => {
-                self.visitNodeList(node.data.list);
+                try self.visitNodeList(node.data.list);
             },
             .array_expression => {
-                self.visitNodeList(node.data.list);
+                try self.visitNodeList(node.data.list);
             },
             .object_expression => {
                 // __proto__ 중복 검사 (ECMAScript 12.2.6.1)
-                checker.checkObjectDuplicateProto(self.ast, node.data.list, &self.errors, self.allocator);
-                self.visitNodeList(node.data.list);
+                try checker.checkObjectDuplicateProto(self.ast, node.data.list, &self.errors, self.allocator);
+                try self.visitNodeList(node.data.list);
             },
             .object_property => {
                 // binary: { left = key, right = value }
                 // key도 순회 (computed property에 표현식이 들어갈 수 있음)
-                self.visitNode(node.data.binary.left);
-                self.visitNode(node.data.binary.right);
+                try self.visitNode(node.data.binary.left);
+                try self.visitNode(node.data.binary.right);
             },
             .template_literal => {
                 // list: [template_element, expression, template_element, ...]
                 // 표현식 내부에 private name 참조 등이 있을 수 있으므로 순회
-                self.visitNodeList(node.data.list);
+                try self.visitNodeList(node.data.list);
             },
 
             // ---- private_identifier 단독 노드 ----
@@ -829,14 +831,14 @@ pub const SemanticAnalyzer = struct {
             // class 밖이면 에러 보고
             .private_identifier => {
                 const raw = self.ast.source[node.span.start..node.span.end];
-                const name = self.resolvePrivateName(raw);
-                self.usePrivateName(name, node.span);
+                const name = try self.resolvePrivateName(raw);
+                try self.usePrivateName(name, node.span);
             },
 
             // ---- computed property key ----
             // [expr] 형태의 프로퍼티 키 — 내부 expression을 순회하여 private name 참조 검출
             .computed_property_key => {
-                self.visitNode(node.data.unary.operand);
+                try self.visitNode(node.data.unary.operand);
             },
 
             // ---- 스킵 (TS 타입 노드, 리터럴, 식별자 등) ----
@@ -844,13 +846,13 @@ pub const SemanticAnalyzer = struct {
         }
     }
 
-    fn visitNodeList(self: *SemanticAnalyzer, list: NodeList) void {
+    fn visitNodeList(self: *SemanticAnalyzer, list: NodeList) AllocError!void {
         if (list.len == 0) return;
         if (list.start + list.len > self.ast.extra_data.items.len) return; // 바운드 방어
         const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
         for (indices) |raw_idx| {
             const idx: NodeIndex = @enumFromInt(raw_idx);
-            self.visitNode(idx);
+            try self.visitNode(idx);
         }
     }
 
@@ -858,21 +860,21 @@ pub const SemanticAnalyzer = struct {
     // Visitor 구현 — 스코프 생성 노드
     // ================================================================
 
-    fn visitProgram(self: *SemanticAnalyzer, node: Node) void {
+    fn visitProgram(self: *SemanticAnalyzer, node: Node) AllocError!void {
         // module이면 module 스코프 (항상 strict), 아니면 global 스코프
         const scope_kind: ScopeKind = if (self.is_module) .module else .global;
-        const saved = self.enterScope(scope_kind, self.is_strict_mode);
-        self.visitNodeList(node.data.list);
+        const saved = try self.enterScope(scope_kind, self.is_strict_mode);
+        try self.visitNodeList(node.data.list);
         self.exitScope(saved);
     }
 
-    fn visitBlockStatement(self: *SemanticAnalyzer, node: Node) void {
-        const saved = self.enterScope(.block, self.is_strict_mode);
-        self.visitNodeList(node.data.list);
+    fn visitBlockStatement(self: *SemanticAnalyzer, node: Node) AllocError!void {
+        const saved = try self.enterScope(.block, self.is_strict_mode);
+        try self.visitNodeList(node.data.list);
         self.exitScope(saved);
     }
 
-    fn visitFunctionDeclaration(self: *SemanticAnalyzer, node: Node) void {
+    fn visitFunctionDeclaration(self: *SemanticAnalyzer, node: Node) AllocError!void {
         // extra: [name, params.start, params.len, body, flags, return_type]
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
@@ -897,38 +899,38 @@ pub const SemanticAnalyzer = struct {
         // 함수 이름을 현재 스코프(외부)에 등록
         if (!name_idx.isNone()) {
             const name_node = self.ast.getNode(name_idx);
-            self.declareSymbol(name_node.span, symbol_kind, node.span);
+            try self.declareSymbol(name_node.span, symbol_kind, node.span);
         }
 
         // 함수 본문 — 새 function 스코프 (부모의 strict mode 상속)
-        const saved = self.enterScope(.function, self.is_strict_mode);
+        const saved = try self.enterScope(.function, self.is_strict_mode);
         const saved_labels = self.saveLabelLen(); // label은 함수 경계를 넘지 못함
 
         // 파라미터를 function 스코프에 등록
         const params_start = extras[extra_start + 1];
         const params_len = extras[extra_start + 2];
-        self.registerParams(params_start, params_len);
+        try self.registerParams(params_start, params_len);
 
         // 중복 파라미터 검증: generator/async는 항상 UniqueFormalParameters,
         // 일반 함수는 strict mode에서만 (non-strict sloppy mode는 중복 허용)
         if (is_async or is_generator or self.isCurrentStrict()) {
-            checker.checkDuplicateParams(self.ast, params_start, params_len, &self.errors, self.allocator);
+            try checker.checkDuplicateParams(self.ast, params_start, params_len, &self.errors, self.allocator);
         }
 
         // 본문 순회
-        self.visitFunctionBodyInner(body_idx);
+        try self.visitFunctionBodyInner(body_idx);
         self.restoreLabelLen(saved_labels);
         self.exitScope(saved);
     }
 
-    fn visitFunctionExpression(self: *SemanticAnalyzer, node: Node) void {
+    fn visitFunctionExpression(self: *SemanticAnalyzer, node: Node) AllocError!void {
         // extra: [name, params.start, params.len, body, flags]
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (extra_start + 4 >= extras.len) return;
         const body_idx: NodeIndex = @enumFromInt(extras[extra_start + 3]);
 
-        const saved = self.enterScope(.function, self.is_strict_mode);
+        const saved = try self.enterScope(.function, self.is_strict_mode);
         const saved_labels = self.saveLabelLen();
 
         // 함수 표현식의 이름은 자체 스코프에만 등록 (외부에서 접근 불가).
@@ -939,7 +941,7 @@ pub const SemanticAnalyzer = struct {
 
         const params_start = extras[extra_start + 1];
         const params_len = extras[extra_start + 2];
-        self.registerParams(params_start, params_len);
+        try self.registerParams(params_start, params_len);
 
         // 중복 파라미터 검증: flags에서 async/generator 판별
         const fn_flags = extras[extra_start + 4];
@@ -947,37 +949,37 @@ pub const SemanticAnalyzer = struct {
         const fn_is_async = (fn_flags & FnFlags.is_async) != 0;
         const fn_is_generator = (fn_flags & FnFlags.is_generator) != 0;
         if (fn_is_async or fn_is_generator or self.isCurrentStrict()) {
-            checker.checkDuplicateParams(self.ast, params_start, params_len, &self.errors, self.allocator);
+            try checker.checkDuplicateParams(self.ast, params_start, params_len, &self.errors, self.allocator);
         }
 
-        self.visitFunctionBodyInner(body_idx);
+        try self.visitFunctionBodyInner(body_idx);
         self.restoreLabelLen(saved_labels);
         self.exitScope(saved);
     }
 
-    fn visitArrowFunction(self: *SemanticAnalyzer, node: Node) void {
+    fn visitArrowFunction(self: *SemanticAnalyzer, node: Node) AllocError!void {
         // binary: { left = param/params, right = body, flags }
-        const saved = self.enterScope(.function, self.is_strict_mode);
+        const saved = try self.enterScope(.function, self.is_strict_mode);
         const saved_labels = self.saveLabelLen();
         const body_idx = node.data.binary.right;
 
         // left가 단일 파라미터(binding_identifier) 또는 파라미터 리스트일 수 있음
         const param_idx = node.data.binary.left;
         if (!param_idx.isNone()) {
-            self.declareArrowParams(param_idx);
+            try self.declareArrowParams(param_idx);
 
             // arrow function은 항상 UniqueFormalParameters — 중복 금지
-            checker.checkDuplicateArrowParams(self.ast, param_idx, &self.errors, self.allocator);
+            try checker.checkDuplicateArrowParams(self.ast, param_idx, &self.errors, self.allocator);
         }
 
         if (!body_idx.isNone()) {
             const body_node = self.ast.getNode(body_idx);
             if (body_node.tag == .block_statement) {
                 // block body — 내부를 직접 순회 (block_statement가 스코프를 또 만들지 않도록)
-                self.visitNodeList(body_node.data.list);
+                try self.visitNodeList(body_node.data.list);
             } else {
                 // expression body
-                self.visitNode(body_idx);
+                try self.visitNode(body_idx);
             }
         }
 
@@ -993,16 +995,16 @@ pub const SemanticAnalyzer = struct {
     /// - assignment_pattern: 기본값 (x = 1)
     /// - identifier_reference: cover grammar에서 변환된 식별자
     /// - assignment_target_identifier: cover grammar 변환된 식별자
-    fn declareArrowParams(self: *SemanticAnalyzer, idx: NodeIndex) void {
+    fn declareArrowParams(self: *SemanticAnalyzer, idx: NodeIndex) AllocError!void {
         if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
         const node = self.ast.getNode(idx);
         switch (node.tag) {
             .binding_identifier, .identifier_reference, .assignment_target_identifier => {
-                self.declareSymbol(node.span, .parameter, node.span);
+                try self.declareSymbol(node.span, .parameter, node.span);
             },
             .parenthesized_expression => {
                 // 괄호 내부를 풀어서 재귀
-                self.declareArrowParams(node.data.unary.operand);
+                try self.declareArrowParams(node.data.unary.operand);
             },
             .sequence_expression => {
                 // 여러 파라미터: (a, b, c)
@@ -1011,36 +1013,36 @@ pub const SemanticAnalyzer = struct {
                 if (list.start + list.len > self.ast.extra_data.items.len) return;
                 const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
                 for (indices) |raw_idx| {
-                    self.declareArrowParams(@enumFromInt(raw_idx));
+                    try self.declareArrowParams(@enumFromInt(raw_idx));
                 }
             },
             .assignment_pattern, .assignment_expression => {
                 // 기본값: x = 1 → left만 파라미터
-                self.declareArrowParams(node.data.binary.left);
+                try self.declareArrowParams(node.data.binary.left);
             },
             .spread_element, .rest_element, .assignment_target_rest => {
                 // ...rest
-                self.declareArrowParams(node.data.unary.operand);
+                try self.declareArrowParams(node.data.unary.operand);
             },
             .object_pattern, .array_pattern => {
                 // destructuring 패턴 — 내부의 binding_identifier를 재귀적으로 추출
-                self.declareBindingPattern(idx);
+                try self.declareBindingPattern(idx);
             },
             .object_assignment_target, .array_assignment_target => {
                 // cover grammar 변환된 destructuring
-                self.declareBindingPattern(idx);
+                try self.declareBindingPattern(idx);
             },
             else => {},
         }
     }
 
     /// destructuring 패턴에서 binding identifier를 재귀적으로 추출하여 parameter로 등록한다.
-    fn declareBindingPattern(self: *SemanticAnalyzer, idx: NodeIndex) void {
+    fn declareBindingPattern(self: *SemanticAnalyzer, idx: NodeIndex) AllocError!void {
         if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
         const node = self.ast.getNode(idx);
         switch (node.tag) {
             .binding_identifier, .identifier_reference, .assignment_target_identifier => {
-                self.declareSymbol(node.span, .parameter, node.span);
+                try self.declareSymbol(node.span, .parameter, node.span);
             },
             .object_pattern, .object_assignment_target => {
                 const list = node.data.list;
@@ -1048,7 +1050,7 @@ pub const SemanticAnalyzer = struct {
                 if (list.start + list.len > self.ast.extra_data.items.len) return;
                 const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
                 for (indices) |raw_idx| {
-                    self.declareBindingPattern(@enumFromInt(raw_idx));
+                    try self.declareBindingPattern(@enumFromInt(raw_idx));
                 }
             },
             .array_pattern, .array_assignment_target => {
@@ -1057,29 +1059,29 @@ pub const SemanticAnalyzer = struct {
                 if (list.start + list.len > self.ast.extra_data.items.len) return;
                 const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
                 for (indices) |raw_idx| {
-                    self.declareBindingPattern(@enumFromInt(raw_idx));
+                    try self.declareBindingPattern(@enumFromInt(raw_idx));
                 }
             },
             .binding_property => {
                 // binary: { left = key, right = value }
-                self.declareBindingPattern(node.data.binary.right);
+                try self.declareBindingPattern(node.data.binary.right);
             },
             .assignment_target_property_identifier, .assignment_target_property_property => {
                 // cover grammar 변환된 프로퍼티
-                self.declareBindingPattern(node.data.binary.right);
+                try self.declareBindingPattern(node.data.binary.right);
             },
             .assignment_pattern, .assignment_expression, .assignment_target_with_default => {
                 // 기본값: left가 바인딩
-                self.declareBindingPattern(node.data.binary.left);
+                try self.declareBindingPattern(node.data.binary.left);
             },
             .spread_element, .rest_element, .assignment_target_rest => {
-                self.declareBindingPattern(node.data.unary.operand);
+                try self.declareBindingPattern(node.data.unary.operand);
             },
             else => {},
         }
     }
 
-    fn visitClassDeclaration(self: *SemanticAnalyzer, node: Node) void {
+    fn visitClassDeclaration(self: *SemanticAnalyzer, node: Node) AllocError!void {
         // extra: [name, super_class, body, ...]
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
@@ -1089,20 +1091,20 @@ pub const SemanticAnalyzer = struct {
         // 클래스 이름을 현재 스코프(외부)에 등록
         if (!name_idx.isNone()) {
             const name_node = self.ast.getNode(name_idx);
-            self.declareSymbol(name_node.span, .class_decl, node.span);
+            try self.declareSymbol(name_node.span, .class_decl, node.span);
         }
 
         const heritage_idx: NodeIndex = @enumFromInt(extras[extra_start + 1]);
-        self.visitClassWithHeritage(heritage_idx, @enumFromInt(extras[extra_start + 2]));
+        try self.visitClassWithHeritage(heritage_idx, @enumFromInt(extras[extra_start + 2]));
     }
 
-    fn visitClassExpression(self: *SemanticAnalyzer, node: Node) void {
+    fn visitClassExpression(self: *SemanticAnalyzer, node: Node) AllocError!void {
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (extra_start + 2 >= extras.len) return;
 
         const heritage_idx: NodeIndex = @enumFromInt(extras[extra_start + 1]);
-        self.visitClassWithHeritage(heritage_idx, @enumFromInt(extras[extra_start + 2]));
+        try self.visitClassWithHeritage(heritage_idx, @enumFromInt(extras[extra_start + 2]));
     }
 
     /// class를 순회한다. heritage expression과 body를 올바른 private name 환경에서 처리.
@@ -1114,39 +1116,39 @@ pub const SemanticAnalyzer = struct {
     ///
     /// 즉, heritage expression에서는 이 클래스의 private name에 접근할 수 없고,
     /// 오직 외부(부모) 클래스의 private name만 보인다.
-    fn visitClassWithHeritage(self: *SemanticAnalyzer, heritage_idx: NodeIndex, body_idx: NodeIndex) void {
+    fn visitClassWithHeritage(self: *SemanticAnalyzer, heritage_idx: NodeIndex, body_idx: NodeIndex) AllocError!void {
         // Step 1: heritage expression 순회 — 이 클래스의 class scope PUSH 전에!
         // heritage는 outerPrivateEnvironment에서 평가되므로 이 클래스의 #name에 접근 불가.
         // class scope를 push하기 전에 heritage를 순회하면, heritage에서의 #name 참조가
         // 외부 class scope에 기록되어 외부 선언만 확인된다.
         if (!heritage_idx.isNone()) {
-            self.visitNode(heritage_idx);
+            try self.visitNode(heritage_idx);
         }
 
         // Step 2: class body의 private name 수집 + early error 검증 + 순회
         // class body는 항상 strict mode (ECMAScript 10.2.1)
-        const saved = self.enterScope(.class_body, true);
-        self.pushClassScope();
+        const saved = try self.enterScope(.class_body, true);
+        try self.pushClassScope();
 
         if (!body_idx.isNone() and @intFromEnum(body_idx) < self.ast.nodes.items.len) {
             const body_node = self.ast.getNode(body_idx);
             if (body_node.tag == .class_body) {
                 // 1차: private name 선언 수집 (멤버 순회)
-                self.collectPrivateNames(body_node.data.list);
+                try self.collectPrivateNames(body_node.data.list);
                 // early error 검증: 중복 생성자, static/instance private name 충돌
-                checker.checkDuplicateConstructors(self.ast, body_node.data.list, &self.errors, self.allocator);
-                checker.checkPrivateNameStaticConflict(self.ast, body_node.data.list, &self.errors, self.allocator);
+                try checker.checkDuplicateConstructors(self.ast, body_node.data.list, &self.errors, self.allocator);
+                try checker.checkPrivateNameStaticConflict(self.ast, body_node.data.list, &self.errors, self.allocator);
                 // 2차: 전체 순회 (참조 검증 포함)
-                self.visitNodeList(body_node.data.list);
+                try self.visitNodeList(body_node.data.list);
             }
         }
 
-        self.popClassScope();
+        try self.popClassScope();
         self.exitScope(saved);
     }
 
     /// class body 멤버에서 private name 선언을 수집한다 (1차 패스).
-    fn collectPrivateNames(self: *SemanticAnalyzer, list: NodeList) void {
+    fn collectPrivateNames(self: *SemanticAnalyzer, list: NodeList) AllocError!void {
         if (list.len == 0) return;
         if (list.start + list.len > self.ast.extra_data.items.len) return;
         const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
@@ -1169,13 +1171,13 @@ pub const SemanticAnalyzer = struct {
                         }
                         break :blk .method;
                     };
-                    self.tryRegisterPrivateKey(key_idx, kind);
+                    try self.tryRegisterPrivateKey(key_idx, kind);
                 },
                 .property_definition, .accessor_property => {
                     // extra: [key, init_val, flags, deco_start, deco_len]
                     const e = node.data.extra;
                     if (e < self.ast.extra_data.items.len) {
-                        self.tryRegisterPrivateKey(@enumFromInt(self.ast.extra_data.items[e]), .field);
+                        try self.tryRegisterPrivateKey(@enumFromInt(self.ast.extra_data.items[e]), .field);
                     }
                 },
                 else => {},
@@ -1184,42 +1186,42 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// key가 private_identifier이면 선언 등록한다.
-    fn tryRegisterPrivateKey(self: *SemanticAnalyzer, key_idx: NodeIndex, kind: PrivateNameKind) void {
+    fn tryRegisterPrivateKey(self: *SemanticAnalyzer, key_idx: NodeIndex, kind: PrivateNameKind) AllocError!void {
         if (key_idx.isNone() or @intFromEnum(key_idx) >= self.ast.nodes.items.len) return;
         const key_node = self.ast.getNode(key_idx);
         if (key_node.tag == .private_identifier) {
             const raw = self.ast.source[key_node.span.start..key_node.span.end];
-            const name = self.resolvePrivateName(raw);
-            self.declarePrivateName(name, key_node.span, kind);
+            const name = try self.resolvePrivateName(raw);
+            try self.declarePrivateName(name, key_node.span, kind);
         }
     }
 
-    fn visitForStatement(self: *SemanticAnalyzer, node: Node) void {
+    fn visitForStatement(self: *SemanticAnalyzer, node: Node) AllocError!void {
         // extra: [init, test, update, body]
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (extra_start + 3 >= extras.len) return;
 
         // for문은 블록 스코프를 생성 (for(let i=0; ...) 의 i가 블록 스코프)
-        const saved = self.enterScope(.block, self.is_strict_mode);
-        self.visitNode(@enumFromInt(extras[extra_start])); // init
-        self.visitNode(@enumFromInt(extras[extra_start + 1])); // test
-        self.visitNode(@enumFromInt(extras[extra_start + 2])); // update
-        self.visitNode(@enumFromInt(extras[extra_start + 3])); // body
+        const saved = try self.enterScope(.block, self.is_strict_mode);
+        try self.visitNode(@enumFromInt(extras[extra_start])); // init
+        try self.visitNode(@enumFromInt(extras[extra_start + 1])); // test
+        try self.visitNode(@enumFromInt(extras[extra_start + 2])); // update
+        try self.visitNode(@enumFromInt(extras[extra_start + 3])); // body
         self.exitScope(saved);
     }
 
-    fn visitForInOf(self: *SemanticAnalyzer, node: Node) void {
+    fn visitForInOf(self: *SemanticAnalyzer, node: Node) AllocError!void {
         // ternary: { a = left, b = right, c = body }
-        const saved = self.enterScope(.block, self.is_strict_mode);
-        self.visitNode(node.data.ternary.a);
-        self.visitNode(node.data.ternary.b);
-        self.visitNode(node.data.ternary.c);
+        const saved = try self.enterScope(.block, self.is_strict_mode);
+        try self.visitNode(node.data.ternary.a);
+        try self.visitNode(node.data.ternary.b);
+        try self.visitNode(node.data.ternary.c);
         self.exitScope(saved);
     }
 
     /// labeled statement: label 등록 → body 순회 → label 해제.
-    fn visitLabeledStatement(self: *SemanticAnalyzer, node: Node) void {
+    fn visitLabeledStatement(self: *SemanticAnalyzer, node: Node) AllocError!void {
         // binary: { left = label identifier, right = body }
         const label_idx = node.data.binary.left;
         const body_idx = node.data.binary.right;
@@ -1230,7 +1232,7 @@ pub const SemanticAnalyzer = struct {
 
             // 중복 label 체크 (같은 label 이름이 현재 스택에 있으면 에러)
             if (self.findLabel(name) != null) {
-                self.addErrorMsg(label_node.span, std.fmt.allocPrint(self.allocator, "Label '{s}' has already been declared", .{name}) catch @panic("OOM: duplicate_label"));
+                try self.addErrorMsg(label_node.span, try std.fmt.allocPrint(self.allocator, "Label '{s}' has already been declared", .{name}));
             }
 
             // body가 loop인지 판별 (continue label에 필요)
@@ -1241,16 +1243,16 @@ pub const SemanticAnalyzer = struct {
                     body_tag == .do_while_statement;
             } else false;
 
-            self.labels.append(.{ .name = name, .span = label_node.span, .is_loop = is_loop }) catch @panic("OOM: labels");
-            self.visitNode(body_idx);
+            try self.labels.append(.{ .name = name, .span = label_node.span, .is_loop = is_loop });
+            try self.visitNode(body_idx);
             _ = self.labels.pop();
         } else {
-            self.visitNode(body_idx);
+            try self.visitNode(body_idx);
         }
     }
 
     /// break/continue with label: label 존재 여부 + continue는 loop label만 가능.
-    fn visitBreakContinue(self: *SemanticAnalyzer, node: Node) void {
+    fn visitBreakContinue(self: *SemanticAnalyzer, node: Node) AllocError!void {
         // unary: { operand = label identifier or none }
         const label_idx = node.data.unary.operand;
         if (label_idx.isNone()) return; // label 없는 break/continue는 파서에서 이미 검증
@@ -1261,33 +1263,33 @@ pub const SemanticAnalyzer = struct {
         if (self.findLabel(name)) |entry| {
             // continue는 loop label만 가능
             if (node.tag == .continue_statement and !entry.is_loop) {
-                self.addErrorMsg(label_node.span, std.fmt.allocPrint(self.allocator, "Cannot continue to non-loop label '{s}'", .{name}) catch @panic("OOM: continue_non_loop"));
+                try self.addErrorMsg(label_node.span, try std.fmt.allocPrint(self.allocator, "Cannot continue to non-loop label '{s}'", .{name}));
             }
         } else {
             // label이 존재하지 않음
-            self.addErrorMsg(label_node.span, std.fmt.allocPrint(self.allocator, "Undefined label '{s}'", .{name}) catch @panic("OOM: undefined_label"));
+            try self.addErrorMsg(label_node.span, try std.fmt.allocPrint(self.allocator, "Undefined label '{s}'", .{name}));
         }
     }
 
-    fn visitSwitchStatement(self: *SemanticAnalyzer, node: Node) void {
+    fn visitSwitchStatement(self: *SemanticAnalyzer, node: Node) AllocError!void {
         // extra: [discriminant, cases.start, cases.len]
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (extra_start + 2 >= extras.len) return;
-        self.visitNode(@enumFromInt(extras[extra_start])); // discriminant
+        try self.visitNode(@enumFromInt(extras[extra_start])); // discriminant
 
         // switch body는 하나의 블록 스코프 (모든 case가 같은 스코프)
-        const saved = self.enterScope(.switch_block, self.is_strict_mode);
+        const saved = try self.enterScope(.switch_block, self.is_strict_mode);
         const cases_start = extras[extra_start + 1];
         const cases_len = extras[extra_start + 2];
         const case_list = NodeList{ .start = cases_start, .len = cases_len };
-        self.visitNodeList(case_list);
+        try self.visitNodeList(case_list);
         self.exitScope(saved);
     }
 
-    fn visitCatchClause(self: *SemanticAnalyzer, node: Node) void {
+    fn visitCatchClause(self: *SemanticAnalyzer, node: Node) AllocError!void {
         // binary: { left = param, right = body, flags }
-        const saved = self.enterScope(.catch_clause, self.is_strict_mode);
+        const saved = try self.enterScope(.catch_clause, self.is_strict_mode);
         const param_idx = node.data.binary.left;
 
         // catch param 이름 수집 (중복 바인딩 검사 + block body 충돌 검사용)
@@ -1297,14 +1299,14 @@ pub const SemanticAnalyzer = struct {
         if (!param_idx.isNone()) {
             const param_node = self.ast.getNode(param_idx);
             if (param_node.tag == .binding_identifier) {
-                self.declareSymbol(param_node.span, .catch_binding, param_node.span);
+                try self.declareSymbol(param_node.span, .catch_binding, param_node.span);
                 if (catch_name_count < 16) {
                     catch_names[catch_name_count] = param_node.span;
                     catch_name_count += 1;
                 }
             } else {
                 // Destructuring pattern — collect all binding names and check duplicates
-                self.collectAndCheckCatchBindings(param_idx, &catch_names, &catch_name_count);
+                try self.collectAndCheckCatchBindings(param_idx, &catch_names, &catch_name_count);
             }
         }
 
@@ -1314,21 +1316,21 @@ pub const SemanticAnalyzer = struct {
             const body_node = self.ast.getNode(body_idx);
             if (body_node.tag == .block_statement and catch_name_count > 0) {
                 // Enter block scope for the body
-                const block_saved = self.enterScope(.block, self.is_strict_mode);
+                const block_saved = try self.enterScope(.block, self.is_strict_mode);
                 // Visit block body statements
-                self.visitNodeList(body_node.data.list);
+                try self.visitNodeList(body_node.data.list);
                 // Check for catch param conflicts with lexically-declared names in the block
-                self.checkCatchBodyConflicts(catch_names[0..catch_name_count]);
+                try self.checkCatchBodyConflicts(catch_names[0..catch_name_count]);
                 self.exitScope(block_saved);
             } else {
-                self.visitNode(body_idx);
+                try self.visitNode(body_idx);
             }
         }
         self.exitScope(saved);
     }
 
     /// Collect binding names from destructuring pattern and check for duplicate catch bindings.
-    fn collectAndCheckCatchBindings(self: *SemanticAnalyzer, idx: NodeIndex, names: *[16]Span, count: *usize) void {
+    fn collectAndCheckCatchBindings(self: *SemanticAnalyzer, idx: NodeIndex, names: *[16]Span, count: *usize) AllocError!void {
         if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
         const node = self.ast.getNode(idx);
         switch (node.tag) {
@@ -1338,11 +1340,11 @@ pub const SemanticAnalyzer = struct {
                 for (names.*[0..count.*]) |existing_span| {
                     const existing_text = self.ast.source[existing_span.start..existing_span.end];
                     if (std.mem.eql(u8, name_text, existing_text)) {
-                        self.addError(node.span, name_text);
+                        try self.addError(node.span, name_text);
                         return;
                     }
                 }
-                self.declareSymbol(node.span, .catch_binding, node.span);
+                try self.declareSymbol(node.span, .catch_binding, node.span);
                 if (count.* < 16) {
                     names.*[count.*] = node.span;
                     count.* += 1;
@@ -1354,7 +1356,7 @@ pub const SemanticAnalyzer = struct {
                 if (node.data.list.start + node.data.list.len > self.ast.extra_data.items.len) return;
                 const indices = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
                 for (indices) |raw_idx| {
-                    self.collectAndCheckCatchBindings(@enumFromInt(raw_idx), names, count);
+                    try self.collectAndCheckCatchBindings(@enumFromInt(raw_idx), names, count);
                 }
             },
             .object_pattern, .object_expression => {
@@ -1368,25 +1370,25 @@ pub const SemanticAnalyzer = struct {
                     if (prop.tag == .object_property or
                         prop.tag == .assignment_target_property_identifier)
                     {
-                        self.collectAndCheckCatchBindings(prop.data.binary.right, names, count);
+                        try self.collectAndCheckCatchBindings(prop.data.binary.right, names, count);
                     } else {
-                        self.collectAndCheckCatchBindings(prop_idx, names, count);
+                        try self.collectAndCheckCatchBindings(prop_idx, names, count);
                     }
                 }
             },
             .assignment_pattern, .assignment_target_with_default => {
                 // binary: { left = pattern, right = default }
-                self.collectAndCheckCatchBindings(node.data.binary.left, names, count);
+                try self.collectAndCheckCatchBindings(node.data.binary.left, names, count);
             },
             .rest_element => {
-                self.collectAndCheckCatchBindings(node.data.unary.operand, names, count);
+                try self.collectAndCheckCatchBindings(node.data.unary.operand, names, count);
             },
             else => {},
         }
     }
 
     /// Check if any lexically-declared name in the catch body block conflicts with catch parameter names.
-    fn checkCatchBodyConflicts(self: *SemanticAnalyzer, catch_names: []const Span) void {
+    fn checkCatchBodyConflicts(self: *SemanticAnalyzer, catch_names: []const Span) AllocError!void {
         // Check symbols declared in current scope against catch parameter names
         for (self.symbols.items) |sym| {
             if (@intFromEnum(sym.scope_id) != @intFromEnum(self.current_scope)) continue;
@@ -1396,14 +1398,14 @@ pub const SemanticAnalyzer = struct {
             for (catch_names) |catch_span| {
                 const catch_name = self.ast.source[catch_span.start..catch_span.end];
                 if (std.mem.eql(u8, sym_name, catch_name)) {
-                    self.addError(sym.declaration_span, sym_name);
+                    try self.addError(sym.declaration_span, sym_name);
                     return;
                 }
             }
         }
     }
 
-    fn visitSwitchCase(self: *SemanticAnalyzer, node: Node) void {
+    fn visitSwitchCase(self: *SemanticAnalyzer, node: Node) AllocError!void {
         // extra: [test_expr, body.start, body.len]
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
@@ -1411,21 +1413,21 @@ pub const SemanticAnalyzer = struct {
         // test_expr은 순회 불필요 (리터럴/식별자)
         const body_start = extras[extra_start + 1];
         const body_len = extras[extra_start + 2];
-        self.visitNodeList(.{ .start = body_start, .len = body_len });
+        try self.visitNodeList(.{ .start = body_start, .len = body_len });
     }
 
-    fn visitTryStatement(self: *SemanticAnalyzer, node: Node) void {
+    fn visitTryStatement(self: *SemanticAnalyzer, node: Node) AllocError!void {
         // ternary: { a = try_block, b = catch_clause, c = finally_block }
-        self.visitNode(node.data.ternary.a);
-        self.visitNode(node.data.ternary.b);
-        self.visitNode(node.data.ternary.c);
+        try self.visitNode(node.data.ternary.a);
+        try self.visitNode(node.data.ternary.b);
+        try self.visitNode(node.data.ternary.c);
     }
 
     // ================================================================
     // Visitor 구현 — 선언 노드
     // ================================================================
 
-    fn visitVariableDeclaration(self: *SemanticAnalyzer, node: Node) void {
+    fn visitVariableDeclaration(self: *SemanticAnalyzer, node: Node) AllocError!void {
         // extra: [kind_flags, declarators.start, declarators.len]
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
@@ -1455,14 +1457,14 @@ pub const SemanticAnalyzer = struct {
                 const binding_idx: NodeIndex = @enumFromInt(decl_extras[decl_extra]);
                 const init_idx: NodeIndex = @enumFromInt(decl_extras[decl_extra + 2]);
 
-                self.registerBinding(binding_idx, sym_kind);
+                try self.registerBinding(binding_idx, sym_kind);
                 // init 표현식도 순회 (내부에 함수 표현식 등이 있을 수 있음)
-                self.visitNode(init_idx);
+                try self.visitNode(init_idx);
             }
         }
     }
 
-    fn visitImportDeclaration(self: *SemanticAnalyzer, node: Node) void {
+    fn visitImportDeclaration(self: *SemanticAnalyzer, node: Node) AllocError!void {
         // side-effect import: flags=1 (import "module") — 바인딩 없음
         if (node.data.unary.flags == 1) return;
 
@@ -1486,21 +1488,21 @@ pub const SemanticAnalyzer = struct {
             switch (spec_node.tag) {
                 .import_default_specifier => {
                     // string_ref — span 자체가 식별자 이름
-                    self.checkStrictBindingName(spec_node.span);
-                    self.declareSymbol(spec_node.span, .import_binding, spec_node.span);
+                    try self.checkStrictBindingName(spec_node.span);
+                    try self.declareSymbol(spec_node.span, .import_binding, spec_node.span);
                 },
                 .import_namespace_specifier => {
                     // string_ref — span 자체가 식별자 이름
-                    self.checkStrictBindingName(spec_node.span);
-                    self.declareSymbol(spec_node.span, .import_binding, spec_node.span);
+                    try self.checkStrictBindingName(spec_node.span);
+                    try self.declareSymbol(spec_node.span, .import_binding, spec_node.span);
                 },
                 .import_specifier => {
                     // binary: { left = imported, right = local } — local이 바인딩
                     const local_idx = spec_node.data.binary.right;
                     if (!local_idx.isNone() and @intFromEnum(local_idx) < self.ast.nodes.items.len) {
                         const local_node = self.ast.getNode(local_idx);
-                        self.checkStrictBindingName(local_node.span);
-                        self.declareSymbol(local_node.span, .import_binding, spec_node.span);
+                        try self.checkStrictBindingName(local_node.span);
+                        try self.declareSymbol(local_node.span, .import_binding, spec_node.span);
                     }
                 },
                 else => {},
@@ -1510,19 +1512,19 @@ pub const SemanticAnalyzer = struct {
 
     /// strict mode에서 eval/arguments를 바인딩 이름으로 사용할 수 없다.
     /// module code는 항상 strict mode.
-    fn checkStrictBindingName(self: *SemanticAnalyzer, span: Span) void {
+    fn checkStrictBindingName(self: *SemanticAnalyzer, span: Span) AllocError!void {
         if (!self.isCurrentStrict()) return;
         const name = self.ast.source[span.start..span.end];
         if (std.mem.eql(u8, name, "eval") or std.mem.eql(u8, name, "arguments")) {
-            self.addErrorMsg(span, std.fmt.allocPrint(
+            try self.addErrorMsg(span, try std.fmt.allocPrint(
                 self.allocator,
                 "'{s}' cannot be used as a binding identifier in strict mode",
                 .{name},
-            ) catch @panic("OOM: strict_binding"));
+            ));
         }
     }
 
-    fn visitExportNamedDeclaration(self: *SemanticAnalyzer, node: Node) void {
+    fn visitExportNamedDeclaration(self: *SemanticAnalyzer, node: Node) AllocError!void {
         // extra: [declaration, specifiers_start, specifiers_len, source]
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
@@ -1550,7 +1552,7 @@ pub const SemanticAnalyzer = struct {
                             name[1 .. name.len - 1]
                         else
                             name;
-                        self.registerExportedName(effective_name, exported_node.span);
+                        try self.registerExportedName(effective_name, exported_node.span);
                     }
 
                     // source 없는 export { x } — local 바인딩이 존재하는지 검증 필요
@@ -1560,7 +1562,7 @@ pub const SemanticAnalyzer = struct {
                             const local_node = self.ast.getNode(local_idx);
                             if (local_node.tag != .string_literal) {
                                 const local_name = self.ast.source[local_node.span.start..local_node.span.end];
-                                self.checkExportBinding(local_name, local_node.span);
+                                try self.checkExportBinding(local_name, local_node.span);
                             }
                         }
                     }
@@ -1572,21 +1574,21 @@ pub const SemanticAnalyzer = struct {
         if (!decl_idx.isNone() and @intFromEnum(decl_idx) < self.ast.nodes.items.len) {
             const decl_node = self.ast.getNode(decl_idx);
             // 선언에서 내보내는 이름 추적
-            self.collectExportedDeclNames(decl_node);
+            try self.collectExportedDeclNames(decl_node);
         }
 
-        self.visitNode(decl_idx);
+        try self.visitNode(decl_idx);
     }
 
     /// export default 시 "default" 이름을 등록한다.
-    fn visitExportDefaultDeclaration(self: *SemanticAnalyzer, node: Node) void {
-        self.registerExportedName("default", node.span);
+    fn visitExportDefaultDeclaration(self: *SemanticAnalyzer, node: Node) AllocError!void {
+        try self.registerExportedName("default", node.span);
         // 내부 선언 순회
-        self.visitNode(node.data.unary.operand);
+        try self.visitNode(node.data.unary.operand);
     }
 
     /// export * as name — name을 등록한다.
-    fn visitExportAllDeclaration(self: *SemanticAnalyzer, node: Node) void {
+    fn visitExportAllDeclaration(self: *SemanticAnalyzer, node: Node) AllocError!void {
         // binary: { left = exported_name, right = source }
         const name_idx = node.data.binary.left;
         if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
@@ -1596,12 +1598,12 @@ pub const SemanticAnalyzer = struct {
                 name[1 .. name.len - 1]
             else
                 name;
-            self.registerExportedName(effective_name, name_node.span);
+            try self.registerExportedName(effective_name, name_node.span);
         }
     }
 
     /// 선언에서 내보내는 이름을 추적한다 (export var x, export function f, etc.)
-    fn collectExportedDeclNames(self: *SemanticAnalyzer, node: Node) void {
+    fn collectExportedDeclNames(self: *SemanticAnalyzer, node: Node) AllocError!void {
         switch (node.tag) {
             .variable_declaration => {
                 // variable_declaration → declarator → binding name
@@ -1617,7 +1619,7 @@ pub const SemanticAnalyzer = struct {
                     const decl_node = self.ast.getNode(decl_idx);
                     if (decl_node.tag == .variable_declarator) {
                         const binding_idx: NodeIndex = @enumFromInt(extras[decl_node.data.extra]);
-                        self.collectBindingExportNames(binding_idx);
+                        try self.collectBindingExportNames(binding_idx);
                     }
                 }
             },
@@ -1628,7 +1630,7 @@ pub const SemanticAnalyzer = struct {
                 if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
                     const name_node = self.ast.getNode(name_idx);
                     const name = self.ast.source[name_node.span.start..name_node.span.end];
-                    self.registerExportedName(name, name_node.span);
+                    try self.registerExportedName(name, name_node.span);
                 }
             },
             .class_declaration => {
@@ -1638,7 +1640,7 @@ pub const SemanticAnalyzer = struct {
                 if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
                     const name_node = self.ast.getNode(name_idx);
                     const name = self.ast.source[name_node.span.start..name_node.span.end];
-                    self.registerExportedName(name, name_node.span);
+                    try self.registerExportedName(name, name_node.span);
                 }
             },
             else => {},
@@ -1646,43 +1648,43 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// 바인딩 패턴에서 내보내는 이름을 수집한다.
-    fn collectBindingExportNames(self: *SemanticAnalyzer, idx: NodeIndex) void {
+    fn collectBindingExportNames(self: *SemanticAnalyzer, idx: NodeIndex) AllocError!void {
         if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
         const node = self.ast.getNode(idx);
         if (node.tag == .binding_identifier) {
             const name = self.ast.source[node.span.start..node.span.end];
-            self.registerExportedName(name, node.span);
+            try self.registerExportedName(name, node.span);
         }
     }
 
     /// 내보낸 이름을 등록한다. 중복이면 에러.
-    fn registerExportedName(self: *SemanticAnalyzer, name: []const u8, span: Span) void {
+    fn registerExportedName(self: *SemanticAnalyzer, name: []const u8, span: Span) AllocError!void {
         if (!self.is_module) return;
         if (self.exported_names.get(name)) |_| {
-            self.addErrorMsg(span, std.fmt.allocPrint(
+            try self.addErrorMsg(span, try std.fmt.allocPrint(
                 self.allocator,
                 "Duplicate export name '{s}'",
                 .{name},
-            ) catch @panic("OOM: duplicate_export"));
+            ));
         } else {
-            self.exported_names.put(name, span) catch @panic("OOM: exported_names");
+            try self.exported_names.put(name, span);
         }
     }
 
     /// export { x } (without from) — x가 선언된 바인딩인지 검증한다.
     /// module scope에서 VarDeclaredNames + LexicallyDeclaredNames에 없으면 에러.
-    fn checkExportBinding(self: *SemanticAnalyzer, name: []const u8, span: Span) void {
+    fn checkExportBinding(self: *SemanticAnalyzer, name: []const u8, span: Span) AllocError!void {
         // 현재 module scope에서 해당 이름의 심볼을 찾는다
         for (self.symbols.items) |sym| {
             const sym_name = self.ast.source[sym.name.start..sym.name.end];
             if (std.mem.eql(u8, sym_name, name)) return; // 존재
         }
         // 찾지 못함 → 에러
-        self.addErrorMsg(span, std.fmt.allocPrint(
+        try self.addErrorMsg(span, try std.fmt.allocPrint(
             self.allocator,
             "Export '{s}' is not defined",
             .{name},
-        ) catch @panic("OOM: undefined_export"));
+        ));
     }
 
     // ================================================================
@@ -1691,68 +1693,68 @@ pub const SemanticAnalyzer = struct {
 
     /// 바인딩 패턴에서 이름을 추출하여 심볼로 등록한다.
     /// 단순 식별자, 배열 패턴, 객체 패턴을 재귀적으로 처리.
-    fn registerBinding(self: *SemanticAnalyzer, idx: NodeIndex, kind: SymbolKind) void {
+    fn registerBinding(self: *SemanticAnalyzer, idx: NodeIndex, kind: SymbolKind) AllocError!void {
         if (idx.isNone()) return;
         const node = self.ast.getNode(idx);
         switch (node.tag) {
             .binding_identifier, .assignment_target_identifier => {
-                self.declareSymbol(node.span, kind, node.span);
+                try self.declareSymbol(node.span, kind, node.span);
             },
             .array_pattern, .array_assignment_target => {
                 // list of elements
-                self.registerBindingList(node.data.list, kind);
+                try self.registerBindingList(node.data.list, kind);
             },
             .object_pattern, .object_assignment_target => {
                 // list of binding_property
-                self.registerBindingList(node.data.list, kind);
+                try self.registerBindingList(node.data.list, kind);
             },
             .binding_property,
             .assignment_target_property_identifier,
             .assignment_target_property_property,
             => {
                 // binary: { left = key, right = value }
-                self.registerBinding(node.data.binary.right, kind);
+                try self.registerBinding(node.data.binary.right, kind);
             },
             .assignment_pattern, .assignment_target_with_default => {
                 // binary: { left = binding, right = default_value }
-                self.registerBinding(node.data.binary.left, kind);
+                try self.registerBinding(node.data.binary.left, kind);
             },
             .binding_rest_element, .rest_element, .assignment_target_rest => {
                 // unary: { operand = binding }
-                self.registerBinding(node.data.unary.operand, kind);
+                try self.registerBinding(node.data.unary.operand, kind);
             },
             else => {},
         }
     }
 
-    fn registerBindingList(self: *SemanticAnalyzer, list: NodeList, kind: SymbolKind) void {
+    fn registerBindingList(self: *SemanticAnalyzer, list: NodeList, kind: SymbolKind) AllocError!void {
         if (list.len == 0) return;
         if (list.start + list.len > self.ast.extra_data.items.len) return;
         const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
         for (indices) |raw_idx| {
-            self.registerBinding(@enumFromInt(raw_idx), kind);
+            try self.registerBinding(@enumFromInt(raw_idx), kind);
         }
     }
 
     /// 함수 파라미터를 현재 스코프에 등록한다.
-    fn registerParams(self: *SemanticAnalyzer, params_start: u32, params_len: u32) void {
+    fn registerParams(self: *SemanticAnalyzer, params_start: u32, params_len: u32) AllocError!void {
         if (params_len == 0) return;
         if (params_start + params_len > self.ast.extra_data.items.len) return;
         const param_indices = self.ast.extra_data.items[params_start .. params_start + params_len];
         for (param_indices) |raw_idx| {
-            self.registerBinding(@enumFromInt(raw_idx), .parameter);
+            try self.registerBinding(@enumFromInt(raw_idx), .parameter);
         }
     }
 
     /// 함수 본문 내부를 순회한다 (block_statement의 스코프 중복 생성 방지).
-    fn visitFunctionBodyInner(self: *SemanticAnalyzer, body_idx: NodeIndex) void {
+    fn visitFunctionBodyInner(self: *SemanticAnalyzer, body_idx: NodeIndex) AllocError!void {
         if (body_idx.isNone()) return;
         const body_node = self.ast.getNode(body_idx);
         if (body_node.tag == .block_statement) {
             // function 스코프가 이미 생성되었으므로 block_statement의 내용만 순회
-            self.visitNodeList(body_node.data.list);
+            try self.visitNodeList(body_node.data.list);
         } else {
-            self.visitNode(body_idx);
+            try self.visitNode(body_idx);
         }
     }
 };
@@ -1773,7 +1775,7 @@ test "SemanticAnalyzer: var declaration creates symbol" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.symbols.items.len == 1);
     try std.testing.expectEqual(SymbolKind.variable_var, ana.symbols.items[0].kind);
@@ -1789,7 +1791,7 @@ test "SemanticAnalyzer: let redeclaration is error" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len > 0);
 }
@@ -1803,7 +1805,7 @@ test "SemanticAnalyzer: var redeclaration is allowed" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len == 0);
 }
@@ -1817,7 +1819,7 @@ test "SemanticAnalyzer: function declaration creates symbol" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.symbols.items.len >= 1);
     try std.testing.expect(ana.errors.items.len == 0);
@@ -1832,7 +1834,7 @@ test "SemanticAnalyzer: scopes are created" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     // global + block = 최소 2개 스코프
     try std.testing.expect(ana.scopes.items.len >= 2);
@@ -1848,7 +1850,7 @@ test "SemanticAnalyzer: let and var conflict is error" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len > 0);
 }
@@ -1862,7 +1864,7 @@ test "SemanticAnalyzer: const redeclaration is error" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len > 0);
 }
@@ -1880,7 +1882,7 @@ test "SemanticAnalyzer: declared private name is valid" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len == 0);
 }
@@ -1894,7 +1896,7 @@ test "SemanticAnalyzer: undeclared private name is error" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len > 0);
 }
@@ -1908,7 +1910,7 @@ test "SemanticAnalyzer: private name outside class is error" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len > 0);
 }
@@ -1922,7 +1924,7 @@ test "SemanticAnalyzer: private method is valid" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len == 0);
 }
@@ -1937,7 +1939,7 @@ test "SemanticAnalyzer: nested class private name" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     // #y는 어디에도 선언 안 됨 → 에러
     try std.testing.expect(ana.errors.items.len > 0);
@@ -1952,7 +1954,7 @@ test "SemanticAnalyzer: inner class can access outer private name" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     // #x는 Outer에 선언됨 → 에러 없음
     try std.testing.expect(ana.errors.items.len == 0);
@@ -1968,7 +1970,7 @@ test "SemanticAnalyzer: duplicate private method is error" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len > 0);
 }
@@ -1983,7 +1985,7 @@ test "SemanticAnalyzer: duplicate private field is error" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len > 0);
 }
@@ -1998,7 +2000,7 @@ test "SemanticAnalyzer: private getter+setter pair is valid" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len == 0);
 }
@@ -2013,7 +2015,7 @@ test "SemanticAnalyzer: private method+getter duplicate is error" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len > 0);
 }
@@ -2032,7 +2034,7 @@ test "SemanticAnalyzer: private name in object literal method is error" {
     if (parser.errors.items.len == 0) {
         var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
         defer ana.deinit();
-        ana.analyze();
+        try ana.analyze();
         semantic_errors = ana.errors.items.len;
     }
     const total_errors = parser.errors.items.len + semantic_errors;
@@ -2049,7 +2051,7 @@ test "SemanticAnalyzer: call expression args are visited" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     // 에러 없이 분석 완료 (스코프: global + function)
     try std.testing.expect(ana.errors.items.len == 0);
@@ -2066,7 +2068,7 @@ test "SemanticAnalyzer: template literal expressions are visited" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     // 에러 없이 분석 완료
     try std.testing.expect(ana.errors.items.len == 0);
@@ -2087,7 +2089,7 @@ test "SemanticAnalyzer: var in nested block is same function scope" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len == 0);
 }
@@ -2103,7 +2105,7 @@ test "SemanticAnalyzer: let in nested block is separate scope" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len == 0);
 }
@@ -2119,7 +2121,7 @@ test "SemanticAnalyzer: var hoisting in function" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len == 0);
 }
@@ -2139,7 +2141,7 @@ test "SemanticAnalyzer: same let name in different functions is valid" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len == 0);
 }
@@ -2155,7 +2157,7 @@ test "SemanticAnalyzer: parameter and let redeclaration is error" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len > 0);
 }
@@ -2171,7 +2173,7 @@ test "SemanticAnalyzer: parameter and var redeclaration is valid" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len == 0);
 }
@@ -2191,7 +2193,7 @@ test "SemanticAnalyzer: for loop with let is valid" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len == 0);
 }
@@ -2207,7 +2209,7 @@ test "SemanticAnalyzer: same let name in separate for loops is valid" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len == 0);
 }
@@ -2227,7 +2229,7 @@ test "SemanticAnalyzer: import binding redeclared with let is error" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len > 0);
 }
@@ -2243,7 +2245,7 @@ test "SemanticAnalyzer: import binding redeclared with var is error" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len > 0);
 }
@@ -2263,7 +2265,7 @@ test "SemanticAnalyzer: catch binding shadowed by let is error" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len > 0);
 }
@@ -2279,7 +2281,7 @@ test "SemanticAnalyzer: catch binding shadowed by var is valid" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len == 0);
 }
@@ -2299,7 +2301,7 @@ test "SemanticAnalyzer: duplicate let in switch block is error" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len > 0);
 }
@@ -2315,7 +2317,7 @@ test "SemanticAnalyzer: duplicate var in switch block is valid" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len == 0);
 }
@@ -2335,7 +2337,7 @@ test "SemanticAnalyzer: let inside generator is valid" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len == 0);
 }
@@ -2351,7 +2353,7 @@ test "SemanticAnalyzer: let inside async function is valid" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len == 0);
 }
@@ -2367,7 +2369,7 @@ test "SemanticAnalyzer: generator duplicate params is error" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len > 0);
 }
@@ -2383,7 +2385,7 @@ test "SemanticAnalyzer: async function duplicate params is error" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len > 0);
 }
@@ -2403,7 +2405,7 @@ test "SemanticAnalyzer: named class expression is valid" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len == 0);
 }
@@ -2419,7 +2421,7 @@ test "SemanticAnalyzer: static and instance private field with same name is erro
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len > 0);
 }
@@ -2437,7 +2439,7 @@ test "SemanticAnalyzer: errors have kind=semantic" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len > 0);
     try std.testing.expectEqual(Diagnostic.Kind.semantic, ana.errors.items[0].kind);
@@ -2452,7 +2454,7 @@ test "SemanticAnalyzer: redeclaration error message contains identifier name" {
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len > 0);
     try std.testing.expect(std.mem.indexOf(u8, ana.errors.items[0].message, "foo") != null);
@@ -2469,7 +2471,7 @@ test "SemanticAnalyzer: duplicate export name is semantic error" {
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
     ana.is_module = true;
-    ana.analyze();
+    try ana.analyze();
 
     // 재선언 에러 또는 중복 export 에러가 있어야 함
     try std.testing.expect(ana.errors.items.len > 0);
@@ -2492,7 +2494,7 @@ test "SemanticAnalyzer: valid code has no semantic errors" {
 
         var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
         defer ana.deinit();
-        ana.analyze();
+        try ana.analyze();
 
         try std.testing.expectEqual(@as(usize, 0), ana.errors.items.len);
     }
@@ -2513,7 +2515,7 @@ fn getRefCounts(source: []const u8, target_name: []const u8, out: *[8]u32) usize
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    ana.analyze() catch return 0;
 
     var count: usize = 0;
     for (ana.symbols.items) |sym| {
