@@ -167,15 +167,23 @@ Phase B1: 기반                    Phase B2: 핵심           Phase B3: 고급
                                    └ 증분 재빌드             └ Hermes 타겟 최적화
 ```
 
-##### React Native 지원 (Rollipop 방식 — Metro 레거시 탈피)
-- **참고**: Rollipop (bungae/reference/rollipop) — Rolldown 위에서 Metro를 대체하는 프로젝트
-- **방향**: Metro의 `__d` 래핑/Haste/의존성 맵 등 레거시를 버리고 표준 번들링으로 RN 지원
-- **표준 모듈 해석**: Haste 대신 Node.js 표준 + Yarn PnP 호환
-- **표준 번들링**: `__d` 래핑 대신 스코프 호이스팅 (웹과 동일)
-- **플랫폼 확장자**: `Button.ios.js` / `Button.android.js` — resolver 플러그인으로 처리
-- **글로벌 주입**: `__DEV__`, `Platform.OS` 등 — define 치환 (이미 ZTS에 구현됨)
-- **Hermes 타겟**: `.hbc` 바이트코드 출력 — Hermes 컴파일러와 C ABI 연동
-- **증분 빌드**: DeltaBundler 개념을 모듈 그래프 + watch 기반으로 재구현
+##### React Native 지원 (Rollipop/bungae 방식 — Metro 레거시 불필요)
+- **참고**: Rollipop (bungae/reference/rollipop), bungae/oxc-bundler — Rolldown 위에서 Metro를 대체
+- **불필요한 Metro 레거시** (구현하지 않음):
+  - `__d` 래핑 — 표준 스코프 호이스팅으로 대체
+  - Haste 모듈 시스템 — Node.js 표준 해석으로 대체
+  - 의존성 맵 (숫자 ID) — 표준 import로 대체
+  - RAM 번들 — code splitting으로 대체
+- **필요한 RN 특화 기능** (플러그인으로 구현):
+  - `platformResolverPlugin` — `.ios.js`/`.android.js` 확장자 + mainFields: `['react-native', 'browser', 'main']`
+  - `flowStripPlugin` — Flow 타입 제거 (Hermes 소스에서 C ABI 활용 가능)
+  - `preludePlugin` — polyfill/InitializeCore 주입
+  - `assetPlugin` — 이미지 등 에셋 처리
+  - `hermesCompatPlugin` — Hermes 호환 변환
+  - `react-refresh` — HMR (React Fast Refresh)
+  - 글로벌 주입: `__DEV__`, `Platform.OS` 등 — define 치환 (이미 ZTS에 구현됨)
+- **핵심 설정**: `strictExecutionOrder: true` (ESM 실행 순서 보장 — InitializeCore → react → react-native → App)
+- **Hermes 바이트코드**: `.hbc` 출력 — Hermes 컴파일러와 C ABI 연동
 
 ##### ESM 실행 순서 보장
 - 스코프 호이스팅 시 원본 ESM의 top-level 코드 실행 순서가 바뀌면 안 됨
