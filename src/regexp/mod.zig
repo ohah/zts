@@ -19,19 +19,25 @@
 
 pub const flags = @import("flags.zig");
 pub const diagnostics = @import("diagnostics.zig");
+pub const parser = @import("parser.zig");
 
 /// 정규식 리터럴을 검증한다.
 /// pattern: `/` 사이의 패턴 텍스트 (예: "\\d{4}")
 /// flag_text: 닫는 `/` 뒤의 플래그 텍스트 (예: "gi")
 /// 에러가 있으면 에러 메시지를 반환, 없으면 null.
-pub fn validate(pattern: []const u8, flag_text: []const u8) ?diagnostics.Error {
+pub fn validate(pattern: []const u8, flag_text: []const u8) ?[]const u8 {
     // 1. 플래그 검증
-    if (flags.validate(flag_text)) |err| {
-        return err;
+    if (flags.validate(flag_text) != null) {
+        return "invalid regular expression flags";
     }
 
-    // 2. 패턴 검증 (PR 2에서 구현)
-    _ = pattern;
+    // 2. 패턴 검증
+    const parsed_flags = flags.parse(flag_text);
+    const Validator = parser.PatternParser(false);
+    var validator = Validator.init(pattern, parsed_flags);
+    if (validator.validate()) |err| {
+        return err;
+    }
 
     return null;
 }
@@ -39,4 +45,5 @@ pub fn validate(pattern: []const u8, flag_text: []const u8) ?diagnostics.Error {
 test {
     _ = flags;
     _ = diagnostics;
+    _ = parser;
 }
