@@ -46,7 +46,6 @@ pub const Parser = struct {
     ast: Ast,
 
     /// 수집된 에러 목록 (D039: 다중 에러)
-    /// 수집된 에러 목록 (D039: 다중 에러)
     errors: std.ArrayList(Diagnostic),
 
     /// 재사용 가능한 임시 버퍼 (리스트 수집용). 매 사용 시 clearRetainingCapacity.
@@ -383,9 +382,9 @@ pub const Parser = struct {
         if (token_mod.keywords.get(text)) |kw| {
             // yield/await는 context-dependent keywords — checkYieldAwaitUse에서 별도 검증.
             if (kw == .kw_yield or kw == .kw_await) return;
-            if (kw.isReservedKeyword() or kw.isLiteralKeyword()) {
-                self.addError(span, "keywords cannot contain escape characters");
-            } else if (self.is_strict_mode and kw.isStrictModeReserved()) {
+            if (kw.isReservedKeyword() or kw.isLiteralKeyword() or
+                (self.is_strict_mode and kw.isStrictModeReserved()))
+            {
                 self.addError(span, "keywords cannot contain escape characters");
             }
         }
@@ -875,8 +874,10 @@ pub const Parser = struct {
             }
         } else if (self.current() == .escaped_strict_reserved) {
             // escaped strict reserved는 strict mode에서 금지
+            // yield/await 컨텍스트 에러가 우선 — 이미 에러가 추가되면 중복 방지
+            const err_count = self.errors.items.len;
             self.checkYieldAwaitUse(self.currentSpan(), "identifier");
-            if (self.is_strict_mode) {
+            if (self.errors.items.len == err_count and self.is_strict_mode) {
                 self.addError(self.currentSpan(), "keywords cannot contain escape characters");
             }
         }
