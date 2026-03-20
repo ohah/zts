@@ -58,6 +58,8 @@ references/                 # 레퍼런스 프로젝트 (.gitignore, 로컬만)
 - comptime으로 JS/JSX/TS/TSX/Flow 파서 각각 생성 (런타임 분기 없음)
 - 에러 복구 지원 (첫 에러에서 멈추지 않음)
 - Test262로 정합성 검증
+- **Context**: packed struct(u8) — ECMAScript 문법 파라미터 8개만 (allow_in, in_generator, in_async, in_function, is_top_level, in_decorator, in_ambient, disallow_conditional_types). 나머지 파서 상태는 개별 bool 필드. SavedState로 함수 경계 save/restore.
+- **Cover Grammar**: expression → assignment target 노드 변환. setTag로 24B 노드의 태그만 교체 (새 노드 할당 불필요). 7개 assignment target 태그 (identifier, array, object, property_identifier, property_property, with_default, rest)
 
 ### TypeScript/Flow Handling (D002, D005, D024)
 - 타입 체크 안 함 (스트리핑만)
@@ -180,6 +182,7 @@ main ← feature/lexer-token-enum
     - ✅ strict mode legacy octal 검증 (숫자 + 문자열 escape) — PR #165
     - ✅ 중복 파라미터 검증 (arrow/method/async/generator/strict) — PR #166
     - ✅ ?? + &&/|| 혼용 금지 — PR #167
+    - ✅ Context u8 분리 + cover grammar 변환 — PR #168~#174
     - ⬜ 예약어/contextual keyword 검증 (escaped keyword 등)
 
 ### 트랜스포머 구현 순서 (PR 단위) — Phase 3 진행 중
