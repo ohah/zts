@@ -10,10 +10,12 @@ pub const semantic = @import("semantic/mod.zig");
 pub const transformer = @import("transformer/mod.zig");
 pub const codegen = @import("codegen/mod.zig");
 pub const config = @import("config.zig");
+pub const regexp = @import("regexp/mod.zig");
 pub const test262 = @import("test262/mod.zig");
 
 test {
     _ = lexer;
+    _ = regexp;
     _ = semantic;
     _ = transformer;
     _ = codegen;
