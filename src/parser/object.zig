@@ -171,9 +171,7 @@ pub fn parseObjectMethodBody(self: *Parser, start: u32, key: NodeIndex, flags: u
     while (self.current() != .r_paren and self.current() != .eof) {
         const param = try self.parseBindingIdentifier();
         try self.scratch.append(param);
-        if (!param.isNone() and self.ast.getNode(param).tag == .spread_element and self.current() == .comma) {
-            self.addError(self.currentSpan(), "Rest parameter must be last formal parameter");
-        }
+        self.checkRestParameterLast(param);
         if (!self.eat(.comma)) break;
     }
     self.expect(.r_paren);

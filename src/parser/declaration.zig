@@ -50,9 +50,7 @@ fn parseFunctionDeclarationWithFlags(self: *Parser, extra_flags: u32) ParseError
     while (self.current() != .r_paren and self.current() != .eof) {
         const param = try self.parseBindingIdentifier();
         try self.scratch.append(param);
-        if (!param.isNone() and self.ast.getNode(param).tag == .spread_element and self.current() == .comma) {
-            self.addError(self.currentSpan(), "Rest parameter must be last formal parameter");
-        }
+        self.checkRestParameterLast(param);
         if (!self.eat(.comma)) break;
     }
     self.expect(.r_paren);
@@ -146,9 +144,7 @@ fn parseFunctionDeclarationWithFlagsOptionalName(self: *Parser, extra_flags: u32
     while (self.current() != .r_paren and self.current() != .eof) {
         const param = try self.parseBindingIdentifier();
         try self.scratch.append(param);
-        if (!param.isNone() and self.ast.getNode(param).tag == .spread_element and self.current() == .comma) {
-            self.addError(self.currentSpan(), "Rest parameter must be last formal parameter");
-        }
+        self.checkRestParameterLast(param);
         if (!self.eat(.comma)) break;
     }
     self.expect(.r_paren);
@@ -215,9 +211,7 @@ pub fn parseFunctionExpressionWithFlags(self: *Parser, extra_flags: u32) ParseEr
     while (self.current() != .r_paren and self.current() != .eof) {
         const param = try self.parseBindingIdentifier();
         try self.scratch.append(param);
-        if (!param.isNone() and self.ast.getNode(param).tag == .spread_element and self.current() == .comma) {
-            self.addError(self.currentSpan(), "Rest parameter must be last formal parameter");
-        }
+        self.checkRestParameterLast(param);
         if (!self.eat(.comma)) break;
     }
     self.expect(.r_paren);
@@ -521,9 +515,7 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         while (self.current() != .r_paren and self.current() != .eof) {
             const param = try self.parseBindingIdentifier();
             try self.scratch.append(param);
-            if (!param.isNone() and self.ast.getNode(param).tag == .spread_element and self.current() == .comma) {
-                self.addError(self.currentSpan(), "Rest parameter must be last formal parameter");
-            }
+            self.checkRestParameterLast(param);
             if (!self.eat(.comma)) break;
         }
         self.expect(.r_paren);
