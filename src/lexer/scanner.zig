@@ -1105,6 +1105,8 @@ pub const Scanner = struct {
                     self.current += 1;
                     return self.scanBinaryLiteral();
                 },
+                // 0_ → numeric separator in leading zero literal is invalid
+                '_' => return .syntax_error,
                 else => {},
             }
         }
