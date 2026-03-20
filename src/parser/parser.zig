@@ -262,6 +262,9 @@ pub const Parser = struct {
     }
 
     const rest_init_error = "rest element may not have a default initializer";
+    /// spread_element의 unary.flags에 설정하여 trailing comma를 표시.
+    /// parseArrayExpression에서 마킹, coverArrayExpressionToTarget에서 검증.
+    const spread_trailing_comma: u16 = 0x01;
 
     /// binding pattern에서 rest element가 assignment_pattern(= initializer)이면 에러.
     /// parseArrayPattern, parseObjectPattern, parseBindingPattern의 rest 처리에서 공통 사용.
@@ -419,8 +422,8 @@ pub const Parser = struct {
                         self.addError(elem.span, "rest element must be last element");
                     }
                     // rest 뒤 trailing comma 금지: [...x,] → SyntaxError
-                    // parseArrayExpression에서 flags 0x01로 마킹됨
-                    if (elem.data.unary.flags & 0x01 != 0) {
+                    // parseArrayExpression에서 spread_trailing_comma로 마킹됨
+                    if ((elem.data.unary.flags & spread_trailing_comma) != 0) {
                         self.addError(elem.span, "rest element may not have a trailing comma");
                     }
                     self.coverSpreadElementToTarget(elem_idx, elem.data.unary.operand);
@@ -3649,10 +3652,10 @@ pub const Parser = struct {
             const elem = try self.parseSpreadOrAssignment();
             try elements.append(elem);
             if (!self.eat(.comma)) break;
-            // spread 뒤에 trailing comma가 있고 바로 ]가 오면 flags에 0x01을 설정.
+            // spread 뒤에 trailing comma가 있고 바로 ]가 오면 플래그를 설정.
             // 이 정보는 coverArrayExpressionToTarget에서 rest trailing comma 에러에 사용된다.
             if (!elem.isNone() and self.ast.getNode(elem).tag == .spread_element and self.current() == .r_bracket) {
-                self.ast.nodes.items[@intFromEnum(elem)].data.unary.flags = 0x01;
+                self.ast.nodes.items[@intFromEnum(elem)].data.unary.flags = spread_trailing_comma;
             }
         }
 
