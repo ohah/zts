@@ -60,6 +60,8 @@ pub fn parse(
     allocator: std.mem.Allocator,
 ) ?ast.RegExpAst {
     // 1. 플래그 검증
+    // 반환 타입이 ?RegExpAst이므로 에러 메시지는 전달할 수 없음.
+    // 구체적 에러가 필요하면 flags.validate()를 직접 호출.
     if (flags.validate(flag_text) != null) {
         return null;
     }
