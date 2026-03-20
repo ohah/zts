@@ -1,17 +1,17 @@
 //! Expression 파싱
 //!
 //! 모든 표현식 타입(assignment, binary, unary, call, member access 등)과
-//! 바인딩 패턴(destructuring), 프로퍼티 키, 리터럴을 파싱하는 함수들.
-//! oxc의 js/expression.rs + js/object.rs + js/binding.rs + js/arrow.rs에 대응.
+//! 프로퍼티 키, 리터럴을 파싱하는 함수들.
+//! 바인딩 패턴(destructuring)은 binding.zig, 객체 리터럴은 object.zig로 분리됨.
+//! oxc의 js/expression.rs + js/arrow.rs에 대응.
 //!
 //! 참고:
 //! - references/oxc/crates/oxc_parser/src/js/expression.rs
-//! - references/oxc/crates/oxc_parser/src/js/object.rs
-//! - references/oxc/crates/oxc_parser/src/js/binding.rs
+//! - object.zig (js/object.rs 대응)
+//! - binding.zig (js/binding.rs 대응)
 
 const std = @import("std");
 const ast_mod = @import("ast.zig");
-const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
 const Tag = Node.Tag;
 const NodeIndex = ast_mod.NodeIndex;
@@ -30,7 +30,7 @@ const ParseError2 = @import("parser.zig").ParseError2;
 /// arrow function 파라미터의 cover grammar: `(a, ...b) => {}`.
 /// 일반 expression 위치에서 `...`는 invalid이지만, arrow 파라미터로 재해석될 수 있으므로
 /// 여기서 parseSpreadOrAssignment을 사용하여 spread_element 노드를 생성한다.
-pub fn parseExpressionOrRest(self: *Parser) ParseError2!NodeIndex {
+fn parseExpressionOrRest(self: *Parser) ParseError2!NodeIndex {
     const first = try parseSpreadOrAssignment(self);
 
     if (self.current() != .comma) return first;
@@ -97,7 +97,7 @@ pub fn parseExpression(self: *Parser) ParseError2!NodeIndex {
 /// arrow function의 body를 파싱한다.
 /// arrow function은 함수이므로 in_function=true, loop/switch 리셋.
 /// block body면 parseFunctionBody(), expression body면 parseAssignmentExpression().
-pub fn parseArrowBody(self: *Parser, is_async: bool, param_idx: NodeIndex) ParseError2!NodeIndex {
+fn parseArrowBody(self: *Parser, is_async: bool, param_idx: NodeIndex) ParseError2!NodeIndex {
     // arrow function은 generator가 될 수 없으므로 is_generator=false
     const saved_ctx = self.enterFunctionContext(is_async, false);
     // arrow function은 자체 바인딩이 없으므로 외부 컨텍스트를 상속:
@@ -321,7 +321,7 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
     return left;
 }
 
-pub fn parseConditionalExpression(self: *Parser) ParseError2!NodeIndex {
+fn parseConditionalExpression(self: *Parser) ParseError2!NodeIndex {
     const expr = try parseBinaryExpression(self, 0);
 
     if (self.eat(.question)) {
@@ -345,7 +345,7 @@ pub fn parseConditionalExpression(self: *Parser) ParseError2!NodeIndex {
 }
 
 /// 이항 연산자를 precedence climbing으로 파싱.
-pub fn parseBinaryExpression(self: *Parser, min_prec: u8) ParseError2!NodeIndex {
+fn parseBinaryExpression(self: *Parser, min_prec: u8) ParseError2!NodeIndex {
     var left = try parseUnaryExpression(self);
 
     // ECMAScript: PrivateIdentifier는 독립 표현식이 아니라 `#field in obj` 형태로만 유효.
@@ -433,7 +433,7 @@ pub fn parseBinaryExpression(self: *Parser, min_prec: u8) ParseError2!NodeIndex 
     return left;
 }
 
-pub fn parseUnaryExpression(self: *Parser) ParseError2!NodeIndex {
+fn parseUnaryExpression(self: *Parser) ParseError2!NodeIndex {
     const kind = self.current();
     switch (kind) {
         .bang, .tilde, .minus, .plus, .kw_typeof, .kw_void, .kw_delete => {
@@ -537,7 +537,7 @@ pub fn parseUnaryExpression(self: *Parser) ParseError2!NodeIndex {
     }
 }
 
-pub fn parsePostfixExpression(self: *Parser) ParseError2!NodeIndex {
+fn parsePostfixExpression(self: *Parser) ParseError2!NodeIndex {
     var expr = try parseCallExpression(self);
 
     // 후위 ++/--
@@ -708,7 +708,7 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
 /// new 표현식의 callee를 파싱한다.
 /// new는 중첩 가능하므로 new를 만나면 재귀한다.
 /// member access (.prop, [expr])만 허용하고 호출 ()은 상위에서 처리.
-pub fn parseNewCallee(self: *Parser) ParseError2!NodeIndex {
+fn parseNewCallee(self: *Parser) ParseError2!NodeIndex {
     // ECMAScript: new import(...) / new import.source(...) / new import.defer(...) は금지
     // 단, new import.meta 는 허용 (import.meta는 MemberExpression)
     if (self.current() == .kw_import) {
@@ -784,7 +784,7 @@ pub fn parseNewCallee(self: *Parser) ParseError2!NodeIndex {
     return expr;
 }
 
-pub fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
+fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
     const span = self.currentSpan();
 
     switch (self.current()) {
@@ -1061,7 +1061,7 @@ pub fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
         .l_curly => {
             // 객체 리터럴 — 내부에서 `in` 연산자 항상 허용
             const obj_saved = self.enterAllowInContext(true);
-            const obj = try parseObjectExpression(self);
+            const obj = try object.parseObjectExpression(self);
             self.restoreContext(obj_saved);
             return obj;
         },
@@ -1140,7 +1140,7 @@ pub fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
 
 /// 보간이 있는 템플릿 리터럴을 파싱한다: `head${expr}middle${expr}tail`
 /// is_tagged가 true이면 tagged template이므로 잘못된 이스케이프를 허용한다.
-pub fn parseTemplateLiteral(self: *Parser, is_tagged: bool) ParseError2!NodeIndex {
+fn parseTemplateLiteral(self: *Parser, is_tagged: bool) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     const scratch_top = self.saveScratch();
 
@@ -1200,7 +1200,7 @@ pub fn parseTemplateLiteral(self: *Parser, is_tagged: bool) ParseError2!NodeInde
     });
 }
 
-pub fn parseArrayExpression(self: *Parser) ParseError2!NodeIndex {
+fn parseArrayExpression(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     self.advance(); // skip [
 
@@ -1241,62 +1241,7 @@ pub fn parseArrayExpression(self: *Parser) ParseError2!NodeIndex {
 }
 
 
-// ================================================================
-// Object Literal — object.zig로 위임
-// ================================================================
-
 const object = @import("object.zig");
-
-pub fn parseObjectExpression(self: *Parser) ParseError2!NodeIndex {
-    return object.parseObjectExpression(self);
-}
-
-pub fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
-    return object.parseObjectProperty(self);
-}
-
-pub fn parseObjectMethodBody(self: *Parser, start: u32, key: NodeIndex, flags: u16) ParseError2!NodeIndex {
-    return object.parseObjectMethodBody(self, start, key, flags);
-}
-
-// ================================================================
-// Binding Pattern — binding.zig로 위임
-// ================================================================
-
-const binding = @import("binding.zig");
-
-pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
-    return binding.parseBindingPattern(self);
-}
-
-pub fn parseBindingIdentifier(self: *Parser) ParseError2!NodeIndex {
-    return binding.parseBindingIdentifier(self);
-}
-
-pub fn tryWrapDefaultValue(self: *Parser, node: NodeIndex) ParseError2!NodeIndex {
-    return binding.tryWrapDefaultValue(self, node);
-}
-
-pub fn parseBindingName(self: *Parser) ParseError2!NodeIndex {
-    return binding.parseBindingName(self);
-}
-
-pub fn parseSimpleIdentifier(self: *Parser) ParseError2!NodeIndex {
-    return binding.parseSimpleIdentifier(self);
-}
-
-pub fn parseArrayPattern(self: *Parser) ParseError2!NodeIndex {
-    return binding.parseArrayPattern(self);
-}
-
-pub fn parseObjectPattern(self: *Parser) ParseError2!NodeIndex {
-    return binding.parseObjectPattern(self);
-}
-
-pub fn parseBindingProperty(self: *Parser) ParseError2!NodeIndex {
-    return binding.parseBindingProperty(self);
-}
-
 
 pub fn parseIdentifierName(self: *Parser) ParseError2!NodeIndex {
     const span = self.currentSpan();
@@ -1348,7 +1293,7 @@ pub fn parseModuleExportName(self: *Parser) ParseError2!NodeIndex {
 
 /// 문자열에 lone surrogate escape (\uD800-\uDFFF)가 있는지 검사한다.
 /// \uHHHH 형태의 escape만 체크 (raw UTF-8은 이미 인코딩됨).
-pub fn containsLoneSurrogate(s: []const u8) bool {
+fn containsLoneSurrogate(s: []const u8) bool {
     var i: usize = 0;
     while (i + 5 < s.len) : (i += 1) {
         if (s[i] == '\\' and s[i + 1] == 'u' and s[i + 2] != '{') {
@@ -1396,7 +1341,7 @@ pub fn containsLoneSurrogate(s: []const u8) bool {
 }
 
 /// 4자리 hex 문자열을 u16으로 파싱한다.
-pub fn parseHex4(s: []const u8) ?u16 {
+fn parseHex4(s: []const u8) ?u16 {
     if (s.len < 4) return null;
     var result: u16 = 0;
     for (s[0..4]) |c| {
@@ -1419,7 +1364,7 @@ pub fn parseHex4(s: []const u8) ?u16 {
 /// 인자 리스트를 파싱한다: (arg1, arg2, ...) → NodeList
 /// 여는 괄호 `(`는 이미 소비된 상태에서 호출.
 /// 닫는 괄호 `)`까지 소비한다.
-pub fn parseArgumentList(self: *Parser) ParseError2!NodeList {
+fn parseArgumentList(self: *Parser) ParseError2!NodeList {
     const scratch_top = self.saveScratch();
     while (self.current() != .r_paren and self.current() != .eof) {
         const arg = try parseSpreadOrAssignment(self);
@@ -1433,7 +1378,7 @@ pub fn parseArgumentList(self: *Parser) ParseError2!NodeList {
 }
 
 /// 함수 인자 하나를 파싱한다. `in` 연산자 허용 (ECMAScript: Arguments[+In]).
-pub fn parseSpreadOrAssignment(self: *Parser) ParseError2!NodeIndex {
+fn parseSpreadOrAssignment(self: *Parser) ParseError2!NodeIndex {
     const arg_saved = self.enterAllowInContext(true);
     defer self.restoreContext(arg_saved);
     if (self.current() == .dot3) {
@@ -1528,7 +1473,7 @@ pub fn parsePropertyKey(self: *Parser) ParseError2!NodeIndex {
 // 연산자 우선순위
 // ================================================================
 
-pub fn getBinaryPrecedence(kind: Kind) u8 {
+fn getBinaryPrecedence(kind: Kind) u8 {
     return switch (kind) {
         .pipe2 => 1, // ||
         .question2 => 1, // ??

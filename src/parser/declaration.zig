@@ -9,7 +9,6 @@
 
 const std = @import("std");
 const ast_mod = @import("ast.zig");
-const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
 const Tag = Node.Tag;
 const NodeIndex = ast_mod.NodeIndex;
@@ -25,7 +24,7 @@ pub fn parseFunctionDeclaration(self: *Parser) ParseError2!NodeIndex {
     return parseFunctionDeclarationWithFlags(self, 0);
 }
 
-pub fn parseFunctionDeclarationWithFlags(self: *Parser, extra_flags: u32) ParseError2!NodeIndex {
+fn parseFunctionDeclarationWithFlags(self: *Parser, extra_flags: u32) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     self.advance(); // skip 'function'
 
@@ -119,7 +118,7 @@ pub fn parseAsyncFunctionDeclarationDefaultExport(self: *Parser) ParseError2!Nod
 
 /// parseFunctionDeclarationWithFlags와 동일하지만 이름이 선택적.
 /// export default에서만 사용.
-pub fn parseFunctionDeclarationWithFlagsOptionalName(self: *Parser, extra_flags: u32) ParseError2!NodeIndex {
+fn parseFunctionDeclarationWithFlagsOptionalName(self: *Parser, extra_flags: u32) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     self.advance(); // skip 'function'
 
@@ -338,7 +337,7 @@ pub fn parseClassWithDecorators(self: *Parser, tag: Tag, decorators: NodeList) P
     });
 }
 
-pub fn parseClassBody(self: *Parser) ParseError2!NodeIndex {
+fn parseClassBody(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     self.expect(.l_curly);
 
@@ -372,7 +371,7 @@ pub fn parseClassBody(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
-pub fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
+fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
 
     // 데코레이터 (class member 앞) — scratch에 수집 후 멤버 노드의 extra_data에 연결

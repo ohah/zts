@@ -1308,108 +1308,8 @@ pub const Parser = struct {
         return statement.parseBlockStatement(self);
     }
 
-    pub fn parseEmptyStatement(self: *Parser) ParseError2!NodeIndex {
-        return statement.parseEmptyStatement(self);
-    }
-
     pub fn parseExpressionStatement(self: *Parser) ParseError2!NodeIndex {
         return statement.parseExpressionStatement(self);
-    }
-
-    pub fn isLetDeclarationStart(self: *Parser) bool {
-        return statement.isLetDeclarationStart(self);
-    }
-
-    pub fn isUsingDeclarationStart(self: *Parser) bool {
-        return statement.isUsingDeclarationStart(self);
-    }
-
-    pub fn isAwaitUsingDeclarationStart(self: *Parser) bool {
-        return statement.isAwaitUsingDeclarationStart(self);
-    }
-
-    pub fn parseAwaitUsingDeclaration(self: *Parser) ParseError2!NodeIndex {
-        return statement.parseAwaitUsingDeclaration(self);
-    }
-
-    pub fn parseExpressionOrLabeledStatement(self: *Parser) ParseError2!NodeIndex {
-        return statement.parseExpressionOrLabeledStatement(self);
-    }
-
-    pub fn parseLabeledStatement(self: *Parser) ParseError2!NodeIndex {
-        return statement.parseLabeledStatement(self);
-    }
-
-    pub fn parseWithStatement(self: *Parser) ParseError2!NodeIndex {
-        return statement.parseWithStatement(self);
-    }
-
-    pub fn parseVariableDeclaration(self: *Parser) ParseError2!NodeIndex {
-        return statement.parseVariableDeclaration(self);
-    }
-
-    pub fn parseVariableDeclarator(self: *Parser) ParseError2!NodeIndex {
-        return statement.parseVariableDeclarator(self);
-    }
-
-    pub fn parseReturnStatement(self: *Parser) ParseError2!NodeIndex {
-        return statement.parseReturnStatement(self);
-    }
-
-    pub fn parseIfStatement(self: *Parser) ParseError2!NodeIndex {
-        return statement.parseIfStatement(self);
-    }
-
-    pub fn parseWhileStatement(self: *Parser) ParseError2!NodeIndex {
-        return statement.parseWhileStatement(self);
-    }
-
-    pub fn parseDoWhileStatement(self: *Parser) ParseError2!NodeIndex {
-        return statement.parseDoWhileStatement(self);
-    }
-
-    pub fn parseForStatement(self: *Parser) ParseError2!NodeIndex {
-        return statement.parseForStatement(self);
-    }
-
-    pub fn validateForInOfDeclaration(self: *Parser, init_expr: NodeIndex) void {
-        return statement.validateForInOfDeclaration(self, init_expr);
-    }
-
-    pub fn parseForRest(self: *Parser, start: u32, init_expr: NodeIndex) ParseError2!NodeIndex {
-        return statement.parseForRest(self, start, init_expr);
-    }
-
-    pub fn parseForIn(self: *Parser, start: u32, left: NodeIndex) ParseError2!NodeIndex {
-        return statement.parseForIn(self, start, left);
-    }
-
-    pub fn parseForOf(self: *Parser, start: u32, left: NodeIndex) ParseError2!NodeIndex {
-        return statement.parseForOf(self, start, left);
-    }
-
-    pub fn parseSimpleStatement(self: *Parser, tag: Tag) ParseError2!NodeIndex {
-        return statement.parseSimpleStatement(self, tag);
-    }
-
-    pub fn parseSwitchStatement(self: *Parser) ParseError2!NodeIndex {
-        return statement.parseSwitchStatement(self);
-    }
-
-    pub fn parseSwitchCase(self: *Parser) ParseError2!NodeIndex {
-        return statement.parseSwitchCase(self);
-    }
-
-    pub fn parseThrowStatement(self: *Parser) ParseError2!NodeIndex {
-        return statement.parseThrowStatement(self);
-    }
-
-    pub fn parseTryStatement(self: *Parser) ParseError2!NodeIndex {
-        return statement.parseTryStatement(self);
-    }
-
-    pub fn parseCatchClause(self: *Parser) ParseError2!NodeIndex {
-        return statement.parseCatchClause(self);
     }
 
     // ================================================================
@@ -1422,10 +1322,6 @@ pub const Parser = struct {
         return declaration.parseFunctionDeclaration(self);
     }
 
-    pub fn parseFunctionDeclarationWithFlags(self: *Parser, extra_flags: u32) ParseError2!NodeIndex {
-        return declaration.parseFunctionDeclarationWithFlags(self, extra_flags);
-    }
-
     pub fn parseAsyncStatement(self: *Parser) ParseError2!NodeIndex {
         return declaration.parseAsyncStatement(self);
     }
@@ -1436,10 +1332,6 @@ pub const Parser = struct {
 
     pub fn parseAsyncFunctionDeclarationDefaultExport(self: *Parser) ParseError2!NodeIndex {
         return declaration.parseAsyncFunctionDeclarationDefaultExport(self);
-    }
-
-    pub fn parseFunctionDeclarationWithFlagsOptionalName(self: *Parser, extra_flags: u32) ParseError2!NodeIndex {
-        return declaration.parseFunctionDeclarationWithFlagsOptionalName(self, extra_flags);
     }
 
     pub fn parseFunctionExpression(self: *Parser) ParseError2!NodeIndex {
@@ -1556,18 +1448,10 @@ pub const Parser = struct {
     }
 
     // ================================================================
-    // Expression 파싱 (Pratt parser / precedence climbing)
-    // ================================================================
-
-    // ================================================================
     // Expression 파싱 — expression.zig로 위임
     // ================================================================
 
     const expression = @import("expression.zig");
-
-    pub fn parseExpressionOrRest(self: *Parser) ParseError2!NodeIndex {
-        return expression.parseExpressionOrRest(self);
-    }
 
     pub fn parseExpression(self: *Parser) ParseError2!NodeIndex {
         return expression.parseExpression(self);
@@ -1579,26 +1463,6 @@ pub const Parser = struct {
 
     pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
         return expression.parseCallExpression(self);
-    }
-
-    pub fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
-        return expression.parsePrimaryExpression(self);
-    }
-
-    pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
-        return expression.parseBindingPattern(self);
-    }
-
-    pub fn parseBindingIdentifier(self: *Parser) ParseError2!NodeIndex {
-        return expression.parseBindingIdentifier(self);
-    }
-
-    pub fn parseBindingName(self: *Parser) ParseError2!NodeIndex {
-        return expression.parseBindingName(self);
-    }
-
-    pub fn parseSimpleIdentifier(self: *Parser) ParseError2!NodeIndex {
-        return expression.parseSimpleIdentifier(self);
     }
 
     pub fn parseIdentifierName(self: *Parser) ParseError2!NodeIndex {
@@ -1613,8 +1477,22 @@ pub const Parser = struct {
         return expression.parsePropertyKey(self);
     }
 
-    pub fn parseArgumentList(self: *Parser) ParseError2!NodeList {
-        return expression.parseArgumentList(self);
+    // ================================================================
+    // Binding Pattern — binding.zig로 직접 위임
+    // ================================================================
+
+    const binding_parser = @import("binding.zig");
+
+    pub fn parseBindingIdentifier(self: *Parser) ParseError2!NodeIndex {
+        return binding_parser.parseBindingIdentifier(self);
+    }
+
+    pub fn parseBindingName(self: *Parser) ParseError2!NodeIndex {
+        return binding_parser.parseBindingName(self);
+    }
+
+    pub fn parseSimpleIdentifier(self: *Parser) ParseError2!NodeIndex {
+        return binding_parser.parseSimpleIdentifier(self);
     }
 
     // ================================================================
@@ -1679,14 +1557,6 @@ pub const Parser = struct {
 
     pub fn parseType(self: *Parser) ParseError2!NodeIndex {
         return ts.parseType(self);
-    }
-
-    pub fn parseTypeArguments(self: *Parser) ParseError2!NodeIndex {
-        return ts.parseTypeArguments(self);
-    }
-
-    pub fn parseObjectType(self: *Parser) ParseError2!NodeIndex {
-        return ts.parseObjectType(self);
     }
 };
 

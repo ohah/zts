@@ -9,7 +9,6 @@
 
 const std = @import("std");
 const ast_mod = @import("ast.zig");
-const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
 const Tag = Node.Tag;
 const NodeIndex = ast_mod.NodeIndex;
@@ -183,7 +182,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
-pub fn parseImportSpecifier(self: *Parser) ParseError2!NodeIndex {
+fn parseImportSpecifier(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
 
     // imported name — ModuleExportName (identifier or string literal)
@@ -349,7 +348,7 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
-pub fn parseExportSpecifier(self: *Parser) ParseError2!NodeIndex {
+fn parseExportSpecifier(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
 
     const local = try self.parseModuleExportName();
@@ -366,7 +365,7 @@ pub fn parseExportSpecifier(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
-pub fn parseModuleSource(self: *Parser) ParseError2!NodeIndex {
+fn parseModuleSource(self: *Parser) ParseError2!NodeIndex {
     const span = self.currentSpan();
     if (self.current() == .string_literal) {
         self.advance();
@@ -385,7 +384,7 @@ pub fn parseModuleSource(self: *Parser) ParseError2!NodeIndex {
 /// import attributes (with/assert { ... })를 파싱한다.
 /// AST에 저장하지 않고 소비만 한다 (트랜스포머에서 필요 시 추가).
 /// 중복 키 검사도 수행한다 (ECMAScript: WithClauseToAttributes 중복 에러).
-pub fn skipImportAttributes(self: *Parser) void {
+fn skipImportAttributes(self: *Parser) void {
     // with { ... }: 줄바꿈 허용 (ECMAScript: AttributesKeyword = with)
     // assert { ... }: 줄바꿈 불허 (ECMAScript: [no LineTerminator here] assert)
     const is_with = self.current() == .kw_with;
@@ -440,7 +439,7 @@ pub fn skipImportAttributes(self: *Parser) void {
 /// import attribute 키의 unicode escape를 해석한다.
 /// 예: "typ\u0065" → "type"
 /// buf에 결과를 쓰고, escape가 없으면 원본 슬라이스를 반환.
-pub fn decodeStringKey(input: []const u8, buf: *[256]u8) []const u8 {
+fn decodeStringKey(input: []const u8, buf: *[256]u8) []const u8 {
     // escape가 없으면 원본 그대로 반환 (빠른 경로)
     if (std.mem.indexOf(u8, input, "\\") == null) return input;
 

@@ -209,7 +209,7 @@ pub fn parseBlockStatement(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
-pub fn parseEmptyStatement(self: *Parser) ParseError2!NodeIndex {
+fn parseEmptyStatement(self: *Parser) ParseError2!NodeIndex {
     const span = self.currentSpan();
     self.advance(); // skip ;
     return try self.ast.addNode(.{
@@ -241,7 +241,7 @@ pub fn parseExpressionStatement(self: *Parser) ParseError2!NodeIndex {
 /// ECMAScript: sloppy mode에서 `let`이 LexicalDeclaration의 시작인지 판별한다.
 /// `let` 뒤에 줄바꿈 없이 BindingIdentifier, `[`, `{`가 오면 LexicalDeclaration이다.
 /// 그 외에는 `let`을 식별자로 취급한다 (expression statement).
-pub fn isLetDeclarationStart(self: *Parser) bool {
+fn isLetDeclarationStart(self: *Parser) bool {
     const next = self.peekNext();
     if (next.has_newline_before) {
         // `let` 뒤에 줄바꿈이 있으면, 일반적으로 ASI가 적용되어 `let`은 식별자.
@@ -262,7 +262,7 @@ pub fn isLetDeclarationStart(self: *Parser) bool {
 }
 
 /// `using` 뒤에 줄바꿈 없이 identifier가 오면 UsingDeclaration으로 해석한다.
-pub fn isUsingDeclarationStart(self: *Parser) bool {
+fn isUsingDeclarationStart(self: *Parser) bool {
     const next = self.peekNext();
     if (next.has_newline_before) return false;
     return next.kind == .identifier or
@@ -270,7 +270,7 @@ pub fn isUsingDeclarationStart(self: *Parser) bool {
 }
 
 /// `await` + `using` + identifier (줄바꿈 없이) → AwaitUsingDeclaration
-pub fn isAwaitUsingDeclarationStart(self: *Parser) bool {
+fn isAwaitUsingDeclarationStart(self: *Parser) bool {
     if (!self.ctx.in_async) return false;
     const next = self.peekNext();
     if (next.has_newline_before or next.kind != .kw_using) return false;
@@ -279,13 +279,13 @@ pub fn isAwaitUsingDeclarationStart(self: *Parser) bool {
 }
 
 /// `await using x = expr;` 선언을 파싱한다.
-pub fn parseAwaitUsingDeclaration(self: *Parser) ParseError2!NodeIndex {
+fn parseAwaitUsingDeclaration(self: *Parser) ParseError2!NodeIndex {
     self.advance(); // skip 'await'
     return parseVariableDeclaration(self); // 'using'부터 parseVariableDeclaration 진행
 }
 
 /// `identifier:` 패턴이면 labeled statement, 아니면 expression statement.
-pub fn parseExpressionOrLabeledStatement(self: *Parser) ParseError2!NodeIndex {
+fn parseExpressionOrLabeledStatement(self: *Parser) ParseError2!NodeIndex {
     // identifier/keyword: statement — labeled statement 판별
     // kw_await/kw_yield도 조건부로 식별자/label 사용 가능 (non-async/non-generator)
     if (self.current() == .identifier or self.current() == .escaped_keyword or
@@ -320,7 +320,7 @@ pub fn parseExpressionOrLabeledStatement(self: *Parser) ParseError2!NodeIndex {
 }
 
 /// labeled statement: label: statement
-pub fn parseLabeledStatement(self: *Parser) ParseError2!NodeIndex {
+fn parseLabeledStatement(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     // label
     const label = try self.ast.addNode(.{
@@ -340,7 +340,7 @@ pub fn parseLabeledStatement(self: *Parser) ParseError2!NodeIndex {
 
 /// with statement: with (expr) statement
 /// strict mode에서는 SyntaxError (D054)
-pub fn parseWithStatement(self: *Parser) ParseError2!NodeIndex {
+fn parseWithStatement(self: *Parser) ParseError2!NodeIndex {
     if (self.is_strict_mode) {
         self.addError(self.currentSpan(), "'with' is not allowed in strict mode");
     }
@@ -362,7 +362,7 @@ pub fn parseWithStatement(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
-pub fn parseVariableDeclaration(self: *Parser) ParseError2!NodeIndex {
+fn parseVariableDeclaration(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     const kind_flags: u32 = switch (self.current()) {
         .kw_var => 0,
@@ -421,7 +421,7 @@ pub fn parseVariableDeclaration(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
-pub fn parseVariableDeclarator(self: *Parser) ParseError2!NodeIndex {
+fn parseVariableDeclarator(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
 
     // 바인딩 패턴 (identifier, [array], {object} destructuring)
@@ -454,7 +454,7 @@ pub fn parseVariableDeclarator(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
-pub fn parseReturnStatement(self: *Parser) ParseError2!NodeIndex {
+fn parseReturnStatement(self: *Parser) ParseError2!NodeIndex {
     // return은 함수 안에서만 허용
     if (!self.ctx.in_function) {
         self.addError(self.currentSpan(), "'return' outside of function");
@@ -479,7 +479,7 @@ pub fn parseReturnStatement(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
-pub fn parseIfStatement(self: *Parser) ParseError2!NodeIndex {
+fn parseIfStatement(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     self.advance(); // skip 'if'
     self.expect(.l_paren);
@@ -503,7 +503,7 @@ pub fn parseIfStatement(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
-pub fn parseWhileStatement(self: *Parser) ParseError2!NodeIndex {
+fn parseWhileStatement(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     self.advance(); // skip 'while'
     self.expect(.l_paren);
@@ -518,7 +518,7 @@ pub fn parseWhileStatement(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
-pub fn parseDoWhileStatement(self: *Parser) ParseError2!NodeIndex {
+fn parseDoWhileStatement(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     self.advance(); // skip 'do'
     const body = try self.parseLoopBody();
@@ -535,7 +535,7 @@ pub fn parseDoWhileStatement(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
-pub fn parseForStatement(self: *Parser) ParseError2!NodeIndex {
+fn parseForStatement(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     self.advance(); // skip 'for'
 
@@ -629,7 +629,7 @@ pub fn parseForStatement(self: *Parser) ParseError2!NodeIndex {
 /// - 단일 바인딩만 허용 (ECMAScript 14.7.5.1)
 /// - initializer 금지 (for-of는 항상, for-in은 strict + let/const)
 /// - Annex B.3.5: sloppy mode의 var + for-in은 initializer 허용
-pub fn validateForInOfDeclaration(self: *Parser, init_expr: NodeIndex) void {
+fn validateForInOfDeclaration(self: *Parser, init_expr: NodeIndex) void {
     if (init_expr.isNone()) return;
     const init_node = self.ast.getNode(init_expr);
     if (init_node.tag != .variable_declaration) return;
@@ -661,7 +661,7 @@ pub fn validateForInOfDeclaration(self: *Parser, init_expr: NodeIndex) void {
 }
 
 /// for(init; test; update) body — 나머지 파싱
-pub fn parseForRest(self: *Parser, start: u32, init_expr: NodeIndex) ParseError2!NodeIndex {
+fn parseForRest(self: *Parser, start: u32, init_expr: NodeIndex) ParseError2!NodeIndex {
     var test_expr = NodeIndex.none;
     if (self.current() != .semicolon) {
         test_expr = try self.parseExpression();
@@ -688,7 +688,7 @@ pub fn parseForRest(self: *Parser, start: u32, init_expr: NodeIndex) ParseError2
 }
 
 /// for(left in right) body
-pub fn parseForIn(self: *Parser, start: u32, left: NodeIndex) ParseError2!NodeIndex {
+fn parseForIn(self: *Parser, start: u32, left: NodeIndex) ParseError2!NodeIndex {
     self.advance(); // skip 'in'
     const right = try self.parseExpression();
     self.expect(.r_paren);
@@ -702,7 +702,7 @@ pub fn parseForIn(self: *Parser, start: u32, left: NodeIndex) ParseError2!NodeIn
 }
 
 /// for(left of right) body
-pub fn parseForOf(self: *Parser, start: u32, left: NodeIndex) ParseError2!NodeIndex {
+fn parseForOf(self: *Parser, start: u32, left: NodeIndex) ParseError2!NodeIndex {
     self.advance(); // skip 'of'
     const right = try self.parseAssignmentExpression();
     self.expect(.r_paren);
@@ -716,7 +716,7 @@ pub fn parseForOf(self: *Parser, start: u32, left: NodeIndex) ParseError2!NodeIn
 }
 
 /// break, continue, debugger 등 키워드 + 세미콜론만으로 구성된 단순 문.
-pub fn parseSimpleStatement(self: *Parser, tag: Tag) ParseError2!NodeIndex {
+fn parseSimpleStatement(self: *Parser, tag: Tag) ParseError2!NodeIndex {
     const keyword_span = self.currentSpan();
     const start = keyword_span.start;
     self.advance(); // skip break/continue/debugger
@@ -753,7 +753,7 @@ pub fn parseSimpleStatement(self: *Parser, tag: Tag) ParseError2!NodeIndex {
     });
 }
 
-pub fn parseSwitchStatement(self: *Parser) ParseError2!NodeIndex {
+fn parseSwitchStatement(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     self.advance(); // skip 'switch'
     self.expect(.l_paren);
@@ -802,7 +802,7 @@ pub fn parseSwitchStatement(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
-pub fn parseSwitchCase(self: *Parser) ParseError2!NodeIndex {
+fn parseSwitchCase(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
 
     var test_expr = NodeIndex.none;
@@ -840,7 +840,7 @@ pub fn parseSwitchCase(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
-pub fn parseThrowStatement(self: *Parser) ParseError2!NodeIndex {
+fn parseThrowStatement(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     self.advance(); // skip 'throw'
     // ECMAScript 14.14: throw [no LineTerminator here] Expression
@@ -857,7 +857,7 @@ pub fn parseThrowStatement(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
-pub fn parseTryStatement(self: *Parser) ParseError2!NodeIndex {
+fn parseTryStatement(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     self.advance(); // skip 'try'
 
@@ -887,7 +887,7 @@ pub fn parseTryStatement(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
-pub fn parseCatchClause(self: *Parser) ParseError2!NodeIndex {
+fn parseCatchClause(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     self.advance(); // skip 'catch'
 
