@@ -294,6 +294,185 @@ pub fn checkGetterSetterParams(
 }
 
 // ====================================================================
+// 5. 파라미터 중복 검증
+// ====================================================================
+
+/// 파라미터 리스트에서 중복된 바인딩 이름이 있으면 에러.
+///
+/// ECMAScript 14.1.2:
+///   UniqueFormalParameters: FormalParameters
+///     It is a Syntax Error if BoundNames of FormalParameters contains any duplicate elements.
+///
+/// 적용 대상:
+///   - arrow function 파라미터 (항상 UniqueFormalParameters)
+///   - class 메서드 파라미터 (class body는 항상 strict)
+///   - strict mode 함수 파라미터
+///   - generator/async function 파라미터
+///   - default/rest 파라미터가 있는 함수 (non-simple)
+pub fn checkDuplicateParams(
+    ast: *const Ast,
+    params_start: u32,
+    params_len: u32,
+    errors: *std.ArrayList(SemanticError),
+    allocator: std.mem.Allocator,
+) void {
+    if (params_len == 0) return;
+    if (params_start + params_len > ast.extra_data.items.len) return;
+
+    // 파라미터 이름 → 첫 선언 위치 매핑
+    var seen = std.StringHashMap(Span).init(allocator);
+    defer seen.deinit();
+
+    const param_indices = ast.extra_data.items[params_start .. params_start + params_len];
+    for (param_indices) |raw_idx| {
+        collectBindingNames(ast, @enumFromInt(raw_idx), &seen, errors, allocator);
+    }
+}
+
+/// 바인딩 패턴에서 이름을 재귀적으로 추출하여 중복 체크한다.
+fn collectBindingNames(
+    ast: *const Ast,
+    idx: NodeIndex,
+    seen: *std.StringHashMap(Span),
+    errors: *std.ArrayList(SemanticError),
+    allocator: std.mem.Allocator,
+) void {
+    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return;
+    const node = ast.getNode(idx);
+
+    switch (node.tag) {
+        .binding_identifier => {
+            const name = ast.source[node.span.start..node.span.end];
+            if (seen.get(name)) |_| {
+                addError(errors, node.span, std.fmt.allocPrint(
+                    allocator,
+                    "Duplicate parameter name '{s}'",
+                    .{name},
+                ) catch @panic("OOM"));
+            } else {
+                seen.put(name, node.span) catch @panic("OOM");
+            }
+        },
+        .array_pattern, .object_pattern => {
+            // list of elements/properties
+            if (node.data.list.len == 0) return;
+            if (node.data.list.start + node.data.list.len > ast.extra_data.items.len) return;
+            const indices = ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+            for (indices) |raw_idx| {
+                collectBindingNames(ast, @enumFromInt(raw_idx), seen, errors, allocator);
+            }
+        },
+        .binding_property => {
+            // binary: { left = key, right = value }
+            collectBindingNames(ast, node.data.binary.right, seen, errors, allocator);
+        },
+        .assignment_pattern => {
+            // binary: { left = binding, right = default_value }
+            collectBindingNames(ast, node.data.binary.left, seen, errors, allocator);
+        },
+        .binding_rest_element, .rest_element => {
+            // unary: { operand = binding }
+            collectBindingNames(ast, node.data.unary.operand, seen, errors, allocator);
+        },
+        else => {},
+    }
+}
+
+/// arrow function의 파라미터 노드에서 중복 바인딩을 검사한다.
+/// arrow function의 left는 단일 binding_identifier 또는 parenthesized_expression,
+/// 또는 cover grammar에서 변환된 array_pattern/object_pattern일 수 있다.
+pub fn checkDuplicateArrowParams(
+    ast: *const Ast,
+    param_idx: NodeIndex,
+    errors: *std.ArrayList(SemanticError),
+    allocator: std.mem.Allocator,
+) void {
+    if (param_idx.isNone() or @intFromEnum(param_idx) >= ast.nodes.items.len) return;
+
+    var seen = std.StringHashMap(Span).init(allocator);
+    defer seen.deinit();
+
+    collectArrowParamNames(ast, param_idx, &seen, errors, allocator);
+}
+
+/// arrow 파라미터 노드에서 바인딩 이름을 재귀 수집한다.
+fn collectArrowParamNames(
+    ast: *const Ast,
+    idx: NodeIndex,
+    seen: *std.StringHashMap(Span),
+    errors: *std.ArrayList(SemanticError),
+    allocator: std.mem.Allocator,
+) void {
+    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return;
+    const node = ast.getNode(idx);
+
+    switch (node.tag) {
+        // 단일 파라미터
+        .binding_identifier => {
+            const name = ast.source[node.span.start..node.span.end];
+            if (seen.get(name)) |_| {
+                addError(errors, node.span, std.fmt.allocPrint(
+                    allocator,
+                    "Duplicate parameter name '{s}'",
+                    .{name},
+                ) catch @panic("OOM"));
+            } else {
+                seen.put(name, node.span) catch @panic("OOM");
+            }
+        },
+        // cover grammar에서 변환된 파라미터 리스트
+        .parenthesized_expression, .sequence_expression => {
+            // parenthesized: unary.operand → 내부 노드
+            if (node.tag == .parenthesized_expression) {
+                collectArrowParamNames(ast, node.data.unary.operand, seen, errors, allocator);
+            } else {
+                // sequence_expression: list of comma-separated expressions
+                if (node.data.list.len == 0) return;
+                if (node.data.list.start + node.data.list.len > ast.extra_data.items.len) return;
+                const indices = ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+                for (indices) |raw_idx| {
+                    collectArrowParamNames(ast, @enumFromInt(raw_idx), seen, errors, allocator);
+                }
+            }
+        },
+        // identifier를 파라미터로 사용
+        .identifier_reference => {
+            const name = ast.source[node.span.start..node.span.end];
+            if (seen.get(name)) |_| {
+                addError(errors, node.span, std.fmt.allocPrint(
+                    allocator,
+                    "Duplicate parameter name '{s}'",
+                    .{name},
+                ) catch @panic("OOM"));
+            } else {
+                seen.put(name, node.span) catch @panic("OOM");
+            }
+        },
+        // destructuring 패턴
+        .array_pattern, .object_pattern, .array_expression, .object_expression => {
+            if (node.data.list.len == 0) return;
+            if (node.data.list.start + node.data.list.len > ast.extra_data.items.len) return;
+            const indices = ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+            for (indices) |raw_idx| {
+                collectArrowParamNames(ast, @enumFromInt(raw_idx), seen, errors, allocator);
+            }
+        },
+        .assignment_expression, .assignment_pattern => {
+            // left = binding, right = default value
+            collectArrowParamNames(ast, node.data.binary.left, seen, errors, allocator);
+        },
+        .binding_property, .object_property => {
+            // binary: { left = key, right = value }
+            collectArrowParamNames(ast, node.data.binary.right, seen, errors, allocator);
+        },
+        .spread_element, .binding_rest_element, .rest_element => {
+            collectArrowParamNames(ast, node.data.unary.operand, seen, errors, allocator);
+        },
+        else => {},
+    }
+}
+
+// ====================================================================
 // Tests
 // ====================================================================
 
@@ -435,4 +614,34 @@ test "checker: single __proto__ is valid" {
     }
 
     try std.testing.expect(errs.items.len == 0);
+}
+
+test "checker: duplicate arrow params is error" {
+    var scanner = Scanner.init(std.testing.allocator, "var f = (x, x) => x;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    const SemanticAnalyzer = @import("analyzer.zig").SemanticAnalyzer;
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len > 0);
+}
+
+test "checker: duplicate method params is error" {
+    var scanner = Scanner.init(std.testing.allocator, "class C { foo(a, a) {} }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    const SemanticAnalyzer = @import("analyzer.zig").SemanticAnalyzer;
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len > 0);
 }

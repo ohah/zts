@@ -587,6 +587,8 @@ pub const SemanticAnalyzer = struct {
                     const params_start = extras[extra_start + 1];
                     const params_len = extras[extra_start + 2];
                     self.registerParams(params_start, params_len);
+                    // 메서드는 항상 UniqueFormalParameters — 중복 금지
+                    checker.checkDuplicateParams(self.ast, params_start, params_len, &self.errors, self.allocator);
                     self.visitFunctionBodyInner(body_idx);
                     self.exitScope(scope_saved);
                 }
@@ -742,6 +744,12 @@ pub const SemanticAnalyzer = struct {
         const params_len = extras[extra_start + 2];
         self.registerParams(params_start, params_len);
 
+        // 중복 파라미터 검증: generator/async는 항상 UniqueFormalParameters,
+        // 일반 함수는 strict mode에서만 (non-strict sloppy mode는 중복 허용)
+        if (is_async or is_generator or self.isCurrentStrict()) {
+            checker.checkDuplicateParams(self.ast, params_start, params_len, &self.errors, self.allocator);
+        }
+
         // 본문 순회
         self.visitFunctionBodyInner(body_idx);
         self.restoreLabelLen(saved_labels);
@@ -769,6 +777,15 @@ pub const SemanticAnalyzer = struct {
         const params_len = extras[extra_start + 2];
         self.registerParams(params_start, params_len);
 
+        // 중복 파라미터 검증: flags에서 async/generator 판별
+        const fn_flags = extras[extra_start + 4];
+        const FnFlags = ast_mod.FunctionFlags;
+        const fn_is_async = (fn_flags & FnFlags.is_async) != 0;
+        const fn_is_generator = (fn_flags & FnFlags.is_generator) != 0;
+        if (fn_is_async or fn_is_generator or self.isCurrentStrict()) {
+            checker.checkDuplicateParams(self.ast, params_start, params_len, &self.errors, self.allocator);
+        }
+
         self.visitFunctionBodyInner(body_idx);
         self.restoreLabelLen(saved_labels);
         self.exitScope(saved);
@@ -788,6 +805,9 @@ pub const SemanticAnalyzer = struct {
                 self.declareSymbol(param_node.span, .parameter, param_node.span);
             }
             // parenthesized_expression인 경우 파라미터 추출은 복잡 — 추후 구현
+
+            // arrow function은 항상 UniqueFormalParameters — 중복 금지
+            checker.checkDuplicateArrowParams(self.ast, param_idx, &self.errors, self.allocator);
         }
 
         if (!body_idx.isNone()) {
