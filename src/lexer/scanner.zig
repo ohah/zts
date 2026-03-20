@@ -329,6 +329,7 @@ pub const Scanner = struct {
         self.token.has_newline_before = false;
         self.token.has_pure_comment_before = false;
         self.token.has_escape = false;
+        self.token.has_legacy_octal = false;
 
         // 주석을 만나면 스킵하고 다시 스캔해야 하므로 루프
         while (true) {
