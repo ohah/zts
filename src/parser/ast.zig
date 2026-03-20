@@ -476,8 +476,9 @@ pub const Ast = struct {
     }
 
     /// span이 가리키는 소스 텍스트를 반환한다.
+    /// source와 string_table 모두 지원 (getText에 위임).
     pub fn getSourceText(self: *const Ast, span: Span) []const u8 {
-        return self.source[span.start..span.end];
+        return self.getText(span);
     }
 
     /// 합성 문자열을 string_table에 추가하고, 이를 가리키는 Span을 반환한다.
@@ -487,6 +488,8 @@ pub const Ast = struct {
     ///   const span = try ast.addString("React");
     ///   // 나중에 ast.getText(span)으로 "React" 반환
     pub fn addString(self: *Ast, text: []const u8) !Span {
+        // string_table은 bit 31 미만이어야 함 (bit 31은 마커로 사용)
+        std.debug.assert(self.string_table.items.len + text.len < STRING_TABLE_BIT);
         const start: u32 = @intCast(self.string_table.items.len);
         try self.string_table.appendSlice(text);
         const end: u32 = @intCast(self.string_table.items.len);

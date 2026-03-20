@@ -1530,7 +1530,7 @@ pub const Codegen = struct {
 
         // enum 이름 텍스트 가져오기
         const name_node = self.ast.getNode(name_idx);
-        const name_text = self.ast.source[name_node.span.start..name_node.span.end];
+        const name_text = self.ast.getText(name_node.span);
 
         // var Color;
         try self.write("var ");
@@ -1553,7 +1553,7 @@ pub const Codegen = struct {
             const member_init_idx = member.data.binary.right;
 
             const member_name = self.ast.getNode(member_name_idx);
-            const member_text = self.ast.source[member_name.span.start..member_name.span.end];
+            const member_text = self.ast.getText(member_name.span);
 
             // Color[Color["Red"] = 0] = "Red";
             try self.write(name_text);
@@ -1569,7 +1569,7 @@ pub const Codegen = struct {
                 // 이니셜라이저가 숫자 리터럴이면 auto_value 업데이트
                 const init_node = self.ast.getNode(member_init_idx);
                 if (init_node.tag == .numeric_literal) {
-                    const num_text = self.ast.source[init_node.span.start..init_node.span.end];
+                    const num_text = self.ast.getText(init_node.span);
                     auto_value = std.fmt.parseInt(i64, num_text, 10) catch auto_value;
                     auto_value += 1;
                 }
@@ -1608,7 +1608,7 @@ pub const Codegen = struct {
         if (body_node.tag == .ts_module_declaration) {
             // 외부 namespace IIFE를 열고, 내부를 재귀 처리
             const name_node = self.ast.getNode(name_idx);
-            const name_text = self.ast.source[name_node.span.start..name_node.span.end];
+            const name_text = self.ast.getText(name_node.span);
 
             try self.write("var ");
             try self.write(name_text);
@@ -1628,7 +1628,7 @@ pub const Codegen = struct {
 
         // body가 block_statement인 경우 (일반 namespace)
         const name_node = self.ast.getNode(name_idx);
-        const name_text = self.ast.source[name_node.span.start..name_node.span.end];
+        const name_text = self.ast.getText(name_node.span);
 
         // var Foo;
         try self.write("var ");
@@ -1695,7 +1695,7 @@ pub const Codegen = struct {
                     const d_extras = self.ast.extra_data.items[de .. de + 3];
                     const name_idx: NodeIndex = @enumFromInt(d_extras[0]);
                     const var_name_node = self.ast.getNode(name_idx);
-                    const var_name = self.ast.source[var_name_node.span.start..var_name_node.span.end];
+                    const var_name = self.ast.getText(var_name_node.span);
                     try self.write(ns_name);
                     try self.writeByte('.');
                     try self.write(var_name);
@@ -1711,7 +1711,7 @@ pub const Codegen = struct {
                 const name_idx: NodeIndex = @enumFromInt(extras[0]);
                 if (!name_idx.isNone()) {
                     const fn_name_node = self.ast.getNode(name_idx);
-                    const fn_name = self.ast.source[fn_name_node.span.start..fn_name_node.span.end];
+                    const fn_name = self.ast.getText(fn_name_node.span);
                     try self.write(ns_name);
                     try self.writeByte('.');
                     try self.write(fn_name);
