@@ -11,11 +11,8 @@
 
 const std = @import("std");
 
-/// 소스 텍스트 내의 바이트 범위 [start, end).
-pub const Span = struct {
-    start: u32,
-    end: u32,
-};
+/// 렉서/파서와 동일한 Span 타입을 재사용한다.
+pub const Span = @import("../lexer/token.zig").Span;
 
 /// 노드 배열의 인덱스. 포인터 대신 인덱스를 사용하여
 /// use-after-free를 방지하고 메모리 효율성을 높인다.
@@ -224,17 +221,25 @@ pub const Node = struct {
 
 /// 패턴 AST 전체. 파서가 빌드하여 반환.
 ///
-/// nodes와 extra_data는 파서 내부의 ArrayList로부터 참조하는 슬라이스.
-/// 파서의 수명(lifetime) 동안만 유효.
+/// 소유권(ownership)은 호출자에게 있다.
+/// 사용 후 반드시 deinit()을 호출하여 메모리를 해제해야 한다.
 pub const RegExpAst = struct {
-    /// 모든 노드의 flat 배열.
+    /// 모든 노드의 flat 배열. (소유권 있음)
     nodes: []const Node,
-    /// 가변 길이 자식 리스트 데이터 (NodeIndex 값).
+    /// 가변 길이 자식 리스트 데이터. (소유권 있음)
     extra_data: []const u32,
     /// 루트 노드 인덱스 (항상 disjunction).
     root: NodeIndex,
-    /// 원본 패턴 텍스트 (zero-copy 참조).
+    /// 원본 패턴 텍스트 (zero-copy 참조, 소유권 없음).
     source: []const u8,
+    /// 메모리 해제용 allocator.
+    allocator: std.mem.Allocator,
+
+    /// 메모리를 해제한다.
+    pub fn deinit(self: *RegExpAst) void {
+        self.allocator.free(self.nodes);
+        self.allocator.free(self.extra_data);
+    }
 
     /// 노드 인덱스로 노드를 가져온다.
     pub fn getNode(self: RegExpAst, index: NodeIndex) Node {

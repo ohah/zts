@@ -81,11 +81,16 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         /// allocator는 AST 노드와 extra_data 저장에 사용.
         pub fn initWithAllocator(source: []const u8, parsed_flags: Flags, alloc: std.mem.Allocator) Self {
             if (!emit_ast) @compileError("initWithAllocator() requires emit_ast=true");
+            var nodes = std.ArrayList(ast.Node).init(alloc);
+            var extra = std.ArrayList(u32).init(alloc);
+            // 대부분의 정규식은 32개 미만 노드 → 재할당 최소화
+            nodes.ensureTotalCapacity(32) catch {};
+            extra.ensureTotalCapacity(64) catch {};
             return .{
                 .source = source,
                 .flags = parsed_flags,
-                .ast_nodes = std.ArrayList(ast.Node).init(alloc),
-                .ast_extra = std.ArrayList(u32).init(alloc),
+                .ast_nodes = nodes,
+                .ast_extra = extra,
             };
         }
 
@@ -101,18 +106,56 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         /// 에러가 있으면 에러 메시지, 없으면 null.
         pub fn validate(self: *Self) ?[]const u8 {
             if (emit_ast) @compileError("use parse() for emit_ast=true");
+            self.parseAndFinalize();
+            return self.err_message;
+        }
 
+        /// 패턴을 파싱하여 AST를 반환한다 (emit_ast=true 전용).
+        /// 에러가 있으면 null, 에러 메시지는 getError()로 조회.
+        ///
+        /// 호출자는 반드시 다음 패턴을 따라야 한다:
+        ///   var p = Parser.initWithAllocator(...);
+        ///   defer p.deinit();           // 파서 내부 버퍼 해제
+        ///   var tree = p.parse() orelse return;
+        ///   defer tree.deinit();        // AST 소유 메모리 해제
+        pub fn parse(self: *Self) ?ast.RegExpAst {
+            if (!emit_ast) @compileError("use validate() for emit_ast=false");
+
+            self.parseAndFinalize();
+            if (self.err_message != null) return null;
+
+            // toOwnedSlice로 소유권 이전 — 호출자가 RegExpAst.deinit()으로 해제.
+            // toOwnedSlice 후 ArrayList는 capacity=0이므로 p.deinit()은 안전한 no-op.
+            const alloc = self.ast_nodes.allocator;
+            const nodes = self.ast_nodes.toOwnedSlice() catch return null;
+            const extra = self.ast_extra.toOwnedSlice() catch {
+                alloc.free(nodes); // 첫 번째 할당 정리
+                return null;
+            };
+            return .{
+                .nodes = nodes,
+                .extra_data = extra,
+                .root = self.last_node,
+                .source = self.source,
+                .allocator = alloc,
+            };
+        }
+
+        /// 파싱 + 후처리 검증 (validate/parse 공통).
+        fn parseAndFinalize(self: *Self) void {
             self.parseDisjunction();
-            if (self.err_message != null) return self.err_message;
+            if (self.err_message != null) return;
 
             // 소스 끝까지 소비하지 않았으면 에러
             if (self.pos < self.source.len) {
-                return "unexpected character in regular expression";
+                self.err_message = "unexpected character in regular expression";
+                return;
             }
 
             // back reference가 group count보다 크면 에러 (unicode mode에서)
             if (self.flags.hasUnicodeMode() and self.max_back_ref > self.group_count) {
-                return "invalid back reference in regular expression";
+                self.err_message = "invalid back reference in regular expression";
+                return;
             }
 
             // named back reference가 정의된 named group을 참조하는지 검증
@@ -125,51 +168,10 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     }
                 }
                 if (!found) {
-                    return "invalid named back reference: group not defined";
-                }
-            }
-
-            return self.err_message;
-        }
-
-        /// 패턴을 파싱하여 AST를 반환한다 (emit_ast=true 전용).
-        /// 에러가 있으면 null, 에러 메시지는 getError()로 조회.
-        pub fn parse(self: *Self) ?ast.RegExpAst {
-            if (!emit_ast) @compileError("use validate() for emit_ast=false");
-
-            self.parseDisjunction();
-            if (self.err_message != null) return null;
-
-            if (self.pos < self.source.len) {
-                self.err_message = "unexpected character in regular expression";
-                return null;
-            }
-
-            if (self.flags.hasUnicodeMode() and self.max_back_ref > self.group_count) {
-                self.err_message = "invalid back reference in regular expression";
-                return null;
-            }
-
-            for (self.named_refs[0..self.named_ref_count]) |ref_name| {
-                var found = false;
-                for (self.named_groups[0..self.named_group_count]) |group_name| {
-                    if (std.mem.eql(u8, ref_name, group_name)) {
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) {
                     self.err_message = "invalid named back reference: group not defined";
-                    return null;
+                    return;
                 }
             }
-
-            return .{
-                .nodes = self.ast_nodes.items,
-                .extra_data = self.ast_extra.items,
-                .root = self.last_node,
-                .source = self.source,
-            };
         }
 
         /// 에러 메시지를 반환한다.
@@ -214,6 +216,20 @@ pub fn PatternParser(comptime emit_ast: bool) type {
             return 0;
         }
 
+        /// 고정 크기 버퍼에 값을 추가한다. 오버플로 시 에러를 설정하고 false 반환.
+        fn bufAppend(self: *Self, buf: anytype, len: anytype, value: u32) bool {
+            if (emit_ast) {
+                if (len.* < buf.len) {
+                    buf[len.*] = value;
+                    len.* += 1;
+                    return true;
+                }
+                self.setError("too many items in regular expression");
+                return false;
+            }
+            return true;
+        }
+
         // ================================================================
         // 핵심 파싱 함수
         // ================================================================
@@ -240,6 +256,9 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     if (buf_len < 64) {
                         buf[buf_len] = @intFromEnum(self.last_node);
                         buf_len += 1;
+                    } else {
+                        self.setError("too many alternatives in regular expression");
+                        return;
                     }
                 }
 
@@ -284,6 +303,9 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     if (buf_len < 256) {
                         buf[buf_len] = @intFromEnum(self.last_node);
                         buf_len += 1;
+                    } else {
+                        self.setError("too many terms in regular expression alternative");
+                        return;
                     }
                 }
 
@@ -307,7 +329,6 @@ pub fn PatternParser(comptime emit_ast: bool) type {
             if (self.parseAssertion()) return;
 
             // Atom
-            const atom_start = self.pos;
             if (!self.parseAtom()) {
                 if (self.err_message == null) {
                     self.setError("unexpected character in regular expression");
@@ -317,7 +338,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
 
             // Quantifier: *, +, ?, {n,m}
             // last_node는 parseAtom이 설정. parseQuantifier가 감쌀 수 있음.
-            self.parseQuantifier(atom_start);
+            self.parseQuantifier();
         }
 
         // ================================================================
@@ -720,6 +741,9 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         if (self.named_ref_count < 32) {
                             self.named_refs[self.named_ref_count] = ref_name;
                             self.named_ref_count += 1;
+                        } else {
+                            self.setError("too many named back references");
+                            return false;
                         }
                         if (emit_ast) {
                             self.last_node = self.addNode(.named_reference, .{
@@ -797,9 +821,9 @@ pub fn PatternParser(comptime emit_ast: bool) type {
             self.advance(); // skip '['
             const negated = self.eat('^');
 
-            // 스택 버퍼에 class content 인덱스를 모은다 (최대 128개)
-            var buf: [128]u32 = undefined;
-            var buf_len: u32 = 0;
+            // emit_ast=true일 때만 버퍼 할당 (스택 절약)
+            var buf: if (emit_ast) [128]u32 else void = if (emit_ast) undefined else {};
+            var buf_len: if (emit_ast) u32 else void = if (emit_ast) 0 else {};
 
             while (!self.isEnd() and self.peek() != ']') {
                 const atom_pos = self.pos;
@@ -815,7 +839,6 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         if (!self.parseClassAtom()) {
                             if (self.err_message != null) return false;
                         }
-                        // range: first - second
                         if (emit_ast) {
                             const second_node = self.last_node;
                             const range_node = self.addNode(.character_class_range, .{
@@ -826,32 +849,22 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                                 @intFromEnum(second_node),
                                 0,
                             });
-                            if (buf_len < 128) {
-                                buf[buf_len] = @intFromEnum(range_node);
-                                buf_len += 1;
-                            }
+                            if (!self.bufAppend(&buf, &buf_len, @intFromEnum(range_node))) return false;
                         }
                     } else {
                         // trailing dash: first + '-'
                         if (emit_ast) {
-                            if (buf_len < 127) {
-                                buf[buf_len] = @intFromEnum(first_node);
-                                buf_len += 1;
-                                const dash_node = self.addNode(.character, .{
-                                    .start = self.pos - 1,
-                                    .end = self.pos,
-                                }, .{ '-', @intFromEnum(ast.CharacterKind.symbol), 0 });
-                                buf[buf_len] = @intFromEnum(dash_node);
-                                buf_len += 1;
-                            }
+                            if (!self.bufAppend(&buf, &buf_len, @intFromEnum(first_node))) return false;
+                            const dash_node = self.addNode(.character, .{
+                                .start = self.pos - 1,
+                                .end = self.pos,
+                            }, .{ '-', @intFromEnum(ast.CharacterKind.symbol), 0 });
+                            if (!self.bufAppend(&buf, &buf_len, @intFromEnum(dash_node))) return false;
                         }
                     }
                 } else {
                     if (emit_ast) {
-                        if (buf_len < 128) {
-                            buf[buf_len] = @intFromEnum(first_node);
-                            buf_len += 1;
-                        }
+                        if (!self.bufAppend(&buf, &buf_len, @intFromEnum(first_node))) return false;
                     }
                 }
             }
@@ -862,10 +875,8 @@ pub fn PatternParser(comptime emit_ast: bool) type {
             }
 
             if (emit_ast) {
-                // extra_data에 flush
                 const list_start = self.extraLen();
                 for (buf[0..buf_len]) |idx| self.appendExtra(idx);
-                // flags: bit 0 = negative, bits 1-2 = contents kind (union=0)
                 const flags_val: u32 = @intFromBool(negated);
                 self.last_node = self.addNode(.character_class, .{
                     .start = class_start,
@@ -964,23 +975,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         return true;
                     },
                     // inline modifiers (?ims:...) or (?ims-ims:...)
-                    'i', 'm', 's' => {
-                        if (!self.parseModifiers()) return false;
-                        self.parseDisjunction();
-                        if (!self.eat(')')) {
-                            self.setError("unterminated group");
-                            return false;
-                        }
-                        if (emit_ast) {
-                            const body = self.last_node;
-                            self.last_node = self.addNode(.ignore_group, .{
-                                .start = group_start,
-                                .end = self.pos,
-                            }, .{ 0, 0, @intFromEnum(body) });
-                        }
-                        return true;
-                    },
-                    '-' => {
+                    'i', 'm', 's', '-' => {
                         if (!self.parseModifiers()) return false;
                         self.parseDisjunction();
                         if (!self.eat(')')) {
@@ -1191,7 +1186,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         // Quantifier
         // ================================================================
 
-        fn parseQuantifier(self: *Self, _: u32) void {
+        fn parseQuantifier(self: *Self) void {
             if (self.isEnd()) return;
             const qc = self.peek();
 
@@ -1501,7 +1496,8 @@ test "AST: basic literal pattern" {
     const result = p.parse();
     try std.testing.expect(result != null);
 
-    const tree = result.?;
+    var tree = result.?;
+    defer tree.deinit();
     try std.testing.expect(tree.nodeCount() > 0);
 
     // 루트는 disjunction
@@ -1540,7 +1536,8 @@ test "AST: alternation" {
     const result = p.parse();
     try std.testing.expect(result != null);
 
-    const tree = result.?;
+    var tree = result.?;
+    defer tree.deinit();
     const root = tree.getNode(tree.root);
     try std.testing.expectEqual(ast.Tag.disjunction, root.tag);
 
@@ -1557,7 +1554,8 @@ test "AST: capturing group" {
     const result = p.parse();
     try std.testing.expect(result != null);
 
-    const tree = result.?;
+    var tree = result.?;
+    defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
     const alt_idx: ast.NodeIndex = @enumFromInt(tree.extra_data[alts.start]);
@@ -1581,7 +1579,8 @@ test "AST: named group" {
     const result = p.parse();
     try std.testing.expect(result != null);
 
-    const tree = result.?;
+    var tree = result.?;
+    defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
     const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
@@ -1604,7 +1603,8 @@ test "AST: quantifier" {
     const result = p.parse();
     try std.testing.expect(result != null);
 
-    const tree = result.?;
+    var tree = result.?;
+    defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
     const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
@@ -1631,7 +1631,8 @@ test "AST: lazy quantifier" {
     const result = p.parse();
     try std.testing.expect(result != null);
 
-    const tree = result.?;
+    var tree = result.?;
+    defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
     const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
@@ -1652,7 +1653,8 @@ test "AST: dot" {
     const result = p.parse();
     try std.testing.expect(result != null);
 
-    const tree = result.?;
+    var tree = result.?;
+    defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
     const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
@@ -1670,7 +1672,8 @@ test "AST: character class escape" {
     const result = p.parse();
     try std.testing.expect(result != null);
 
-    const tree = result.?;
+    var tree = result.?;
+    defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
     const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
@@ -1689,7 +1692,8 @@ test "AST: character class" {
     const result = p.parse();
     try std.testing.expect(result != null);
 
-    const tree = result.?;
+    var tree = result.?;
+    defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
     const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
@@ -1712,7 +1716,8 @@ test "AST: character class range" {
     const result = p.parse();
     try std.testing.expect(result != null);
 
-    const tree = result.?;
+    var tree = result.?;
+    defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
     const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
@@ -1739,7 +1744,8 @@ test "AST: negated character class" {
     const result = p.parse();
     try std.testing.expect(result != null);
 
-    const tree = result.?;
+    var tree = result.?;
+    defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
     const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
@@ -1759,7 +1765,8 @@ test "AST: boundary assertion" {
     const result = p.parse();
     try std.testing.expect(result != null);
 
-    const tree = result.?;
+    var tree = result.?;
+    defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
     const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
@@ -1784,7 +1791,8 @@ test "AST: non-capturing group" {
     const result = p.parse();
     try std.testing.expect(result != null);
 
-    const tree = result.?;
+    var tree = result.?;
+    defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
     const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
@@ -1802,7 +1810,8 @@ test "AST: indexed reference" {
     const result = p.parse();
     try std.testing.expect(result != null);
 
-    const tree = result.?;
+    var tree = result.?;
+    defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
     const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
@@ -1823,7 +1832,8 @@ test "AST: lookahead assertion" {
     const result = p.parse();
     try std.testing.expect(result != null);
 
-    const tree = result.?;
+    var tree = result.?;
+    defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
     const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
@@ -1842,7 +1852,8 @@ test "AST: escape characters" {
     const result = p.parse();
     try std.testing.expect(result != null);
 
-    const tree = result.?;
+    var tree = result.?;
+    defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
     const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
@@ -1862,7 +1873,8 @@ test "AST: hex escape" {
     const result = p.parse();
     try std.testing.expect(result != null);
 
-    const tree = result.?;
+    var tree = result.?;
+    defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
     const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
@@ -1881,7 +1893,8 @@ test "AST: braced quantifier" {
     const result = p.parse();
     try std.testing.expect(result != null);
 
-    const tree = result.?;
+    var tree = result.?;
+    defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
     const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
