@@ -109,6 +109,9 @@ pub const Parser = struct {
     has_cover_init_name: bool = false,
     /// formal parameter 파싱 중인지 (yield/await expression 금지).
     in_formal_parameters: bool = false,
+    /// if/with/labeled body에서 labelled function statement 금지 체크 중인지.
+    /// IsLabelledFunction(Statement) is true → SyntaxError
+    in_labelled_fn_check: bool = false,
 
     // ================================================================
     // Context packed struct 정의
@@ -657,6 +660,10 @@ pub const Parser = struct {
                 self.checkAsyncArrowParamsForAwait(node.data.binary.left);
                 self.checkAsyncArrowParamsForAwait(node.data.binary.right);
             },
+            // 중첩 arrow의 파라미터에도 await 사용 금지
+            .arrow_function_expression => {
+                self.checkAsyncArrowParamsForAwait(node.data.binary.left);
+            },
             else => {},
         }
     }
@@ -1158,8 +1165,8 @@ pub const Parser = struct {
     // ================================================================
 
     /// statement position에서 lexical/function declaration 금지를 체크한 뒤 parseStatement 호출.
-    /// is_loop_body: true면 for/while/do-while body (function도 항상 금지)
-    ///               false면 if/else/with/labeled body (function은 Annex B로 non-strict 허용)
+    /// is_loop_body: true면 for/while/do-while/with body (function도 항상 금지)
+    ///               false면 if/else/labeled body (function은 Annex B로 non-strict 허용)
     fn parseStatementChecked(self: *Parser, comptime is_loop_body: bool) ParseError2!NodeIndex {
         switch (self.current()) {
             .kw_const => {
@@ -1182,11 +1189,12 @@ pub const Parser = struct {
                 if (self.peekNextKind() == .star) {
                     // generator는 항상 금지
                     self.addError(self.currentSpan(), "generator declaration is not allowed in statement position");
-                } else if (is_loop_body) {
-                    // loop body에서 function은 항상 금지 (ECMAScript 13.7.4, Annex B 미적용)
+                } else if (is_loop_body or self.in_labelled_fn_check) {
+                    // loop/with body에서 function은 항상 금지 (ECMAScript 13.7.4, Annex B 미적용)
+                    // labelled function이 if/with body를 통해 전파된 경우도 금지
                     self.addError(self.currentSpan(), "function declaration is not allowed in statement position");
                 } else if (self.is_strict_mode) {
-                    // if/else/with/labeled body에서는 strict mode에서만 금지
+                    // if/else/labeled body에서는 strict mode에서만 금지
                     self.addError(self.currentSpan(), "function declaration is not allowed in statement position in strict mode");
                 }
             },
@@ -1227,6 +1235,17 @@ pub const Parser = struct {
                 self.parseConstEnum()
             else
                 self.parseVariableDeclaration(),
+            // using declaration (TC39 Stage 3: Explicit Resource Management)
+            // `using x = getResource()` — parsed like const
+            .kw_using => if (self.isUsingDeclarationStart())
+                self.parseVariableDeclaration()
+            else
+                self.parseExpressionOrLabeledStatement(),
+            // await using declaration: `await using x = getResource()`
+            .kw_await => if (self.isAwaitUsingDeclarationStart())
+                self.parseAwaitUsingDeclaration()
+            else
+                self.parseExpressionOrLabeledStatement(),
             .kw_return => self.parseReturnStatement(),
             .kw_if => self.parseIfStatement(),
             .kw_while => self.parseWhileStatement(),
@@ -1327,14 +1346,44 @@ pub const Parser = struct {
     fn isLetDeclarationStart(self: *Parser) bool {
         const next = self.peekNext();
         if (next.has_newline_before) {
-            // `let` 뒤에 줄바꿈이 있으면 `[`인 경우만 LexicalDeclaration
-            // (ExpressionStatement의 lookahead 제한: `let [` 금지)
-            return next.kind == .l_bracket;
+            // `let` 뒤에 줄바꿈이 있으면, 일반적으로 ASI가 적용되어 `let`은 식별자.
+            // 예외 1: `let [` → ExpressionStatement lookahead 제한으로 항상 LexicalDeclaration.
+            // 예외 2: `let\nlet`, `let\nyield`(generator), `let\nawait`(async) →
+            //         spec 5.3에 의해 ASI 전에 production 매칭 → LexicalDeclaration으로 해석.
+            //         static semantics에서 에러 보고 (let은 binding 불가 등).
+            if (next.kind == .l_bracket) return true;
+            if (next.kind == .kw_let) return true;
+            if (next.kind == .kw_yield and self.ctx.in_generator) return true;
+            if (next.kind == .kw_await and self.ctx.in_async) return true;
+            return false;
         }
         // 줄바꿈 없이 바로 오는 경우: identifier, [, {, escaped_strict_reserved → LexicalDeclaration
         return next.kind == .identifier or next.kind == .l_bracket or next.kind == .l_curly or
             next.kind == .escaped_strict_reserved or
             (next.kind.isKeyword() and !next.kind.isReservedKeyword() and !next.kind.isLiteralKeyword());
+    }
+
+    /// `using` 뒤에 줄바꿈 없이 identifier가 오면 UsingDeclaration으로 해석한다.
+    fn isUsingDeclarationStart(self: *Parser) bool {
+        const next = self.peekNext();
+        if (next.has_newline_before) return false;
+        return next.kind == .identifier or
+            (next.kind.isKeyword() and !next.kind.isReservedKeyword() and !next.kind.isLiteralKeyword());
+    }
+
+    /// `await` + `using` + identifier (줄바꿈 없이) → AwaitUsingDeclaration
+    fn isAwaitUsingDeclarationStart(self: *Parser) bool {
+        if (!self.ctx.in_async) return false;
+        const next = self.peekNext();
+        if (next.has_newline_before or next.kind != .kw_using) return false;
+        // await using 뒤에 identifier가 와야 함 — 더 앞은 볼 수 없으므로 true 반환
+        return true;
+    }
+
+    /// `await using x = expr;` 선언을 파싱한다.
+    fn parseAwaitUsingDeclaration(self: *Parser) ParseError2!NodeIndex {
+        self.advance(); // skip 'await'
+        return self.parseVariableDeclaration(); // 'using'부터 parseVariableDeclaration 진행
     }
 
     /// `identifier:` 패턴이면 labeled statement, 아니면 expression statement.
@@ -1351,7 +1400,16 @@ pub const Parser = struct {
                 // yield/await를 label로 사용하면 generator/async에서 에러
                 self.checkYieldAwaitUse(self.currentSpan(), "label");
                 if (self.current() == .escaped_keyword) {
-                    self.addError(self.currentSpan(), "escaped reserved word cannot be used as label");
+                    // escaped `await` is only reserved in module/async context
+                    const esc_text = self.resolveIdentifierText(self.currentSpan());
+                    const is_escaped_await = std.mem.eql(u8, esc_text, "await");
+                    if (is_escaped_await) {
+                        if (self.is_module or self.ctx.in_async) {
+                            self.addError(self.currentSpan(), "escaped reserved word cannot be used as label");
+                        }
+                    } else {
+                        self.addError(self.currentSpan(), "escaped reserved word cannot be used as label");
+                    }
                 } else if (self.current() == .escaped_strict_reserved and self.is_strict_mode) {
                     self.addError(self.currentSpan(), "escaped reserved word cannot be used as label in strict mode");
                 } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
@@ -1393,7 +1451,12 @@ pub const Parser = struct {
         self.expect(.l_paren);
         const obj = try self.parseExpression();
         self.expect(.r_paren);
-        const body = try self.parseStatementChecked(false);
+        // with body에서 function declaration은 항상 금지 (Annex B에 with 예외 없음)
+        // IsLabelledFunction(Statement) 체크도 필요
+        const saved_labelled = self.in_labelled_fn_check;
+        self.in_labelled_fn_check = true;
+        const body = try self.parseStatementChecked(true);
+        self.in_labelled_fn_check = saved_labelled;
         return try self.ast.addNode(.{
             .tag = .with_statement,
             .span = .{ .start = start, .end = self.currentSpan().start },
@@ -1407,9 +1470,10 @@ pub const Parser = struct {
             .kw_var => 0,
             .kw_let => 1,
             .kw_const => 2,
+            .kw_using => 2, // using은 const처럼 동작 (block-scoped, immutable)
             else => 0,
         };
-        self.advance(); // skip var/let/const
+        self.advance(); // skip var/let/const/using
 
         // let/const 선언에서 바인딩 이름 'let'은 금지 (ECMAScript 14.3.1.1)
         // 'let let = 1' → SyntaxError (non-strict에서도)
@@ -1523,12 +1587,16 @@ pub const Parser = struct {
         self.expect(.l_paren);
         const test_expr = try self.parseExpression();
         self.expect(.r_paren);
+        // ECMAScript 13.6.1: IsLabelledFunction(Statement) → SyntaxError
+        const saved_labelled = self.in_labelled_fn_check;
+        self.in_labelled_fn_check = true;
         const consequent = try self.parseStatementChecked(false);
 
         var alternate = NodeIndex.none;
         if (self.eat(.kw_else)) {
             alternate = try self.parseStatementChecked(false);
         }
+        self.in_labelled_fn_check = saved_labelled;
 
         return try self.ast.addNode(.{
             .tag = .if_statement,
@@ -2404,9 +2472,10 @@ pub const Parser = struct {
             const saved_super_prop_for_params = self.allow_super_property;
             self.in_static_initializer = false;
             self.in_class_field = false;
-            // async/generator 메서드의 파라미터에서 await/yield 금지
-            if ((flags & 0x08) != 0) self.ctx.in_async = true;
-            if ((flags & 0x10) != 0) self.ctx.in_generator = true;
+            // 메서드의 파라미터에서 async/generator 컨텍스트 설정
+            // 非async/非generator 메서드에서는 await/yield를 식별자로 사용 가능
+            self.ctx.in_async = (flags & 0x08) != 0;
+            self.ctx.in_generator = (flags & 0x10) != 0;
             // class 메서드의 파라미터에서 super.prop 허용 (ECMAScript 15.7.5)
             self.allow_super_property = true;
             self.expect(.l_paren);
@@ -3203,11 +3272,12 @@ pub const Parser = struct {
         // arrow function은 generator가 될 수 없으므로 is_generator=false
         const saved_ctx = self.enterFunctionContext(is_async, false);
         // arrow function은 자체 바인딩이 없으므로 외부 컨텍스트를 상속:
-        // - in_class_field/in_static_initializer: arguments 사용 제한
+        // - in_class_field: arguments 사용 제한 (arrow에는 자체 arguments 없음)
         // - allow_new_target: new.target 허용 여부 (global arrow에서는 false)
         // - allow_super_call/allow_super_property: super 접근 허용 여부 (메서드 내 arrow에서 super 사용)
+        // 주의: in_static_initializer는 상속하지 않음 — arrow 내에서 await은 식별자로 사용 가능
+        // (ECMAScript ContainsAwait이 ArrowFunction을 면제)
         self.in_class_field = saved_ctx.in_class_field;
-        self.in_static_initializer = saved_ctx.in_static_initializer;
         self.allow_new_target = saved_ctx.allow_new_target;
         self.allow_super_call = saved_ctx.allow_super_call;
         self.allow_super_property = saved_ctx.allow_super_property;
@@ -3367,6 +3437,11 @@ pub const Parser = struct {
                 self.current() != .template_middle and self.current() != .template_tail and
                 self.current() != .eof)
             {
+                // yield 뒤의 /는 regexp로 재스캔 (division이 아님)
+                // yield의 RHS에서 /abc/i 같은 regexp가 올 수 있다
+                if (self.current() == .slash or self.current() == .slash_eq) {
+                    self.scanner.rescanAsRegexp();
+                }
                 operand = try self.parseAssignmentExpression();
             }
             return try self.ast.addNode(.{
@@ -3421,12 +3496,14 @@ pub const Parser = struct {
 
         if (self.eat(.question)) {
             const expr_start = self.ast.getNode(expr).span.start;
-            // 조건 연산자의 consequent/alternate에서는 `in` 연산자 항상 허용
+            // ECMAScript: ConditionalExpression[In] →
+            //   ... ? AssignmentExpression[+In] : AssignmentExpression[?In]
+            // consequent는 항상 `in` 허용, alternate는 외부 context 유지
             const cond_saved = self.enterAllowInContext(true);
             const consequent = try self.parseAssignmentExpression();
+            self.restoreContext(cond_saved); // alternate는 원래 context로 복원
             self.expect(.colon);
             const alternate = try self.parseAssignmentExpression();
-            self.restoreContext(cond_saved);
             return try self.ast.addNode(.{
                 .tag = .conditional_expression,
                 .span = .{ .start = expr_start, .end = self.currentSpan().start },
@@ -3684,8 +3761,18 @@ pub const Parser = struct {
                     // 멤버 접근: a.b
                     self.advance();
                     const prop = try self.parseIdentifierName();
+                    // super.#private → SyntaxError (ECMAScript: SuperProperty doesn't include PrivateName)
+                    if (!prop.isNone() and self.ast.getNode(prop).tag == .private_identifier) {
+                        const obj_node = self.ast.getNode(expr);
+                        if (obj_node.tag == .super_expression) {
+                            self.addError(self.ast.getNode(prop).span, "private field access on super is not allowed");
+                        }
+                    }
                     expr = try self.ast.addNode(.{
-                        .tag = .static_member_expression,
+                        .tag = if (!prop.isNone() and self.ast.getNode(prop).tag == .private_identifier)
+                            .private_field_expression
+                        else
+                            .static_member_expression,
                         .span = .{ .start = expr_start, .end = self.currentSpan().start },
                         .data = .{ .binary = .{ .left = expr, .right = prop, .flags = 0 } },
                     });
@@ -3838,7 +3925,7 @@ pub const Parser = struct {
                 // ECMAScript 15.7.1 (class field), 15.7.14 (static block)
                 // 이 컨텍스트들은 자체 arguments 바인딩이 없다.
                 if (self.in_class_field or self.in_static_initializer) {
-                    const text = self.ast.source[span.start..span.end];
+                    const text = self.resolveIdentifierText(span);
                     if (std.mem.eql(u8, text, "arguments")) {
                         const msg = if (self.in_static_initializer)
                             "'arguments' is not allowed in class static initializer"
@@ -4364,6 +4451,11 @@ pub const Parser = struct {
         // 키: identifier, string, number, 또는 computed [expr]
         const key = try self.parsePropertyKey();
 
+        // object literal에서 private identifier는 키로 사용 불가
+        if (!key.isNone() and self.ast.getNode(key).tag == .private_identifier) {
+            self.addError(self.ast.getNode(key).span, "private identifier is not allowed as object property key");
+        }
+
         // 메서드 shorthand: { foo() {} }
         if (self.current() == .l_paren) {
             return self.parseObjectMethodBody(start, key, 0);
@@ -4388,7 +4480,13 @@ pub const Parser = struct {
                     .identifier_reference => {
                         const key_text = self.resolveIdentifierText(key_node.span);
                         if (token_mod.keywords.get(key_text)) |kw| {
-                            if (kw.isReservedKeyword() or kw.isLiteralKeyword()) {
+                            // await/yield は contextual keyword — 特定のコンテキストでのみ reserved
+                            const is_context_reserved = if (kw == .kw_await)
+                                // await은 module 또는 async context에서만 reserved
+                                false // kw_await 전용 체크는 아래에서 별도 처리
+                            else
+                                kw.isReservedKeyword() or kw.isLiteralKeyword();
+                            if (is_context_reserved) {
                                 self.addError(key_node.span, "reserved word cannot be used as shorthand property");
                             } else if (self.is_strict_mode and kw.isStrictModeReserved()) {
                                 self.addError(key_node.span, "reserved word in strict mode cannot be used as shorthand property");

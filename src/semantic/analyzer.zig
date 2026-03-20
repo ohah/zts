@@ -82,6 +82,11 @@ pub const SemanticAnalyzer = struct {
     /// label 스택. labeled statement 진입 시 push, 퇴장 시 pop.
     /// 함수 경계에서 saved_label_len으로 저장/복원 (label은 함수를 넘지 못함).
     labels: std.ArrayList(LabelEntry) = undefined,
+    /// label fence: 함수 경계에서 외부 label을 숨기기 위한 인덱스.
+    /// findLabel은 fence 이후의 label만 검색한다.
+    label_fence: usize = 0,
+    /// resolvePrivateName에서 할당된 문자열 (deinit에서 해제)
+    resolved_names: std.ArrayList([]const u8) = undefined,
 
     const PrivateRef = struct {
         name: []const u8,
@@ -117,6 +122,7 @@ pub const SemanticAnalyzer = struct {
             .class_private_declared = std.ArrayList(std.StringHashMap(PrivateNameInfo)).init(allocator),
             .class_private_refs = std.ArrayList(std.ArrayList(PrivateRef)).init(allocator),
             .labels = std.ArrayList(LabelEntry).init(allocator),
+            .resolved_names = std.ArrayList([]const u8).init(allocator),
             .errors = std.ArrayList(SemanticError).init(allocator),
             .allocator = allocator,
         };
@@ -131,6 +137,11 @@ pub const SemanticAnalyzer = struct {
         self.symbols.deinit();
         self.exported_names.deinit();
         self.labels.deinit();
+        // resolvePrivateName에서 할당된 문자열 해제
+        for (self.resolved_names.items) |name| {
+            self.allocator.free(name);
+        }
+        self.resolved_names.deinit();
         self.errors.deinit();
         for (self.class_private_declared.items) |*map| map.deinit();
         self.class_private_declared.deinit();
@@ -171,19 +182,25 @@ pub const SemanticAnalyzer = struct {
     // ================================================================
 
     /// label 스택의 현재 길이를 저장한다. 함수 경계에서 복원용.
-    fn saveLabelLen(self: *const SemanticAnalyzer) usize {
-        return self.labels.items.len;
+    fn saveLabelLen(self: *SemanticAnalyzer) usize {
+        const saved = self.label_fence;
+        // 함수 경계에서 label fence를 현재 위치로 설정.
+        // findLabel은 fence 이후의 label만 검색한다.
+        self.label_fence = self.labels.items.len;
+        return saved;
     }
 
-    /// label 스택을 저장된 길이로 복원한다.
+    /// label fence를 복원하고, 함수 내부에서 추가된 label을 제거한다.
     fn restoreLabelLen(self: *SemanticAnalyzer, saved: usize) void {
-        self.labels.shrinkRetainingCapacity(saved);
+        self.labels.shrinkRetainingCapacity(self.label_fence);
+        self.label_fence = saved;
     }
 
     /// label 이름으로 검색한다. 없으면 null.
     fn findLabel(self: *const SemanticAnalyzer, name: []const u8) ?LabelEntry {
         var i = self.labels.items.len;
-        while (i > 0) {
+        // label_fence 이후의 label만 검색 (함수 경계 외부 label 숨김)
+        while (i > self.label_fence) {
             i -= 1;
             if (std.mem.eql(u8, self.labels.items[i].name, name)) {
                 return self.labels.items[i];
@@ -311,7 +328,10 @@ pub const SemanticAnalyzer = struct {
             }
         }
 
-        return self.allocator.dupe(u8, buf.items) catch @panic("OOM: resolvePrivateName");
+        const result = self.allocator.dupe(u8, buf.items) catch @panic("OOM: resolvePrivateName");
+        // 할당된 문자열을 추적하여 deinit에서 해제
+        self.resolved_names.append(result) catch @panic("OOM: resolvePrivateName tracking");
+        return result;
     }
 
     /// private name 참조를 기록한다 (class body 퇴장 시 검증).
@@ -818,12 +838,11 @@ pub const SemanticAnalyzer = struct {
         const saved = self.enterScope(.function, self.is_strict_mode);
         const saved_labels = self.saveLabelLen();
 
-        // 함수 표현식의 이름은 자체 스코프에만 등록 (외부에서 접근 불가)
-        const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
-        if (!name_idx.isNone()) {
-            const name_node = self.ast.getNode(name_idx);
-            self.declareSymbol(name_node.span, .function_decl, node.span);
-        }
+        // 함수 표현식의 이름은 자체 스코프에만 등록 (외부에서 접근 불가).
+        // ECMAScript: 함수 표현식 이름은 implicit binding으로, body의 let/const/var로 섀도잉 가능.
+        // 재선언 충돌을 일으키지 않도록 symbol 등록을 생략한다.
+        // (이름의 read-only 접근은 런타임에서 처리)
+        _ = @as(NodeIndex, @enumFromInt(extras[extra_start])); // name_idx (사용하지 않음)
 
         const params_start = extras[extra_start + 1];
         const params_len = extras[extra_start + 2];
@@ -1065,14 +1084,118 @@ pub const SemanticAnalyzer = struct {
         // binary: { left = param, right = body, flags }
         const saved = self.enterScope(.catch_clause, self.is_strict_mode);
         const param_idx = node.data.binary.left;
+
+        // catch param 이름 수집 (중복 바인딩 검사 + block body 충돌 검사용)
+        var catch_names: [16]Span = undefined;
+        var catch_name_count: usize = 0;
+
         if (!param_idx.isNone()) {
             const param_node = self.ast.getNode(param_idx);
             if (param_node.tag == .binding_identifier) {
                 self.declareSymbol(param_node.span, .catch_binding, param_node.span);
+                if (catch_name_count < 16) {
+                    catch_names[catch_name_count] = param_node.span;
+                    catch_name_count += 1;
+                }
+            } else {
+                // Destructuring pattern — collect all binding names and check duplicates
+                self.collectAndCheckCatchBindings(param_idx, &catch_names, &catch_name_count);
             }
         }
-        self.visitNode(node.data.binary.right); // body
+
+        // Visit body (block statement) with catch param conflict checking
+        const body_idx = node.data.binary.right;
+        if (!body_idx.isNone()) {
+            const body_node = self.ast.getNode(body_idx);
+            if (body_node.tag == .block_statement and catch_name_count > 0) {
+                // Enter block scope for the body
+                const block_saved = self.enterScope(.block, self.is_strict_mode);
+                // Visit block body statements
+                self.visitNodeList(body_node.data.list);
+                // Check for catch param conflicts with lexically-declared names in the block
+                self.checkCatchBodyConflicts(catch_names[0..catch_name_count]);
+                self.exitScope(block_saved);
+            } else {
+                self.visitNode(body_idx);
+            }
+        }
         self.exitScope(saved);
+    }
+
+    /// Collect binding names from destructuring pattern and check for duplicate catch bindings.
+    fn collectAndCheckCatchBindings(self: *SemanticAnalyzer, idx: NodeIndex, names: *[16]Span, count: *usize) void {
+        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        const node = self.ast.getNode(idx);
+        switch (node.tag) {
+            .binding_identifier => {
+                // Check for duplicate
+                const name_text = self.ast.source[node.span.start..node.span.end];
+                for (names.*[0..count.*]) |existing_span| {
+                    const existing_text = self.ast.source[existing_span.start..existing_span.end];
+                    if (std.mem.eql(u8, name_text, existing_text)) {
+                        self.addError(node.span, name_text);
+                        return;
+                    }
+                }
+                self.declareSymbol(node.span, .catch_binding, node.span);
+                if (count.* < 16) {
+                    names.*[count.*] = node.span;
+                    count.* += 1;
+                }
+            },
+            .array_pattern, .array_expression => {
+                // list: binding elements
+                if (node.data.list.len == 0) return;
+                if (node.data.list.start + node.data.list.len > self.ast.extra_data.items.len) return;
+                const indices = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+                for (indices) |raw_idx| {
+                    self.collectAndCheckCatchBindings(@enumFromInt(raw_idx), names, count);
+                }
+            },
+            .object_pattern, .object_expression => {
+                if (node.data.list.len == 0) return;
+                if (node.data.list.start + node.data.list.len > self.ast.extra_data.items.len) return;
+                const indices = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+                for (indices) |raw_idx| {
+                    const prop_idx: NodeIndex = @enumFromInt(raw_idx);
+                    if (prop_idx.isNone() or @intFromEnum(prop_idx) >= self.ast.nodes.items.len) continue;
+                    const prop = self.ast.getNode(prop_idx);
+                    if (prop.tag == .object_property or
+                        prop.tag == .assignment_target_property_identifier)
+                    {
+                        self.collectAndCheckCatchBindings(prop.data.binary.right, names, count);
+                    } else {
+                        self.collectAndCheckCatchBindings(prop_idx, names, count);
+                    }
+                }
+            },
+            .assignment_pattern, .assignment_target_with_default => {
+                // binary: { left = pattern, right = default }
+                self.collectAndCheckCatchBindings(node.data.binary.left, names, count);
+            },
+            .rest_element => {
+                self.collectAndCheckCatchBindings(node.data.unary.operand, names, count);
+            },
+            else => {},
+        }
+    }
+
+    /// Check if any lexically-declared name in the catch body block conflicts with catch parameter names.
+    fn checkCatchBodyConflicts(self: *SemanticAnalyzer, catch_names: []const Span) void {
+        // Check symbols declared in current scope against catch parameter names
+        for (self.symbols.items) |sym| {
+            if (@intFromEnum(sym.scope_id) != @intFromEnum(self.current_scope)) continue;
+            // Only block-scoped (let/const/class) and function-like declarations conflict
+            if (!sym.kind.isBlockScoped() and !sym.kind.isFunctionLike()) continue;
+            const sym_name = self.ast.source[sym.name.start..sym.name.end];
+            for (catch_names) |catch_span| {
+                const catch_name = self.ast.source[catch_span.start..catch_span.end];
+                if (std.mem.eql(u8, sym_name, catch_name)) {
+                    self.addError(sym.declaration_span, sym_name);
+                    return;
+                }
+            }
+        }
     }
 
     fn visitSwitchCase(self: *SemanticAnalyzer, node: Node) void {
