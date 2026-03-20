@@ -466,6 +466,189 @@ pub const Parser = struct {
         }
     }
 
+    // ================================================================
+    // Cover Grammar: expression → assignment target 재해석 (oxc 방식)
+    // ================================================================
+    //
+    // ECMAScript의 "cover grammar"은 expression과 pattern이 같은 구문 형태를
+    // 공유하기 때문에 파서가 expression으로 먼저 파싱한 후, 문맥에 따라
+    // assignment target으로 재해석하는 메커니즘이다.
+    //
+    // 예: `[a, b] = [1, 2]` — 좌변은 array_expression으로 파싱되지만
+    //     `=`를 만나는 순간 array destructuring pattern으로 재해석된다.
+    //
+    // 기존에는 이 재해석을 위한 검증이 6개 함수에 분산되어 있었다.
+    // coverExpressionToAssignmentTarget은 이를 단일 재귀 walk로 통합한다.
+    //
+    // 한 번의 순회에서 검증하는 규칙:
+    // 1. 구조적 유효성: identifier, member expr, destructuring만 assignment target
+    // 2. rest/spread initializer 금지: [...x = 1] = arr → SyntaxError
+    // 3. escaped keyword 금지: ({ v\u0061r }) = x → SyntaxError
+    // 4. strict mode eval/arguments 할당 금지
+    // 5. parenthesized destructuring 금지: ({x}) = 1 → SyntaxError
+
+    /// expression을 assignment target으로 검증하는 단일 재귀 walk.
+    /// 기존의 isValidAssignmentTarget + checkRestInitInAssignmentPattern +
+    /// checkSpreadRestInit + checkEscapedKeywordInPattern +
+    /// checkStrictAssignmentTarget 5개 함수를 하나로 통합한다.
+    ///
+    /// 반환값: true면 valid assignment target, false면 에러를 이미 추가했거나 invalid.
+    /// is_top이 true면 최상위 호출 (invalid일 때 "invalid assignment target" 에러 추가).
+    fn coverExpressionToAssignmentTarget(self: *Parser, idx: NodeIndex, is_top: bool) bool {
+        if (idx.isNone()) return false;
+        const node = self.ast.getNode(idx);
+        return switch (node.tag) {
+            // 1) identifier — valid target. escaped keyword + strict eval/arguments 검증.
+            .identifier_reference => {
+                // escaped keyword 검증: v\u0061r → "var"이면 에러
+                self.checkIdentifierEscapedKeyword(node.span);
+                // strict mode: eval/arguments에 할당 금지
+                if (self.ctx.is_strict_mode) {
+                    self.checkStrictBinding(node.span);
+                }
+                return true;
+            },
+            .private_identifier, .private_field_expression => true,
+
+            // 2) member expression — optional chaining이 아니면 valid
+            .static_member_expression, .computed_member_expression => {
+                return node.data.binary.flags == 0; // 0 = normal, 1 = optional
+            },
+
+            // 3) array destructuring — 각 요소를 재귀 검증
+            .array_expression => {
+                self.coverArrayExpressionToTarget(node);
+                return true;
+            },
+
+            // 4) object destructuring — 각 프로퍼티를 재귀 검증
+            .object_expression => {
+                self.coverObjectExpressionToTarget(node);
+                return true;
+            },
+
+            // 5) parenthesized expression — 내부를 벗겨서 검증
+            .parenthesized_expression => {
+                const inner = node.data.unary.operand;
+                if (inner.isNone()) {
+                    if (is_top) self.addError(node.span, "invalid assignment target");
+                    return false;
+                }
+                const inner_tag = self.ast.getNode(inner).tag;
+                // ({x}) = 1, ([x]) = 1 → parenthesized destructuring 금지
+                if (inner_tag == .array_expression or inner_tag == .object_expression) {
+                    self.addError(node.span, "invalid assignment target");
+                    return false;
+                }
+                // (x) = 1 → 내부가 simple target이면 OK
+                return self.coverExpressionToAssignmentTarget(inner, is_top);
+            },
+
+            // 6) assignment expression은 nested 위치에서 유효 (destructuring default)
+            //    하지만 이 함수는 assignment target 검증이므로 invalid
+            else => {
+                if (is_top) self.addError(node.span, "invalid assignment target");
+                return false;
+            },
+        };
+    }
+
+    /// array expression 내부를 assignment target으로 검증 (coverExpressionToAssignmentTarget 헬퍼).
+    /// 각 요소의 spread rest-init 금지 + nested pattern 재귀 + escaped keyword 검증.
+    fn coverArrayExpressionToTarget(self: *Parser, node: Node) void {
+        const list = node.data.list;
+        var i: u32 = 0;
+        while (i < list.len) : (i += 1) {
+            const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+            if (elem_idx.isNone()) continue; // elision
+            const elem = self.ast.getNode(elem_idx);
+            switch (elem.tag) {
+                .spread_element => {
+                    // [...x = 1] → rest에 initializer 금지
+                    const operand_idx = elem.data.unary.operand;
+                    const operand = self.ast.getNode(operand_idx);
+                    if (operand.tag == .assignment_expression) {
+                        self.addError(operand.span, rest_init_error);
+                    }
+                    // spread operand를 재귀 검증 (nested pattern일 수 있음)
+                    _ = self.coverExpressionToAssignmentTarget(operand_idx, false);
+                },
+                .assignment_expression => {
+                    // [x = 1] → left를 재귀 검증 (nested pattern일 수 있음)
+                    _ = self.coverExpressionToAssignmentTarget(elem.data.binary.left, false);
+                },
+                .identifier_reference => {
+                    self.checkIdentifierEscapedKeyword(elem.span);
+                    if (self.ctx.is_strict_mode) {
+                        self.checkStrictBinding(elem.span);
+                    }
+                },
+                else => {
+                    // nested array/object/member 등 재귀
+                    _ = self.coverExpressionToAssignmentTarget(elem_idx, false);
+                },
+            }
+        }
+    }
+
+    /// object expression 내부를 assignment target으로 검증 (coverExpressionToAssignmentTarget 헬퍼).
+    /// 각 프로퍼티의 shorthand escaped keyword + spread rest-init + nested value 재귀 검증.
+    fn coverObjectExpressionToTarget(self: *Parser, node: Node) void {
+        const list = node.data.list;
+        var i: u32 = 0;
+        while (i < list.len) : (i += 1) {
+            const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+            if (elem_idx.isNone()) continue;
+            const elem = self.ast.getNode(elem_idx);
+            if (elem.tag == .object_property) {
+                if (!elem.data.binary.left.isNone() and !elem.data.binary.right.isNone()) {
+                    // shorthand 검증: key와 value가 같은 span이면 shorthand
+                    const key_span = self.ast.getNode(elem.data.binary.left).span;
+                    const val_node = self.ast.getNode(elem.data.binary.right);
+                    const is_shorthand = key_span.start == val_node.span.start and key_span.end == val_node.span.end;
+                    if (is_shorthand) {
+                        self.checkIdentifierEscapedKeyword(key_span);
+                    }
+                    // value를 재귀 검증 (nested pattern일 수 있음)
+                    _ = self.coverExpressionToAssignmentTarget(elem.data.binary.right, false);
+                }
+            } else if (elem.tag == .spread_element) {
+                // {...x = 1} → rest에 initializer 금지
+                const operand_idx = elem.data.unary.operand;
+                const operand = self.ast.getNode(operand_idx);
+                if (operand.tag == .assignment_expression) {
+                    self.addError(operand.span, rest_init_error);
+                }
+                _ = self.coverExpressionToAssignmentTarget(operand_idx, false);
+            }
+        }
+    }
+
+    /// arrow function 파라미터를 cover grammar으로 검증.
+    /// parenthesized/sequence expression을 풀어서 각 요소에
+    /// coverExpressionToAssignmentTarget을 위임한다.
+    ///
+    /// 기존 checkRestInitInArrowParams를 대체한다.
+    fn coverExpressionToArrowParams(self: *Parser, idx: NodeIndex) void {
+        if (idx.isNone()) return;
+        const node = self.ast.getNode(idx);
+        if (node.tag == .parenthesized_expression) {
+            // (expr) → 내부를 다시 풀기
+            self.coverExpressionToArrowParams(node.data.unary.operand);
+        } else if (node.tag == .sequence_expression) {
+            // (a, b, c) → 각 요소를 개별 검증
+            const list = node.data.list;
+            var i: u32 = 0;
+            while (i < list.len) : (i += 1) {
+                const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+                _ = self.coverExpressionToAssignmentTarget(elem_idx, false);
+            }
+        } else {
+            // 단일 expression → 직접 검증
+            _ = self.coverExpressionToAssignmentTarget(idx, false);
+        }
+    }
+
     /// 키워드를 바인딩 위치에서 사용할 때의 검증.
     /// ECMAScript 12.1.1: reserved keyword, strict mode reserved, contextual keywords.
     fn checkKeywordBinding(self: *Parser) void {
@@ -6533,4 +6716,108 @@ test "Parser: arguments in class field initializer is error" {
         _ = try parser.parse();
         try std.testing.expect(parser.errors.items.len == 0);
     }
+}
+
+// ============================================================
+// Cover Grammar 유닛 테스트
+// ============================================================
+
+test "CoverGrammar: rest element with initializer in array destructuring" {
+    // [...x = 1] = arr → rest에 initializer 금지
+    var scanner = Scanner.init(std.testing.allocator, "[...x = 1] = arr;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+    // "rest element may not have a default initializer" 에러가 포함되어야 함
+    var found = false;
+    for (parser.errors.items) |err| {
+        if (std.mem.indexOf(u8, err.message, "rest element") != null) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "CoverGrammar: valid array destructuring" {
+    // [a, b, ...c] = arr → 에러 없음
+    var scanner = Scanner.init(std.testing.allocator, "[a, b, ...c] = arr;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "CoverGrammar: valid object destructuring" {
+    // ({ a, b: c } = obj) → 에러 없음
+    var scanner = Scanner.init(std.testing.allocator, "({ a, b: c } = obj);");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "CoverGrammar: strict mode eval assignment" {
+    // "use strict"; eval = 1 → 에러
+    var scanner = Scanner.init(std.testing.allocator, "\"use strict\"; eval = 1;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "CoverGrammar: parenthesized destructuring is invalid" {
+    // ([x]) = 1 → parenthesized destructuring 금지
+    var scanner = Scanner.init(std.testing.allocator, "([x]) = 1;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "CoverGrammar: for-in with rest-init is error" {
+    // for ([...x = 1] in obj) {} → rest-init 금지
+    var scanner = Scanner.init(std.testing.allocator, "for ([...x = 1] in obj) {}");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    var found = false;
+    for (parser.errors.items) |err| {
+        if (std.mem.indexOf(u8, err.message, "rest element") != null) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "CoverGrammar: arrow params rest-init is error" {
+    // ([...x = 1]) => {} → rest-init 금지
+    var scanner = Scanner.init(std.testing.allocator, "([...x = 1]) => {};");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    var found = false;
+    for (parser.errors.items) |err| {
+        if (std.mem.indexOf(u8, err.message, "rest element") != null) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
 }
