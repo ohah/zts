@@ -58,6 +58,8 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         last_class_value: u32 = 0,
         /// 마지막 class atom이 \d, \D, \w, \W, \s, \S인지 (range endpoint 금지).
         last_class_is_class_escape: bool = false,
+        /// v-flag class의 contents kind (parseClassSetExpression이 설정).
+        last_class_contents_kind: ast.CharacterClassContentsKind = .@"union",
 
         // ── AST 모드 전용 필드 ──
         // emit_ast=false일 때는 void 타입 (0바이트, 메모리 사용 없음)
@@ -894,62 +896,67 @@ pub fn PatternParser(comptime emit_ast: bool) type {
             var buf: if (emit_ast) [128]u32 else void = if (emit_ast) undefined else {};
             var buf_len: if (emit_ast) u32 else void = if (emit_ast) 0 else {};
 
-            while (!self.isEnd() and self.peek() != ']') {
-                const atom_pos = self.pos;
-                if (!self.parseClassAtom()) {
-                    if (self.err_message != null) return false;
-                }
-                const first_node = if (emit_ast) self.last_node else {};
-                const first_value = self.last_class_value;
-                const first_is_escape = self.last_class_is_class_escape;
+            if (self.flags.v) {
+                // ── v-flag (unicodeSets): set operations + nested classes ──
+                self.last_class_contents_kind = .@"union";
+                self.parseClassSetExpression(&buf, &buf_len);
+                if (self.err_message != null) return false;
+            } else {
+                // ── 기존 모드: 단순 atom + range ──
+                while (!self.isEnd() and self.peek() != ']') {
+                    const atom_pos = self.pos;
+                    if (!self.parseClassAtom()) {
+                        if (self.err_message != null) return false;
+                    }
+                    const first_node = if (emit_ast) self.last_node else {};
+                    const first_value = self.last_class_value;
+                    const first_is_escape = self.last_class_is_class_escape;
 
-                // range: a-z
-                if (!self.isEnd() and self.peek() == '-') {
-                    self.advance();
-                    if (!self.isEnd() and self.peek() != ']') {
-                        if (!self.parseClassAtom()) {
-                            if (self.err_message != null) return false;
-                        }
-                        // unicode mode: class escape(\d 등)를 range endpoint로 사용 금지
-                        if (self.flags.hasUnicodeMode()) {
-                            if (first_is_escape or self.last_class_is_class_escape) {
-                                self.setError("character class escape cannot be used in range");
-                                return false;
+                    // range: a-z
+                    if (!self.isEnd() and self.peek() == '-') {
+                        self.advance();
+                        if (!self.isEnd() and self.peek() != ']') {
+                            if (!self.parseClassAtom()) {
+                                if (self.err_message != null) return false;
                             }
-                        }
-                        // 모든 모드: range 순서 검증 (ECMAScript 22.2.2.9.1)
-                        if (!first_is_escape and !self.last_class_is_class_escape) {
-                            if (first_value > self.last_class_value) {
-                                self.setError("character class range out of order");
-                                return false;
+                            if (self.flags.hasUnicodeMode()) {
+                                if (first_is_escape or self.last_class_is_class_escape) {
+                                    self.setError("character class escape cannot be used in range");
+                                    return false;
+                                }
                             }
-                        }
-                        if (emit_ast) {
-                            const second_node = self.last_node;
-                            const range_node = self.addNode(.character_class_range, .{
-                                .start = atom_pos,
-                                .end = self.pos,
-                            }, .{
-                                @intFromEnum(first_node),
-                                @intFromEnum(second_node),
-                                0,
-                            });
-                            if (!self.bufAppend(&buf, &buf_len, @intFromEnum(range_node))) return false;
+                            if (!first_is_escape and !self.last_class_is_class_escape) {
+                                if (first_value > self.last_class_value) {
+                                    self.setError("character class range out of order");
+                                    return false;
+                                }
+                            }
+                            if (emit_ast) {
+                                const second_node = self.last_node;
+                                const range_node = self.addNode(.character_class_range, .{
+                                    .start = atom_pos,
+                                    .end = self.pos,
+                                }, .{
+                                    @intFromEnum(first_node),
+                                    @intFromEnum(second_node),
+                                    0,
+                                });
+                                if (!self.bufAppend(&buf, &buf_len, @intFromEnum(range_node))) return false;
+                            }
+                        } else {
+                            if (emit_ast) {
+                                if (!self.bufAppend(&buf, &buf_len, @intFromEnum(first_node))) return false;
+                                const dash_node = self.addNode(.character, .{
+                                    .start = self.pos - 1,
+                                    .end = self.pos,
+                                }, .{ '-', @intFromEnum(ast.CharacterKind.symbol), 0 });
+                                if (!self.bufAppend(&buf, &buf_len, @intFromEnum(dash_node))) return false;
+                            }
                         }
                     } else {
-                        // trailing dash: first + '-'
                         if (emit_ast) {
                             if (!self.bufAppend(&buf, &buf_len, @intFromEnum(first_node))) return false;
-                            const dash_node = self.addNode(.character, .{
-                                .start = self.pos - 1,
-                                .end = self.pos,
-                            }, .{ '-', @intFromEnum(ast.CharacterKind.symbol), 0 });
-                            if (!self.bufAppend(&buf, &buf_len, @intFromEnum(dash_node))) return false;
                         }
-                    }
-                } else {
-                    if (emit_ast) {
-                        if (!self.bufAppend(&buf, &buf_len, @intFromEnum(first_node))) return false;
                     }
                 }
             }
@@ -962,7 +969,12 @@ pub fn PatternParser(comptime emit_ast: bool) type {
             if (emit_ast) {
                 const list_start = self.extraLen();
                 for (buf[0..buf_len]) |idx| self.appendExtra(idx);
-                const flags_val: u32 = @intFromBool(negated);
+                // flags: bit 0 = negative, bits 1-2 = CharacterClassContentsKind
+                const kind_bits: u32 = if (self.flags.v)
+                    @intFromEnum(self.last_class_contents_kind)
+                else
+                    0; // non-v-flag: 항상 union(0)
+                const flags_val: u32 = @intFromBool(negated) | (kind_bits << 1);
                 self.last_node = self.addNode(.character_class, .{
                     .start = class_start,
                     .end = self.pos,
@@ -1418,6 +1430,276 @@ pub fn PatternParser(comptime emit_ast: bool) type {
             return self.eat(terminator);
         }
 
+        /// 두 문자를 연속으로 확인한다.
+        fn peek2(self: *const Self, c1: u8, c2: u8) bool {
+            return self.pos + 1 < self.source.len and
+                self.source[self.pos] == c1 and
+                self.source[self.pos + 1] == c2;
+        }
+
+        /// 두 문자를 연속으로 소비한다.
+        fn eat2(self: *Self, c1: u8, c2: u8) bool {
+            if (self.peek2(c1, c2)) {
+                self.pos += 2;
+                return true;
+            }
+            return false;
+        }
+
+        // ================================================================
+        // v-flag (unicodeSets) Character Class
+        // ================================================================
+
+        /// v-flag character class의 내용물을 파싱한다.
+        /// `[` 와 `]` 사이의 내용. buf/buf_len에 자식 노드 인덱스를 수집한다.
+        fn parseClassSetExpression(self: *Self, buf: anytype, buf_len: anytype) void {
+            if (self.isEnd() or self.peek() == ']') return;
+
+            // 1. range 시도 (a-z)
+            if (self.tryClassSetRange(buf, buf_len)) {
+                self.parseClassSetUnion(buf, buf_len);
+                return;
+            }
+
+            // 2. operand 시도 (nested class, \q{}, character)
+            if (!self.parseClassSetOperand()) {
+                if (self.err_message == null and !self.isEnd() and self.peek() != ']') {
+                    self.setError("invalid character in v-flag character class");
+                }
+                return;
+            }
+            if (emit_ast) _ = self.bufAppend(buf, buf_len, @intFromEnum(self.last_node));
+
+            // 3. 연산자 확인: && → intersection, -- → subtraction, else → union
+            if (self.peek2('&', '&')) {
+                self.last_class_contents_kind = .intersection;
+                self.parseClassIntersection(buf, buf_len);
+            } else if (self.peek2('-', '-')) {
+                self.last_class_contents_kind = .subtraction;
+                self.parseClassSubtraction(buf, buf_len);
+            } else {
+                self.last_class_contents_kind = .@"union";
+                self.parseClassSetUnion(buf, buf_len);
+            }
+        }
+
+        /// Union: 나머지 term들을 수집한다 (range + operand 혼합 가능).
+        fn parseClassSetUnion(self: *Self, buf: anytype, buf_len: anytype) void {
+            while (!self.isEnd() and self.peek() != ']') {
+                if (self.err_message != null) return;
+
+                // range 시도
+                if (self.tryClassSetRange(buf, buf_len)) continue;
+
+                // operand 시도
+                if (self.parseClassSetOperand()) {
+                    if (emit_ast) _ = self.bufAppend(buf, buf_len, @intFromEnum(self.last_node));
+                    continue;
+                }
+
+                // 어떤 것도 파싱 못함 → 종료
+                if (self.err_message == null and !self.isEnd() and self.peek() != ']') {
+                    self.setError("invalid character in v-flag character class");
+                }
+                return;
+            }
+        }
+
+        /// Intersection: `&&` 로 구분된 operand 목록.
+        fn parseClassIntersection(self: *Self, buf: anytype, buf_len: anytype) void {
+            while (!self.isEnd() and self.peek() != ']') {
+                if (self.err_message != null) return;
+                if (!self.eat2('&', '&')) {
+                    self.setError("expected '&&' in class intersection");
+                    return;
+                }
+                // &&& 방지
+                if (!self.isEnd() and self.peek() == '&') {
+                    self.setError("unexpected third '&' in class intersection");
+                    return;
+                }
+                if (!self.parseClassSetOperand()) {
+                    if (self.err_message == null)
+                        self.setError("expected operand after '&&'");
+                    return;
+                }
+                if (emit_ast) _ = self.bufAppend(buf, buf_len, @intFromEnum(self.last_node));
+            }
+        }
+
+        /// Subtraction: `--` 로 구분된 operand 목록.
+        fn parseClassSubtraction(self: *Self, buf: anytype, buf_len: anytype) void {
+            while (!self.isEnd() and self.peek() != ']') {
+                if (self.err_message != null) return;
+                if (!self.eat2('-', '-')) {
+                    self.setError("expected '--' in class subtraction");
+                    return;
+                }
+                if (!self.parseClassSetOperand()) {
+                    if (self.err_message == null)
+                        self.setError("expected operand after '--'");
+                    return;
+                }
+                if (emit_ast) _ = self.bufAppend(buf, buf_len, @intFromEnum(self.last_node));
+            }
+        }
+
+        /// Range 시도 (checkpoint/rewind). 성공 시 buf에 추가하고 true.
+        fn tryClassSetRange(self: *Self, buf: anytype, buf_len: anytype) bool {
+            const saved_pos = self.pos;
+            const saved_err = self.err_message;
+            const saved_nodes = if (emit_ast) self.ast_nodes.items.len else 0;
+            const saved_extra = if (emit_ast) self.ast_extra.items.len else 0;
+
+            if (self.parseClassSetCharacter()) {
+                const first_val = self.last_class_value;
+                const first_node = if (emit_ast) self.last_node else {};
+                if (self.eat('-')) {
+                    if (!self.isEnd() and self.peek() != ']') {
+                        if (self.parseClassSetCharacter()) {
+                            if (first_val > self.last_class_value) {
+                                self.setError("character class range out of order");
+                                return false;
+                            }
+                            if (emit_ast) {
+                                const second_node = self.last_node;
+                                const range_node = self.addNode(.character_class_range, .{
+                                    .start = saved_pos,
+                                    .end = self.pos,
+                                }, .{
+                                    @intFromEnum(first_node),
+                                    @intFromEnum(second_node),
+                                    0,
+                                });
+                                _ = self.bufAppend(buf, buf_len, @intFromEnum(range_node));
+                            }
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            // rollback (위치 + 에러 + AST 상태 모두 복원)
+            self.pos = saved_pos;
+            self.err_message = saved_err;
+            if (emit_ast) {
+                self.ast_nodes.items.len = saved_nodes;
+                self.ast_extra.items.len = saved_extra;
+            }
+            return false;
+        }
+
+        /// ClassSetOperand: nested class, \q{}, 또는 single character.
+        fn parseClassSetOperand(self: *Self) bool {
+            if (self.isEnd()) return false;
+
+            // nested class [...]
+            if (self.peek() == '[') {
+                return self.parseCharacterClass();
+            }
+
+            // \q{...} class string disjunction
+            if (self.peek() == '\\' and self.pos + 1 < self.source.len and
+                self.source[self.pos + 1] == 'q' and
+                self.pos + 2 < self.source.len and self.source[self.pos + 2] == '{')
+            {
+                return self.parseClassStringDisjunction();
+            }
+
+            // single character (escape 포함)
+            return self.parseClassSetCharacter();
+        }
+
+        /// ClassSetCharacter: v-flag에서 유효한 단일 문자.
+        fn parseClassSetCharacter(self: *Self) bool {
+            if (self.isEnd()) return false;
+            const ch = self.peek();
+
+            // escape
+            if (ch == '\\') {
+                return self.parseEscape();
+            }
+
+            // v-flag 문법 문자는 리터럴로 사용 불가
+            if (isClassSetSyntaxChar(ch)) return false;
+
+            // 예약된 이중 구두점 방지 (&&, !!, ## 등)
+            if (self.pos + 1 < self.source.len) {
+                if (isClassSetReservedDoublePunct(ch, self.source[self.pos + 1])) return false;
+            }
+
+            self.advance();
+            self.setClassValue(ch);
+            if (emit_ast) {
+                self.last_node = self.addNode(.character, .{
+                    .start = self.pos - 1,
+                    .end = self.pos,
+                }, .{ ch, @intFromEnum(ast.CharacterKind.symbol), 0 });
+            }
+            return true;
+        }
+
+        /// \q{...} class string disjunction.
+        fn parseClassStringDisjunction(self: *Self) bool {
+            const start = self.pos;
+            self.pos += 3; // skip \q{
+
+            var str_buf: if (emit_ast) [64]u32 else void = if (emit_ast) undefined else {};
+            var str_len: if (emit_ast) u32 else void = if (emit_ast) 0 else {};
+
+            // 첫 번째 string 파싱
+            self.parseClassString(&str_buf, &str_len);
+            if (self.err_message != null) return false;
+
+            while (self.eat('|')) {
+                self.parseClassString(&str_buf, &str_len);
+                if (self.err_message != null) return false;
+            }
+
+            if (!self.eat('}')) {
+                self.setError("unterminated class string disjunction \\q{...}");
+                return false;
+            }
+
+            self.last_class_is_class_escape = true; // \q{} 는 range endpoint 불가
+            if (emit_ast) {
+                const list_start = self.extraLen();
+                for (str_buf[0..str_len]) |idx| self.appendExtra(idx);
+                self.last_node = self.addNode(.class_string_disjunction, .{
+                    .start = start,
+                    .end = self.pos,
+                }, .{ list_start, str_len, 0 });
+            }
+            return true;
+        }
+
+        /// \q{} 내의 단일 string (| 또는 } 까지).
+        fn parseClassString(self: *Self, outer_buf: anytype, outer_len: anytype) void {
+            const start = self.pos;
+
+            var char_buf: if (emit_ast) [64]u32 else void = if (emit_ast) undefined else {};
+            var char_len: if (emit_ast) u32 else void = if (emit_ast) 0 else {};
+
+            while (!self.isEnd() and self.peek() != '|' and self.peek() != '}') {
+                if (!self.parseClassSetCharacter()) {
+                    if (self.err_message == null)
+                        self.setError("invalid character in class string");
+                    return;
+                }
+                if (emit_ast) _ = self.bufAppend(&char_buf, &char_len, @intFromEnum(self.last_node));
+            }
+
+            if (emit_ast) {
+                const list_start = self.extraLen();
+                for (char_buf[0..char_len]) |idx| self.appendExtra(idx);
+                const string_node = self.addNode(.class_string, .{
+                    .start = start,
+                    .end = self.pos,
+                }, .{ list_start, char_len, 0 });
+                _ = self.bufAppend(outer_buf, outer_len, @intFromEnum(string_node));
+            }
+        }
+
         fn setError(self: *Self, msg: []const u8) void {
             if (self.err_message == null) {
                 self.err_message = msg;
@@ -1444,6 +1726,23 @@ fn isSyntaxChar(c: u8) bool {
 
 fn isModifierChar(c: u8) bool {
     return c == 'i' or c == 'm' or c == 's';
+}
+
+/// v-flag: character class 내에서 리터럴로 사용할 수 없는 문법 문자.
+fn isClassSetSyntaxChar(c: u8) bool {
+    return switch (c) {
+        '(', ')', '[', ']', '{', '}', '/', '-', '\\', '|' => true,
+        else => false,
+    };
+}
+
+/// v-flag: 예약된 이중 구두점 (&&, !!, ## 등).
+/// 두 문자가 같고 예약 목록에 있으면 true.
+fn isClassSetReservedDoublePunct(c1: u8, c2: u8) bool {
+    return c1 == c2 and switch (c1) {
+        '&', '!', '#', '$', '%', '*', '+', ',', '.', ':', ';', '<', '=', '>', '?', '@', '^', '`', '~' => true,
+        else => false,
+    };
 }
 
 /// 16진수 문자를 값으로 변환한다.
@@ -2117,4 +2416,108 @@ test "range: [\\d-x] allowed in non-unicode mode" {
     const P = PatternParser(false);
     var p = P.init("[\\d-x]", .{});
     try std.testing.expect(p.validate() == null);
+}
+
+// ============================================================
+// Tests — v-flag (unicodeSets) character class
+// ============================================================
+
+test "v-flag: simple class [abc]" {
+    const P = PatternParser(false);
+    var p = P.init("[abc]", .{ .v = true });
+    try std.testing.expect(p.validate() == null);
+}
+
+test "v-flag: intersection [a&&b]" {
+    const P = PatternParser(false);
+    var p = P.init("[a&&b]", .{ .v = true });
+    try std.testing.expect(p.validate() == null);
+}
+
+test "v-flag: subtraction [a--b]" {
+    const P = PatternParser(false);
+    var p = P.init("[a--b]", .{ .v = true });
+    try std.testing.expect(p.validate() == null);
+}
+
+test "v-flag: nested class [[a-z]&&[A-Z]]" {
+    const P = PatternParser(false);
+    var p = P.init("[[a-z]&&[A-Z]]", .{ .v = true });
+    try std.testing.expect(p.validate() == null);
+}
+
+test "v-flag: class string disjunction [\\q{abc|def}]" {
+    const P = PatternParser(false);
+    var p = P.init("[\\q{abc|def}]", .{ .v = true });
+    try std.testing.expect(p.validate() == null);
+}
+
+test "v-flag: mixing && and -- is error" {
+    const P = PatternParser(false);
+    var p = P.init("[a&&b--c]", .{ .v = true });
+    try std.testing.expect(p.validate() != null);
+}
+
+test "v-flag: triple & is error" {
+    const P = PatternParser(false);
+    var p = P.init("[a&&&b]", .{ .v = true });
+    try std.testing.expect(p.validate() != null);
+}
+
+test "v-flag: range [a-z]" {
+    const P = PatternParser(false);
+    var p = P.init("[a-z]", .{ .v = true });
+    try std.testing.expect(p.validate() == null);
+}
+
+test "v-flag: range out of order [z-a]" {
+    const P = PatternParser(false);
+    var p = P.init("[z-a]", .{ .v = true });
+    try std.testing.expect(p.validate() != null);
+}
+
+test "v-flag: property in class [\\p{ASCII}]" {
+    const P = PatternParser(false);
+    var p = P.init("[\\p{ASCII}]", .{ .v = true });
+    try std.testing.expect(p.validate() == null);
+}
+
+test "v-flag AST: intersection creates correct kind" {
+    const P = PatternParser(true);
+    var p = P.initWithAllocator("[a&&b]", .{ .v = true }, std.testing.allocator);
+    defer p.deinit();
+
+    const result = p.parse();
+    try std.testing.expect(result != null);
+    var tree = result.?;
+    defer tree.deinit();
+
+    // root > alt > character_class
+    const root = tree.getNode(tree.root);
+    const alts = root.getNodeList();
+    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const terms = alt.getNodeList();
+    const cc = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    try std.testing.expectEqual(ast.Tag.character_class, cc.tag);
+    // kind bits at data[0] >> 1 = intersection(1)
+    try std.testing.expectEqual(@as(u32, @intFromEnum(ast.CharacterClassContentsKind.intersection)), (cc.data[0] >> 1) & 3);
+}
+
+test "v-flag AST: subtraction creates correct kind" {
+    const P = PatternParser(true);
+    var p = P.initWithAllocator("[a--b]", .{ .v = true }, std.testing.allocator);
+    defer p.deinit();
+
+    const result = p.parse();
+    try std.testing.expect(result != null);
+    var tree = result.?;
+    defer tree.deinit();
+
+    const root = tree.getNode(tree.root);
+    const alts = root.getNodeList();
+    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const terms = alt.getNodeList();
+    const cc = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    try std.testing.expectEqual(ast.Tag.character_class, cc.tag);
+    try std.testing.expectEqual(@as(u32, @intFromEnum(ast.CharacterClassContentsKind.subtraction)), (cc.data[0] >> 1) & 3);
 }
