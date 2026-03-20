@@ -59,17 +59,21 @@ fn transpileFile(
         for (parser.errors.items) |diag| {
             try printErrorCodeFrame(stderr, source, file_path, &scanner, diag);
         }
+        return; // 파서 에러가 있으면 변환하지 않음
     }
 
     // Semantic analysis (D038): 파서 에러가 없을 때만 실행
-    if (parser.errors.items.len == 0) {
+    {
         var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
         defer analyzer.deinit();
+        analyzer.is_strict_mode = parser.is_strict_mode;
+        analyzer.is_module = parser.is_module;
         analyzer.analyze();
         if (analyzer.errors.items.len > 0) {
             for (analyzer.errors.items) |diag| {
                 try printErrorCodeFrame(stderr, source, file_path, &scanner, diag);
             }
+            return; // semantic 에러가 있으면 변환하지 않음
         }
     }
 
