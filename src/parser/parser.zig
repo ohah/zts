@@ -202,7 +202,11 @@ pub const Parser = struct {
             .errors = std.ArrayList(ParseError).init(allocator),
             .scratch = std.ArrayList(NodeIndex).init(allocator),
             .param_name_spans = std.ArrayList(Span).init(allocator),
-            .bracket_stack = std.ArrayList(BracketInfo).init(allocator),
+            .bracket_stack = blk: {
+                var stack = std.ArrayList(BracketInfo).init(allocator);
+                stack.ensureTotalCapacity(8) catch {};
+                break :blk stack;
+            },
             .allocator = allocator,
         };
     }
@@ -237,11 +241,19 @@ pub const Parser = struct {
             self.bracket_stack.append(.{
                 .kind = kind,
                 .span = self.currentSpan(),
-            }) catch {};
-        }
-        // 닫는 괄호면 스택에서 pop
-        if (kind == .r_paren or kind == .r_bracket or kind == .r_curly) {
-            if (self.bracket_stack.items.len > 0) {
+            }) catch @panic("OOM: bracket stack");
+        } else if (kind == .r_paren or kind == .r_bracket or kind == .r_curly) {
+            // 닫는 괄호면 스택에서 매칭되는 여는 괄호만 pop.
+            // 매칭 안 되면 pop하지 않는다 — 에러 복구 시 스택 오염 방지.
+            const expected_open: Kind = switch (kind) {
+                .r_paren => .l_paren,
+                .r_bracket => .l_bracket,
+                .r_curly => .l_curly,
+                else => unreachable,
+            };
+            if (self.bracket_stack.items.len > 0 and
+                self.bracket_stack.items[self.bracket_stack.items.len - 1].kind == expected_open)
+            {
                 _ = self.bracket_stack.pop();
             }
         }
@@ -261,29 +273,19 @@ pub const Parser = struct {
     /// 닫는 괄호를 기대하는 경우, 매칭되는 여는 괄호 위치도 표시한다.
     fn expect(self: *Parser, expected: Kind) void {
         if (!self.eat(expected)) {
-            const found_sym = self.current().symbol();
-            // 닫는 괄호를 기대할 때 → 여는 괄호 위치 표시
             const opening = self.findMatchingOpenBracket(expected);
-            if (opening) |open_info| {
-                self.errors.append(.{
-                    .span = self.currentSpan(),
-                    .message = expected.symbol(),
-                    .found = found_sym,
-                    .related_span = open_info.span,
-                    .related_label = switch (open_info.kind) {
-                        .l_paren => "opening '(' is here",
-                        .l_bracket => "opening '[' is here",
-                        .l_curly => "opening '{' is here",
-                        else => null,
-                    },
-                }) catch @panic("OOM: parser error list");
-            } else {
-                self.errors.append(.{
-                    .span = self.currentSpan(),
-                    .message = expected.symbol(),
-                    .found = found_sym,
-                }) catch @panic("OOM: parser error list");
-            }
+            self.errors.append(.{
+                .span = self.currentSpan(),
+                .message = expected.symbol(),
+                .found = self.current().symbol(),
+                .related_span = if (opening) |o| o.span else null,
+                .related_label = if (opening) |o| switch (o.kind) {
+                    .l_paren => "opening '(' is here",
+                    .l_bracket => "opening '[' is here",
+                    .l_curly => "opening '{' is here",
+                    else => null,
+                } else null,
+            }) catch @panic("OOM: parser error list");
         }
     }
 
