@@ -1107,6 +1107,11 @@ pub const Scanner = struct {
                 },
                 // 0_ → numeric separator in leading zero literal is invalid
                 '_' => return .syntax_error,
+                // 0 뒤에 숫자가 오면 legacy octal (00, 07) 또는 non-octal decimal (08, 09)
+                // 둘 다 strict mode에서 금지 (ECMAScript 12.8.3.1)
+                '0'...'9' => {
+                    self.token.has_legacy_octal = true;
+                },
                 else => {},
             }
         }
@@ -1315,7 +1320,19 @@ pub const Scanner = struct {
                 const escaped = self.peek();
                 switch (escaped) {
                     // 단순 이스케이프: 1바이트 스킵
-                    'n', 'r', 't', '\\', '\'', '"', '0', 'b', 'f', 'v' => {
+                    'n', 'r', 't', '\\', '\'', '"', 'b', 'f', 'v' => {
+                        self.current += 1;
+                    },
+                    // \0: 뒤에 숫자가 없으면 NUL, 있으면 legacy octal
+                    '0' => {
+                        self.current += 1;
+                        if (!self.isAtEnd() and self.peek() >= '0' and self.peek() <= '9') {
+                            self.token.has_legacy_octal = true;
+                        }
+                    },
+                    // \1..\9: legacy octal escape (strict mode에서 금지)
+                    '1'...'9' => {
+                        self.token.has_legacy_octal = true;
                         self.current += 1;
                     },
                     // 16진수 이스케이프: \xHH

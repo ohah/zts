@@ -59,6 +59,12 @@ pub const Token = struct {
     /// tagged template에서는 허용되지만 (cooked가 undefined),
     /// untagged template에서는 파서가 SyntaxError를 보고해야 한다.
     has_invalid_escape: bool = false,
+
+    /// legacy octal 리터럴/이스케이프가 포함되었는지.
+    /// strict mode에서는 SyntaxError (ECMAScript 12.8.3.1).
+    /// - 숫자: 0으로 시작하는 octal (00, 07, 08, 09 등)
+    /// - 문자열: \0 뒤에 숫자, \1~\9 octal escape
+    has_legacy_octal: bool = false,
 };
 
 /// ECMAScript / TypeScript / JSX 토큰 종류.
