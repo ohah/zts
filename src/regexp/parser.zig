@@ -59,6 +59,8 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         named_groups: std.BoundedArray(NamedGroupEntry, 16) = .{},
         /// named back reference 목록 (파싱 끝에서 존재 검증).
         named_refs: std.BoundedArray([]const u8, 32) = .{},
+        /// \k가 < 없이 사용되었는지 (named group이 있으면 에러).
+        has_bare_k_escape: bool = false,
 
         // ── ES2025 alternative tracking ──
         // parseDisjunction에서 '|' 마다 증가, parseGroup에서 depth 추적.
@@ -257,6 +259,12 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     return;
                 }
             }
+
+            // \k without < in pattern that has named groups → error
+            if (self.has_bare_k_escape and self.named_groups.len > 0) {
+                self.err_message = "invalid named back reference";
+                return;
+            }
         }
 
         /// 에러 메시지를 반환한다.
@@ -418,7 +426,23 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         /// Term -> Assertion | Atom Quantifier?
         fn parseTerm(self: *Self) void {
             // Assertion: ^, $, \b, \B, lookahead/lookbehind
-            if (self.parseAssertion()) return;
+            if (self.parseAssertion()) {
+                // ECMAScript: quantifier after assertion is SyntaxError.
+                // 다만 ^, $, \b, \B 뒤의 quantifier-like은 별도 term으로 파싱됨.
+                // lookahead/lookbehind 뒤의 *, +, ?, {n,m}만 에러.
+                if (!self.isEnd()) {
+                    const next = self.peek();
+                    if (next == '*' or next == '+' or next == '?') {
+                        self.setError("quantifier after assertion");
+                        return;
+                    }
+                    if (next == '{' and self.isInvalidBracedQuantifier()) {
+                        self.setError("quantifier after assertion");
+                        return;
+                    }
+                }
+                return;
+            }
 
             // Atom
             if (!self.parseAtom()) {
@@ -543,12 +567,30 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     return false;
                 },
                 // non-unicode: literal로 취급. unicode: 에러.
-                '{', '}', ']' => {
+                // 단, '{' 뒤에 유효한 braced quantifier가 오면 InvalidBracedQuantifier로 항상 에러.
+                '{' => {
                     if (self.flags.hasUnicodeMode()) {
-                        self.setError(if (c == '{')
-                            "unexpected quantifier without preceding atom"
-                        else
-                            "unexpected character in regular expression");
+                        self.setError("unexpected quantifier without preceding atom");
+                        return false;
+                    }
+                    // Annex B: InvalidBracedQuantifier check
+                    // '{' DecimalDigits (',' DecimalDigits?)? '}'는 항상 에러 (atom 없이)
+                    if (self.isInvalidBracedQuantifier()) {
+                        self.setError("unexpected quantifier without preceding atom");
+                        return false;
+                    }
+                    self.advance();
+                    if (emit_ast) {
+                        self.last_node = self.addNode(.character, .{
+                            .start = self.pos - 1,
+                            .end = self.pos,
+                        }, .{ c, @intFromEnum(ast.CharacterKind.symbol), 0 });
+                    }
+                    return true;
+                },
+                '}', ']' => {
+                    if (self.flags.hasUnicodeMode()) {
+                        self.setError("unexpected character in regular expression");
                         return false;
                     }
                     self.advance();
@@ -870,11 +912,14 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         }
                         return true;
                     }
-                    // \k 뒤에 <가 없으면: unicode에서 에러, non-unicode에서 identity escape
+                    // \k 뒤에 <가 없으면: unicode에서 에러,
+                    // non-unicode에서는 identity escape이지만 named group이 있으면 에러
                     if (self.flags.hasUnicodeMode()) {
                         self.setError("invalid named back reference");
                         return false;
                     }
+                    // 비 unicode: named group이 존재하면 post-parse에서 에러 보고
+                    self.has_bare_k_escape = true;
                     if (emit_ast) {
                         self.last_node = self.addNode(.character, .{
                             .start = bs_pos,
@@ -1232,6 +1277,11 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 self.setError("invalid modifier group, expected ':'");
                 return null;
             }
+            // ECMAScript: both enabling and disabling modifiers empty → SyntaxError
+            if (enabling == 0 and disabling == 0) {
+                self.setError("modifier group must have at least one modifier");
+                return null;
+            }
             return .{ .enabling = enabling, .disabling = disabling };
         }
 
@@ -1275,20 +1325,103 @@ pub fn PatternParser(comptime emit_ast: bool) type {
             // \u escape in group name
             if (gc == '\\') {
                 if (self.pos + 1 < self.source.len and self.source[self.pos + 1] == 'u') {
+                    const saved_pos = self.pos;
                     self.pos += 2; // skip \u
+                    var codepoint: u32 = 0;
+                    var valid_escape = false;
                     // \u{HHHH} or \uHHHH
                     if (self.eat('{')) {
-                        if (!self.eatHexDigitsUntil('}')) {
+                        // \u{HHHH...} — variable length
+                        const hex_start = self.pos;
+                        while (!self.isEnd() and self.peek() != '}') {
+                            const d = std.fmt.charToDigit(self.peek(), 16) catch {
+                                self.setError("invalid unicode escape in group name");
+                                return false;
+                            };
+                            codepoint = codepoint * 16 + d;
+                            self.advance();
+                        }
+                        if (!self.eat('}') or self.pos == hex_start + 1) {
                             self.setError("invalid unicode escape in group name");
                             return false;
                         }
+                        valid_escape = true;
                     } else {
-                        if (!self.eatHexDigits(4)) {
+                        // \uHHHH — exactly 4 hex digits
+                        if (self.pos + 4 <= self.source.len) {
+                            var ok = true;
+                            var i: usize = 0;
+                            while (i < 4) : (i += 1) {
+                                const d = std.fmt.charToDigit(self.source[self.pos + i], 16) catch {
+                                    ok = false;
+                                    break;
+                                };
+                                codepoint = codepoint * 16 + d;
+                            }
+                            if (ok) {
+                                self.pos += 4;
+                                // Check for surrogate pair: \uD800-\uDBFF followed by \uDC00-\uDFFF
+                                if (codepoint >= 0xD800 and codepoint <= 0xDBFF) {
+                                    // High surrogate — check for low surrogate
+                                    if (self.pos + 6 <= self.source.len and
+                                        self.source[self.pos] == '\\' and self.source[self.pos + 1] == 'u')
+                                    {
+                                        var low: u32 = 0;
+                                        var low_ok = true;
+                                        var j: usize = 0;
+                                        while (j < 4) : (j += 1) {
+                                            const d = std.fmt.charToDigit(self.source[self.pos + 2 + j], 16) catch {
+                                                low_ok = false;
+                                                break;
+                                            };
+                                            low = low * 16 + d;
+                                        }
+                                        if (low_ok and low >= 0xDC00 and low <= 0xDFFF) {
+                                            codepoint = 0x10000 + (codepoint - 0xD800) * 0x400 + (low - 0xDC00);
+                                            self.pos += 6;
+                                            valid_escape = true;
+                                        } else {
+                                            // Lone high surrogate
+                                            self.setError("invalid unicode escape in group name");
+                                            return false;
+                                        }
+                                    } else {
+                                        // Lone high surrogate
+                                        self.setError("invalid unicode escape in group name");
+                                        return false;
+                                    }
+                                } else if (codepoint >= 0xDC00 and codepoint <= 0xDFFF) {
+                                    // Lone low surrogate
+                                    self.setError("invalid unicode escape in group name");
+                                    return false;
+                                } else {
+                                    valid_escape = true;
+                                }
+                            }
+                        }
+                        if (!valid_escape) {
                             self.setError("invalid unicode escape in group name");
                             return false;
                         }
                     }
-                    return true; // escape의 코드포인트 검증은 생략 (대부분의 케이스를 잡음)
+                    // Validate codepoint is valid for identifier
+                    if (codepoint > 0x10FFFF) {
+                        self.setError("invalid unicode escape in group name");
+                        return false;
+                    }
+                    const cp21: u21 = std.math.cast(u21, codepoint) orelse {
+                        self.setError("invalid unicode escape in group name");
+                        return false;
+                    };
+                    const id_valid = if (is_start)
+                        unicode.isIdentifierStart(cp21) or codepoint == '$' or codepoint == '_'
+                    else
+                        unicode.isIdentifierContinue(cp21) or codepoint == '$' or codepoint == 0x200C or codepoint == 0x200D;
+                    if (!id_valid) {
+                        self.pos = saved_pos;
+                        return false;
+                    }
+                    return true;
                 }
                 return false;
             }
@@ -1417,6 +1550,26 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         // ================================================================
         // 헬퍼 함수
         // ================================================================
+
+        /// `{` 뒤에 유효한 braced quantifier가 오는지 확인한다 (ECMAScript InvalidBracedQuantifier).
+        /// `{n}`, `{n,}`, `{n,m}` 패턴이면 true.
+        /// 현재 위치를 변경하지 않는다.
+        fn isInvalidBracedQuantifier(self: *const Self) bool {
+            if (self.isEnd() or self.peek() != '{') return false;
+            var i = self.pos + 1;
+            // DecimalDigits 필수
+            if (i >= self.source.len or self.source[i] < '0' or self.source[i] > '9') return false;
+            while (i < self.source.len and self.source[i] >= '0' and self.source[i] <= '9') : (i += 1) {}
+            if (i >= self.source.len) return false;
+            if (self.source[i] == '}') return true;
+            if (self.source[i] == ',') {
+                i += 1;
+                // 선택적 DecimalDigits
+                while (i < self.source.len and self.source[i] >= '0' and self.source[i] <= '9') : (i += 1) {}
+                if (i < self.source.len and self.source[i] == '}') return true;
+            }
+            return false;
+        }
 
         fn peek(self: *const Self) u8 {
             return self.source[self.pos];

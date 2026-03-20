@@ -517,6 +517,16 @@ pub const Scanner = struct {
 
     // ====================================================================
     // JSX 모드 스캔 (파서가 JSX 컨텍스트에서 호출)
+    /// 현재 `/` 또는 `/=` 토큰을 regexp literal로 재스캔한다.
+    /// 파서가 `yield` 뒤 등 regexp context에서 호출한다.
+    pub fn rescanAsRegexp(self: *Scanner) void {
+        // 현재 토큰의 시작 위치로 되돌린다 (/ 또는 /= 의 시작)
+        self.current = self.start + 1; // opening / 직후
+        self.token.kind = self.scanRegExp();
+        self.token.span = .{ .start = self.start, .end = self.current };
+        self.prev_token_kind = self.token.kind;
+    }
+
     // ====================================================================
 
     /// JSX 태그 내부의 다음 토큰을 스캔한다.
@@ -743,9 +753,17 @@ pub const Scanner = struct {
             const c = self.peek();
 
             if (c == '\\') {
-                // 이스케이프: 다음 문자를 무조건 스킵
+                // 이스케이프: 다음 문자가 줄바꿈이면 에러 (ECMAScript 12.9.5)
+                // RegularExpressionBackslashSequence :: \ RegularExpressionNonTerminator
+                // RegularExpressionNonTerminator :: SourceCharacter but not LineTerminator
                 self.current += 1;
-                if (!self.isAtEnd()) self.current += 1;
+                if (!self.isAtEnd()) {
+                    const next_ch = self.peek();
+                    if (next_ch == '\n' or next_ch == '\r' or self.isLineSeparator()) {
+                        return .syntax_error;
+                    }
+                    self.current += 1;
+                }
                 continue;
             }
 
