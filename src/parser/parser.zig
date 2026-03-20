@@ -2306,6 +2306,9 @@ pub const Parser = struct {
     fn parseArrowBody(self: *Parser, is_async: bool) ParseError2!NodeIndex {
         // arrow function은 generator가 될 수 없으므로 is_generator=false
         const saved_ctx = self.enterFunctionContext(is_async, false);
+        // arrow function은 자체 arguments 바인딩이 없으므로 in_class_field를 유지해야 한다.
+        // class field 이니셜라이저 안의 arrow function에서 arguments 사용은 SyntaxError.
+        self.ctx.in_class_field = saved_ctx.in_class_field;
         const body = if (self.current() == .l_curly)
             try self.parseFunctionBody()
         else
@@ -6161,4 +6164,37 @@ test "Parser: parenthesized destructuring is not assignment target" {
 
     _ = try parser.parse();
     try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "Parser: arguments in class field initializer is error" {
+    // class field에서 arguments 직접 사용 — SyntaxError
+    {
+        var scanner = Scanner.init(std.testing.allocator, "var C = class { x = arguments; };");
+        defer scanner.deinit();
+        var parser = Parser.init(std.testing.allocator, &scanner);
+        defer parser.deinit();
+
+        _ = try parser.parse();
+        try std.testing.expect(parser.errors.items.len > 0);
+    }
+    // arrow function 안에서 arguments 사용 — arrow는 자체 arguments가 없으므로 SyntaxError
+    {
+        var scanner = Scanner.init(std.testing.allocator, "class C { x = () => arguments; }");
+        defer scanner.deinit();
+        var parser = Parser.init(std.testing.allocator, &scanner);
+        defer parser.deinit();
+
+        _ = try parser.parse();
+        try std.testing.expect(parser.errors.items.len > 0);
+    }
+    // 일반 function 안에서 arguments 사용 — 자체 arguments 바인딩이 있으므로 OK
+    {
+        var scanner = Scanner.init(std.testing.allocator, "class C { x = function() { return arguments; }; }");
+        defer scanner.deinit();
+        var parser = Parser.init(std.testing.allocator, &scanner);
+        defer parser.deinit();
+
+        _ = try parser.parse();
+        try std.testing.expect(parser.errors.items.len == 0);
+    }
 }

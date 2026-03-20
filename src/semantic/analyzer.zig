@@ -68,7 +68,7 @@ pub const SemanticAnalyzer = struct {
 
     /// class private name 스택 (중첩 class 지원, oxc 방식).
     /// 각 항목은 해당 class body에서 선언된 private name 집합.
-    class_private_declared: std.ArrayList(std.StringHashMap(Span)),
+    class_private_declared: std.ArrayList(std.StringHashMap(PrivateNameInfo)),
 
     /// class private name 참조 스택.
     /// 각 항목은 해당 class body에서 참조된 private name 목록 (검증 대기).
@@ -83,6 +83,20 @@ pub const SemanticAnalyzer = struct {
         span: Span,
     };
 
+    /// private name의 종류 (중복 검사에서 getter+setter 쌍을 허용하기 위해 구분).
+    const PrivateNameKind = enum {
+        field,
+        method,
+        getter,
+        setter,
+    };
+
+    /// private name 선언 정보 (span + kind).
+    const PrivateNameInfo = struct {
+        span: Span,
+        kind: PrivateNameKind,
+    };
+
     const LabelEntry = struct {
         name: []const u8,
         span: Span,
@@ -94,7 +108,7 @@ pub const SemanticAnalyzer = struct {
             .ast = ast,
             .scopes = std.ArrayList(Scope).init(allocator),
             .symbols = std.ArrayList(Symbol).init(allocator),
-            .class_private_declared = std.ArrayList(std.StringHashMap(Span)).init(allocator),
+            .class_private_declared = std.ArrayList(std.StringHashMap(PrivateNameInfo)).init(allocator),
             .class_private_refs = std.ArrayList(std.ArrayList(PrivateRef)).init(allocator),
             .labels = std.ArrayList(LabelEntry).init(allocator),
             .errors = std.ArrayList(SemanticError).init(allocator),
@@ -191,7 +205,7 @@ pub const SemanticAnalyzer = struct {
 
     /// class body 진입 시 private name 스코프를 push한다.
     fn pushClassScope(self: *SemanticAnalyzer) void {
-        self.class_private_declared.append(std.StringHashMap(Span).init(self.allocator)) catch @panic("OOM");
+        self.class_private_declared.append(std.StringHashMap(PrivateNameInfo).init(self.allocator)) catch @panic("OOM");
         self.class_private_refs.append(std.ArrayList(PrivateRef).init(self.allocator)) catch @panic("OOM");
     }
 
@@ -223,12 +237,24 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// private name을 현재 class scope에 선언 등록한다.
-    fn declarePrivateName(self: *SemanticAnalyzer, name: []const u8, span: Span) void {
+    fn declarePrivateName(self: *SemanticAnalyzer, name: []const u8, span: Span, kind: PrivateNameKind) void {
         if (self.class_private_declared.items.len == 0) return;
         var current = &self.class_private_declared.items[self.class_private_declared.items.len - 1];
-        // 중복 private name 선언 체크는 getter+setter 쌍 구분이 필요하므로
-        // 향후 PrivateKind 기반으로 구현 예정
-        current.put(name, span) catch @panic("OOM");
+
+        if (current.get(name)) |existing| {
+            // getter+setter 쌍은 허용 (순서 무관)
+            const is_accessor_pair = (existing.kind == .getter and kind == .setter) or
+                (existing.kind == .setter and kind == .getter);
+            if (!is_accessor_pair) {
+                self.addErrorMsg(span, std.fmt.allocPrint(
+                    self.allocator,
+                    "Private field '{s}' has already been declared",
+                    .{name},
+                ) catch @panic("OOM"));
+                return;
+            }
+        }
+        current.put(name, .{ .span = span, .kind = kind }) catch @panic("OOM");
     }
 
     /// private name 참조를 기록한다 (class body 퇴장 시 검증).
@@ -739,11 +765,20 @@ pub const SemanticAnalyzer = struct {
                     const extra_start = node.data.extra;
                     if (extra_start >= self.ast.extra_data.items.len) continue;
                     const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[extra_start]);
-                    self.tryRegisterPrivateKey(key_idx);
+                    // flags는 extra_start + 4: 0x02=getter, 0x04=setter
+                    const kind: PrivateNameKind = blk: {
+                        if (extra_start + 4 < self.ast.extra_data.items.len) {
+                            const flags = self.ast.extra_data.items[extra_start + 4];
+                            if (flags & 0x02 != 0) break :blk .getter;
+                            if (flags & 0x04 != 0) break :blk .setter;
+                        }
+                        break :blk .method;
+                    };
+                    self.tryRegisterPrivateKey(key_idx, kind);
                 },
                 .property_definition => {
                     // binary: { left = key, right = value, flags }
-                    self.tryRegisterPrivateKey(node.data.binary.left);
+                    self.tryRegisterPrivateKey(node.data.binary.left, .field);
                 },
                 else => {},
             }
@@ -751,12 +786,12 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// key가 private_identifier이면 선언 등록한다.
-    fn tryRegisterPrivateKey(self: *SemanticAnalyzer, key_idx: NodeIndex) void {
+    fn tryRegisterPrivateKey(self: *SemanticAnalyzer, key_idx: NodeIndex, kind: PrivateNameKind) void {
         if (key_idx.isNone() or @intFromEnum(key_idx) >= self.ast.nodes.items.len) return;
         const key_node = self.ast.getNode(key_idx);
         if (key_node.tag == .private_identifier) {
             const name = self.ast.source[key_node.span.start..key_node.span.end];
-            self.declarePrivateName(name, key_node.span);
+            self.declarePrivateName(name, key_node.span, kind);
         }
     }
 
@@ -1244,4 +1279,64 @@ test "SemanticAnalyzer: inner class can access outer private name" {
 
     // #x는 Outer에 선언됨 → 에러 없음
     try std.testing.expect(ana.errors.items.len == 0);
+}
+
+test "SemanticAnalyzer: duplicate private method is error" {
+    // 같은 이름의 private method 두 번 선언 → 에러
+    var scanner = Scanner.init(std.testing.allocator, "class C { #m() {} #m() {} }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len > 0);
+}
+
+test "SemanticAnalyzer: duplicate private field is error" {
+    // 같은 이름의 private field 두 번 선언 → 에러
+    var scanner = Scanner.init(std.testing.allocator, "class C { #x; #x; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len > 0);
+}
+
+test "SemanticAnalyzer: private getter+setter pair is valid" {
+    // getter와 setter 쌍은 중복이 아님
+    var scanner = Scanner.init(std.testing.allocator, "class C { get #x() { return 1; } set #x(v) {} }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len == 0);
+}
+
+test "SemanticAnalyzer: private method+getter duplicate is error" {
+    // method와 getter는 쌍이 아님 → 에러
+    var scanner = Scanner.init(std.testing.allocator, "class C { #m() {} get #m() { return 1; } }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len > 0);
 }
