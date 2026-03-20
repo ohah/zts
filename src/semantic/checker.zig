@@ -489,7 +489,7 @@ const Parser = @import("../parser/parser.zig").Parser;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 
 test "checker: duplicate constructor is error" {
-    var scanner = Scanner.init(std.testing.allocator, "class C { constructor() {} constructor() {} }");
+    var scanner = try Scanner.init(std.testing.allocator, "class C { constructor() {} constructor() {} }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -515,7 +515,7 @@ test "checker: duplicate constructor is error" {
 }
 
 test "checker: single constructor is valid" {
-    var scanner = Scanner.init(std.testing.allocator, "class C { constructor() {} foo() {} }");
+    var scanner = try Scanner.init(std.testing.allocator, "class C { constructor() {} foo() {} }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -536,7 +536,7 @@ test "checker: single constructor is valid" {
 }
 
 test "checker: static/instance private name conflict is error" {
-    var scanner = Scanner.init(std.testing.allocator, "class C { set #f(v) {} static get #f() {} }");
+    var scanner = try Scanner.init(std.testing.allocator, "class C { set #f(v) {} static get #f() {} }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -560,7 +560,7 @@ test "checker: static/instance private name conflict is error" {
 }
 
 test "checker: same static private getter+setter is valid" {
-    var scanner = Scanner.init(std.testing.allocator, "class C { static get #f() {} static set #f(v) {} }");
+    var scanner = try Scanner.init(std.testing.allocator, "class C { static get #f() {} static set #f(v) {} }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -581,7 +581,7 @@ test "checker: same static private getter+setter is valid" {
 }
 
 test "checker: duplicate __proto__ is error" {
-    var scanner = Scanner.init(std.testing.allocator, "var o = { __proto__: null, __proto__: null };");
+    var scanner = try Scanner.init(std.testing.allocator, "var o = { __proto__: null, __proto__: null };");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -605,7 +605,7 @@ test "checker: duplicate __proto__ is error" {
 }
 
 test "checker: single __proto__ is valid" {
-    var scanner = Scanner.init(std.testing.allocator, "var o = { __proto__: null, x: 1 };");
+    var scanner = try Scanner.init(std.testing.allocator, "var o = { __proto__: null, x: 1 };");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -626,7 +626,7 @@ test "checker: single __proto__ is valid" {
 }
 
 test "checker: duplicate arrow params is error" {
-    var scanner = Scanner.init(std.testing.allocator, "var f = (x, x) => x;");
+    var scanner = try Scanner.init(std.testing.allocator, "var f = (x, x) => x;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -641,7 +641,7 @@ test "checker: duplicate arrow params is error" {
 }
 
 test "checker: duplicate method params is error" {
-    var scanner = Scanner.init(std.testing.allocator, "class C { foo(a, a) {} }");
+    var scanner = try Scanner.init(std.testing.allocator, "class C { foo(a, a) {} }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();

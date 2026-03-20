@@ -26,11 +26,11 @@ pub fn parseFunctionDeclaration(self: *Parser) ParseError2!NodeIndex {
 
 fn parseFunctionDeclarationWithFlags(self: *Parser, extra_flags: u32) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    self.advance(); // skip 'function'
+    try self.advance(); // skip 'function'
 
     // generator: function* name()
     var flags = extra_flags;
-    if (self.eat(.star)) {
+    if (try self.eat(.star)) {
         flags |= FunctionFlags.is_generator;
     }
 
@@ -44,30 +44,30 @@ fn parseFunctionDeclarationWithFlags(self: *Parser, extra_flags: u32) ParseError
 
     const saved_ctx = self.enterFunctionContext(is_async, is_generator);
 
-    self.expect(.l_paren);
+    try self.expect(.l_paren);
     self.in_formal_parameters = true;
     const scratch_top = self.saveScratch();
     while (self.current() != .r_paren and self.current() != .eof) {
         const param = try self.parseBindingIdentifier();
         try self.scratch.append(param);
-        self.checkRestParameterLast(param);
-        if (!self.eat(.comma)) break;
+        try self.checkRestParameterLast(param);
+        if (!try self.eat(.comma)) break;
     }
-    self.expect(.r_paren);
+    try self.expect(.r_paren);
     self.in_formal_parameters = false;
 
     // TS 리턴 타입 어노테이션
     const return_type = try self.tryParseReturnType();
 
     self.has_simple_params = self.checkSimpleParams(scratch_top);
-    self.checkDuplicateParams(scratch_top);
+    try self.checkDuplicateParams(scratch_top);
     const body = try self.parseFunctionBody();
 
     // retroactive strict mode checks: "use strict" directive가 있으면
     // 함수 이름과 파라미터를 소급 검증 (ECMAScript 14.1.2)
     if (self.is_strict_mode and !saved_ctx.is_strict_mode) {
-        self.checkStrictFunctionName(name);
-        self.checkStrictParamNames(scratch_top);
+        try self.checkStrictFunctionName(name);
+        try self.checkStrictParamNames(scratch_top);
     }
 
     self.restoreFunctionContext(saved_ctx);
@@ -92,10 +92,10 @@ fn parseFunctionDeclarationWithFlags(self: *Parser, extra_flags: u32) ParseError
 /// async 뒤에 function이 오면 async function declaration,
 /// 그 외는 expression statement로 처리.
 pub fn parseAsyncStatement(self: *Parser) ParseError2!NodeIndex {
-    const peek = self.peekNext();
+    const peek = try self.peekNext();
     // async [no LineTerminator here] function → async function declaration
     if (peek.kind == .kw_function and !peek.has_newline_before) {
-        self.advance(); // skip 'async'
+        try self.advance(); // skip 'async'
         return parseFunctionDeclarationWithFlags(self, FunctionFlags.is_async);
     }
     // async 뒤에 줄바꿈이 있거나 function이 아니면 → expression statement
@@ -110,7 +110,7 @@ pub fn parseFunctionDeclarationDefaultExport(self: *Parser) ParseError2!NodeInde
 
 /// export default async function / async function* — 이름이 선택적
 pub fn parseAsyncFunctionDeclarationDefaultExport(self: *Parser) ParseError2!NodeIndex {
-    self.advance(); // skip 'async'
+    try self.advance(); // skip 'async'
     return parseFunctionDeclarationWithFlagsOptionalName(self, FunctionFlags.is_async);
 }
 
@@ -118,10 +118,10 @@ pub fn parseAsyncFunctionDeclarationDefaultExport(self: *Parser) ParseError2!Nod
 /// export default에서만 사용.
 fn parseFunctionDeclarationWithFlagsOptionalName(self: *Parser, extra_flags: u32) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    self.advance(); // skip 'function'
+    try self.advance(); // skip 'function'
 
     var flags = extra_flags;
-    if (self.eat(.star)) {
+    if (try self.eat(.star)) {
         flags |= FunctionFlags.is_generator;
     }
 
@@ -138,28 +138,28 @@ fn parseFunctionDeclarationWithFlagsOptionalName(self: *Parser, extra_flags: u32
 
     const saved_ctx = self.enterFunctionContext(is_async, is_generator);
 
-    self.expect(.l_paren);
+    try self.expect(.l_paren);
     self.in_formal_parameters = true;
     const scratch_top = self.saveScratch();
     while (self.current() != .r_paren and self.current() != .eof) {
         const param = try self.parseBindingIdentifier();
         try self.scratch.append(param);
-        self.checkRestParameterLast(param);
-        if (!self.eat(.comma)) break;
+        try self.checkRestParameterLast(param);
+        if (!try self.eat(.comma)) break;
     }
-    self.expect(.r_paren);
+    try self.expect(.r_paren);
     self.in_formal_parameters = false;
 
     const return_type = try self.tryParseReturnType();
 
     self.has_simple_params = self.checkSimpleParams(scratch_top);
-    self.checkDuplicateParams(scratch_top);
+    try self.checkDuplicateParams(scratch_top);
     const body = try self.parseFunctionBody();
 
     // retroactive strict mode checks
     if (self.is_strict_mode and !saved_ctx.is_strict_mode) {
-        self.checkStrictFunctionName(name);
-        self.checkStrictParamNames(scratch_top);
+        try self.checkStrictFunctionName(name);
+        try self.checkStrictParamNames(scratch_top);
     }
 
     self.restoreFunctionContext(saved_ctx);
@@ -186,11 +186,11 @@ pub fn parseFunctionExpression(self: *Parser) ParseError2!NodeIndex {
 
 pub fn parseFunctionExpressionWithFlags(self: *Parser, extra_flags: u32) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    self.advance(); // skip 'function'
+    try self.advance(); // skip 'function'
 
     // generator: function* () {}
     var flags: u32 = extra_flags;
-    if (self.eat(.star)) {
+    if (try self.eat(.star)) {
         flags |= FunctionFlags.is_generator;
     }
 
@@ -205,28 +205,28 @@ pub fn parseFunctionExpressionWithFlags(self: *Parser, extra_flags: u32) ParseEr
         name = try self.parseBindingIdentifier();
     }
 
-    self.expect(.l_paren);
+    try self.expect(.l_paren);
     self.in_formal_parameters = true;
     const scratch_top = self.saveScratch();
     while (self.current() != .r_paren and self.current() != .eof) {
         const param = try self.parseBindingIdentifier();
         try self.scratch.append(param);
-        self.checkRestParameterLast(param);
-        if (!self.eat(.comma)) break;
+        try self.checkRestParameterLast(param);
+        if (!try self.eat(.comma)) break;
     }
-    self.expect(.r_paren);
+    try self.expect(.r_paren);
     self.in_formal_parameters = false;
 
     // TS 리턴 타입 어노테이션
     _ = try self.tryParseReturnType();
     self.has_simple_params = self.checkSimpleParams(scratch_top);
-    self.checkDuplicateParams(scratch_top);
+    try self.checkDuplicateParams(scratch_top);
     const body = try self.parseFunctionBodyExpr();
 
     // retroactive strict mode checks
     if (self.is_strict_mode and !saved_ctx.is_strict_mode) {
-        self.checkStrictFunctionName(name);
-        self.checkStrictParamNames(scratch_top);
+        try self.checkStrictFunctionName(name);
+        try self.checkStrictParamNames(scratch_top);
     }
 
     self.restoreFunctionContext(saved_ctx);
@@ -258,7 +258,7 @@ pub fn parseClassExpression(self: *Parser) ParseError2!NodeIndex {
 /// extra = [name, super_class, body, type_params, implements_start, implements_len, deco_start, deco_len]
 pub fn parseClassWithDecorators(self: *Parser, tag: Tag, decorators: NodeList) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    self.advance(); // skip 'class'
+    try self.advance(); // skip 'class'
 
     // ECMAScript 10.2.1: "All parts of a ClassDeclaration or a ClassExpression
     // are strict mode code." — 클래스 이름, extends, 본문 모두 strict mode.
@@ -291,14 +291,14 @@ pub fn parseClassWithDecorators(self: *Parser, tag: Tag, decorators: NodeList) P
     // parseCallExpression을 사용하여 arrow function이 heritage에서 파싱되지 않도록 한다.
     // 예: `class extends () => {} {}` → SyntaxError (arrow의 {}가 class body와 충돌)
     var super_class = NodeIndex.none;
-    if (self.eat(.kw_extends)) {
+    if (try self.eat(.kw_extends)) {
         super_class = try self.parseCallExpression();
     }
 
     // TS implements 절 (선택): class Foo implements Bar, Baz
-    if (self.eat(.kw_implements)) {
+    if (try self.eat(.kw_implements)) {
         _ = try self.parseType();
-        while (self.eat(.comma)) {
+        while (try self.eat(.comma)) {
             _ = try self.parseType();
         }
     }
@@ -333,7 +333,7 @@ pub fn parseClassWithDecorators(self: *Parser, tag: Tag, decorators: NodeList) P
 
 fn parseClassBody(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    self.expect(.l_curly);
+    try self.expect(.l_curly);
 
     // class body 안에서는 in_class=true (super 허용 등)
     const saved_in_class = self.in_class;
@@ -343,7 +343,7 @@ fn parseClassBody(self: *Parser) ParseError2!NodeIndex {
     while (self.current() != .r_curly and self.current() != .eof) {
         // 세미콜론 스킵 (클래스 본문에서 허용)
         if (self.current() == .semicolon) {
-            self.advance();
+            try self.advance();
             continue;
         }
         const member = try parseClassMember(self);
@@ -353,7 +353,7 @@ fn parseClassBody(self: *Parser) ParseError2!NodeIndex {
     self.in_class = saved_in_class;
 
     const end = self.currentSpan().end;
-    self.expect(.r_curly);
+    try self.expect(.r_curly);
 
     const members = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
@@ -383,7 +383,7 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         self.current() == .kw_abstract or self.current() == .kw_override or
         self.current() == .kw_declare)
     {
-        self.advance(); // skip modifier (스트리핑 대상이므로 AST에 저장 불필요)
+        try self.advance(); // skip modifier (스트리핑 대상이므로 AST에 저장 불필요)
     }
 
     // static 키워드 (선택)
@@ -391,12 +391,12 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
     // static 뒤에 {, (, = 가 오면 이름으로 취급
     var flags: u16 = 0;
     if (self.current() == .kw_static) {
-        const next = self.peekNextKind();
+        const next = try self.peekNextKind();
         if (next == .l_curly) {
             // static { } — static block
             // static initializer는 자체 arguments 바인딩이 없음.
             // new.target은 허용 (undefined로 평가, ECMAScript 15.7.15)
-            self.advance(); // skip 'static'
+            try self.advance(); // skip 'static'
             const saved_in_static = self.in_static_initializer;
             const saved_new_target = self.allow_new_target;
             const saved_in_function = self.ctx.in_function;
@@ -433,7 +433,7 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         // static 뒤에 (나 = 가 오면 static은 메서드/프로퍼티 이름
         if (next != .l_paren and next != .eq and next != .semicolon) {
             flags |= 0x01; // static modifier
-            self.advance();
+            try self.advance();
         }
     }
 
@@ -443,7 +443,7 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         self.current() == .kw_public or self.current() == .kw_private or
         self.current() == .kw_protected)
     {
-        self.advance();
+        try self.advance();
     }
 
     // accessor (선택): TC39 Decorators proposal — `accessor x = 1`
@@ -452,35 +452,35 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
     // `accessor()`, `accessor;`, `accessor =` 는 "accessor"라는 이름의 일반 멤버.
     var is_accessor = false;
     if (self.current() == .kw_accessor) {
-        const next = self.peekNextKind();
+        const next = try self.peekNextKind();
         if (next != .l_paren and next != .eq and next != .semicolon and
             next != .r_curly and next != .eof)
         {
             is_accessor = true;
-            self.advance(); // skip 'accessor'
+            try self.advance(); // skip 'accessor'
         }
     }
 
     // get/set (선택)
-    if (self.current() == .kw_get and self.peekNextKind() != .l_paren) {
+    if (self.current() == .kw_get and try self.peekNextKind() != .l_paren) {
         flags |= 0x02; // getter
-        self.advance();
-    } else if (self.current() == .kw_set and self.peekNextKind() != .l_paren) {
+        try self.advance();
+    } else if (self.current() == .kw_set and try self.peekNextKind() != .l_paren) {
         flags |= 0x04; // setter
-        self.advance();
+        try self.advance();
     }
 
     // async (선택): async [no LineTerminator here] MethodName
     // 스펙: async와 다음 토큰(*/PropertyName) 사이에 줄바꿈이 없어야 함
-    if (self.current() == .kw_async and self.peekNextKind() != .l_paren and
-        !self.peekNext().has_newline_before)
+    if (self.current() == .kw_async and try self.peekNextKind() != .l_paren and
+        !(try self.peekNext()).has_newline_before)
     {
         flags |= 0x08; // async flag
-        self.advance();
+        try self.advance();
     }
 
     // generator (선택): *method() {}
-    if (self.eat(.star)) {
+    if (try self.eat(.star)) {
         flags |= 0x10; // generator flag
     }
 
@@ -509,16 +509,16 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         self.ctx.in_generator = (flags & 0x10) != 0;
         // class 메서드의 파라미터에서 super.prop 허용 (ECMAScript 15.7.5)
         self.allow_super_property = true;
-        self.expect(.l_paren);
+        try self.expect(.l_paren);
         self.in_formal_parameters = true;
         const param_top = self.saveScratch();
         while (self.current() != .r_paren and self.current() != .eof) {
             const param = try self.parseBindingIdentifier();
             try self.scratch.append(param);
-            self.checkRestParameterLast(param);
-            if (!self.eat(.comma)) break;
+            try self.checkRestParameterLast(param);
+            if (!try self.eat(.comma)) break;
         }
-        self.expect(.r_paren);
+        try self.expect(.r_paren);
         self.in_formal_parameters = false;
 
         // TS 리턴 타입 어노테이션: (): Type
@@ -535,20 +535,20 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
             else
                 @as([]const u8, "");
             if ((flags & 0x01) != 0 and std.mem.eql(u8, method_name, "prototype")) {
-                self.addError(mk.span, "Static class method cannot be named 'prototype'");
+                try self.addError(mk.span, "Static class method cannot be named 'prototype'");
             }
             // constructor는 일반 method만 가능 — getter/setter/generator/async 금지
             if ((flags & 0x01) == 0 and std.mem.eql(u8, method_name, "constructor")) {
                 // flags: 0x02=getter, 0x04=setter, 0x08=async, 0x10=generator
                 if ((flags & 0x1E) != 0) {
-                    self.addError(mk.span, "Class constructor cannot be a getter, setter, generator, or async");
+                    try self.addError(mk.span, "Class constructor cannot be a getter, setter, generator, or async");
                 }
             }
             // private name '#constructor' 금지
             if (mk.tag == .private_identifier) {
                 const pn = self.ast.source[mk.span.start..mk.span.end];
                 if (std.mem.eql(u8, pn, "#constructor")) {
-                    self.addError(mk.span, "Class member cannot be named '#constructor'");
+                    try self.addError(mk.span, "Class member cannot be named '#constructor'");
                 }
             }
         }
@@ -578,11 +578,11 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
                 }
             }
             self.has_simple_params = self.checkSimpleParams(param_top);
-            self.checkDuplicateParams(param_top);
+            try self.checkDuplicateParams(param_top);
             body = try self.parseFunctionBodyExpr();
             self.restoreFunctionContext(saved_ctx);
         } else {
-            _ = self.eat(.semicolon);
+            _ = try self.eat(.semicolon);
         }
         // 파라미터 전에 변경한 플래그 복원 (if/else 양쪽 공통)
         // restoreFunctionContext는 enterFunctionContext 시점의 (이미 false인) 값을
@@ -627,17 +627,17 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         if (key_text.len > 0) {
             // class field 이름 'constructor' 금지 — static/non-static 모두 (ECMAScript 15.7.1)
             if (std.mem.eql(u8, key_text, "constructor")) {
-                self.addError(key_node.span, "Class field cannot be named 'constructor'");
+                try self.addError(key_node.span, "Class field cannot be named 'constructor'");
             }
             if ((flags & 0x01) != 0 and std.mem.eql(u8, key_text, "prototype")) {
-                self.addError(key_node.span, "Static class field cannot be named 'prototype'");
+                try self.addError(key_node.span, "Static class field cannot be named 'prototype'");
             }
         }
         // private field '#constructor' 금지
         if (key_node.tag == .private_identifier) {
             const pn = self.ast.source[key_node.span.start..key_node.span.end];
             if (std.mem.eql(u8, pn, "#constructor")) {
-                self.addError(key_node.span, "Class member cannot be named '#constructor'");
+                try self.addError(key_node.span, "Class member cannot be named '#constructor'");
             }
         }
     }
@@ -647,7 +647,7 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
 
     // 프로퍼티 (= 이니셜라이저) — class field에서 arguments 사용 금지
     var init_val = NodeIndex.none;
-    if (self.eat(.eq)) {
+    if (try self.eat(.eq)) {
         const saved_in_class_field = self.in_class_field;
         const saved_new_target = self.allow_new_target;
         const saved_super_property = self.allow_super_property;
@@ -660,7 +660,7 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         self.allow_super_property = saved_super_property;
     }
     // class field 끝에서 ASI 규칙 적용: 같은 줄에 다른 멤버가 오면 에러
-    self.expectSemicolon();
+    try self.expectSemicolon();
 
     // property_definition / accessor_property:
     // extra = [key, init_val, flags, deco_start, deco_len]

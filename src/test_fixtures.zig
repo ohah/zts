@@ -51,7 +51,7 @@ const TestResult = struct {
 fn runFixture(allocator: std.mem.Allocator, source: []const u8, cg_options: CodegenOptions) !TestResult {
     // Scanner: 렉서. source를 받아 토큰으로 변환한다.
     const scanner_ptr = try allocator.create(Scanner);
-    scanner_ptr.* = Scanner.init(allocator, source);
+    scanner_ptr.* = try Scanner.init(allocator, source);
 
     // Parser: 토큰 스트림을 AST로 변환한다.
     const parser_ptr = try allocator.create(Parser);
