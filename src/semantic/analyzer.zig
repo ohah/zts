@@ -541,8 +541,10 @@ pub const SemanticAnalyzer = struct {
                 self.visitNode(node.data.binary.right);
             },
             .static_block => {
-                // unary: { operand = body }
+                // static block은 함수와 같은 경계 — label은 넘지 못함
+                const saved_labels = self.saveLabelLen();
                 self.visitNode(node.data.unary.operand);
+                self.restoreLabelLen(saved_labels);
             },
 
             // ---- 스킵 (TS 타입 노드, 리터럴, 식별자 등) ----
