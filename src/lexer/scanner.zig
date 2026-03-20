@@ -727,6 +727,7 @@ pub const Scanner = struct {
     /// - 줄바꿈은 정규식 안에서 불허
     fn scanRegExp(self: *Scanner) Kind {
         var in_class = false; // [...] character class 안인지
+        const pattern_start = self.current; // pattern 시작 위치 (opening / 직후)
 
         while (!self.isAtEnd()) {
             const c = self.peek();
@@ -751,12 +752,15 @@ pub const Scanner = struct {
             }
 
             if (c == '/' and !in_class) {
+                const pattern_end = self.current;
                 self.current += 1; // consume closing /
-                // flags 스캔 + 검증: 중복, 미지원, u/v 충돌
+                // flags 스캔 + 검증
                 const flags_start = self.current;
                 self.scanRegExpFlags();
                 const flags_text = self.source[flags_start..self.current];
-                if (regexp_mod.flags.validate(flags_text) != null) {
+                // flags + pattern 검증
+                const pattern_text = self.source[pattern_start..pattern_end];
+                if (regexp_mod.validate(pattern_text, flags_text) != null) {
                     return .syntax_error;
                 }
                 return .regexp_literal;
