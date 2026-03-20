@@ -510,7 +510,10 @@ pub const Parser = struct {
 
             // 2) member expression — optional chaining이 아니면 valid
             .static_member_expression, .computed_member_expression => {
-                return node.data.binary.flags == 0; // 0 = normal, 1 = optional
+                if (node.data.binary.flags == 0) return true; // normal
+                // optional chaining (a?.b, a?.[b])은 assignment target이 아님
+                if (is_top) self.addError(node.span, "invalid assignment target");
+                return false;
             },
 
             // 3) array destructuring — 각 요소를 재귀 검증
@@ -1321,13 +1324,11 @@ pub const Parser = struct {
         const init_expr = try self.parseExpression();
         self.restoreContext(for_saved);
         if (self.current() == .kw_in) {
-            self.checkRestInitInAssignmentPattern(init_expr);
-            self.checkEscapedKeywordInPattern(init_expr);
+            _ = self.coverExpressionToAssignmentTarget(init_expr, false);
             return self.parseForIn(start, init_expr);
         }
         if (self.current() == .kw_of) {
-            self.checkRestInitInAssignmentPattern(init_expr);
-            self.checkEscapedKeywordInPattern(init_expr);
+            _ = self.coverExpressionToAssignmentTarget(init_expr, false);
             return self.parseForOf(start, init_expr);
         }
         _ = self.eat(.semicolon);
@@ -2769,7 +2770,7 @@ pub const Parser = struct {
                         // 괄호를 expression으로 파싱 (parenthesized_expression)
                         const params_expr = try self.parseConditionalExpression();
                         if (self.current() == .arrow and !self.scanner.token.has_newline_before) {
-                            self.checkRestInitInArrowParams(params_expr);
+                            self.coverExpressionToArrowParams(params_expr);
                             self.advance(); // skip =>
                             const body = try self.parseArrowBody(true);
                             return try self.ast.addNode(.{
@@ -2863,8 +2864,8 @@ pub const Parser = struct {
         // => 를 만나면 arrow function (괄호 형태)
         // left가 parenthesized_expression이면 파라미터 리스트로 취급
         if (self.current() == .arrow) {
-            // arrow 파라미터에서 rest-init 검증 (ECMAScript: ArrowFormalParameters)
-            self.checkRestInitInArrowParams(left);
+            // arrow 파라미터 cover grammar 검증 (ECMAScript: ArrowFormalParameters)
+            self.coverExpressionToArrowParams(left);
             const left_start = self.ast.getNode(left).span.start;
             self.advance(); // skip =>
             const body = try self.parseArrowBody(false);
@@ -2877,17 +2878,9 @@ pub const Parser = struct {
         }
 
         if (self.current().isAssignment()) {
-            // assignment target 검증 (ECMAScript 13.15.1)
-            if (!self.isValidAssignmentTarget(left)) {
-                self.addError(self.ast.getNode(left).span, "invalid assignment target");
-            }
-            // assignment destructuring 검증
-            self.checkRestInitInAssignmentPattern(left);
-            self.checkEscapedKeywordInPattern(left);
-            // strict mode: eval/arguments에 할당 금지 (ECMAScript 13.15.1)
-            if (self.ctx.is_strict_mode) {
-                self.checkStrictAssignmentTarget(left);
-            }
+            // cover grammar: expression → assignment target 검증 (ECMAScript 13.15.1)
+            // 구조적 유효성 + rest-init + escaped keyword + strict eval/arguments를 단일 walk로 검증
+            _ = self.coverExpressionToAssignmentTarget(left, true);
             const left_start = self.ast.getNode(left).span.start;
             const flags: u16 = @intFromEnum(self.current());
             self.advance();
@@ -3041,10 +3034,7 @@ pub const Parser = struct {
                 self.advance();
                 const operand = try self.parseUnaryExpression();
                 // ++/-- operand는 유효한 assignment target이어야 함
-                if (!self.isValidAssignmentTarget(operand)) {
-                    self.addError(self.ast.getNode(operand).span, "invalid assignment target");
-                }
-                if (self.ctx.is_strict_mode) self.checkStrictAssignmentTarget(operand);
+                _ = self.coverExpressionToAssignmentTarget(operand, true);
                 return try self.ast.addNode(.{
                     .tag = .update_expression,
                     .span = .{ .start = start, .end = self.currentSpan().start },
@@ -3088,10 +3078,7 @@ pub const Parser = struct {
             !self.scanner.token.has_newline_before)
         {
             // ++/-- operand는 유효한 assignment target이어야 함
-            if (!self.isValidAssignmentTarget(expr)) {
-                self.addError(self.ast.getNode(expr).span, "invalid assignment target");
-            }
-            if (self.ctx.is_strict_mode) self.checkStrictAssignmentTarget(expr);
+            _ = self.coverExpressionToAssignmentTarget(expr, true);
             const expr_start = self.ast.getNode(expr).span.start;
             const kind = self.current();
             self.advance();
