@@ -322,9 +322,23 @@
 - **JS 플러그인**: N-API로 같은 프로세스에서 호출 (esbuild의 IPC 문제 없음)
 - Rollup 핵심 훅: resolveId, load, transform (3개만 알면 대부분 구현 가능)
 
+### D061: Arena Allocator 도입 전략
+- **결정**: 번들러 전에 1~3단계 완료, 4단계는 번들러와 동시
+- **이유**: 번들러 후 도입 시 변경 범위 3배. `std.heap.ArenaAllocator` 사용하면 `std.mem.Allocator` 인터페이스 동일하므로 기존 코드 변경 최소.
+- **설계**: Arena = 소유권 경계. 각 모듈(Parser/Transformer/Codegen)은 할당만 수행, 해제는 호출자가 Arena 단위로. Phase별 Arena 분리 (parse arena → transform arena → codegen arena). 번들러에서는 파일별 독립 Arena로 멀티스레드 lock-free 달성.
+- **단계**: 1) Parser (하루), 2) Semantic Analyzer, 3) Transformer/Codegen, 4) 번들러 파일별 Arena
+
+### D062: WASM AST API 직렬화
+- **결정**: 바이너리 우선 + ESTree 변환 나중에 (둘 다 제공)
+- **이유**: 24B 고정 노드 + u32 인덱스가 WASM 메모리에서 직접 접근 가능 (직렬화 비용 0, ZTS만의 차별점). ESTree는 JS 래퍼로 바이너리 위에 변환 계층 추가. oxc는 JSON 직렬화로 병목 발생.
+
+### D063: 트리쉐이킹 수준
+- **결정**: 점진적 (보수적 → 정교)
+- **이유**: false positive(잘못된 제거) 위험을 단계별로 격리. 사용자 입장에서 "빌드는 되는데 런타임 깨짐"이 최악. 보수적으로 시작하면 이 위험 없음. esbuild/Rolldown도 같은 전략.
+- **1단계** (번들러 MVP): export 사용 추적 + `sideEffects` 필드 (~300줄, 2~3일)
+- **2단계**: `@__PURE__` 활용 + 미사용 함수 선언 제거
+- **3단계** (프로덕션 전): 함수 본문 사이드이펙트 분석, 참조 그래프 (Rollup 수준)
+
 ### Phase 6 (Advanced) 미결정 사항
-- Metro 호환 상세 (Haste 모듈, 플랫폼 확장자, RAM 번들)
-- 트리쉐이킹 수준 (문/식/프로퍼티)
-- CSS 번들링 (자체 파서 vs Lightning CSS 연동)
-- 개발 서버 (자체 HTTP vs 외부 연동)
-- WASM AST API 직렬화 (ESTree 호환? 자체 포맷?)
+- CSS 번들링 (자체 파서 vs Lightning CSS 연동 vs 플러그인 위임)
+- 개발 서버 (자체 HTTP vs Vite 위임 1단계)
