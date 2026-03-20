@@ -74,9 +74,19 @@ pub const SemanticAnalyzer = struct {
     /// 각 항목은 해당 class body에서 참조된 private name 목록 (검증 대기).
     class_private_refs: std.ArrayList(std.ArrayList(PrivateRef)),
 
+    /// label 스택. labeled statement 진입 시 push, 퇴장 시 pop.
+    /// 함수 경계에서 saved_label_len으로 저장/복원 (label은 함수를 넘지 못함).
+    labels: std.ArrayList(LabelEntry) = undefined,
+
     const PrivateRef = struct {
         name: []const u8,
         span: Span,
+    };
+
+    const LabelEntry = struct {
+        name: []const u8,
+        span: Span,
+        is_loop: bool,
     };
 
     pub fn init(allocator: std.mem.Allocator, ast: *const Ast) SemanticAnalyzer {
@@ -86,6 +96,7 @@ pub const SemanticAnalyzer = struct {
             .symbols = std.ArrayList(Symbol).init(allocator),
             .class_private_declared = std.ArrayList(std.StringHashMap(Span)).init(allocator),
             .class_private_refs = std.ArrayList(std.ArrayList(PrivateRef)).init(allocator),
+            .labels = std.ArrayList(LabelEntry).init(allocator),
             .errors = std.ArrayList(SemanticError).init(allocator),
             .allocator = allocator,
         };
@@ -98,6 +109,7 @@ pub const SemanticAnalyzer = struct {
         }
         self.scopes.deinit();
         self.symbols.deinit();
+        self.labels.deinit();
         self.errors.deinit();
         for (self.class_private_declared.items) |*map| map.deinit();
         self.class_private_declared.deinit();
@@ -131,6 +143,32 @@ pub const SemanticAnalyzer = struct {
         }) catch @panic("OOM: scope list");
         self.current_scope = new_id;
         return parent;
+    }
+
+    // ================================================================
+    // Label 관리
+    // ================================================================
+
+    /// label 스택의 현재 길이를 저장한다. 함수 경계에서 복원용.
+    fn saveLabelLen(self: *const SemanticAnalyzer) usize {
+        return self.labels.items.len;
+    }
+
+    /// label 스택을 저장된 길이로 복원한다.
+    fn restoreLabelLen(self: *SemanticAnalyzer, saved: usize) void {
+        self.labels.shrinkRetainingCapacity(saved);
+    }
+
+    /// label 이름으로 검색한다. 없으면 null.
+    fn findLabel(self: *const SemanticAnalyzer, name: []const u8) ?LabelEntry {
+        var i = self.labels.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (std.mem.eql(u8, self.labels.items[i].name, name)) {
+                return self.labels.items[i];
+            }
+        }
+        return null;
     }
 
     /// 현재 스코프가 strict mode인지 확인한다.
@@ -448,7 +486,9 @@ pub const SemanticAnalyzer = struct {
                 self.visitNode(node.data.binary.left);
                 self.visitNode(node.data.binary.right);
             },
-            .labeled_statement, .with_statement => {
+            .labeled_statement => self.visitLabeledStatement(node),
+            .break_statement, .continue_statement => self.visitBreakContinue(node),
+            .with_statement => {
                 self.visitNode(node.data.binary.left);
                 self.visitNode(node.data.binary.right);
             },
@@ -568,14 +608,16 @@ pub const SemanticAnalyzer = struct {
 
         // 함수 본문 — 새 function 스코프 (부모의 strict mode 상속)
         const saved = self.enterScope(.function, self.is_strict_mode);
+        const saved_labels = self.saveLabelLen(); // label은 함수 경계를 넘지 못함
 
         // 파라미터를 function 스코프에 등록
         const params_start = extras[extra_start + 1];
         const params_len = extras[extra_start + 2];
         self.registerParams(params_start, params_len);
 
-        // 본문 순회 (block_statement가 또 스코프를 만들지만, function body는 이미 function 스코프)
+        // 본문 순회
         self.visitFunctionBodyInner(body_idx);
+        self.restoreLabelLen(saved_labels);
         self.exitScope(saved);
     }
 
@@ -587,6 +629,7 @@ pub const SemanticAnalyzer = struct {
         const body_idx: NodeIndex = @enumFromInt(extras[extra_start + 3]);
 
         const saved = self.enterScope(.function, self.is_strict_mode);
+        const saved_labels = self.saveLabelLen();
 
         // 함수 표현식의 이름은 자체 스코프에만 등록 (외부에서 접근 불가)
         const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
@@ -600,12 +643,14 @@ pub const SemanticAnalyzer = struct {
         self.registerParams(params_start, params_len);
 
         self.visitFunctionBodyInner(body_idx);
+        self.restoreLabelLen(saved_labels);
         self.exitScope(saved);
     }
 
     fn visitArrowFunction(self: *SemanticAnalyzer, node: Node) void {
         // binary: { left = param/params, right = body, flags }
         const saved = self.enterScope(.function, self.is_strict_mode);
+        const saved_labels = self.saveLabelLen();
         const body_idx = node.data.binary.right;
 
         // left가 단일 파라미터(binding_identifier) 또는 파라미터 리스트일 수 있음
@@ -629,6 +674,7 @@ pub const SemanticAnalyzer = struct {
             }
         }
 
+        self.restoreLabelLen(saved_labels);
         self.exitScope(saved);
     }
 
@@ -734,6 +780,57 @@ pub const SemanticAnalyzer = struct {
         self.visitNode(node.data.ternary.b);
         self.visitNode(node.data.ternary.c);
         self.exitScope(saved);
+    }
+
+    /// labeled statement: label 등록 → body 순회 → label 해제.
+    fn visitLabeledStatement(self: *SemanticAnalyzer, node: Node) void {
+        // binary: { left = label identifier, right = body }
+        const label_idx = node.data.binary.left;
+        const body_idx = node.data.binary.right;
+
+        if (!label_idx.isNone()) {
+            const label_node = self.ast.getNode(label_idx);
+            const name = self.ast.source[label_node.span.start..label_node.span.end];
+
+            // 중복 label 체크 (같은 label 이름이 현재 스택에 있으면 에러)
+            if (self.findLabel(name) != null) {
+                self.addErrorMsg(label_node.span, std.fmt.allocPrint(self.allocator, "Label '{s}' has already been declared", .{name}) catch @panic("OOM"));
+            }
+
+            // body가 loop인지 판별 (continue label에 필요)
+            const is_loop = if (!body_idx.isNone()) blk: {
+                const body_tag = self.ast.getNode(body_idx).tag;
+                break :blk body_tag == .for_statement or body_tag == .for_in_statement or
+                    body_tag == .for_of_statement or body_tag == .while_statement or
+                    body_tag == .do_while_statement;
+            } else false;
+
+            self.labels.append(.{ .name = name, .span = label_node.span, .is_loop = is_loop }) catch @panic("OOM");
+            self.visitNode(body_idx);
+            _ = self.labels.pop();
+        } else {
+            self.visitNode(body_idx);
+        }
+    }
+
+    /// break/continue with label: label 존재 여부 + continue는 loop label만 가능.
+    fn visitBreakContinue(self: *SemanticAnalyzer, node: Node) void {
+        // unary: { operand = label identifier or none }
+        const label_idx = node.data.unary.operand;
+        if (label_idx.isNone()) return; // label 없는 break/continue는 파서에서 이미 검증
+
+        const label_node = self.ast.getNode(label_idx);
+        const name = self.ast.source[label_node.span.start..label_node.span.end];
+
+        if (self.findLabel(name)) |entry| {
+            // continue는 loop label만 가능
+            if (node.tag == .continue_statement and !entry.is_loop) {
+                self.addErrorMsg(label_node.span, std.fmt.allocPrint(self.allocator, "Cannot continue to non-loop label '{s}'", .{name}) catch @panic("OOM"));
+            }
+        } else {
+            // label이 존재하지 않음
+            self.addErrorMsg(label_node.span, std.fmt.allocPrint(self.allocator, "Undefined label '{s}'", .{name}) catch @panic("OOM"));
+        }
     }
 
     fn visitSwitchStatement(self: *SemanticAnalyzer, node: Node) void {
