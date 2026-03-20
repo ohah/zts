@@ -291,8 +291,7 @@ test "fixture: spread_rest - 배열 구조분해 + rest 타입 제거" {
 }
 
 test "fixture: decorator_member - class member decorator 유지" {
-    // @log method() {} → @log
-method(){}
+    // @log method(){} → @log\nmethod(){}
     // class member 앞의 decorator가 AST에 연결되어 출력된다.
     const input = @embedFile("fixtures/transform/decorator_member.input.ts");
     const expected = @embedFile("fixtures/transform/decorator_member.expected.js");

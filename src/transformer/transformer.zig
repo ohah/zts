@@ -775,7 +775,7 @@ pub const Transformer = struct {
         const new_decos = try self.visitExtraList(self.readU32(e, 5), self.readU32(e, 6));
         return self.addExtraNode(.method_definition, node.span, &.{
             @intFromEnum(new_key), new_params.start, new_params.len, @intFromEnum(new_body),
-            self.readU32(e, 4), new_decos.start, new_decos.len,
+            self.readU32(e, 4),    new_decos.start,  new_decos.len,
         });
     }
 
@@ -787,7 +787,7 @@ pub const Transformer = struct {
         const new_decos = try self.visitExtraList(self.readU32(e, 3), self.readU32(e, 4));
         return self.addExtraNode(.property_definition, node.span, &.{
             @intFromEnum(new_key), @intFromEnum(new_value), self.readU32(e, 2),
-            new_decos.start, new_decos.len,
+            new_decos.start,       new_decos.len,
         });
     }
 
@@ -799,7 +799,7 @@ pub const Transformer = struct {
         const new_decos = try self.visitExtraList(self.readU32(e, 3), self.readU32(e, 4));
         return self.addExtraNode(.accessor_property, node.span, &.{
             @intFromEnum(new_key), @intFromEnum(new_value), self.readU32(e, 2),
-            new_decos.start, new_decos.len,
+            new_decos.start,       new_decos.len,
         });
     }
 
