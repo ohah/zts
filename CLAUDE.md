@@ -43,6 +43,7 @@ references/                 # 레퍼런스 프로젝트 (.gitignore, 로컬만)
   webpack/                  #   JS — code splitting/플러그인 시스템/HMR 참고
   vite/                     #   JS — 개발 서버/HMR/플러그인 API 참고
   turbopack/                #   Rust — 증분 컴파일/캐싱 전략 참고
+  rspack/                   #   Rust — Webpack 호환 번들러/CSS 처리/플러그인 참고
   babel/                    #   JS — 플러그인 시스템/스펙 추종 참고
 ```
 
@@ -89,6 +90,8 @@ references/                 # 레퍼런스 프로젝트 (.gitignore, 로컬만)
 - Tab 기본 + Space 옵션 (oxc 방식). IndentChar enum으로 Tab/Space 선택
 - `\n` 정규화 + CRLF 옵션. 크로스 플랫폼 지원
 - 소스맵 VLQ 자체 구현 (~30줄). 외부 의존성 없음
+- 번들러 소스맵: 전 파이프라인을 자체 소유하므로 AST span으로 원본→최종 직접 매핑 (esbuild 방식, 체이닝 불필요)
+- 플러그인 transform 시: 플러그인이 소스맵을 반환하면 VLQ 역추적으로 체이닝 (~200줄). 미반환 시 경고
 
 ### Semantic Analysis Design (D051-D055)
 - 파서에서 구문 컨텍스트 추적 (strict/async/generator/loop/switch), Semantic 패스에서 스코프/심볼
@@ -112,12 +115,27 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
 
 #### 추천 구현 순서
 1. **Test262 마무리 + regexp validator** — 파서 안정화, AST 변경 완료
-2. **Arena allocator 설계 + 도입** — 번들러 전 필수. Phase별 lifetime 설계 (parse → transform → codegen). 나중에 넣을수록 변경 범위 커짐
-3. **ES 다운레벨링** (ES2024→ES2016 점진적, ES2015 이후, ES5 미정) — 트랜스포머 visitor 추가. 독립적이라 언제든 가능하지만 AST 안정화 후가 이상적
-4. **.d.ts 생성** (isolatedDeclarations) — AST 순회로 타입 추출. AST 태그가 안정화된 후
+2. **Arena allocator 설계 + 도입** — 번들러 전 필수 (1~3단계). 나중에 넣을수록 변경 범위 커짐
+   - 1단계: Parser에 Arena 적용 (allocator 교체, 하루 소요)
+   - 2단계: Semantic Analyzer에 적용 (스코프/심볼)
+   - 3단계: Transformer/Codegen에 적용 (Phase별 Arena 분리)
+   - 4단계: 번들러 파일별 Arena (번들러 구현 시 같이)
+   - Arena = 소유권 경계. 각 모듈은 할당만, 해제는 호출자가 Arena 단위로
+   - `std.heap.ArenaAllocator` 사용, `std.mem.Allocator` 인터페이스 동일하므로 기존 코드 변경 최소
+3. **ES 다운레벨링** (ES2024→ES2016 점진적, ES2015 이후, ES5) — 트랜스포머 visitor 추가. 독립적이라 언제든 가능하지만 AST 안정화 후가 이상적
+   - 1차 ES2024→ES2020 (~200줄, 1~2일): `??`, `?.`, `??=`/`||=`/`&&=`, class public field
+   - 2차 ES2019→ES2016 (~500줄, 3~5일): async/await→generator+Promise, rest/spread properties
+   - 3차 ES2015 (~6000줄, 4~6주): class→function/prototype, arrow→bind, let/const→var+IIFE, generator→상태 머신, destructuring, for-of, template literal
+   - 4차 ES5 (~2000줄, 1~2주): polyfill + 런타임 헬퍼 (tslib 방식)
+   - 참고: oxc `crates/oxc_transformer/src/es20XX/` (버전별 폴더, 가장 구조 유사), Babel `packages/babel-plugin-transform-*/` (ES5까지 완벽), esbuild `pkg/js_parser/js_parser_lower.go` (읽기 쉬움)
+   - 런타임 헬퍼: `__extends`, `__awaiter`, `__generator` 등 15개+ — 필요한 것만 주입 (esbuild 방식)
+4. **.d.ts 생성** (isolatedDeclarations) — 후순위. 당분간 tsc에 위임 (esbuild/SWC와 동일). 자체 구현 시 AST 순회로 export 타입 추출 (~500줄), 파일별 독립이라 번들러 불필요
 5. **번들러 설계** (멀티스레드 모델 포함) — 아래 번들러 상세 참조
 6. **번들러 MVP** — Arena + 멀티스레드 + 모듈 해석 통합
 7. **프로파일링 → SIMD → 미니파이어** — 번들러 MVP로 현실적 벤치마크 가능. SIMD는 렉서 함수 3개 교체 (공백 스킵, 식별자 스캔, 문자열 스캔), 인터페이스 불변이라 언제 넣어도 비용 동일
+   - 미니파이어 3단계: 1) whitespace (✅ 이미 있음, codegen minify) → 2) identifier mangling (번들 크기 70%, 스코프 분석 필수) → 3) syntax 최적화 (if→ternary, dead code 등)
+   - mangling은 번들러의 스코프/심볼 데이터를 공유하므로 번들러 후가 효율적
+   - 단독 미니파이(`zts --minify`)도 가능하지만 번들+미니파이 통합이 최대 효과
 8. **WASM 공개 AST API** — 모든 게 안정화된 후. AST 변동 중 넣으면 매번 breaking change
 
 #### 번들러 상세 설계
@@ -253,6 +271,26 @@ src/bundler/
 - **단방향 의존**: resolver → graph → linker → tree_shaker → chunk → emitter
 - **독립 테스트 가능**: 각 모듈이 입력/출력 명확, 다른 모듈의 내부를 모름
 - **기존 코드 재사용**: parser, semantic, codegen, transformer를 도구로 위임
+
+##### 번들러 테스트 전략 (TDD)
+- **원칙**: 버그 하나 = 테스트 하나. 이슈 재현 테스트 먼저 → 수정 → 같은 버그 재발 방지
+- **모듈별 유닛 테스트**: 파일시스템 없이 가짜 데이터로 격리 테스트
+  - resolver ~50개 (확장자 해석, package.json exports, tsconfig paths, node_modules 탐색)
+  - graph ~40개 (실행 순서, 순환 참조, 동적 import, re-export 체인)
+  - linker ~30개 (이름 충돌, import 교체, CJS 래핑)
+  - tree_shaker ~30개 (미사용 export, sideEffects, @__PURE__)
+  - emitter ~50개 (실행 비교, 소스맵, edge case)
+- **픽스처 테스트**: `tests/bundler/fixtures/` — 입력 파일 → 기대 출력 비교
+- **실행 비교 테스트 (핵심)**: 번들 결과를 실행해서 동작 확인 (출력 형태보다 실행 결과가 중요)
+- **호환 테스트**: 같은 입력으로 Rollup과 실행 결과 비교 (Rolldown 방식)
+- **스모크 테스트**: three.js, react, lodash 등 실제 프로젝트 빌드 (프로덕션 전)
+- **도입 순서**: B1에서 유닛+픽스처 → B2에서 실행 비교+호환 → 프로덕션 전 스모크
+
+##### 실전 검증 로드맵
+- **1단계 (지금 가능)**: 실제 .ts/.tsx 파일을 ZTS로 변환, esbuild/SWC 출력과 비교
+- **2단계 (Arena 후)**: `hyperfine`으로 대형 파일 벤치마크 (ZTS vs esbuild vs SWC). Arena 없이 벤치마크는 의미 없음
+- **3단계 (N-API 후)**: `vite-plugin-zts`로 실제 React/Vue 프로젝트 개발 서버. 첫 실전 사용자 검증
+- **4단계 (번들러 MVP)**: three.js, lodash-es, react-todomvc 등 실제 프로젝트 빌드 스모크 테스트
 
 **Module에 필요한 정보 (Rollup 분석 결과):**
 ```zig
