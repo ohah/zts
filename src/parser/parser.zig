@@ -1841,6 +1841,13 @@ pub const Parser = struct {
         const start = self.currentSpan().start;
         self.advance(); // skip 'class'
 
+        // ECMAScript 10.2.1: "All parts of a ClassDeclaration or a ClassExpression
+        // are strict mode code." — 클래스 이름, extends, 본문 모두 strict mode.
+        // 이를 통해 yield/let/static 등 strict mode reserved word가 클래스 이름으로
+        // 사용되는 것을 금지하고, 본문 내 yield/await 사용도 올바르게 검증한다.
+        const saved_strict_mode = self.is_strict_mode;
+        self.is_strict_mode = true;
+
         // 클래스 이름 (선언은 필수, 표현식은 선택)
         // kw_yield/kw_await는 컨텍스트에 따라 식별자로 사용 가능
         var name = NodeIndex.none;
@@ -1878,6 +1885,9 @@ pub const Parser = struct {
         self.has_super_class = !super_class.isNone();
         const body = try self.parseClassBody();
         self.has_super_class = saved_has_super_class;
+
+        // strict mode 복원 — 클래스 외부의 strict 상태로 되돌림
+        self.is_strict_mode = saved_strict_mode;
 
         const none = @intFromEnum(NodeIndex.none);
         const extra_start = try self.ast.addExtras(&.{
@@ -4065,7 +4075,13 @@ pub const Parser = struct {
                 return self.tryWrapDefaultValue(pat);
             },
             .escaped_keyword => {
-                self.addError(self.currentSpan(), "escaped reserved word cannot be used as identifier");
+                // escaped await (aw\u0061it)은 script mode에서 식별자로 사용 가능.
+                // ECMAScript 12.1.1: await는 Module goal에서만 Syntax Error.
+                // 다른 reserved keyword의 escaped 형태는 항상 사용 불가.
+                const is_escaped_await = self.isEscapedKeyword("await");
+                if (!is_escaped_await or self.is_module or self.ctx.in_async) {
+                    self.addError(self.currentSpan(), "escaped reserved word cannot be used as identifier");
+                }
                 const span = self.currentSpan();
                 self.advance();
                 return try self.ast.addNode(.{
@@ -4149,7 +4165,13 @@ pub const Parser = struct {
             .l_bracket => return self.parseArrayPattern(),
             .l_curly => return self.parseObjectPattern(),
             .escaped_keyword => {
-                self.addError(self.currentSpan(), "escaped reserved word cannot be used as identifier");
+                // escaped await (aw\u0061it)은 script mode에서 식별자로 사용 가능.
+                // ECMAScript 12.1.1: await는 Module goal에서만 Syntax Error.
+                // 다른 reserved keyword의 escaped 형태는 항상 사용 불가.
+                const is_escaped_await = self.isEscapedKeyword("await");
+                if (!is_escaped_await or self.is_module or self.ctx.in_async) {
+                    self.addError(self.currentSpan(), "escaped reserved word cannot be used as identifier");
+                }
                 const span = self.currentSpan();
                 self.advance();
                 return try self.ast.addNode(.{
