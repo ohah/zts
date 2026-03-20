@@ -761,9 +761,18 @@ pub const Parser = struct {
         };
     }
 
-    /// 함수 본문을 파싱한다.
-    /// block statement와 동일하지만, "use strict" directive를 감지하여 strict mode를 설정한다.
+    /// 함수 선언의 본문을 파싱한다 (닫는 `}` 뒤의 `/`는 regexp로 토큰화).
     fn parseFunctionBody(self: *Parser) ParseError2!NodeIndex {
+        return self.parseFunctionBodyInner(false);
+    }
+
+    /// 표현식 컨텍스트에서 함수 본문을 파싱한다.
+    /// 닫는 `}` 뒤의 `/`가 division으로 올바르게 토큰화된다.
+    fn parseFunctionBodyExpr(self: *Parser) ParseError2!NodeIndex {
+        return self.parseFunctionBodyInner(true);
+    }
+
+    fn parseFunctionBodyInner(self: *Parser, in_expression: bool) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.expect(.l_curly);
 
@@ -807,6 +816,14 @@ pub const Parser = struct {
         }
 
         const end = self.currentSpan().end;
+
+        // 표현식 컨텍스트(함수 표현식, 클래스 메서드 등)에서는 닫는 `}` 뒤의 `/`가
+        // division이어야 한다. scanner.prev_token_kind를 `.r_paren`으로 설정하면
+        // scanSlash()가 slashIsRegex()=false로 판단하여 division으로 토큰화한다.
+        // 이 설정은 expect 내부의 advance() → scanner.next()에서 사용된다.
+        if (in_expression) {
+            self.scanner.prev_token_kind = .r_paren;
+        }
         self.expect(.r_curly);
 
         const list = try self.ast.addNodeList(stmts.items);
@@ -1809,7 +1826,7 @@ pub const Parser = struct {
         _ = try self.tryParseReturnType();
         self.has_simple_params = self.checkSimpleParams(scratch_top);
         self.checkDuplicateParams(scratch_top);
-        const body = try self.parseFunctionBody();
+        const body = try self.parseFunctionBodyExpr();
         self.restoreFunctionContext(saved_ctx);
 
         const param_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
@@ -2096,7 +2113,7 @@ pub const Parser = struct {
                 }
                 self.has_simple_params = self.checkSimpleParams(param_top);
                 self.checkDuplicateParams(param_top);
-                body = try self.parseFunctionBody();
+                body = try self.parseFunctionBodyExpr();
                 self.restoreFunctionContext(saved_ctx);
             } else {
                 _ = self.eat(.semicolon);
@@ -2777,7 +2794,7 @@ pub const Parser = struct {
         self.in_static_initializer = saved_ctx.in_static_initializer;
         self.allow_new_target = saved_ctx.allow_new_target;
         const body = if (self.current() == .l_curly)
-            try self.parseFunctionBody()
+            try self.parseFunctionBodyExpr()
         else
             try self.parseAssignmentExpression();
         self.restoreFunctionContext(saved_ctx);
@@ -3811,6 +3828,11 @@ pub const Parser = struct {
         }
 
         const end = self.currentSpan().end;
+
+        // 객체 리터럴은 표현식이므로, 닫는 `}` 뒤의 `/`는 division이어야 한다.
+        // prev_token_kind를 `.r_paren`으로 설정하면 scanSlash()가 division으로 판별한다.
+        // 예: `{valueOf: fn} / 1` — object literal 뒤 division
+        self.scanner.prev_token_kind = .r_paren;
         self.expect(.r_curly);
 
         const list = try self.ast.addNodeList(props.items);
@@ -3938,7 +3960,7 @@ pub const Parser = struct {
         _ = try self.tryParseReturnType();
         self.has_simple_params = self.checkSimpleParams(scratch_top);
         self.checkDuplicateParams(scratch_top);
-        const body = try self.parseFunctionBody();
+        const body = try self.parseFunctionBodyExpr();
         self.restoreFunctionContext(saved_ctx);
 
         const param_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
