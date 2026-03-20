@@ -1735,6 +1735,8 @@ pub const Scanner = struct {
                 i += 1;
             }
         }
+        // Unicode 유효 범위 검증 (U+10FFFF 초과 거부)
+        if (codepoint > 0x10FFFF) return null;
         return codepoint;
     }
 
