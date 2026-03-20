@@ -390,13 +390,18 @@ pub const Transformer = struct {
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
+        // pending_nodes save/restore: 중첩 visitExtraList 호출에 안전.
+        // 내부 리스트의 pending_nodes가 외부 리스트로 누출되지 않도록 한다.
+        const pending_top = self.pending_nodes.items.len;
+        defer self.pending_nodes.shrinkRetainingCapacity(pending_top);
+
         for (old_indices) |raw_idx| {
             const new_child = try self.visitNode(@enumFromInt(raw_idx));
 
             // pending_nodes 드레인: visitNode가 추가한 보류 노드를 먼저 삽입
-            if (self.pending_nodes.items.len > 0) {
-                try self.scratch.appendSlice(self.pending_nodes.items);
-                self.pending_nodes.clearRetainingCapacity();
+            if (self.pending_nodes.items.len > pending_top) {
+                try self.scratch.appendSlice(self.pending_nodes.items[pending_top..]);
+                self.pending_nodes.shrinkRetainingCapacity(pending_top);
             }
 
             if (!new_child.isNone()) {
