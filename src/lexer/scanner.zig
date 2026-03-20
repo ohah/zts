@@ -1321,7 +1321,7 @@ pub const Scanner = struct {
                     // 16진수 이스케이프: \xHH
                     'x' => {
                         self.current += 1;
-                        self.skipHexEscape(2);
+                        if (self.skipHexEscape(2)) return .syntax_error;
                     },
                     // 유니코드 이스케이프: \uHHHH 또는 \u{H...H}
                     'u' => {
@@ -1335,7 +1335,7 @@ pub const Scanner = struct {
                             if (!self.isAtEnd()) self.current += 1; // consume '}'
                         } else {
                             // \uHHHH — 고정 4자리
-                            self.skipHexEscape(4);
+                            if (self.skipHexEscape(4)) return .syntax_error;
                         }
                     },
                     // 줄 연속: \ 뒤에 줄바꿈이 오면 줄바꿈을 건너뜀
@@ -1369,14 +1369,16 @@ pub const Scanner = struct {
     }
 
     /// hex 이스케이프의 지정된 자릿수만큼 스킵한다.
-    fn skipHexEscape(self: *Scanner, count: u32) void {
+    /// hex escape를 스킵한다. count자리를 소비. 부족하면 true (에러).
+    fn skipHexEscape(self: *Scanner, count: u32) bool {
         var i: u32 = 0;
         while (i < count and !self.isAtEnd()) : (i += 1) {
             const c = self.peek();
             if ((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F')) {
                 self.current += 1;
-            } else break;
+            } else return true; // 에러: non-hex character
         }
+        return i < count; // 에러: 자릿수 부족 (EOF)
     }
 
     /// 템플릿 리터럴을 스캔한다 (opening backtick은 이미 소비됨).
@@ -1500,7 +1502,7 @@ pub const Scanner = struct {
             }
             if (!self.isAtEnd()) self.current += 1; // skip }
         } else {
-            self.skipHexEscape(4);
+            _ = self.skipHexEscape(4);
         }
         return true;
     }
