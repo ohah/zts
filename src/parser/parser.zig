@@ -104,6 +104,11 @@ pub const Parser = struct {
     allow_super_property: bool = false,
     /// static initializer (static { }) 안인지 — arguments 사용 금지
     in_static_initializer: bool = false,
+    /// object literal에서 CoverInitializedName (shorthand with default: { x = 1 }) 가 있었는지.
+    /// cover grammar 변환(destructuring)에서 소비되지 않으면 에러.
+    has_cover_init_name: bool = false,
+    /// formal parameter 파싱 중인지 (yield/await expression 금지).
+    in_formal_parameters: bool = false,
 
     // ================================================================
     // Context packed struct 정의
@@ -163,6 +168,7 @@ pub const Parser = struct {
         allow_new_target: bool,
         allow_super_call: bool,
         allow_super_property: bool,
+        in_formal_parameters: bool,
     };
 
     pub fn init(allocator: std.mem.Allocator, scanner: *Scanner) Parser {
@@ -292,6 +298,9 @@ pub const Parser = struct {
     fn checkIdentifierEscapedKeyword(self: *Parser, span: Span) void {
         const text = self.resolveIdentifierText(span);
         if (token_mod.keywords.get(text)) |kw| {
+            // yield/await는 context-dependent keywords — checkYieldAwaitUse에서 별도 검증.
+            // 여기서 에러를 내면 generator/async 밖에서도 잘못 에러가 발생한다.
+            if (kw == .kw_yield or kw == .kw_await) return;
             if (kw.isReservedKeyword() or kw.isLiteralKeyword()) {
                 self.addError(span, "keywords cannot contain escape characters");
             }
@@ -370,6 +379,8 @@ pub const Parser = struct {
             .object_expression => {
                 self.ast.setTag(idx, .object_assignment_target);
                 self.coverObjectExpressionToTarget(node);
+                // CoverInitializedName이 destructuring으로 정상 소비됨
+                self.has_cover_init_name = false;
                 return true;
             },
 
@@ -820,6 +831,7 @@ pub const Parser = struct {
             .allow_new_target = self.allow_new_target,
             .allow_super_call = self.allow_super_call,
             .allow_super_property = self.allow_super_property,
+            .in_formal_parameters = self.in_formal_parameters,
         };
         self.ctx = self.ctx.enterFunction(is_async, is_generator);
         // Parser 필드 리셋 — 함수 경계에서 초기 상태로
@@ -832,6 +844,7 @@ pub const Parser = struct {
         self.in_class_field = false;
         self.in_static_initializer = false;
         self.allow_new_target = true; // 일반 함수에서는 new.target 허용
+        self.in_formal_parameters = false;
         return saved;
     }
 
@@ -848,6 +861,7 @@ pub const Parser = struct {
         self.allow_new_target = saved.allow_new_target;
         self.allow_super_call = saved.allow_super_call;
         self.allow_super_property = saved.allow_super_property;
+        self.in_formal_parameters = saved.in_formal_parameters;
     }
 
     /// Context(u8)를 복원한다 (enterAllowInContext 등과 쌍).
@@ -995,6 +1009,27 @@ pub const Parser = struct {
             // TODO: destructuring([a,b], {a})은 collectBoundNames로 여러 이름을 수집해야 함
             else => null,
         };
+    }
+
+    /// "use strict" directive가 발견된 후 함수 이름이 eval/arguments인지 소급 검증.
+    /// ECMAScript 14.1.2: strict mode에서 eval/arguments를 바인딩 이름으로 사용 금지.
+    fn checkStrictFunctionName(self: *Parser, name_idx: NodeIndex) void {
+        if (name_idx.isNone()) return;
+        const node = self.ast.getNode(name_idx);
+        if (node.tag != .binding_identifier) return;
+        self.checkStrictBinding(node.span);
+    }
+
+    /// "use strict" directive가 발견된 후 파라미터 이름을 소급 검증.
+    /// ECMAScript 14.1.2: strict mode에서 eval/arguments + 중복 파라미터 금지.
+    fn checkStrictParamNames(self: *Parser, scratch_top: usize) void {
+        const params = self.scratch.items[scratch_top..];
+        for (params) |param_idx| {
+            const name_span = self.extractParamName(param_idx) orelse continue;
+            self.checkStrictBinding(name_span);
+        }
+        // 중복 파라미터도 소급 검사 (simple params + sloppy에서는 허용이지만 strict에서는 금지)
+        self.checkDuplicateParams(scratch_top);
     }
 
     /// 함수 선언의 본문을 파싱한다 (닫는 `}` 뒤의 `/`는 regexp로 토큰화).
@@ -1269,7 +1304,13 @@ pub const Parser = struct {
 
     fn parseExpressionStatement(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
+        self.has_cover_init_name = false;
         const expr = try self.parseExpression();
+        // CoverInitializedName ({ x = 1 }) 이 destructuring으로 소비되지 않았으면 에러
+        if (self.has_cover_init_name) {
+            self.addError(.{ .start = start, .end = self.currentSpan().start }, "invalid shorthand property initializer");
+            self.has_cover_init_name = false;
+        }
         const end = self.currentSpan().end;
         _ = self.eat(.semicolon); // 세미콜론은 선택적 (ASI)
         return try self.ast.addNode(.{
@@ -1895,13 +1936,15 @@ pub const Parser = struct {
         const is_async = (flags & ast_mod.FunctionFlags.is_async) != 0;
         const is_generator = (flags & ast_mod.FunctionFlags.is_generator) != 0;
 
-        // 함수 컨텍스트 진입 — 이름/파라미터/본문 모두 이 컨텍스트에서 파싱
-        // ECMAScript: BindingIdentifier[?Yield, ?Await], FormalParameters[+Yield, +Await]
-        const saved_ctx = self.enterFunctionContext(is_async, is_generator);
-
+        // ECMAScript 14.1: 함수 선언의 BindingIdentifier는 외부 context([?Yield, ?Await])에서 파싱.
+        // enterFunctionContext 이전에 이름을 파싱해야 올바른 yield/await 검증이 된다.
+        // 예: function* foo() { function yield() {} } — "yield"는 외부(generator) context에서 에러.
         const name = try self.parseBindingIdentifier();
 
+        const saved_ctx = self.enterFunctionContext(is_async, is_generator);
+
         self.expect(.l_paren);
+        self.in_formal_parameters = true;
         const scratch_top = self.saveScratch();
         while (self.current() != .r_paren and self.current() != .eof) {
             const param = try self.parseBindingIdentifier();
@@ -1912,6 +1955,7 @@ pub const Parser = struct {
             if (!self.eat(.comma)) break;
         }
         self.expect(.r_paren);
+        self.in_formal_parameters = false;
 
         // TS 리턴 타입 어노테이션
         const return_type = try self.tryParseReturnType();
@@ -1919,6 +1963,14 @@ pub const Parser = struct {
         self.has_simple_params = self.checkSimpleParams(scratch_top);
         self.checkDuplicateParams(scratch_top);
         const body = try self.parseFunctionBody();
+
+        // retroactive strict mode checks: "use strict" directive가 있으면
+        // 함수 이름과 파라미터를 소급 검증 (ECMAScript 14.1.2)
+        if (self.is_strict_mode and !saved_ctx.is_strict_mode) {
+            self.checkStrictFunctionName(name);
+            self.checkStrictParamNames(scratch_top);
+        }
+
         self.restoreFunctionContext(saved_ctx);
 
         const param_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
@@ -1976,9 +2028,8 @@ pub const Parser = struct {
 
         const is_async = (flags & ast_mod.FunctionFlags.is_async) != 0;
         const is_generator = (flags & ast_mod.FunctionFlags.is_generator) != 0;
-        const saved_ctx = self.enterFunctionContext(is_async, is_generator);
 
-        // 이름은 선택적: identifier가 있으면 파싱, 없으면 none
+        // 이름은 선택적: identifier가 있으면 외부 context에서 파싱
         const name = if (self.current() == .identifier or
             self.current() == .kw_yield or self.current() == .kw_await or
             self.current() == .escaped_keyword or self.current() == .escaped_strict_reserved)
@@ -1986,7 +2037,10 @@ pub const Parser = struct {
         else
             NodeIndex.none;
 
+        const saved_ctx = self.enterFunctionContext(is_async, is_generator);
+
         self.expect(.l_paren);
+        self.in_formal_parameters = true;
         const scratch_top = self.saveScratch();
         while (self.current() != .r_paren and self.current() != .eof) {
             const param = try self.parseBindingIdentifier();
@@ -1997,12 +2051,20 @@ pub const Parser = struct {
             if (!self.eat(.comma)) break;
         }
         self.expect(.r_paren);
+        self.in_formal_parameters = false;
 
         const return_type = try self.tryParseReturnType();
 
         self.has_simple_params = self.checkSimpleParams(scratch_top);
         self.checkDuplicateParams(scratch_top);
         const body = try self.parseFunctionBody();
+
+        // retroactive strict mode checks
+        if (self.is_strict_mode and !saved_ctx.is_strict_mode) {
+            self.checkStrictFunctionName(name);
+            self.checkStrictParamNames(scratch_top);
+        }
+
         self.restoreFunctionContext(saved_ctx);
 
         const param_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
@@ -2047,6 +2109,7 @@ pub const Parser = struct {
         }
 
         self.expect(.l_paren);
+        self.in_formal_parameters = true;
         const scratch_top = self.saveScratch();
         while (self.current() != .r_paren and self.current() != .eof) {
             const param = try self.parseBindingIdentifier();
@@ -2057,12 +2120,20 @@ pub const Parser = struct {
             if (!self.eat(.comma)) break;
         }
         self.expect(.r_paren);
+        self.in_formal_parameters = false;
 
         // TS 리턴 타입 어노테이션
         _ = try self.tryParseReturnType();
         self.has_simple_params = self.checkSimpleParams(scratch_top);
         self.checkDuplicateParams(scratch_top);
         const body = try self.parseFunctionBodyExpr();
+
+        // retroactive strict mode checks
+        if (self.is_strict_mode and !saved_ctx.is_strict_mode) {
+            self.checkStrictFunctionName(name);
+            self.checkStrictParamNames(scratch_top);
+        }
+
         self.restoreFunctionContext(saved_ctx);
 
         const param_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
@@ -2290,6 +2361,7 @@ pub const Parser = struct {
             self.in_static_initializer = false;
             self.in_class_field = false;
             self.expect(.l_paren);
+            self.in_formal_parameters = true;
             const param_top = self.saveScratch();
             while (self.current() != .r_paren and self.current() != .eof) {
                 const param = try self.parseBindingIdentifier();
@@ -2300,6 +2372,7 @@ pub const Parser = struct {
                 if (!self.eat(.comma)) break;
             }
             self.expect(.r_paren);
+            self.in_formal_parameters = false;
 
             // TS 리턴 타입 어노테이션: (): Type
             _ = try self.tryParseReturnType();
@@ -3219,6 +3292,10 @@ pub const Parser = struct {
         // yield expression — AssignmentExpression 레벨에서만 유효 (ECMAScript 14.4)
         // UnaryExpression 위치에서는 yield가 IdentifierReference로 해석되어야 함
         if (self.current() == .kw_yield and self.ctx.in_generator) {
+            // formal parameter 안에서 yield expression 금지 (ECMAScript 14.1.2)
+            if (self.in_formal_parameters) {
+                self.addError(self.currentSpan(), "'yield' expression is not allowed in formal parameters");
+            }
             const yield_start = self.currentSpan().start;
             self.advance();
             // yield* delegate — * 전에 줄바꿈이 있으면 delegate 아님
@@ -3234,6 +3311,7 @@ pub const Parser = struct {
                 self.current() != .r_paren and self.current() != .r_bracket and
                 self.current() != .colon and self.current() != .comma and
                 self.current() != .kw_in and self.current() != .kw_of and
+                self.current() != .template_middle and self.current() != .template_tail and
                 self.current() != .eof)
             {
                 operand = try self.parseAssignmentExpression();
@@ -3449,6 +3527,10 @@ pub const Parser = struct {
                 // module mode에서 await expression으로 파싱되기 전에 체크해야 함
                 if (self.in_static_initializer) {
                     self.addError(self.currentSpan(), "'await' is not allowed in class static initializer");
+                }
+                // formal parameter 안에서 await expression 금지 (ECMAScript 14.1.2)
+                if (self.in_formal_parameters and self.ctx.in_async) {
+                    self.addError(self.currentSpan(), "'await' expression is not allowed in formal parameters");
                 }
                 // async 함수 안에서는 항상 await_expression.
                 // module top-level(함수 밖)에서는 top-level await.
@@ -4241,25 +4323,34 @@ pub const Parser = struct {
             value = try self.parseAssignmentExpression();
         } else if (self.eat(.eq)) {
             // shorthand with default: { x = 1 }  (destructuring default)
+            // CoverInitializedName — destructuring 변환에서 소비되지 않으면 에러
             value = try self.parseAssignmentExpression();
             prop_flags = shorthand_with_default;
+            self.has_cover_init_name = true;
         } else {
             // shorthand: { x } — key가 identifier shorthand로 사용 가능한지 검증
             if (!key.isNone()) {
                 const key_node = self.ast.getNode(key);
-                if (key_node.tag == .identifier_reference) {
-                    const key_text = self.resolveIdentifierText(key_node.span);
-                    if (token_mod.keywords.get(key_text)) |kw| {
-                        if (kw.isReservedKeyword() or kw.isLiteralKeyword()) {
-                            self.addError(key_node.span, "reserved word cannot be used as shorthand property");
-                        } else if (self.is_strict_mode and kw.isStrictModeReserved()) {
-                            self.addError(key_node.span, "reserved word in strict mode cannot be used as shorthand property");
-                        } else if (kw == .kw_yield and self.ctx.in_generator) {
-                            self.addError(key_node.span, "'yield' cannot be used as shorthand property in generator");
-                        } else if (kw == .kw_await and (self.ctx.in_async or self.is_module)) {
-                            self.addError(key_node.span, "'await' cannot be used as shorthand property in async/module");
+                switch (key_node.tag) {
+                    .identifier_reference => {
+                        const key_text = self.resolveIdentifierText(key_node.span);
+                        if (token_mod.keywords.get(key_text)) |kw| {
+                            if (kw.isReservedKeyword() or kw.isLiteralKeyword()) {
+                                self.addError(key_node.span, "reserved word cannot be used as shorthand property");
+                            } else if (self.is_strict_mode and kw.isStrictModeReserved()) {
+                                self.addError(key_node.span, "reserved word in strict mode cannot be used as shorthand property");
+                            } else if (kw == .kw_yield and self.ctx.in_generator) {
+                                self.addError(key_node.span, "'yield' cannot be used as shorthand property in generator");
+                            } else if (kw == .kw_await and (self.ctx.in_async or self.is_module)) {
+                                self.addError(key_node.span, "'await' cannot be used as shorthand property in async/module");
+                            }
                         }
-                    }
+                    },
+                    // non-identifier keys (numeric, bigint, string, computed) 는 shorthand 불가
+                    .numeric_literal, .bigint_literal, .string_literal, .computed_property_key => {
+                        self.addError(key_node.span, "expected ':' after property key");
+                    },
+                    else => {},
                 }
             }
         }
@@ -4281,6 +4372,7 @@ pub const Parser = struct {
         self.allow_super_property = true;
 
         self.expect(.l_paren);
+        self.in_formal_parameters = true;
         const scratch_top = self.saveScratch();
         while (self.current() != .r_paren and self.current() != .eof) {
             const param = try self.parseBindingIdentifier();
@@ -4291,12 +4383,19 @@ pub const Parser = struct {
             if (!self.eat(.comma)) break;
         }
         self.expect(.r_paren);
+        self.in_formal_parameters = false;
 
         // TS 리턴 타입
         _ = try self.tryParseReturnType();
         self.has_simple_params = self.checkSimpleParams(scratch_top);
         self.checkDuplicateParams(scratch_top);
         const body = try self.parseFunctionBodyExpr();
+
+        // retroactive strict mode checks for object methods
+        if (self.is_strict_mode and !saved_ctx.is_strict_mode) {
+            self.checkStrictParamNames(scratch_top);
+        }
+
         self.restoreFunctionContext(saved_ctx);
 
         const param_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
@@ -4869,6 +4968,14 @@ pub const Parser = struct {
                 self.advance();
                 return try self.ast.addNode(.{
                     .tag = .numeric_literal,
+                    .span = span,
+                    .data = .{ .none = 0 },
+                });
+            },
+            .decimal_bigint, .binary_bigint, .octal_bigint, .hex_bigint => {
+                self.advance();
+                return try self.ast.addNode(.{
+                    .tag = .bigint_literal,
                     .span = span,
                     .data = .{ .none = 0 },
                 });
