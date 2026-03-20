@@ -1,0 +1,1 @@
+const [first, ...rest]: number[] = arr;

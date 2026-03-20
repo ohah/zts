@@ -1,0 +1,1 @@
+interface Foo { bar: string; } const x = 1;

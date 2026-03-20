@@ -1,0 +1,1 @@
+namespace Foo { export const x = 1; }

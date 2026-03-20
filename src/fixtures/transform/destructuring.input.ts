@@ -1,0 +1,1 @@
+const { a, b: c }: { a: number; b: string } = obj;

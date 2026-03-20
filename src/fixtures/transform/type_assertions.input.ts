@@ -1,0 +1,1 @@
+const x = y as number; const z = w!;

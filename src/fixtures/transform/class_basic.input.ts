@@ -1,0 +1,1 @@
+class Foo { bar(): string { return 'hello'; } }
