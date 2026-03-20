@@ -30,6 +30,14 @@ pub fn PatternParser(comptime emit_ast: bool) type {
     return struct {
         const Self = @This();
 
+        /// ES2025 named group 엔트리 (이름 + alternative path).
+        pub const NamedGroupEntry = struct {
+            name: []const u8,
+            /// 이 그룹이 속한 alternative 경로.
+            alt_path: [8]u32 = [_]u32{0} ** 8,
+            alt_depth: u8 = 0,
+        };
+
         /// 패턴 소스 텍스트
         source: []const u8,
         /// 현재 위치
@@ -40,16 +48,22 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         err_message: ?[]const u8 = null,
         /// 에러 위치
         err_offset: u32 = 0,
-        /// capturing group 카운트 (back reference 검증용)
+        /// capturing group 카운트 (main parse 중 증가).
         group_count: u32 = 0,
-        /// named group 이름 목록 (중복 검증용)
-        named_groups: [32][]const u8 = undefined,
-        named_group_count: u8 = 0,
-        /// 가장 큰 back reference 번호 (group_count와 비교)
-        max_back_ref: u32 = 0,
-        /// named back reference 이름 목록 (파싱 끝에서 존재 검증)
-        named_refs: [32][]const u8 = undefined,
-        named_ref_count: u8 = 0,
+        /// pre-parse에서 수집한 총 capturing group 수 (forward reference 즉시 검증용).
+        total_group_count: u32 = 0,
+        /// named group 목록 (ES2025 중복 검증용).
+        named_groups: std.BoundedArray(NamedGroupEntry, 32) = .{},
+        /// named back reference 목록 (파싱 끝에서 존재 검증).
+        named_refs: std.BoundedArray([]const u8, 64) = .{},
+
+        // ── ES2025 alternative tracking ──
+        // parseDisjunction에서 '|' 마다 증가, parseGroup에서 depth 추적.
+
+        /// 현재 그룹 중첩 깊이.
+        alt_depth: u8 = 0,
+        /// 각 깊이에서의 현재 alternative 인덱스.
+        alt_indices: [8]u32 = [_]u32{0} ** 8,
 
         // ── character class range 검증용 ──
         // parseClassAtom/parseEscape가 설정, parseCharacterClass에서 사용.
@@ -153,27 +167,80 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         }
 
         /// 파싱 + 후처리 검증 (validate/parse 공통).
+        /// 패턴을 가볍게 스캔하여 capturing group 수를 수집한다 (pre-parse).
+        /// escape, character class를 건너뛰면서 '(' 만 카운트.
+        fn preParseGroups(self: *Self) void {
+            var pos: u32 = 0;
+            var count: u32 = 0;
+            while (pos < self.source.len) {
+                const ch = self.source[pos];
+                switch (ch) {
+                    '\\' => {
+                        pos += 1;
+                        if (pos < self.source.len) pos += 1;
+                    },
+                    '[' => {
+                        pos += 1;
+                        while (pos < self.source.len and self.source[pos] != ']') {
+                            if (self.source[pos] == '\\' and pos + 1 < self.source.len) pos += 1;
+                            pos += 1;
+                        }
+                        if (pos < self.source.len) pos += 1;
+                    },
+                    '(' => {
+                        pos += 1;
+                        if (pos < self.source.len and self.source[pos] == '?') {
+                            pos += 1;
+                            if (pos < self.source.len) {
+                                const spec = self.source[pos];
+                                if (spec == '<' and pos + 1 < self.source.len and
+                                    self.source[pos + 1] != '=' and self.source[pos + 1] != '!')
+                                {
+                                    count += 1; // named group
+                                    while (pos < self.source.len and self.source[pos] != '>') pos += 1;
+                                    if (pos < self.source.len) pos += 1;
+                                }
+                                // (?:...), (?=...), (?!...), (?<=...), (?<!...), (?ims:...) → 카운트 안 함
+                            }
+                        } else {
+                            count += 1; // unnamed capturing group
+                        }
+                    },
+                    else => pos += 1,
+                }
+            }
+            self.total_group_count = count;
+        }
+
+        /// ES2025: 두 named group의 alternative path가 다른지 확인한다.
+        /// 다르면 true (공존 가능), 같으면 false (같은 alternative → 에러).
+        fn canParticipate(path1: []const u32, path2: []const u32) bool {
+            const min_len = @min(path1.len, path2.len);
+            for (0..min_len) |i| {
+                if (path1[i] != path2[i]) return true;
+            }
+            return false;
+        }
+
+        /// 파싱 + 후처리 검증 (validate/parse 공통).
         fn parseAndFinalize(self: *Self) void {
+            // 1단계: pre-parse — capturing group 수 사전 수집
+            self.preParseGroups();
+
+            // 2단계: 본 파싱
             self.parseDisjunction();
             if (self.err_message != null) return;
 
-            // 소스 끝까지 소비하지 않았으면 에러
             if (self.pos < self.source.len) {
                 self.err_message = "unexpected character in regular expression";
                 return;
             }
 
-            // back reference가 group count보다 크면 에러 (unicode mode에서)
-            if (self.flags.hasUnicodeMode() and self.max_back_ref > self.group_count) {
-                self.err_message = "invalid back reference in regular expression";
-                return;
-            }
-
             // named back reference가 정의된 named group을 참조하는지 검증
-            for (self.named_refs[0..self.named_ref_count]) |ref_name| {
+            for (self.named_refs.slice()) |ref_name| {
                 var found = false;
-                for (self.named_groups[0..self.named_group_count]) |group_name| {
-                    if (std.mem.eql(u8, ref_name, group_name)) {
+                for (self.named_groups.slice()) |entry| {
+                    if (std.mem.eql(u8, ref_name, entry.name)) {
                         found = true;
                         break;
                     }
@@ -269,6 +336,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 buf_len = 1;
 
                 while (self.eat('|')) {
+                    self.alt_indices[@min(self.alt_depth, 7)] +|= 1;
                     self.parseAlternative();
                     if (buf_len < 64) {
                         buf[buf_len] = @intFromEnum(self.last_node);
@@ -279,7 +347,6 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     }
                 }
 
-                // extra_data에 연속으로 flush
                 const list_start = self.extraLen();
                 for (buf[0..buf_len]) |idx| {
                     self.appendExtra(idx);
@@ -290,6 +357,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 }, .{ list_start, buf_len, 0 });
             } else {
                 while (self.eat('|')) {
+                    self.alt_indices[@min(self.alt_depth, 7)] +|= 1;
                     self.parseAlternative();
                 }
             }
@@ -809,13 +877,10 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         if (!self.parseGroupName()) return false;
                         // 참조 이름을 수집 (파싱 끝에서 존재 검증)
                         const ref_name = self.source[ref_name_start .. self.pos - 1];
-                        if (self.named_ref_count < 32) {
-                            self.named_refs[self.named_ref_count] = ref_name;
-                            self.named_ref_count += 1;
-                        } else {
+                        self.named_refs.append(ref_name) catch {
                             self.setError("too many named back references");
                             return false;
-                        }
+                        };
                         if (emit_ast) {
                             self.last_node = self.addNode(.named_reference, .{
                                 .start = bs_pos,
@@ -844,7 +909,11 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         ref_num = ref_num *| 10 +| (self.peek() - '0'); // saturating arithmetic
                         self.advance();
                     }
-                    if (ref_num > self.max_back_ref) self.max_back_ref = ref_num;
+                    // 즉시 검증: pre-parsed group count로 forward reference 확인
+                    if (self.flags.hasUnicodeMode() and ref_num > self.total_group_count) {
+                        self.setError("back reference exceeds number of capturing groups");
+                        return false;
+                    }
                     if (emit_ast) {
                         self.last_node = self.addNode(.indexed_reference, .{
                             .start = bs_pos,
@@ -1014,6 +1083,15 @@ pub fn PatternParser(comptime emit_ast: bool) type {
             const group_start = self.pos;
             self.advance(); // skip '('
 
+            // ES2025: group 진입 시 depth 증가 (defer로 항상 복원)
+            const prev_depth = self.alt_depth;
+            self.alt_depth = @min(self.alt_depth +| 1, 7);
+            self.alt_indices[@min(self.alt_depth, 7)] = 0;
+            defer {
+                self.alt_indices[@min(self.alt_depth, 7)] = 0;
+                self.alt_depth = prev_depth;
+            }
+
             if (!self.isEnd() and self.peek() == '?') {
                 self.advance(); // skip '?'
                 if (self.isEnd()) {
@@ -1047,20 +1125,31 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         if (!self.parseGroupName()) return false;
                         const name_e = self.pos - 1; // -1 for '>'
                         const name = self.source[name_s..name_e];
-                        // 중복 이름 체크
-                        for (self.named_groups[0..self.named_group_count]) |existing| {
-                            if (std.mem.eql(u8, existing, name)) {
-                                self.setError("duplicate named capturing group");
-                                return false;
+                        // ES2025 중복 이름 체크: 같은 alternative면 에러, 다른 alternative면 허용
+                        const cur_depth = @min(self.alt_depth, 7);
+                        const cur_path = self.alt_indices[0 .. cur_depth + 1];
+                        for (self.named_groups.slice()) |existing| {
+                            if (std.mem.eql(u8, existing.name, name)) {
+                                const ex_path = existing.alt_path[0 .. existing.alt_depth + 1];
+                                if (!canParticipate(ex_path, cur_path)) {
+                                    self.setError("duplicate named capturing group in same alternative");
+                                    return false;
+                                }
                             }
                         }
-                        if (self.named_group_count < 32) {
-                            self.named_groups[self.named_group_count] = name;
-                            self.named_group_count += 1;
-                        } else {
+                        self.named_groups.append(.{
+                            .name = name,
+                            .alt_path = blk: {
+                                var path: [8]u32 = [_]u32{0} ** 8;
+                                const len = @min(cur_depth + 1, 8);
+                                @memcpy(path[0..len], self.alt_indices[0..len]);
+                                break :blk path;
+                            },
+                            .alt_depth = cur_depth,
+                        }) catch {
                             self.setError("too many named capturing groups");
                             return false;
-                        }
+                        };
                         self.group_count += 1;
 
                         self.parseDisjunction();
@@ -2540,4 +2629,61 @@ test "v-flag AST: subtraction creates correct kind" {
     const cc = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
     try std.testing.expectEqual(ast.Tag.character_class, cc.tag);
     try std.testing.expectEqual(@as(u32, @intFromEnum(ast.CharacterClassContentsKind.subtraction)), (cc.data[0] >> 1) & 3);
+}
+
+// ============================================================
+// Tests — ES2025 duplicate named groups
+// ============================================================
+
+test "ES2025: same name in different alternatives is allowed" {
+    const P = PatternParser(false);
+    // (?<a>x)|(?<a>y) — different alternatives → OK
+    var p = P.init("(?<a>x)|(?<a>y)", .{});
+    try std.testing.expect(p.validate() == null);
+}
+
+test "ES2025: same name in same alternative is error" {
+    const P = PatternParser(false);
+    // (?<a>x)(?<a>y) — same alternative → error
+    var p = P.init("(?<a>x)(?<a>y)", .{});
+    try std.testing.expect(p.validate() != null);
+}
+
+test "ES2025: nested different alternatives" {
+    const P = PatternParser(false);
+    // ((?<a>x)|(?<a>y)) — inner alternatives differ → OK
+    var p = P.init("((?<a>x)|(?<a>y))", .{});
+    try std.testing.expect(p.validate() == null);
+}
+
+test "ES2025: three alternatives" {
+    const P = PatternParser(false);
+    // (?<n>a)|(?<n>b)|(?<n>c) → all different alternatives → OK
+    var p = P.init("(?<n>a)|(?<n>b)|(?<n>c)", .{});
+    try std.testing.expect(p.validate() == null);
+}
+
+// ============================================================
+// Tests — pre-parse + forward reference
+// ============================================================
+
+test "pre-parse: forward back reference valid" {
+    const P = PatternParser(false);
+    // \1(a) — forward reference to group 1 (defined after reference)
+    var p = P.init("\\1(a)", .{ .u = true });
+    try std.testing.expect(p.validate() == null);
+}
+
+test "pre-parse: back reference exceeds groups" {
+    const P = PatternParser(false);
+    // \2(a) — only 1 group, reference to 2 is error in unicode mode
+    var p = P.init("\\2(a)", .{ .u = true });
+    try std.testing.expect(p.validate() != null);
+}
+
+test "pre-parse: multiple groups valid" {
+    const P = PatternParser(false);
+    // (a)(b)\1\2 — 2 groups, references 1 and 2 are valid
+    var p = P.init("(a)(b)\\1\\2", .{ .u = true });
+    try std.testing.expect(p.validate() == null);
 }
