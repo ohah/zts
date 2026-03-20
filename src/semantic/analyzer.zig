@@ -664,7 +664,7 @@ pub const SemanticAnalyzer = struct {
                     self.exitScope(scope_saved);
                 }
             },
-            .property_definition => {
+            .property_definition, .accessor_property => {
                 // binary: { left = key, right = value }
                 // key도 순회 (computed property의 표현식, class 밖 private name 검출)
                 self.visitNode(node.data.binary.left);
@@ -744,6 +744,12 @@ pub const SemanticAnalyzer = struct {
                 const raw = self.ast.source[node.span.start..node.span.end];
                 const name = self.resolvePrivateName(raw);
                 self.usePrivateName(name, node.span);
+            },
+
+            // ---- computed property key ----
+            // [expr] 형태의 프로퍼티 키 — 내부 expression을 순회하여 private name 참조 검출
+            .computed_property_key => {
+                self.visitNode(node.data.unary.operand);
             },
 
             // ---- 스킵 (TS 타입 노드, 리터럴, 식별자 등) ----
@@ -871,11 +877,7 @@ pub const SemanticAnalyzer = struct {
         // left가 단일 파라미터(binding_identifier) 또는 파라미터 리스트일 수 있음
         const param_idx = node.data.binary.left;
         if (!param_idx.isNone()) {
-            const param_node = self.ast.getNode(param_idx);
-            if (param_node.tag == .binding_identifier) {
-                self.declareSymbol(param_node.span, .parameter, param_node.span);
-            }
-            // parenthesized_expression인 경우 파라미터 추출은 복잡 — 추후 구현
+            self.declareArrowParams(param_idx);
 
             // arrow function은 항상 UniqueFormalParameters — 중복 금지
             checker.checkDuplicateArrowParams(self.ast, param_idx, &self.errors, self.allocator);
@@ -896,6 +898,100 @@ pub const SemanticAnalyzer = struct {
         self.exitScope(saved);
     }
 
+    /// arrow function의 파라미터를 재귀적으로 추출하여 심볼로 등록한다.
+    /// cover grammar 변환 후 파라미터는 다양한 형태:
+    /// - binding_identifier: 단일 파라미터 (x => ...)
+    /// - parenthesized_expression: 괄호 형태 ((x, y) => ...)
+    /// - sequence_expression: 괄호 내 여러 파라미터
+    /// - assignment_pattern: 기본값 (x = 1)
+    /// - identifier_reference: cover grammar에서 변환된 식별자
+    /// - assignment_target_identifier: cover grammar 변환된 식별자
+    fn declareArrowParams(self: *SemanticAnalyzer, idx: NodeIndex) void {
+        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        const node = self.ast.getNode(idx);
+        switch (node.tag) {
+            .binding_identifier, .identifier_reference, .assignment_target_identifier => {
+                self.declareSymbol(node.span, .parameter, node.span);
+            },
+            .parenthesized_expression => {
+                // 괄호 내부를 풀어서 재귀
+                self.declareArrowParams(node.data.unary.operand);
+            },
+            .sequence_expression => {
+                // 여러 파라미터: (a, b, c)
+                const list = node.data.list;
+                if (list.len == 0) return;
+                if (list.start + list.len > self.ast.extra_data.items.len) return;
+                const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+                for (indices) |raw_idx| {
+                    self.declareArrowParams(@enumFromInt(raw_idx));
+                }
+            },
+            .assignment_pattern, .assignment_expression => {
+                // 기본값: x = 1 → left만 파라미터
+                self.declareArrowParams(node.data.binary.left);
+            },
+            .spread_element, .rest_element, .assignment_target_rest => {
+                // ...rest
+                self.declareArrowParams(node.data.unary.operand);
+            },
+            .object_pattern, .array_pattern => {
+                // destructuring 패턴 — 내부의 binding_identifier를 재귀적으로 추출
+                self.declareBindingPattern(idx);
+            },
+            .object_assignment_target, .array_assignment_target => {
+                // cover grammar 변환된 destructuring
+                self.declareBindingPattern(idx);
+            },
+            else => {},
+        }
+    }
+
+    /// destructuring 패턴에서 binding identifier를 재귀적으로 추출하여 parameter로 등록한다.
+    fn declareBindingPattern(self: *SemanticAnalyzer, idx: NodeIndex) void {
+        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        const node = self.ast.getNode(idx);
+        switch (node.tag) {
+            .binding_identifier, .identifier_reference, .assignment_target_identifier => {
+                self.declareSymbol(node.span, .parameter, node.span);
+            },
+            .object_pattern, .object_assignment_target => {
+                const list = node.data.list;
+                if (list.len == 0) return;
+                if (list.start + list.len > self.ast.extra_data.items.len) return;
+                const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+                for (indices) |raw_idx| {
+                    self.declareBindingPattern(@enumFromInt(raw_idx));
+                }
+            },
+            .array_pattern, .array_assignment_target => {
+                const list = node.data.list;
+                if (list.len == 0) return;
+                if (list.start + list.len > self.ast.extra_data.items.len) return;
+                const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+                for (indices) |raw_idx| {
+                    self.declareBindingPattern(@enumFromInt(raw_idx));
+                }
+            },
+            .binding_property => {
+                // binary: { left = key, right = value }
+                self.declareBindingPattern(node.data.binary.right);
+            },
+            .assignment_target_property_identifier, .assignment_target_property_property => {
+                // cover grammar 변환된 프로퍼티
+                self.declareBindingPattern(node.data.binary.right);
+            },
+            .assignment_pattern, .assignment_expression, .assignment_target_with_default => {
+                // 기본값: left가 바인딩
+                self.declareBindingPattern(node.data.binary.left);
+            },
+            .spread_element, .rest_element, .assignment_target_rest => {
+                self.declareBindingPattern(node.data.unary.operand);
+            },
+            else => {},
+        }
+    }
+
     fn visitClassDeclaration(self: *SemanticAnalyzer, node: Node) void {
         // extra: [name, super_class, body, ...]
         const extra_start = node.data.extra;
@@ -909,19 +1005,38 @@ pub const SemanticAnalyzer = struct {
             self.declareSymbol(name_node.span, .class_decl, node.span);
         }
 
-        self.visitClassBodyNode(@enumFromInt(extras[extra_start + 2]));
+        const heritage_idx: NodeIndex = @enumFromInt(extras[extra_start + 1]);
+        self.visitClassWithHeritage(heritage_idx, @enumFromInt(extras[extra_start + 2]));
     }
 
     fn visitClassExpression(self: *SemanticAnalyzer, node: Node) void {
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (extra_start + 2 >= extras.len) return;
-        self.visitClassBodyNode(@enumFromInt(extras[extra_start + 2]));
+
+        const heritage_idx: NodeIndex = @enumFromInt(extras[extra_start + 1]);
+        self.visitClassWithHeritage(heritage_idx, @enumFromInt(extras[extra_start + 2]));
     }
 
-    /// class body를 스코프로 감싸서 순회한다.
-    /// private name 수집/검증 + early error 검증도 여기서 처리 (oxc 방식).
-    fn visitClassBodyNode(self: *SemanticAnalyzer, body_idx: NodeIndex) void {
+    /// class를 순회한다. heritage expression과 body를 올바른 private name 환경에서 처리.
+    ///
+    /// ECMAScript ClassDefinitionEvaluation (15.7.14):
+    ///   5. outerPrivateEnvironment = 현재 PrivateEnvironment
+    ///   6-8. classPrivateEnvironment에 ClassBody의 private name 등록
+    ///   10b. NOTE: ClassHeritage 평가 시 PrivateEnvironment는 outerPrivateEnvironment
+    ///
+    /// 즉, heritage expression에서는 이 클래스의 private name에 접근할 수 없고,
+    /// 오직 외부(부모) 클래스의 private name만 보인다.
+    fn visitClassWithHeritage(self: *SemanticAnalyzer, heritage_idx: NodeIndex, body_idx: NodeIndex) void {
+        // Step 1: heritage expression 순회 — 이 클래스의 class scope PUSH 전에!
+        // heritage는 outerPrivateEnvironment에서 평가되므로 이 클래스의 #name에 접근 불가.
+        // class scope를 push하기 전에 heritage를 순회하면, heritage에서의 #name 참조가
+        // 외부 class scope에 기록되어 외부 선언만 확인된다.
+        if (!heritage_idx.isNone()) {
+            self.visitNode(heritage_idx);
+        }
+
+        // Step 2: class body의 private name 수집 + early error 검증 + 순회
         // class body는 항상 strict mode (ECMAScript 10.2.1)
         const saved = self.enterScope(.class_body, true);
         self.pushClassScope();
@@ -969,7 +1084,7 @@ pub const SemanticAnalyzer = struct {
                     };
                     self.tryRegisterPrivateKey(key_idx, kind);
                 },
-                .property_definition => {
+                .property_definition, .accessor_property => {
                     // binary: { left = key, right = value, flags }
                     self.tryRegisterPrivateKey(node.data.binary.left, .field);
                 },

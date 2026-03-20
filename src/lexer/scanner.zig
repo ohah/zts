@@ -405,12 +405,19 @@ pub const Scanner = struct {
                             break :blk .hashbang_comment;
                         }
                     }
-                    // private identifier — # 뒤에 식별자 문자가 있어야 함
-                    const before_tail = self.current;
-                    self.scanIdentifierTail();
-                    if (self.current == before_tail) {
-                        // # 뒤에 식별자 문자 없음 → syntax error
+                    // private identifier — # 뒤에 IdentifierStart가 있어야 함
+                    // ECMAScript: PrivateName :: # IdentifierName
+                    // IdentifierName :: IdentifierStart IdentifierName IdentifierPart
+                    // ZWNJ (U+200C), ZWJ (U+200D) 는 IdentifierPart이지 IdentifierStart가 아님.
+                    // 따라서 #\u200C_X 같은 형태는 SyntaxError.
+                    const before_start = self.current;
+                    if (!self.scanPrivateIdentifierStart()) {
+                        // # 뒤에 유효한 IdentifierStart 없음 → syntax error
                         break :blk .syntax_error;
+                    }
+                    // IdentifierStart가 확인되었으면 나머지 IdentifierPart를 스캔
+                    if (self.current != before_start) {
+                        self.scanIdentifierTail();
                     }
                     break :blk .private_identifier;
                 },
@@ -1658,6 +1665,55 @@ pub const Scanner = struct {
             if (self.isLineSeparator()) break;
             self.current += 1;
         }
+    }
+
+    /// private identifier (#) 뒤의 첫 문자가 유효한 IdentifierStart인지 확인한다.
+    /// IdentifierStart는 $, _, UnicodeIDStart, \uXXXX(IdentifierStart 코드포인트) 만 허용.
+    /// ZWNJ (U+200C), ZWJ (U+200D) 등 IdentifierPart 전용 문자는 거부한다.
+    fn scanPrivateIdentifierStart(self: *Scanner) bool {
+        if (self.isAtEnd()) return false;
+        const c = self.peek();
+        if (c < 0x80) {
+            // ASCII: a-z, A-Z, _, $
+            if (isAsciiIdentStart(c)) {
+                self.current += 1;
+                return true;
+            }
+            if (c == '\\') {
+                // \uXXXX 유니코드 이스케이프 — IdentifierStart인지 검증
+                const esc_pos = self.current;
+                if (!self.scanIdentifierEscape()) return false;
+                const esc_slice = self.source[esc_pos..self.current];
+                const cp = self.decodeEscapeCodepoint(esc_slice);
+                if (cp) |codepoint| {
+                    if (codepoint < 0x80) {
+                        if (!isAsciiIdentStart(@intCast(codepoint))) {
+                            self.current = esc_pos;
+                            return false;
+                        }
+                    } else if (codepoint <= 0x10FFFF) {
+                        if (!unicode.isIdentifierStart(@intCast(codepoint))) {
+                            self.current = esc_pos;
+                            return false;
+                        }
+                    }
+                } else {
+                    self.current = esc_pos;
+                    return false;
+                }
+                return true;
+            }
+            return false;
+        }
+        // Non-ASCII: UTF-8 디코딩 후 UnicodeIDStart 확인
+        const remaining = self.source[self.current..];
+        const decoded = unicode.decodeUtf8(remaining);
+        if (decoded.len == 0) return false;
+        if (unicode.isIdentifierStart(decoded.codepoint)) {
+            self.current += decoded.len;
+            return true;
+        }
+        return false;
     }
 
     /// 식별자의 나머지 부분을 스캔한다. 유니코드 문자와 \u 이스케이프를 처리.
