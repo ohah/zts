@@ -200,6 +200,22 @@ pub const Node = struct {
         array_assignment_target,
         object_assignment_target,
         assignment_target_with_default,
+        /// destructuring LHS에서 identifier_reference를 대체.
+        /// 예: `[x] = arr` → x가 assignment_target_identifier로 변환.
+        /// data: string_ref (identifier의 소스 위치)
+        assignment_target_identifier,
+        /// destructuring LHS에서 shorthand property를 대체.
+        /// 예: `{x} = obj` → x가 assignment_target_property_identifier로 변환.
+        /// data: binary (left=key, right=value, shorthand)
+        assignment_target_property_identifier,
+        /// destructuring LHS에서 long-form property를 대체.
+        /// 예: `{x: y} = obj` → assignment_target_property_property로 변환.
+        /// data: binary (left=key, right=value)
+        assignment_target_property_property,
+        /// destructuring LHS에서 spread_element을 대체.
+        /// 예: `[...x] = arr` → ...x가 assignment_target_rest로 변환.
+        /// data: unary (operand = target)
+        assignment_target_rest,
 
         // ==============================================================
         // Object Properties
@@ -410,6 +426,12 @@ pub const Ast = struct {
     /// 인덱스로 노드를 가져온다.
     pub fn getNode(self: *const Ast, index: NodeIndex) Node {
         return self.nodes.items[@intFromEnum(index)];
+    }
+
+    /// 노드의 태그를 변경한다 (cover grammar 변환용).
+    /// 24바이트 고정 크기이므로 태그만 바꾸면 새 노드 할당 없이 변환 가능.
+    pub fn setTag(self: *Ast, index: NodeIndex, new_tag: Node.Tag) void {
+        self.nodes.items[@intFromEnum(index)].tag = new_tag;
     }
 
     /// extra_data에 값을 추가하고 시작 인덱스를 반환한다.
