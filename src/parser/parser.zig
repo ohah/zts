@@ -2813,6 +2813,20 @@ pub const Parser = struct {
             // ** (star2)는 우결합: prec - 1로 재귀하여 같은 우선순위를 오른쪽에 허용
             const next_prec = if (op_kind == .star2) prec - 1 else prec;
             const right = try self.parseBinaryExpression(next_prec);
+
+            // ?? 의 오른쪽에 괄호 없는 &&/|| 이 있으면 에러 (재귀 호출로 감지 못한 케이스)
+            // 예: 0 ?? 0 && true → right = (0 && true) = logical_expression
+            if (op_kind == .question2 and !right.isNone()) {
+                const right_tag = self.ast.getNode(right).tag;
+                if (right_tag == .logical_expression) {
+                    const right_node = self.ast.getNode(right);
+                    const right_op: Kind = @enumFromInt(right_node.data.binary.flags);
+                    if (right_op == .amp2 or right_op == .pipe2) {
+                        self.addError(right_node.span, "cannot mix '??' with '&&' or '||' without parentheses");
+                    }
+                }
+            }
+
             const tag: Tag = if (is_logical) .logical_expression else .binary_expression;
 
             left = try self.ast.addNode(.{
