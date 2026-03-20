@@ -221,6 +221,18 @@ pub const Parser = struct {
         }
     }
 
+    /// ASI (Automatic Semicolon Insertion) 규칙으로 세미콜론을 처리한다.
+    /// - 세미콜론이 있으면 소비
+    /// - 현재 토큰 앞에 개행이 있으면 OK (ASI)
+    /// - 현재 토큰이 } 또는 EOF이면 OK (ASI)
+    /// - 그 외: 세미콜론이 필요하다는 에러 보고
+    fn expectSemicolon(self: *Parser) void {
+        if (self.eat(.semicolon)) return;
+        if (self.scanner.token.has_newline_before) return;
+        if (self.current() == .r_curly or self.current() == .eof) return;
+        self.addError(self.currentSpan(), ";");
+    }
+
     /// 에러를 추가한다.
     fn addError(self: *Parser, span: Span, expected: []const u8) void {
         self.errors.append(.{
@@ -1285,6 +1297,8 @@ pub const Parser = struct {
 
         const saved = self.ctx;
         self.ctx.in_switch = true;
+        // switch body 안에서는 top-level이 아님 (import/export 금지)
+        self.ctx.is_top_level = false;
 
         const scratch_top = self.saveScratch();
         while (self.current() != .r_curly and self.current() != .eof) {
@@ -1486,6 +1500,76 @@ pub const Parser = struct {
         }
         // async 뒤에 줄바꿈이 있거나 function이 아니면 → expression statement
         return self.parseExpressionStatement();
+    }
+
+    /// export default function / function* — 이름이 선택적 (없으면 anonymous)
+    /// ECMAScript: HoistableDeclaration[+Default] → function (Params) { Body }
+    fn parseFunctionDeclarationDefaultExport(self: *Parser) ParseError2!NodeIndex {
+        return self.parseFunctionDeclarationWithFlagsOptionalName(0);
+    }
+
+    /// export default async function / async function* — 이름이 선택적
+    fn parseAsyncFunctionDeclarationDefaultExport(self: *Parser) ParseError2!NodeIndex {
+        self.advance(); // skip 'async'
+        return self.parseFunctionDeclarationWithFlagsOptionalName(ast_mod.FunctionFlags.is_async);
+    }
+
+    /// parseFunctionDeclarationWithFlags와 동일하지만 이름이 선택적.
+    /// export default에서만 사용.
+    fn parseFunctionDeclarationWithFlagsOptionalName(self: *Parser, extra_flags: u32) ParseError2!NodeIndex {
+        const start = self.currentSpan().start;
+        self.advance(); // skip 'function'
+
+        var flags = extra_flags;
+        if (self.eat(.star)) {
+            flags |= ast_mod.FunctionFlags.is_generator;
+        }
+
+        const is_async = (flags & ast_mod.FunctionFlags.is_async) != 0;
+        const is_generator = (flags & ast_mod.FunctionFlags.is_generator) != 0;
+        const saved_ctx = self.enterFunctionContext(is_async, is_generator);
+
+        // 이름은 선택적: identifier가 있으면 파싱, 없으면 none
+        const name = if (self.current() == .identifier or
+            self.current() == .kw_yield or self.current() == .kw_await or
+            self.current() == .escaped_keyword or self.current() == .escaped_strict_reserved)
+            try self.parseBindingIdentifier()
+        else
+            NodeIndex.none;
+
+        self.expect(.l_paren);
+        const scratch_top = self.saveScratch();
+        while (self.current() != .r_paren and self.current() != .eof) {
+            const param = try self.parseBindingIdentifier();
+            try self.scratch.append(param);
+            if (!param.isNone() and self.ast.getNode(param).tag == .spread_element and self.current() == .comma) {
+                self.addError(self.currentSpan(), "rest parameter must be last formal parameter");
+            }
+            if (!self.eat(.comma)) break;
+        }
+        self.expect(.r_paren);
+
+        const return_type = try self.tryParseReturnType();
+
+        self.ctx.has_simple_params = self.checkSimpleParams(scratch_top);
+        self.checkDuplicateParams(scratch_top);
+        const body = try self.parseFunctionBody();
+        self.restoreContext(saved_ctx);
+
+        const param_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        self.restoreScratch(scratch_top);
+        const extra_start = try self.ast.addExtra(@intFromEnum(name));
+        _ = try self.ast.addExtra(param_list.start);
+        _ = try self.ast.addExtra(param_list.len);
+        _ = try self.ast.addExtra(@intFromEnum(body));
+        _ = try self.ast.addExtra(flags);
+        _ = try self.ast.addExtra(@intFromEnum(return_type));
+
+        return try self.ast.addNode(.{
+            .tag = .function_declaration,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .extra = extra_start },
+        });
     }
 
     fn parseFunctionExpression(self: *Parser) ParseError2!NodeIndex {
@@ -2090,13 +2174,21 @@ pub const Parser = struct {
     fn parseImportSpecifier(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
 
-        // imported name
-        const imported = try self.parseIdentifierName();
+        // imported name — ModuleExportName (identifier or string literal)
+        const imported = try self.parseModuleExportName();
 
-        // as local
+        // string literal import 시 반드시 `as` 바인딩 필요:
+        // import { "☿" as Ami } from ... (OK)
+        // import { "☿" } from ... (Error — string cannot be used as binding)
         var local = imported;
         if (self.eat(.kw_as)) {
+            // `as` 뒤는 반드시 BindingIdentifier (string literal 불가)
             local = try self.parseIdentifierName();
+        } else if (!imported.isNone() and @intFromEnum(imported) < self.ast.nodes.items.len and
+            self.ast.getNode(imported).tag == .string_literal)
+        {
+            // string literal without `as` — binding 이름이 없으므로 에러
+            self.addError(self.ast.getNode(imported).span, "string literal in import specifier requires 'as' binding");
         }
 
         return try self.ast.addNode(.{
@@ -2119,11 +2211,31 @@ pub const Parser = struct {
         // export default
         if (self.eat(.kw_default)) {
             const decl = switch (self.current()) {
-                .kw_function => try self.parseFunctionDeclaration(),
+                // export default function / export default function* — 이름 선택적
+                .kw_function => blk: {
+                    const fn_decl = try self.parseFunctionDeclarationDefaultExport();
+                    // anonymous function declaration은 호출 불가 (IIFE가 아님)
+                    // export default function() {}() → SyntaxError
+                    if (self.current() == .l_paren) {
+                        self.addError(self.currentSpan(), "anonymous function declaration cannot be invoked");
+                    }
+                    break :blk fn_decl;
+                },
                 .kw_class => try self.parseClassDeclaration(),
                 else => blk: {
+                    // export default async function / export default async function* — 이름 선택적
+                    if (self.current() == .kw_async) {
+                        const peek = self.peekNext();
+                        if (peek.kind == .kw_function and !peek.has_newline_before) {
+                            const fn_decl = try self.parseAsyncFunctionDeclarationDefaultExport();
+                            if (self.current() == .l_paren) {
+                                self.addError(self.currentSpan(), "anonymous function declaration cannot be invoked");
+                            }
+                            break :blk fn_decl;
+                        }
+                    }
                     const expr = try self.parseAssignmentExpression();
-                    _ = self.eat(.semicolon);
+                    self.expectSemicolon();
                     break :blk expr;
                 },
             };
@@ -2139,17 +2251,11 @@ pub const Parser = struct {
             self.advance(); // skip *
             var exported_name = NodeIndex.none;
             if (self.eat(.kw_as)) {
-                const name_span = self.currentSpan();
-                self.advance();
-                exported_name = try self.ast.addNode(.{
-                    .tag = .identifier_reference,
-                    .span = name_span,
-                    .data = .{ .string_ref = name_span },
-                });
+                exported_name = try self.parseModuleExportName();
             }
             self.expect(.kw_from);
             const source_node = try self.parseModuleSource();
-            _ = self.eat(.semicolon);
+            self.expectSemicolon();
 
             return try self.ast.addNode(.{
                 .tag = .export_all_declaration,
@@ -2175,7 +2281,27 @@ pub const Parser = struct {
             if (self.eat(.kw_from)) {
                 source_node = try self.parseModuleSource();
             }
-            _ = self.eat(.semicolon);
+            self.expectSemicolon();
+
+            // export NamedExports ; (without `from`) →
+            // local 이름에 string literal 사용 불가
+            // (ECMAScript: ReferencedBindings에 StringLiteral이 있으면 SyntaxError)
+            if (source_node.isNone()) {
+                for (self.scratch.items[scratch_top..]) |spec_idx| {
+                    if (spec_idx.isNone()) continue;
+                    if (@intFromEnum(spec_idx) >= self.ast.nodes.items.len) continue;
+                    const spec_node = self.ast.getNode(spec_idx);
+                    if (spec_node.tag == .export_specifier) {
+                        const local_idx = spec_node.data.binary.left;
+                        if (!local_idx.isNone() and @intFromEnum(local_idx) < self.ast.nodes.items.len) {
+                            const local_node = self.ast.getNode(local_idx);
+                            if (local_node.tag == .string_literal) {
+                                self.addError(local_node.span, "string literal cannot be used as local binding in export");
+                            }
+                        }
+                    }
+                }
+            }
 
             const specifiers = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
             self.restoreScratch(scratch_top);
@@ -2214,11 +2340,11 @@ pub const Parser = struct {
     fn parseExportSpecifier(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
 
-        const local = try self.parseIdentifierName();
+        const local = try self.parseModuleExportName();
 
         var exported = local;
         if (self.eat(.kw_as)) {
-            exported = try self.parseIdentifierName();
+            exported = try self.parseModuleExportName();
         }
 
         return try self.ast.addNode(.{
@@ -2244,27 +2370,119 @@ pub const Parser = struct {
         return NodeIndex.none;
     }
 
-    /// import attributes (with/assert { ... })를 건너뛴다.
+    /// import attributes (with/assert { ... })를 파싱한다.
     /// AST에 저장하지 않고 소비만 한다 (트랜스포머에서 필요 시 추가).
+    /// 중복 키 검사도 수행한다 (ECMAScript: WithClauseToAttributes 중복 에러).
     fn skipImportAttributes(self: *Parser) void {
-        // with { ... } 또는 assert { ... }
-        if ((self.current() == .kw_with or self.current() == .kw_assert) and
-            !self.scanner.token.has_newline_before)
-        {
-            self.advance(); // skip with/assert
-            if (self.current() == .l_curly) {
-                self.advance(); // skip {
-                while (self.current() != .r_curly and self.current() != .eof) {
-                    self.advance(); // key
-                    _ = self.eat(.colon);
-                    if (self.current() != .r_curly and self.current() != .eof) {
-                        self.advance(); // value
+        // with { ... }: 줄바꿈 허용 (ECMAScript: AttributesKeyword = with)
+        // assert { ... }: 줄바꿈 불허 (ECMAScript: [no LineTerminator here] assert)
+        const is_with = self.current() == .kw_with;
+        const is_assert = self.current() == .kw_assert and !self.scanner.token.has_newline_before;
+        if (!is_with and !is_assert) return;
+
+        self.advance(); // skip with/assert
+        if (self.current() == .l_curly) {
+            self.advance(); // skip {
+
+            // 중복 키 검사를 위한 키 수집 (최대 16개, 초과 시 검사 생략)
+            var keys: [16][]const u8 = undefined;
+            var key_spans: [16]Span = undefined;
+            var key_count: usize = 0;
+
+            while (self.current() != .r_curly and self.current() != .eof) {
+                // key: identifier 또는 string literal
+                const key_span = self.currentSpan();
+                const key_text = self.ast.source[key_span.start..key_span.end];
+                self.advance(); // key
+
+                // 중복 키 검사
+                if (key_count < 16) {
+                    // 키 값 결정: string literal은 따옴표 제거 후 escape 해석
+                    var decoded_buf: [256]u8 = undefined;
+                    const effective_key = if (key_text.len >= 2 and (key_text[0] == '\'' or key_text[0] == '"'))
+                        decodeStringKey(key_text[1 .. key_text.len - 1], &decoded_buf)
+                    else
+                        key_text;
+
+                    for (0..key_count) |i| {
+                        if (std.mem.eql(u8, keys[i], effective_key)) {
+                            self.addError(key_span, "duplicate import attribute key");
+                            break;
+                        }
                     }
-                    _ = self.eat(.comma);
+                    keys[key_count] = effective_key;
+                    key_spans[key_count] = key_span;
+                    key_count += 1;
                 }
-                _ = self.eat(.r_curly);
+
+                _ = self.eat(.colon);
+                if (self.current() != .r_curly and self.current() != .eof) {
+                    self.advance(); // value
+                }
+                _ = self.eat(.comma);
+            }
+            _ = self.eat(.r_curly);
+        }
+    }
+
+    /// import attribute 키의 unicode escape를 해석한다.
+    /// 예: "typ\u0065" → "type"
+    /// buf에 결과를 쓰고, escape가 없으면 원본 슬라이스를 반환.
+    fn decodeStringKey(input: []const u8, buf: *[256]u8) []const u8 {
+        // escape가 없으면 원본 그대로 반환 (빠른 경로)
+        if (std.mem.indexOf(u8, input, "\\") == null) return input;
+
+        var out: usize = 0;
+        var i: usize = 0;
+        while (i < input.len and out < 256) {
+            if (input[i] == '\\' and i + 1 < input.len) {
+                if (input[i + 1] == 'u') {
+                    // \uHHHH
+                    if (i + 5 < input.len) {
+                        i += 2; // skip \u
+                        var codepoint: u21 = 0;
+                        var valid = true;
+                        for (0..4) |_| {
+                            if (i >= input.len) {
+                                valid = false;
+                                break;
+                            }
+                            const c = input[i];
+                            const digit: u21 = if (c >= '0' and c <= '9')
+                                c - '0'
+                            else if (c >= 'a' and c <= 'f')
+                                c - 'a' + 10
+                            else if (c >= 'A' and c <= 'F')
+                                c - 'A' + 10
+                            else {
+                                valid = false;
+                                break;
+                            };
+                            codepoint = codepoint * 16 + digit;
+                            i += 1;
+                        }
+                        if (valid and codepoint < 128 and out < 256) {
+                            buf[out] = @intCast(codepoint);
+                            out += 1;
+                        }
+                        continue;
+                    }
+                }
+                // 기타 escape: 그대로 복사
+                if (out < 256) {
+                    buf[out] = input[i + 1];
+                    out += 1;
+                }
+                i += 2;
+            } else {
+                if (out < 256) {
+                    buf[out] = input[i];
+                    out += 1;
+                }
+                i += 1;
             }
         }
+        return buf[0..out];
     }
 
     // ================================================================
@@ -2811,8 +3029,9 @@ pub const Parser = struct {
                         self.addError(self.currentSpan(), "tagged template cannot be used in optional chain");
                     }
                     // tagged template: expr`text` 또는 expr`text${...}...`
+                    // tagged template에서는 잘못된 이스케이프 허용 (cooked가 undefined)
                     const tmpl = if (self.current() == .template_head)
-                        try self.parseTemplateLiteral()
+                        try self.parseTemplateLiteral(true)
                     else blk: {
                         const tmpl_span = self.currentSpan();
                         self.advance();
@@ -3119,6 +3338,10 @@ pub const Parser = struct {
             },
             .no_substitution_template => {
                 // 보간 없는 템플릿 리터럴: `text`
+                // untagged template에서 잘못된 이스케이프는 SyntaxError (ECMAScript 13.2.8.1)
+                if (self.scanner.token.has_invalid_escape) {
+                    self.addError(span, "invalid escape sequence in template literal");
+                }
                 self.advance();
                 return try self.ast.addNode(.{
                     .tag = .template_literal,
@@ -3128,7 +3351,11 @@ pub const Parser = struct {
             },
             .template_head => {
                 // 보간 있는 템플릿 리터럴: `text${expr}...`
-                return self.parseTemplateLiteral();
+                // untagged template에서 잘못된 이스케이프는 SyntaxError
+                if (self.scanner.token.has_invalid_escape) {
+                    self.addError(span, "invalid escape sequence in template literal");
+                }
+                return self.parseTemplateLiteral(false);
             },
             .regexp_literal => {
                 self.advance();
@@ -3212,7 +3439,8 @@ pub const Parser = struct {
     }
 
     /// 보간이 있는 템플릿 리터럴을 파싱한다: `head${expr}middle${expr}tail`
-    fn parseTemplateLiteral(self: *Parser) ParseError2!NodeIndex {
+    /// is_tagged가 true이면 tagged template이므로 잘못된 이스케이프를 허용한다.
+    fn parseTemplateLiteral(self: *Parser, is_tagged: bool) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         const scratch_top = self.saveScratch();
 
@@ -3233,6 +3461,10 @@ pub const Parser = struct {
 
             // template_middle: }text${ 또는 template_tail: }text`
             if (self.current() == .template_middle) {
+                // untagged template에서 잘못된 이스케이프는 SyntaxError
+                if (!is_tagged and self.scanner.token.has_invalid_escape) {
+                    self.addError(self.currentSpan(), "invalid escape sequence in template literal");
+                }
                 try self.scratch.append(try self.ast.addNode(.{
                     .tag = .template_element,
                     .span = self.currentSpan(),
@@ -3240,6 +3472,10 @@ pub const Parser = struct {
                 }));
                 self.advance();
             } else if (self.current() == .template_tail) {
+                // untagged template에서 잘못된 이스케이프는 SyntaxError
+                if (!is_tagged and self.scanner.token.has_invalid_escape) {
+                    self.addError(self.currentSpan(), "invalid escape sequence in template literal");
+                }
                 try self.scratch.append(try self.ast.addNode(.{
                     .tag = .template_element,
                     .span = self.currentSpan(),
@@ -3839,6 +4075,95 @@ pub const Parser = struct {
         self.addError(span, "identifier expected");
         self.advance();
         return try self.ast.addNode(.{ .tag = .invalid, .span = span, .data = .{ .none = 0 } });
+    }
+
+    /// ModuleExportName을 파싱한다.
+    /// ECMAScript: ModuleExportName = IdentifierName | StringLiteral
+    /// export { "☿" }, import { "☿" as x } 등에서 사용.
+    /// StringLiteral의 경우 IsStringWellFormedUnicode 검사를 수행한다 (lone surrogate 금지).
+    fn parseModuleExportName(self: *Parser) ParseError2!NodeIndex {
+        if (self.current() == .string_literal) {
+            const span = self.currentSpan();
+            // lone surrogate 검사: \uD800-\uDFFF가 쌍을 이루지 않으면 에러
+            const str_content = self.ast.source[span.start + 1 .. if (span.end > 0) span.end - 1 else span.end];
+            if (containsLoneSurrogate(str_content)) {
+                self.addError(span, "string literal contains lone surrogate");
+            }
+            self.advance();
+            return try self.ast.addNode(.{
+                .tag = .string_literal,
+                .span = span,
+                .data = .{ .string_ref = span },
+            });
+        }
+        return self.parseIdentifierName();
+    }
+
+    /// 문자열에 lone surrogate escape (\uD800-\uDFFF)가 있는지 검사한다.
+    /// \uHHHH 형태의 escape만 체크 (raw UTF-8은 이미 인코딩됨).
+    fn containsLoneSurrogate(s: []const u8) bool {
+        var i: usize = 0;
+        while (i + 5 < s.len) : (i += 1) {
+            if (s[i] == '\\' and s[i + 1] == 'u' and s[i + 2] != '{') {
+                // \uHHHH — 4자리 hex 파싱
+                if (i + 5 < s.len) {
+                    const codepoint = parseHex4(s[i + 2 .. i + 6]) orelse continue;
+                    if (codepoint >= 0xD800 and codepoint <= 0xDBFF) {
+                        // high surrogate — 뒤에 \uDC00-\uDFFF가 있으면 쌍
+                        if (i + 11 < s.len and s[i + 6] == '\\' and s[i + 7] == 'u') {
+                            const low = parseHex4(s[i + 8 .. i + 12]) orelse {
+                                return true; // invalid low → lone
+                            };
+                            if (low >= 0xDC00 and low <= 0xDFFF) {
+                                i += 11; // skip surrogate pair
+                                continue;
+                            }
+                        }
+                        return true; // lone high surrogate
+                    } else if (codepoint >= 0xDC00 and codepoint <= 0xDFFF) {
+                        return true; // lone low surrogate
+                    }
+                }
+            }
+        }
+        // 마지막 몇 바이트도 체크
+        while (i < s.len) : (i += 1) {
+            if (s[i] == '\\' and i + 5 < s.len and s[i + 1] == 'u' and s[i + 2] != '{') {
+                const codepoint = parseHex4(s[i + 2 .. i + 6]) orelse continue;
+                if (codepoint >= 0xD800 and codepoint <= 0xDFFF) {
+                    if (codepoint >= 0xD800 and codepoint <= 0xDBFF) {
+                        // check for low surrogate
+                        if (i + 11 < s.len and s[i + 6] == '\\' and s[i + 7] == 'u') {
+                            const low = parseHex4(s[i + 8 .. i + 12]) orelse return true;
+                            if (low >= 0xDC00 and low <= 0xDFFF) {
+                                i += 11;
+                                continue;
+                            }
+                        }
+                    }
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /// 4자리 hex 문자열을 u16으로 파싱한다.
+    fn parseHex4(s: []const u8) ?u16 {
+        if (s.len < 4) return null;
+        var result: u16 = 0;
+        for (s[0..4]) |c| {
+            const digit: u16 = if (c >= '0' and c <= '9')
+                c - '0'
+            else if (c >= 'a' and c <= 'f')
+                c - 'a' + 10
+            else if (c >= 'A' and c <= 'F')
+                c - 'A' + 10
+            else
+                return null;
+            result = result * 16 + digit;
+        }
+        return result;
     }
 
     /// 객체 프로퍼티 키를 파싱한다.
