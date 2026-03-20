@@ -174,9 +174,13 @@ main ← feature/lexer-token-enum
     - ✅ 파서 컨텍스트 추적 (strict/function/async/generator/loop/switch)
     - ✅ strict mode 에러 (with문), break/continue/return 검증
     - ✅ Test262 early phase 통합
-    - ⬜ semantic 모듈 (scope + symbol + analyzer)
-    - ⬜ 변수 재선언 검증
-    - ⬜ 예약어/contextual keyword 검증
+    - ✅ semantic 모듈 (scope + symbol + analyzer) — PR #163
+    - ✅ 변수 재선언 검증 (let/const/var 충돌)
+    - ✅ checker.zig: 중복 생성자, private static 충돌, __proto__ 중복, getter/setter 파라미터 — PR #164
+    - ✅ strict mode legacy octal 검증 (숫자 + 문자열 escape) — PR #165
+    - ✅ 중복 파라미터 검증 (arrow/method/async/generator/strict) — PR #166
+    - ✅ ?? + &&/|| 혼용 금지 — PR #167
+    - ⬜ 예약어/contextual keyword 검증 (escaped keyword 등)
 
 ### 트랜스포머 구현 순서 (PR 단위) — Phase 3 진행 중
 1. ✅ Phase 3 의사결정 (D041-D043) — PR #36
