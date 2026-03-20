@@ -54,14 +54,13 @@ pub const Parser = struct {
     // 컨텍스트 플래그 (D051: 파서에서 구문 컨텍스트 추적)
     // ================================================================
     //
-    // Context는 packed struct(u32)로 구현된 bitflags다.
-    // 함수 진입/퇴장 시 save/restore 대상이 되는 모든 플래그를 하나로 묶어,
-    // 저장/복원을 단순 대입으로 처리한다 (oxc/Babel/Bun 공통 패턴).
+    // Context(u8)는 ECMAScript 문법 파라미터([+In], [+Yield] 등)만 포함한다.
+    // 나머지 파서 상태는 개별 bool 필드로 관리한다.
     //
     // is_module은 파싱 시작 시 한 번 결정되고 변하지 않는 불변 설정이므로
     // Context에 포함하지 않고 별도 필드로 관리한다 (oxc/Babel/Hermes 방식).
 
-    /// 파싱 컨텍스트 bitflags. 함수/블록 경계에서 save/restore 대상.
+    /// 파싱 컨텍스트 bitflags — ECMAScript 문법 파라미터만 포함.
     ctx: Context = Context.default,
 
     /// module 모드인지 (import/export 허용, 항상 strict).
@@ -69,7 +68,7 @@ pub const Parser = struct {
     is_module: bool = false,
 
     // ================================================================
-    // Context에서 분리된 개별 플래그 (향후 사용 예정)
+    // 개별 파서 상태 플래그
     // ================================================================
 
     /// TS 타입 어노테이션 안인지 (렉서 동작 변경: `<`/`>`를 타입 구분자로)
@@ -80,96 +79,84 @@ pub const Parser = struct {
     allow_new_target: bool = false,
     /// constructor 안인지
     is_constructor: bool = false,
+    /// strict mode 여부 (D054: "use strict" directive 또는 module mode)
+    is_strict_mode: bool = false,
+    /// 루프 안에 있는지 (continue 유효성 검증용)
+    in_loop: bool = false,
+    /// switch 안에 있는지 (break 유효성 검증용 — break는 loop OR switch에서 허용)
+    in_switch: bool = false,
+    /// 현재 파싱 중인 함수의 파라미터가 simple인지 (non-simple이면 "use strict" 금지)
+    has_simple_params: bool = true,
+    /// for 초기화절 안인지 (for-in/for-of 구분)
+    for_loop_init: bool = false,
+    /// class 본문 안인지
+    in_class: bool = false,
+    /// class field 초기값 안인지
+    in_class_field: bool = false,
+    /// static block 안인지
+    in_static_block: bool = false,
+    /// extends 있는 class인지 (super() 허용 판단)
+    has_super_class: bool = false,
+    /// super() 호출 허용 여부 (constructor + extends)
+    allow_super_call: bool = false,
+    /// super.x / super[x] 허용 여부
+    allow_super_property: bool = false,
 
     // ================================================================
     // Context packed struct 정의
     // ================================================================
 
-    /// 파서의 구문 컨텍스트를 추적하는 bitflags.
+    /// ECMAScript 문법 파라미터를 추적하는 bitflags.
     ///
-    /// packed struct(u32)를 사용하면:
-    /// - 22개 bool 필드가 4바이트 하나에 들어감 (개별 bool이면 22바이트)
-    /// - save/restore가 u32 대입 한 번으로 끝남 (구조체 필드 7개 복사 → 1개)
-    /// - 비트 연산으로 여러 플래그를 한꺼번에 조작 가능
+    /// packed struct(u8)에는 문법 파라미터(allow_in, in_generator 등)만 포함한다.
+    /// 나머지 파서 상태(is_strict_mode, in_loop 등)는 Parser의 개별 필드로 관리.
     ///
-    /// 기본값 주의: has_simple_params, allow_in, is_top_level은 기본값이 true.
-    pub const Context = packed struct(u32) {
-        // --- 기본 ECMAScript 컨텍스트 (비트 0~7) ---
-
-        /// strict mode 여부 (D054: "use strict" directive 또는 module mode)
-        is_strict_mode: bool = false,
-        /// 함수 본문 안에 있는지 (return 유효성 검증용)
-        in_function: bool = false,
-        /// async 함수 안에 있는지 (await 키워드 유효성 검증용)
-        in_async: bool = false,
-        /// generator 함수 안에 있는지 (yield 키워드 유효성 검증용)
-        in_generator: bool = false,
-        /// 루프 안에 있는지 (continue 유효성 검증용)
-        in_loop: bool = false,
-        /// switch 안에 있는지 (break 유효성 검증용 — break는 loop OR switch에서 허용)
-        in_switch: bool = false,
-        /// 현재 파싱 중인 함수의 파라미터가 simple인지 (non-simple이면 "use strict" 금지)
-        has_simple_params: bool = true,
+    /// 기본값 주의: allow_in, is_top_level은 기본값이 true.
+    pub const Context = packed struct(u8) {
         /// `in` 연산자 허용 여부 (for-in/for-of 초기화절에서는 false로 설정하여
         /// `in`을 관계 연산자가 아닌 for-in 키워드로 파싱)
         allow_in: bool = true,
-
-        // --- 추가 ECMAScript 컨텍스트 (비트 8~11) ---
-
+        /// generator 함수 안에 있는지 (yield 키워드 유효성 검증용)
+        in_generator: bool = false,
+        /// async 함수 안에 있는지 (await 키워드 유효성 검증용)
+        in_async: bool = false,
+        /// 함수 본문 안에 있는지 (return 유효성 검증용)
+        in_function: bool = false,
         /// 최상위 레벨인지 (top-level await 감지용)
         is_top_level: bool = true,
         /// decorator 파싱 중인지
         in_decorator: bool = false,
-        /// for 초기화절 안인지 (for-in/for-of 구분)
-        for_loop_init: bool = false,
-
-        // --- class 관련 컨텍스트 (비트 12~17) ---
-
-        /// class 본문 안인지
-        in_class: bool = false,
-        /// class field 초기값 안인지
-        in_class_field: bool = false,
-        /// static block 안인지
-        in_static_block: bool = false,
-        /// extends 있는 class인지 (super() 허용 판단)
-        has_super_class: bool = false,
-        /// super() 호출 허용 여부 (constructor + extends)
-        allow_super_call: bool = false,
-        /// super.x / super[x] 허용 여부
-        allow_super_property: bool = false,
-
-        // --- TypeScript 컨텍스트 (비트 17~19) ---
-
         /// TS declare 블록 또는 .d.ts 파일 안인지
         in_ambient: bool = false,
         /// TS 조건부 타입 금지 (infer 절에서 extends를 제약으로 파싱)
         disallow_conditional_types: bool = false,
 
-        // 남은 비트는 padding (향후 확장용)
-        _padding: u13 = 0,
-
-        /// 기본값: has_simple_params=true, allow_in=true, is_top_level=true, 나머지 false.
+        /// 기본값: allow_in=true, is_top_level=true, 나머지 false.
         pub const default: Context = .{};
 
-        /// 함수 진입 시 컨텍스트를 설정한다.
-        /// in_function=true, in_loop/in_switch=false (함수 안의 break/continue는 함수 밖 loop에 속하지 않음),
-        /// is_top_level=false, async/generator는 인자로 설정.
-        /// 나머지 플래그(is_strict_mode 등)는 유지한다.
+        /// 함수 진입 시 Context(문법 파라미터)를 설정한다.
+        /// in_function=true, is_top_level=false, async/generator는 인자로 설정.
         pub fn enterFunction(self: Context, is_async: bool, is_generator: bool) Context {
             var new = self;
             new.in_function = true;
             new.in_async = is_async;
             new.in_generator = is_generator;
-            new.in_loop = false;
-            new.in_switch = false;
             new.is_top_level = false;
-            // 일반 function은 새로운 super 바인딩 → 메서드가 아니면 super 불가
-            // (arrow function은 enterFunction을 사용하지 않고 별도로 처리)
-            new.allow_super_call = false;
-            new.allow_super_property = false;
-            new.in_class_field = false; // 일반 function은 자체 arguments 있음
             return new;
         }
+    };
+
+    /// 함수/메서드 진입 시 저장되는 상태.
+    /// enterFunctionContext()로 저장, restoreFunctionContext()로 복원.
+    const SavedState = struct {
+        ctx: Context,
+        is_strict_mode: bool,
+        in_loop: bool,
+        in_switch: bool,
+        has_simple_params: bool,
+        in_class_field: bool,
+        allow_super_call: bool,
+        allow_super_property: bool,
     };
 
     pub fn init(allocator: std.mem.Allocator, scanner: *Scanner) Parser {
@@ -265,7 +252,7 @@ pub const Parser = struct {
 
     /// strict mode에서 eval/arguments를 바인딩 이름으로 사용하면 에러.
     fn checkStrictBinding(self: *Parser, span: Span) void {
-        if (!self.ctx.is_strict_mode) return;
+        if (!self.is_strict_mode) return;
         const text = self.ast.source[span.start..span.end];
         if (std.mem.eql(u8, text, "eval") or std.mem.eql(u8, text, "arguments")) {
             self.addError(span, "assignment to 'eval' or 'arguments' is not allowed in strict mode");
@@ -492,7 +479,7 @@ pub const Parser = struct {
             self.checkYieldAwaitUse(self.currentSpan(), "identifier");
         } else if (self.current().isReservedKeyword() or self.current().isLiteralKeyword()) {
             self.addError(self.currentSpan(), "reserved word cannot be used as identifier");
-        } else if (self.ctx.is_strict_mode and self.current().isStrictModeReserved()) {
+        } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
             self.addError(self.currentSpan(), "reserved word in strict mode cannot be used as identifier");
         }
     }
@@ -510,7 +497,7 @@ pub const Parser = struct {
         if (is_yield) {
             if (self.ctx.in_generator) {
                 self.addError(span, "'yield' cannot be used as " ++ context_noun ++ " in generator");
-            } else if (self.ctx.is_strict_mode) {
+            } else if (self.is_strict_mode) {
                 self.addError(span, "'yield' cannot be used as " ++ context_noun ++ " in strict mode");
             }
         } else if (is_await) {
@@ -533,22 +520,46 @@ pub const Parser = struct {
     // 컨텍스트 저장/복원 (D051: 함수 경계에서 컨텍스트 리셋)
     // ================================================================
     //
-    // Context가 packed struct(u32)이므로 저장/복원이 단순 대입이다.
-    // 함수 진입: saved = self.ctx; self.ctx = self.ctx.enterFunction(...)
-    // 함수 퇴장: self.ctx = saved;
-    //
-    // enterFunctionContext()는 이 패턴을 함수로 감싸 실수를 방지한다.
+    // 함수 진입 시 SavedState로 ctx(u8) + 관련 Parser 필드를 저장/복원한다.
+    // allow_in 등 Context만 변경하는 경우는 ctx를 직접 save/restore한다.
 
     /// 함수 컨텍스트를 설정한다.
-    /// 현재 ctx를 반환(저장)하고, ctx를 함수 진입 상태로 변경한다.
-    /// 함수/메서드/arrow 진입 시 호출하고, 본문 파싱 후 restoreContext()로 복원.
-    fn enterFunctionContext(self: *Parser, is_async: bool, is_generator: bool) Context {
-        const saved = self.ctx;
+    /// 현재 ctx와 관련 Parser 필드를 SavedState에 저장하고, 함수 진입 상태로 변경한다.
+    /// 함수/메서드/arrow 진입 시 호출하고, 본문 파싱 후 restoreFunctionContext()로 복원.
+    fn enterFunctionContext(self: *Parser, is_async: bool, is_generator: bool) SavedState {
+        const saved = SavedState{
+            .ctx = self.ctx,
+            .is_strict_mode = self.is_strict_mode,
+            .in_loop = self.in_loop,
+            .in_switch = self.in_switch,
+            .has_simple_params = self.has_simple_params,
+            .in_class_field = self.in_class_field,
+            .allow_super_call = self.allow_super_call,
+            .allow_super_property = self.allow_super_property,
+        };
         self.ctx = self.ctx.enterFunction(is_async, is_generator);
+        // Parser 필드 리셋
+        self.in_loop = false;
+        self.in_switch = false;
+        self.allow_super_call = false;
+        self.allow_super_property = false;
+        self.in_class_field = false;
         return saved;
     }
 
-    /// 저장된 컨텍스트를 복원한다.
+    /// 함수 컨텍스트를 복원한다 (enterFunctionContext와 쌍).
+    fn restoreFunctionContext(self: *Parser, saved: SavedState) void {
+        self.ctx = saved.ctx;
+        self.is_strict_mode = saved.is_strict_mode;
+        self.in_loop = saved.in_loop;
+        self.in_switch = saved.in_switch;
+        self.has_simple_params = saved.has_simple_params;
+        self.in_class_field = saved.in_class_field;
+        self.allow_super_call = saved.allow_super_call;
+        self.allow_super_property = saved.allow_super_property;
+    }
+
+    /// Context(u8)를 복원한다 (enterAllowInContext 등과 쌍).
     fn restoreContext(self: *Parser, saved: Context) void {
         self.ctx = saved;
     }
@@ -573,12 +584,12 @@ pub const Parser = struct {
         return std.mem.eql(u8, inner, "use strict");
     }
 
-    /// 루프 본문을 파싱한다. 전체 ctx를 save/restore하여 일관성 유지.
+    /// 루프 본문을 파싱한다. in_loop를 save/restore.
     fn parseLoopBody(self: *Parser) ParseError2!NodeIndex {
-        const saved = self.ctx;
-        self.ctx.in_loop = true;
+        const saved_in_loop = self.in_loop;
+        self.in_loop = true;
         const body = try self.parseStatementChecked(true);
-        self.ctx = saved;
+        self.in_loop = saved_in_loop;
         return body;
     }
 
@@ -603,7 +614,7 @@ pub const Parser = struct {
     /// strict mode에서도 항상 에러
     /// sloppy mode + simple params인 일반 function만 허용
     fn checkDuplicateParams(self: *Parser, scratch_top: usize) void {
-        const must_check = self.ctx.is_strict_mode or !self.ctx.has_simple_params or
+        const must_check = self.is_strict_mode or !self.has_simple_params or
             self.ctx.in_generator or self.ctx.in_async;
         if (!must_check) return;
         const params = self.scratch.items[scratch_top..];
@@ -664,10 +675,10 @@ pub const Parser = struct {
                     // non-simple parameters + "use strict" → 에러
                     // ECMAScript 14.1.2: function with non-simple parameter list
                     // shall not contain a Use Strict Directive
-                    if (!self.ctx.has_simple_params) {
+                    if (!self.has_simple_params) {
                         self.addError(self.currentSpan(), "\"use strict\" not allowed in function with non-simple parameters");
                     }
-                    self.ctx.is_strict_mode = true;
+                    self.is_strict_mode = true;
                     // "use strict" 이전에 octal escape가 있었으면 retroactive 에러
                     if (has_prologue_octal) {
                         self.addError(prologue_octal_span, "Octal escape sequences are not allowed in strict mode");
@@ -708,7 +719,7 @@ pub const Parser = struct {
 
         // module 모드면 항상 strict (D054)
         if (self.is_module) {
-            self.ctx.is_strict_mode = true;
+            self.is_strict_mode = true;
         }
 
         // hashbang (#! ...) 건너뛰기
@@ -725,7 +736,7 @@ pub const Parser = struct {
         while (self.current() != .eof) {
             if (in_directive_prologue) {
                 if (self.isUseStrictDirective()) {
-                    self.ctx.is_strict_mode = true;
+                    self.is_strict_mode = true;
                 } else if (self.current() != .string_literal) {
                     // directive prologue는 문자열 expression statement가 연속되는 동안 유효
                     in_directive_prologue = false;
@@ -759,7 +770,7 @@ pub const Parser = struct {
                 self.addError(self.currentSpan(), "lexical declaration is not allowed in statement position");
             },
             .kw_let => {
-                if (self.ctx.is_strict_mode) {
+                if (self.is_strict_mode) {
                     self.addError(self.currentSpan(), "lexical declaration is not allowed in statement position");
                 } else {
                     const next = self.peekNext();
@@ -782,7 +793,7 @@ pub const Parser = struct {
                 } else if (is_loop_body) {
                     // loop body에서 function은 항상 금지 (ECMAScript 13.7.4, Annex B 미적용)
                     self.addError(self.currentSpan(), "function declaration is not allowed in statement position");
-                } else if (self.ctx.is_strict_mode) {
+                } else if (self.is_strict_mode) {
                     // if/else/with/labeled body에서는 strict mode에서만 금지
                     self.addError(self.currentSpan(), "function declaration is not allowed in statement position in strict mode");
                 }
@@ -918,9 +929,9 @@ pub const Parser = struct {
                 self.checkYieldAwaitUse(self.currentSpan(), "label");
                 if (self.current() == .escaped_keyword) {
                     self.addError(self.currentSpan(), "escaped reserved word cannot be used as label");
-                } else if (self.current() == .escaped_strict_reserved and self.ctx.is_strict_mode) {
+                } else if (self.current() == .escaped_strict_reserved and self.is_strict_mode) {
                     self.addError(self.currentSpan(), "escaped reserved word cannot be used as label in strict mode");
-                } else if (self.ctx.is_strict_mode and self.current().isStrictModeReserved()) {
+                } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
                     self.addError(self.currentSpan(), "reserved word in strict mode cannot be used as label");
                 }
                 return self.parseLabeledStatement();
@@ -951,7 +962,7 @@ pub const Parser = struct {
     /// with statement: with (expr) statement
     /// strict mode에서는 SyntaxError (D054)
     fn parseWithStatement(self: *Parser) ParseError2!NodeIndex {
-        if (self.ctx.is_strict_mode) {
+        if (self.is_strict_mode) {
             self.addError(self.currentSpan(), "'with' is not allowed in strict mode");
         }
         const start = self.currentSpan().start;
@@ -989,7 +1000,7 @@ pub const Parser = struct {
             // const without initializer → SyntaxError (ECMAScript 14.3.1)
             // for-in/for-of에서는 const 이니셜라이저 불필요 (for (const x of ...))
             // TS declare에서도 불필요 (declare const x: number)
-            if (kind_flags == 2 and !decl.isNone() and !self.ctx.for_loop_init and !self.ctx.in_ambient) {
+            if (kind_flags == 2 and !decl.isNone() and !self.for_loop_init and !self.ctx.in_ambient) {
                 const decl_node = self.ast.getNode(decl);
                 if (decl_node.tag == .variable_declarator) {
                     const init_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[decl_node.data.extra + 2]);
@@ -1151,11 +1162,13 @@ pub const Parser = struct {
         // for 초기화절에서는 `in` 연산자를 비활성화하고 for_loop_init을 설정한다.
         // for_loop_init: const without init 체크 스킵 (for-in/for-of에서는 init 불필요)
         const for_saved = self.enterAllowInContext(false);
-        self.ctx.for_loop_init = true;
+        const saved_for_loop_init = self.for_loop_init;
+        self.for_loop_init = true;
 
         if (self.current() == .kw_var or self.current() == .kw_let or self.current() == .kw_const) {
             const init_expr = try self.parseVariableDeclaration();
             self.restoreContext(for_saved);
+            self.for_loop_init = saved_for_loop_init;
             // parseVariableDeclaration이 세미콜론을 소비했으면 for(;;)
             // 'in' 또는 'of'가 보이면 for-in/for-of
             if (self.current() == .kw_in or self.current() == .kw_of) {
@@ -1175,6 +1188,7 @@ pub const Parser = struct {
         // 일반 표현식 init
         const init_expr = try self.parseExpression();
         self.restoreContext(for_saved);
+        self.for_loop_init = saved_for_loop_init;
         if (self.current() == .kw_in) {
             _ = self.coverExpressionToAssignmentTarget(init_expr, false);
             return self.parseForIn(start, init_expr);
@@ -1218,7 +1232,7 @@ pub const Parser = struct {
         // initializer가 있으면 에러 (예외: sloppy var + for-in)
         const is_var = kind_flags == 0;
         const is_for_in = self.current() == .kw_in;
-        if (is_for_in and is_var and !self.ctx.is_strict_mode) return; // Annex B.3.5
+        if (is_for_in and is_var and !self.is_strict_mode) return; // Annex B.3.5
         self.addError(decl_node.span, "for-in/for-of loop variable declaration may not have an initializer");
     }
 
@@ -1297,12 +1311,12 @@ pub const Parser = struct {
         }
 
         // continue → label 유무와 관계없이 loop 안에서만 허용
-        if (tag == .continue_statement and !self.ctx.in_loop) {
+        if (tag == .continue_statement and !self.in_loop) {
             self.addError(keyword_span, "'continue' outside of loop");
         }
         // break → label이 없을 때만 loop 또는 switch 필요
         // label이 있는 break는 labelled statement 안에서 유효 (loop/switch 불필요)
-        if (tag == .break_statement and label.isNone() and !self.ctx.in_loop and !self.ctx.in_switch) {
+        if (tag == .break_statement and label.isNone() and !self.in_loop and !self.in_switch) {
             self.addError(keyword_span, "'break' outside of loop or switch");
         }
 
@@ -1323,8 +1337,9 @@ pub const Parser = struct {
         self.expect(.r_paren);
         self.expect(.l_curly);
 
-        const saved = self.ctx;
-        self.ctx.in_switch = true;
+        const saved_ctx = self.ctx;
+        const saved_in_switch = self.in_switch;
+        self.in_switch = true;
         // switch body 안에서는 top-level이 아님 (import/export 금지)
         self.ctx.is_top_level = false;
 
@@ -1334,7 +1349,8 @@ pub const Parser = struct {
             try self.scratch.append(case_node);
         }
 
-        self.ctx = saved;
+        self.ctx = saved_ctx;
+        self.in_switch = saved_in_switch;
 
         const end = self.currentSpan().end;
         self.expect(.r_curly);
@@ -1495,10 +1511,10 @@ pub const Parser = struct {
         // TS 리턴 타입 어노테이션
         const return_type = try self.tryParseReturnType();
 
-        self.ctx.has_simple_params = self.checkSimpleParams(scratch_top);
+        self.has_simple_params = self.checkSimpleParams(scratch_top);
         self.checkDuplicateParams(scratch_top);
         const body = try self.parseFunctionBody();
-        self.restoreContext(saved_ctx);
+        self.restoreFunctionContext(saved_ctx);
 
         const param_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
         self.restoreScratch(scratch_top);
@@ -1579,10 +1595,10 @@ pub const Parser = struct {
 
         const return_type = try self.tryParseReturnType();
 
-        self.ctx.has_simple_params = self.checkSimpleParams(scratch_top);
+        self.has_simple_params = self.checkSimpleParams(scratch_top);
         self.checkDuplicateParams(scratch_top);
         const body = try self.parseFunctionBody();
-        self.restoreContext(saved_ctx);
+        self.restoreFunctionContext(saved_ctx);
 
         const param_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
         self.restoreScratch(scratch_top);
@@ -1639,10 +1655,10 @@ pub const Parser = struct {
 
         // TS 리턴 타입 어노테이션
         _ = try self.tryParseReturnType();
-        self.ctx.has_simple_params = self.checkSimpleParams(scratch_top);
+        self.has_simple_params = self.checkSimpleParams(scratch_top);
         self.checkDuplicateParams(scratch_top);
         const body = try self.parseFunctionBody();
-        self.restoreContext(saved_ctx);
+        self.restoreFunctionContext(saved_ctx);
 
         const param_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
         self.restoreScratch(scratch_top);
@@ -1706,10 +1722,10 @@ pub const Parser = struct {
 
         // 클래스 본문 — extends 있으면 has_super_class 설정 (super() 허용 판단)
         // 중첩 class에서 외부 has_super_class를 상속하지 않도록 명시적 설정
-        const class_ctx_saved = self.ctx;
-        self.ctx.has_super_class = !super_class.isNone();
+        const saved_has_super_class = self.has_super_class;
+        self.has_super_class = !super_class.isNone();
         const body = try self.parseClassBody();
-        self.ctx = class_ctx_saved;
+        self.has_super_class = saved_has_super_class;
 
         const none = @intFromEnum(NodeIndex.none);
         const extra_start = try self.ast.addExtras(&.{
@@ -1734,8 +1750,8 @@ pub const Parser = struct {
         self.expect(.l_curly);
 
         // class body 안에서는 in_class=true (super 허용 등)
-        const class_saved = self.ctx;
-        self.ctx.in_class = true;
+        const saved_in_class = self.in_class;
+        self.in_class = true;
 
         const scratch_top = self.saveScratch();
         while (self.current() != .r_curly and self.current() != .eof) {
@@ -1748,7 +1764,7 @@ pub const Parser = struct {
             if (!member.isNone()) try self.scratch.append(member);
         }
 
-        self.ctx = class_saved;
+        self.in_class = saved_in_class;
 
         const end = self.currentSpan().end;
         self.expect(.r_curly);
@@ -1895,7 +1911,7 @@ pub const Parser = struct {
                 // 메서드의 async/generator 플래그는 함수와 비트 위치가 다름 (0x08/0x10)
                 const saved_ctx = self.enterFunctionContext((flags & 0x08) != 0, (flags & 0x10) != 0);
                 // class 메서드는 super.prop 허용 (ECMAScript 12.3.7)
-                self.ctx.allow_super_property = true;
+                self.allow_super_property = true;
                 // constructor에서는 super() 호출도 허용
                 if (!key.isNone() and (flags & 0x01) == 0) { // non-static
                     const mk = self.ast.getNode(key);
@@ -1907,15 +1923,15 @@ pub const Parser = struct {
                         @as([]const u8, "");
                     if (std.mem.eql(u8, kt, "constructor")) {
                         // extends가 있는 class의 constructor에서만 super() 허용
-                        if (self.ctx.has_super_class) {
-                            self.ctx.allow_super_call = true;
+                        if (self.has_super_class) {
+                            self.allow_super_call = true;
                         }
                     }
                 }
-                self.ctx.has_simple_params = self.checkSimpleParams(param_top);
+                self.has_simple_params = self.checkSimpleParams(param_top);
                 self.checkDuplicateParams(param_top);
                 body = try self.parseFunctionBody();
-                self.restoreContext(saved_ctx);
+                self.restoreFunctionContext(saved_ctx);
             } else {
                 _ = self.eat(.semicolon);
             }
@@ -1971,10 +1987,10 @@ pub const Parser = struct {
         // 프로퍼티 (= 이니셜라이저) — class field에서 arguments 사용 금지
         var init_val = NodeIndex.none;
         if (self.eat(.eq)) {
-            const field_saved = self.ctx;
-            self.ctx.in_class_field = true;
+            const saved_in_class_field = self.in_class_field;
+            self.in_class_field = true;
             init_val = try self.parseAssignmentExpression();
-            self.ctx = field_saved;
+            self.in_class_field = saved_in_class_field;
         }
         _ = self.eat(.semicolon);
 
@@ -2559,12 +2575,12 @@ pub const Parser = struct {
         const saved_ctx = self.enterFunctionContext(is_async, false);
         // arrow function은 자체 arguments 바인딩이 없으므로 in_class_field를 유지해야 한다.
         // class field 이니셜라이저 안의 arrow function에서 arguments 사용은 SyntaxError.
-        self.ctx.in_class_field = saved_ctx.in_class_field;
+        self.in_class_field = saved_ctx.in_class_field;
         const body = if (self.current() == .l_curly)
             try self.parseFunctionBody()
         else
             try self.parseAssignmentExpression();
-        self.restoreContext(saved_ctx);
+        self.restoreFunctionContext(saved_ctx);
         return body;
     }
 
@@ -2876,7 +2892,7 @@ pub const Parser = struct {
                     }
                 }
                 // delete (x) 도 괄호를 통과하여 체크
-                if (is_delete and self.ctx.is_strict_mode and !operand.isNone()) {
+                if (is_delete and self.is_strict_mode and !operand.isNone()) {
                     var target = operand;
                     while (!target.isNone()) {
                         const t = self.ast.getNode(target);
@@ -2990,7 +3006,7 @@ pub const Parser = struct {
             switch (self.current()) {
                 .l_paren => {
                     // super() 호출은 constructor에서만 허용
-                    if (self.ast.getNode(expr).tag == .super_expression and !self.ctx.allow_super_call) {
+                    if (self.ast.getNode(expr).tag == .super_expression and !self.allow_super_call) {
                         self.addError(self.ast.getNode(expr).span, "'super()' is only allowed in a class constructor");
                     }
                     // 함수 호출
@@ -3157,7 +3173,7 @@ pub const Parser = struct {
         switch (self.current()) {
             .identifier => {
                 // class field 이니셜라이저에서 arguments 사용 금지 (ECMAScript 15.7.1)
-                if (self.ctx.in_class_field) {
+                if (self.in_class_field) {
                     const text = self.ast.source[span.start..span.end];
                     if (std.mem.eql(u8, text, "arguments")) {
                         self.addError(span, "'arguments' is not allowed in class field initializer");
@@ -3172,7 +3188,7 @@ pub const Parser = struct {
             },
             .decimal, .float, .hex, .octal, .binary, .positive_exponential, .negative_exponential => {
                 // strict mode에서 legacy octal 숫자 금지 (ECMAScript 12.8.3.1)
-                if (self.scanner.token.has_legacy_octal and self.ctx.is_strict_mode) {
+                if (self.scanner.token.has_legacy_octal and self.is_strict_mode) {
                     self.addError(span, "Octal literals are not allowed in strict mode");
                 }
                 self.advance();
@@ -3192,7 +3208,7 @@ pub const Parser = struct {
             },
             .string_literal => {
                 // strict mode에서 legacy octal escape 금지 (ECMAScript 12.8.4.1)
-                if (self.scanner.token.has_legacy_octal and self.ctx.is_strict_mode) {
+                if (self.scanner.token.has_legacy_octal and self.is_strict_mode) {
                     self.addError(span, "Octal escape sequences are not allowed in strict mode");
                 }
                 self.advance();
@@ -3276,7 +3292,7 @@ pub const Parser = struct {
                 // ECMAScript 12.3.7: super는 메서드 안에서만 허용
                 // allow_super_property는 메서드 진입 시 true, 일반 함수 진입 시 false로 리셋
                 // arrow function은 외부의 allow_super_property를 상속
-                if (!self.ctx.allow_super_property and !self.ctx.allow_super_call) {
+                if (!self.allow_super_property and !self.allow_super_call) {
                     self.addError(span, "'super' is not allowed outside of a method");
                 }
                 self.advance();
@@ -3444,7 +3460,7 @@ pub const Parser = struct {
             else => {
                 // escaped strict reserved → strict mode에서 에러, non-strict에서 identifier
                 if (self.current() == .escaped_strict_reserved) {
-                    if (self.ctx.is_strict_mode) {
+                    if (self.is_strict_mode) {
                         self.addError(span, "escaped reserved word cannot be used as identifier in strict mode");
                     }
                     self.checkYieldAwaitUse(span, "identifier");
@@ -3460,7 +3476,7 @@ pub const Parser = struct {
                 if (self.current().isKeyword() and
                     (!self.current().isReservedKeyword() or self.current() == .kw_await or self.current() == .kw_yield))
                 {
-                    if (self.ctx.is_strict_mode and self.current().isStrictModeReserved()) {
+                    if (self.is_strict_mode and self.current().isStrictModeReserved()) {
                         self.addError(span, "reserved word in strict mode cannot be used as identifier");
                     } else {
                         self.checkYieldAwaitUse(span, "identifier");
@@ -3676,7 +3692,7 @@ pub const Parser = struct {
                     if (token_mod.keywords.get(key_text)) |kw| {
                         if (kw.isReservedKeyword() or kw.isLiteralKeyword()) {
                             self.addError(key_node.span, "reserved word cannot be used as shorthand property");
-                        } else if (self.ctx.is_strict_mode and kw.isStrictModeReserved()) {
+                        } else if (self.is_strict_mode and kw.isStrictModeReserved()) {
                             self.addError(key_node.span, "reserved word in strict mode cannot be used as shorthand property");
                         } else if (kw == .kw_yield and self.ctx.in_generator) {
                             self.addError(key_node.span, "'yield' cannot be used as shorthand property in generator");
@@ -3702,7 +3718,7 @@ pub const Parser = struct {
         // flags: 0x02=getter, 0x04=setter, 0x08=async, 0x10=generator
         const saved_ctx = self.enterFunctionContext((flags & 0x08) != 0, (flags & 0x10) != 0);
         // ECMAScript 12.3.7: 객체 리터럴 메서드에서도 super.prop 허용
-        self.ctx.allow_super_property = true;
+        self.allow_super_property = true;
 
         self.expect(.l_paren);
         const scratch_top = self.saveScratch();
@@ -3718,10 +3734,10 @@ pub const Parser = struct {
 
         // TS 리턴 타입
         _ = try self.tryParseReturnType();
-        self.ctx.has_simple_params = self.checkSimpleParams(scratch_top);
+        self.has_simple_params = self.checkSimpleParams(scratch_top);
         self.checkDuplicateParams(scratch_top);
         const body = try self.parseFunctionBody();
-        self.restoreContext(saved_ctx);
+        self.restoreFunctionContext(saved_ctx);
 
         const param_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
         self.restoreScratch(scratch_top);
@@ -3828,7 +3844,7 @@ pub const Parser = struct {
                 });
             },
             .escaped_strict_reserved => {
-                if (self.ctx.is_strict_mode) {
+                if (self.is_strict_mode) {
                     self.addError(self.currentSpan(), "escaped reserved word cannot be used as identifier in strict mode");
                 }
                 self.checkYieldAwaitUse(self.currentSpan(), "identifier");
@@ -3912,7 +3928,7 @@ pub const Parser = struct {
                 });
             },
             .escaped_strict_reserved => {
-                if (self.ctx.is_strict_mode) {
+                if (self.is_strict_mode) {
                     self.addError(self.currentSpan(), "escaped reserved word cannot be used as identifier in strict mode");
                 }
                 self.checkYieldAwaitUse(self.currentSpan(), "identifier");
@@ -3950,7 +3966,7 @@ pub const Parser = struct {
         {
             if (self.current() == .escaped_keyword) {
                 self.addError(span, "escaped reserved word cannot be used as identifier");
-            } else if (self.current() == .escaped_strict_reserved and self.ctx.is_strict_mode) {
+            } else if (self.current() == .escaped_strict_reserved and self.is_strict_mode) {
                 self.addError(span, "escaped reserved word cannot be used as identifier in strict mode");
             } else {
                 self.checkKeywordBinding();
