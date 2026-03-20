@@ -53,9 +53,9 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         /// pre-parse에서 수집한 총 capturing group 수 (forward reference 즉시 검증용).
         total_group_count: u32 = 0,
         /// named group 목록 (ES2025 중복 검증용).
-        named_groups: std.BoundedArray(NamedGroupEntry, 32) = .{},
+        named_groups: std.BoundedArray(NamedGroupEntry, 16) = .{},
         /// named back reference 목록 (파싱 끝에서 존재 검증).
-        named_refs: std.BoundedArray([]const u8, 64) = .{},
+        named_refs: std.BoundedArray([]const u8, 32) = .{},
 
         // ── ES2025 alternative tracking ──
         // parseDisjunction에서 '|' 마다 증가, parseGroup에서 depth 추적.
@@ -1172,7 +1172,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     },
                     // inline modifiers (?ims:...) or (?ims-ims:...)
                     'i', 'm', 's', '-' => {
-                        if (!self.parseModifiers()) return false;
+                        const mods = self.parseModifiers() orelse return false;
                         self.parseDisjunction();
                         if (!self.eat(')')) {
                             self.setError("unterminated group");
@@ -1183,7 +1183,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             self.last_node = self.addNode(.ignore_group, .{
                                 .start = group_start,
                                 .end = self.pos,
-                            }, .{ 0, 0, @intFromEnum(body) });
+                            }, .{ mods.enabling, mods.disabling, @intFromEnum(body) });
                         }
                         return true;
                     },
@@ -1216,74 +1216,46 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         // Modifiers (?ims-ims:...)
         // ================================================================
 
-        fn parseModifiers(self: *Self) bool {
-            var seen_i: bool = false;
-            var seen_m: bool = false;
-            var seen_s: bool = false;
+        /// modifier flags 결과 (enabling/disabling 비트: i=1, m=2, s=4).
+        const ModifierResult = struct { enabling: u8, disabling: u8 };
+
+        fn parseModifiers(self: *Self) ?ModifierResult {
+            var seen: u8 = 0; // 이미 본 modifier 비트
+            var enabling: u8 = 0;
+
             // positive modifiers
             while (!self.isEnd() and isModifierChar(self.peek())) {
-                switch (self.peek()) {
-                    'i' => {
-                        if (seen_i) {
-                            self.setError("duplicate modifier 'i'");
-                            return false;
-                        }
-                        seen_i = true;
-                    },
-                    'm' => {
-                        if (seen_m) {
-                            self.setError("duplicate modifier 'm'");
-                            return false;
-                        }
-                        seen_m = true;
-                    },
-                    's' => {
-                        if (seen_s) {
-                            self.setError("duplicate modifier 's'");
-                            return false;
-                        }
-                        seen_s = true;
-                    },
-                    else => {},
+                const bit = modifierBit(self.peek());
+                if (seen & bit != 0) {
+                    self.setError("duplicate modifier in group");
+                    return null;
                 }
+                seen |= bit;
+                enabling |= bit;
                 self.advance();
             }
+
             // optional '-' for negative modifiers
+            var disabling: u8 = 0;
             if (!self.isEnd() and self.peek() == '-') {
                 self.advance();
                 while (!self.isEnd() and isModifierChar(self.peek())) {
-                    switch (self.peek()) {
-                        'i' => {
-                            if (seen_i) {
-                                self.setError("modifier 'i' already set");
-                                return false;
-                            }
-                            seen_i = true;
-                        },
-                        'm' => {
-                            if (seen_m) {
-                                self.setError("modifier 'm' already set");
-                                return false;
-                            }
-                            seen_m = true;
-                        },
-                        's' => {
-                            if (seen_s) {
-                                self.setError("modifier 's' already set");
-                                return false;
-                            }
-                            seen_s = true;
-                        },
-                        else => {},
+                    const bit = modifierBit(self.peek());
+                    if (seen & bit != 0) {
+                        self.setError("modifier already set in group");
+                        return null;
                     }
+                    seen |= bit;
+                    disabling |= bit;
                     self.advance();
                 }
             }
+
             if (!self.eat(':')) {
                 self.setError("invalid modifier group, expected ':'");
-                return false;
+                return null;
             }
-            return true;
+            return .{ .enabling = enabling, .disabling = disabling };
         }
 
         // ================================================================
@@ -1418,6 +1390,11 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                                 max_val = self.eatDigitValue() orelse std.math.maxInt(u32);
                             }
                             if (self.eat('}')) {
+                                // {n,m} 에서 n > m 이면 에러
+                                if (max_val != std.math.maxInt(u32) and min_val > max_val) {
+                                    self.setError("quantifier range out of order");
+                                    return;
+                                }
                                 const greedy = !self.eat('?');
                                 const atom_node = self.last_node;
                                 self.last_node = self.addNode(.quantifier, .{
@@ -1435,26 +1412,28 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             self.setError("invalid braced quantifier");
                             return;
                         }
-                        // non-unicode: rollback, treat '{' as literal
                         self.pos = saved;
                     } else {
                         const saved = self.pos;
                         self.advance(); // skip '{'
-                        if (self.eatDigits()) {
+                        if (self.eatDigitValue()) |min_val| {
+                            var max_val: u32 = min_val;
                             if (self.eat(',')) {
-                                _ = self.eatDigits(); // optional max
+                                max_val = self.eatDigitValue() orelse std.math.maxInt(u32);
                             }
                             if (self.eat('}')) {
-                                _ = self.eat('?'); // lazy
+                                if (max_val != std.math.maxInt(u32) and min_val > max_val) {
+                                    self.setError("quantifier range out of order");
+                                    return;
+                                }
+                                _ = self.eat('?');
                                 return;
                             }
                         }
-                        // invalid braced quantifier
                         if (self.flags.hasUnicodeMode()) {
                             self.setError("invalid braced quantifier");
                             return;
                         }
-                        // non-unicode: rollback, treat '{' as literal
                         self.pos = saved;
                     }
                 },
@@ -1827,7 +1806,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
 // ================================================================
 
 fn isHexDigit(c: u8) bool {
-    return (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F');
+    return std.ascii.isHex(c);
 }
 
 fn isSyntaxChar(c: u8) bool {
@@ -1839,6 +1818,16 @@ fn isSyntaxChar(c: u8) bool {
 
 fn isModifierChar(c: u8) bool {
     return c == 'i' or c == 'm' or c == 's';
+}
+
+/// modifier 문자를 비트로 변환한다 (i=1, m=2, s=4).
+fn modifierBit(c: u8) u8 {
+    return switch (c) {
+        'i' => 1,
+        'm' => 2,
+        's' => 4,
+        else => 0,
+    };
 }
 
 /// v-flag: character class 내에서 리터럴로 사용할 수 없는 문법 문자.
