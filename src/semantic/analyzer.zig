@@ -624,15 +624,12 @@ pub const SemanticAnalyzer = struct {
                 // binary: { left = callee, right = @enumFromInt(args_start), flags = args_len }
                 // callee 순회
                 self.visitNode(node.data.binary.left);
-                // 인자 순회 — right를 extra_data 시작 인덱스, flags를 길이로 사용
-                const args_start = @intFromEnum(node.data.binary.right);
-                const args_len = node.data.binary.flags & 0x7FFF; // 상위 비트는 optional 플래그
-                if (args_len > 0 and args_start + args_len <= self.ast.extra_data.items.len) {
-                    const arg_indices = self.ast.extra_data.items[args_start .. args_start + args_len];
-                    for (arg_indices) |raw_idx| {
-                        self.visitNode(@enumFromInt(raw_idx));
-                    }
-                }
+                // 인자 순회 — visitNodeList 재활용
+                // flags 하위 15비트가 인자 개수 (상위 비트는 optional chaining 플래그)
+                self.visitNodeList(.{
+                    .start = @intFromEnum(node.data.binary.right),
+                    .len = node.data.binary.flags & 0x7FFF,
+                });
             },
             .tagged_template_expression => {
                 // binary: { left = tag, right = template, flags = 0 }
@@ -1617,14 +1614,16 @@ test "SemanticAnalyzer: private name in object literal method is error" {
     defer parser.deinit();
     _ = try parser.parse();
 
-    // 파서가 에러를 보고할 수도 있으므로 semantic까지 도달하는 경우만 체크
+    // 파서 또는 semantic 중 하나 이상에서 에러가 발생해야 함
+    var semantic_errors: usize = 0;
     if (parser.errors.items.len == 0) {
         var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
         defer ana.deinit();
         ana.analyze();
-        // class 밖에서 private name 사용 → 에러
-        try std.testing.expect(ana.errors.items.len > 0);
+        semantic_errors = ana.errors.items.len;
     }
+    const total_errors = parser.errors.items.len + semantic_errors;
+    try std.testing.expect(total_errors > 0);
 }
 
 test "SemanticAnalyzer: call expression args are visited" {
