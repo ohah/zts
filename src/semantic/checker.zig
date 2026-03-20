@@ -22,6 +22,8 @@ const Span = @import("../lexer/token.zig").Span;
 
 const Diagnostic = @import("../diagnostic.zig").Diagnostic;
 
+const AllocError = std.mem.Allocator.Error;
+
 // ====================================================================
 // method_definition flags 상수 (parser.zig와 동일)
 // extra_data[extra_start + 4]에 저장됨
@@ -53,7 +55,7 @@ pub fn checkDuplicateConstructors(
     class_body_list: NodeList,
     errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
-) void {
+) AllocError!void {
     if (class_body_list.len == 0) return;
     if (class_body_list.start + class_body_list.len > ast.extra_data.items.len) return;
 
@@ -84,7 +86,7 @@ pub fn checkDuplicateConstructors(
 
         if (first_constructor_span) |_| {
             // 두 번째 constructor → 에러
-            addError(errors, node.span, std.fmt.allocPrint(allocator, "A class may only have one constructor", .{}) catch @panic("OOM: duplicate_constructor"));
+            try addError(errors, node.span, try std.fmt.allocPrint(allocator, "A class may only have one constructor", .{}));
             return; // 첫 중복만 보고
         } else {
             first_constructor_span = node.span;
@@ -116,8 +118,8 @@ fn matchKeyName(ast: *const Ast, key_idx: NodeIndex, target: []const u8) bool {
 }
 
 /// 에러를 errors 목록에 추가한다.
-fn addError(errors: *std.ArrayList(Diagnostic), span: Span, msg: []const u8) void {
-    errors.append(.{ .span = span, .message = msg, .kind = .semantic }) catch @panic("OOM: semantic error list");
+fn addError(errors: *std.ArrayList(Diagnostic), span: Span, msg: []const u8) AllocError!void {
+    try errors.append(.{ .span = span, .message = msg, .kind = .semantic });
 }
 
 // ====================================================================
@@ -136,7 +138,7 @@ pub fn checkPrivateNameStaticConflict(
     class_body_list: NodeList,
     errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
-) void {
+) AllocError!void {
     if (class_body_list.len == 0) return;
     if (class_body_list.start + class_body_list.len > ast.extra_data.items.len) return;
 
@@ -160,7 +162,7 @@ pub fn checkPrivateNameStaticConflict(
                 const flags = ast.extra_data.items[extra_start + 4];
                 const is_static = (flags & METHOD_FLAG_STATIC) != 0;
 
-                checkPrivateKeyStaticConflict(ast, key_idx, is_static, &declared, errors, allocator);
+                try checkPrivateKeyStaticConflict(ast, key_idx, is_static, &declared, errors, allocator);
             },
             .property_definition => {
                 // extra: [key, init_val, flags, deco_start, deco_len]
@@ -170,7 +172,7 @@ pub fn checkPrivateNameStaticConflict(
                 const key_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra_start]);
                 const is_static = (ast.extra_data.items[extra_start + 2] & METHOD_FLAG_STATIC) != 0;
 
-                checkPrivateKeyStaticConflict(ast, key_idx, is_static, &declared, errors, allocator);
+                try checkPrivateKeyStaticConflict(ast, key_idx, is_static, &declared, errors, allocator);
             },
             else => {},
         }
@@ -190,7 +192,7 @@ fn checkPrivateKeyStaticConflict(
     declared: *std.StringHashMap(PrivateStaticEntry),
     errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
-) void {
+) AllocError!void {
     if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return;
     const key_node = ast.getNode(key_idx);
     if (key_node.tag != .private_identifier) return;
@@ -200,14 +202,14 @@ fn checkPrivateKeyStaticConflict(
     if (declared.get(name)) |existing| {
         // 같은 이름이 이미 등록됨 → static 상태가 다르면 에러
         if (existing.is_static != is_static) {
-            addError(errors, key_node.span, std.fmt.allocPrint(
+            try addError(errors, key_node.span, try std.fmt.allocPrint(
                 allocator,
                 "Private field '{s}' has already been declared",
                 .{name},
-            ) catch @panic("OOM: private_static_conflict"));
+            ));
         }
     } else {
-        declared.put(name, .{ .is_static = is_static, .span = key_node.span }) catch @panic("OOM: declared");
+        try declared.put(name, .{ .is_static = is_static, .span = key_node.span });
     }
 }
 
@@ -229,7 +231,7 @@ pub fn checkObjectDuplicateProto(
     object_list: NodeList,
     errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
-) void {
+) AllocError!void {
     if (object_list.len == 0) return;
     if (object_list.start + object_list.len > ast.extra_data.items.len) return;
 
@@ -255,7 +257,7 @@ pub fn checkObjectDuplicateProto(
         if (!matchKeyName(ast, key_idx, "__proto__")) continue;
 
         if (first_proto_span) |_| {
-            addError(errors, node.span, std.fmt.allocPrint(allocator, "Property name __proto__ appears more than once in object literal", .{}) catch @panic("OOM: duplicate_proto"));
+            try addError(errors, node.span, try std.fmt.allocPrint(allocator, "Property name __proto__ appears more than once in object literal", .{}));
             return; // 첫 중복만 보고
         } else {
             first_proto_span = node.span;
@@ -281,7 +283,7 @@ pub fn checkGetterSetterParams(
     node: Node,
     errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
-) void {
+) AllocError!void {
     if (node.tag != .method_definition) return;
 
     const extra_start = node.data.extra;
@@ -291,11 +293,11 @@ pub fn checkGetterSetterParams(
     const params_len = ast.extra_data.items[extra_start + 2];
 
     if ((flags & METHOD_FLAG_GETTER) != 0 and params_len != 0) {
-        addError(errors, node.span, std.fmt.allocPrint(allocator, "Getter must not have any formal parameters", .{}) catch @panic("OOM: getter_params"));
+        try addError(errors, node.span, try std.fmt.allocPrint(allocator, "Getter must not have any formal parameters", .{}));
     }
 
     if ((flags & METHOD_FLAG_SETTER) != 0 and params_len != 1) {
-        addError(errors, node.span, std.fmt.allocPrint(allocator, "Setter must have exactly one formal parameter", .{}) catch @panic("OOM: setter_params"));
+        try addError(errors, node.span, try std.fmt.allocPrint(allocator, "Setter must have exactly one formal parameter", .{}));
     }
 }
 
@@ -320,7 +322,7 @@ pub fn checkDuplicateParams(
     params_len: u32,
     errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
-) void {
+) AllocError!void {
     if (params_len == 0) return;
     if (params_start + params_len > ast.extra_data.items.len) return;
 
@@ -330,7 +332,7 @@ pub fn checkDuplicateParams(
 
     const param_indices = ast.extra_data.items[params_start .. params_start + params_len];
     for (param_indices) |raw_idx| {
-        collectBindingNames(ast, @enumFromInt(raw_idx), &seen, errors, allocator);
+        try collectBindingNames(ast, @enumFromInt(raw_idx), &seen, errors, allocator);
     }
 }
 
@@ -341,15 +343,15 @@ fn recordSeenName(
     seen: *std.StringHashMap(Span),
     errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
-) void {
+) AllocError!void {
     if (seen.get(name)) |_| {
-        addError(errors, span, std.fmt.allocPrint(
+        try addError(errors, span, try std.fmt.allocPrint(
             allocator,
             "Duplicate parameter name '{s}'",
             .{name},
-        ) catch @panic("OOM: duplicate_param"));
+        ));
     } else {
-        seen.put(name, span) catch @panic("OOM: seen");
+        try seen.put(name, span);
     }
 }
 
@@ -360,13 +362,13 @@ fn collectBindingNames(
     seen: *std.StringHashMap(Span),
     errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
-) void {
+) AllocError!void {
     if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return;
     const node = ast.getNode(idx);
 
     switch (node.tag) {
         .binding_identifier => {
-            recordSeenName(ast.source[node.span.start..node.span.end], node.span, seen, errors, allocator);
+            try recordSeenName(ast.source[node.span.start..node.span.end], node.span, seen, errors, allocator);
         },
         .array_pattern, .object_pattern => {
             // list of elements/properties
@@ -374,20 +376,20 @@ fn collectBindingNames(
             if (node.data.list.start + node.data.list.len > ast.extra_data.items.len) return;
             const indices = ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
             for (indices) |raw_idx| {
-                collectBindingNames(ast, @enumFromInt(raw_idx), seen, errors, allocator);
+                try collectBindingNames(ast, @enumFromInt(raw_idx), seen, errors, allocator);
             }
         },
         .binding_property => {
             // binary: { left = key, right = value }
-            collectBindingNames(ast, node.data.binary.right, seen, errors, allocator);
+            try collectBindingNames(ast, node.data.binary.right, seen, errors, allocator);
         },
         .assignment_pattern => {
             // binary: { left = binding, right = default_value }
-            collectBindingNames(ast, node.data.binary.left, seen, errors, allocator);
+            try collectBindingNames(ast, node.data.binary.left, seen, errors, allocator);
         },
         .binding_rest_element, .rest_element => {
             // unary: { operand = binding }
-            collectBindingNames(ast, node.data.unary.operand, seen, errors, allocator);
+            try collectBindingNames(ast, node.data.unary.operand, seen, errors, allocator);
         },
         else => {},
     }
@@ -401,7 +403,7 @@ pub fn checkDuplicateArrowParams(
     param_idx: NodeIndex,
     errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
-) void {
+) AllocError!void {
     if (param_idx.isNone() or @intFromEnum(param_idx) >= ast.nodes.items.len) return;
 
     // fast path: 단일 파라미터는 중복 불가능
@@ -411,7 +413,7 @@ pub fn checkDuplicateArrowParams(
     var seen = std.StringHashMap(Span).init(allocator);
     defer seen.deinit();
 
-    collectArrowParamNames(ast, param_idx, &seen, errors, allocator);
+    try collectArrowParamNames(ast, param_idx, &seen, errors, allocator);
 }
 
 /// arrow 파라미터 노드에서 바인딩 이름을 재귀 수집한다.
@@ -421,31 +423,31 @@ fn collectArrowParamNames(
     seen: *std.StringHashMap(Span),
     errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
-) void {
+) AllocError!void {
     if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return;
     const node = ast.getNode(idx);
 
     switch (node.tag) {
         // 단일 파라미터 (post-cover-grammar)
         .binding_identifier => {
-            recordSeenName(ast.source[node.span.start..node.span.end], node.span, seen, errors, allocator);
+            try recordSeenName(ast.source[node.span.start..node.span.end], node.span, seen, errors, allocator);
         },
         // cover grammar에서 변환된 파라미터 리스트
         .parenthesized_expression, .sequence_expression => {
             if (node.tag == .parenthesized_expression) {
-                collectArrowParamNames(ast, node.data.unary.operand, seen, errors, allocator);
+                try collectArrowParamNames(ast, node.data.unary.operand, seen, errors, allocator);
             } else {
                 if (node.data.list.len == 0) return;
                 if (node.data.list.start + node.data.list.len > ast.extra_data.items.len) return;
                 const indices = ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
                 for (indices) |raw_idx| {
-                    collectArrowParamNames(ast, @enumFromInt(raw_idx), seen, errors, allocator);
+                    try collectArrowParamNames(ast, @enumFromInt(raw_idx), seen, errors, allocator);
                 }
             }
         },
         // identifier를 파라미터로 사용 (cover grammar 변환 전후 모두 처리)
         .identifier_reference, .assignment_target_identifier => {
-            recordSeenName(ast.source[node.span.start..node.span.end], node.span, seen, errors, allocator);
+            try recordSeenName(ast.source[node.span.start..node.span.end], node.span, seen, errors, allocator);
         },
         // destructuring 패턴 (cover grammar 변환 전후 모두 처리)
         .array_pattern,
@@ -459,12 +461,12 @@ fn collectArrowParamNames(
             if (node.data.list.start + node.data.list.len > ast.extra_data.items.len) return;
             const indices = ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
             for (indices) |raw_idx| {
-                collectArrowParamNames(ast, @enumFromInt(raw_idx), seen, errors, allocator);
+                try collectArrowParamNames(ast, @enumFromInt(raw_idx), seen, errors, allocator);
             }
         },
         .assignment_expression, .assignment_pattern, .assignment_target_with_default => {
             // left = binding, right = default value
-            collectArrowParamNames(ast, node.data.binary.left, seen, errors, allocator);
+            try collectArrowParamNames(ast, node.data.binary.left, seen, errors, allocator);
         },
         .binding_property,
         .object_property,
@@ -472,10 +474,10 @@ fn collectArrowParamNames(
         .assignment_target_property_property,
         => {
             // binary: { left = key, right = value }
-            collectArrowParamNames(ast, node.data.binary.right, seen, errors, allocator);
+            try collectArrowParamNames(ast, node.data.binary.right, seen, errors, allocator);
         },
         .spread_element, .binding_rest_element, .rest_element, .assignment_target_rest => {
-            collectArrowParamNames(ast, node.data.unary.operand, seen, errors, allocator);
+            try collectArrowParamNames(ast, node.data.unary.operand, seen, errors, allocator);
         },
         else => {},
     }
@@ -506,7 +508,7 @@ test "checker: duplicate constructor is error" {
     const ast = &parser.ast;
     for (ast.nodes.items) |node| {
         if (node.tag == .class_body) {
-            checkDuplicateConstructors(ast, node.data.list, &errs, std.testing.allocator);
+            try checkDuplicateConstructors(ast, node.data.list, &errs, std.testing.allocator);
             break;
         }
     }
@@ -527,7 +529,7 @@ test "checker: single constructor is valid" {
     const ast = &parser.ast;
     for (ast.nodes.items) |node| {
         if (node.tag == .class_body) {
-            checkDuplicateConstructors(ast, node.data.list, &errs, std.testing.allocator);
+            try checkDuplicateConstructors(ast, node.data.list, &errs, std.testing.allocator);
             break;
         }
     }
@@ -551,7 +553,7 @@ test "checker: static/instance private name conflict is error" {
     const ast = &parser.ast;
     for (ast.nodes.items) |node| {
         if (node.tag == .class_body) {
-            checkPrivateNameStaticConflict(ast, node.data.list, &errs, std.testing.allocator);
+            try checkPrivateNameStaticConflict(ast, node.data.list, &errs, std.testing.allocator);
             break;
         }
     }
@@ -572,7 +574,7 @@ test "checker: same static private getter+setter is valid" {
     const ast = &parser.ast;
     for (ast.nodes.items) |node| {
         if (node.tag == .class_body) {
-            checkPrivateNameStaticConflict(ast, node.data.list, &errs, std.testing.allocator);
+            try checkPrivateNameStaticConflict(ast, node.data.list, &errs, std.testing.allocator);
             break;
         }
     }
@@ -596,7 +598,7 @@ test "checker: duplicate __proto__ is error" {
     const ast = &parser.ast;
     for (ast.nodes.items) |node| {
         if (node.tag == .object_expression) {
-            checkObjectDuplicateProto(ast, node.data.list, &errs, std.testing.allocator);
+            try checkObjectDuplicateProto(ast, node.data.list, &errs, std.testing.allocator);
             break;
         }
     }
@@ -617,7 +619,7 @@ test "checker: single __proto__ is valid" {
     const ast = &parser.ast;
     for (ast.nodes.items) |node| {
         if (node.tag == .object_expression) {
-            checkObjectDuplicateProto(ast, node.data.list, &errs, std.testing.allocator);
+            try checkObjectDuplicateProto(ast, node.data.list, &errs, std.testing.allocator);
             break;
         }
     }
@@ -635,7 +637,7 @@ test "checker: duplicate arrow params is error" {
     const SemanticAnalyzer = @import("analyzer.zig").SemanticAnalyzer;
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len > 0);
 }
@@ -650,7 +652,7 @@ test "checker: duplicate method params is error" {
     const SemanticAnalyzer = @import("analyzer.zig").SemanticAnalyzer;
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
-    ana.analyze();
+    try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len > 0);
 }
