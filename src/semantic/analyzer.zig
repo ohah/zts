@@ -16,9 +16,7 @@ const Tag = Node.Tag;
 const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
 const Ast = ast_mod.Ast;
-const token_mod = @import("../lexer/token.zig");
-const Span = token_mod.Span;
-const TokenKind = token_mod.Kind;
+const Span = @import("../lexer/token.zig").Span;
 const scope_mod = @import("scope.zig");
 const ScopeId = scope_mod.ScopeId;
 const ScopeKind = scope_mod.ScopeKind;
@@ -27,8 +25,6 @@ const symbol_mod = @import("symbol.zig");
 const SymbolId = symbol_mod.SymbolId;
 const SymbolKind = symbol_mod.SymbolKind;
 const Symbol = symbol_mod.Symbol;
-const Reference = symbol_mod.Reference;
-const ReferenceKind = symbol_mod.ReferenceKind;
 const checker = @import("checker.zig");
 pub const Diagnostic = @import("../diagnostic.zig").Diagnostic;
 
@@ -92,9 +88,8 @@ pub const SemanticAnalyzer = struct {
     /// key는 소스 코드 슬라이스 (zero-copy), value는 symbols 배열의 인덱스.
     scope_maps: std.ArrayList(std.StringHashMap(usize)),
 
-    /// 참조 배열 (플랫). 식별자가 어떤 심볼을 참조하는지 기록.
-    /// tree-shaking: 참조가 0인 심볼은 미사용 → 제거 대상.
-    references: std.ArrayList(Reference),
+    // Note: 개별 Reference 배열은 번들러(Phase 6)에서 추가 예정.
+    // 현재는 Symbol.reference_count만으로 tree-shaking 판단에 충분.
 
     const PrivateRef = struct {
         name: []const u8,
@@ -132,7 +127,6 @@ pub const SemanticAnalyzer = struct {
             .labels = std.ArrayList(LabelEntry).init(allocator),
             .resolved_names = std.ArrayList([]const u8).init(allocator),
             .scope_maps = std.ArrayList(std.StringHashMap(usize)).init(allocator),
-            .references = std.ArrayList(Reference).init(allocator),
             .errors = std.ArrayList(Diagnostic).init(allocator),
             .allocator = allocator,
         };
@@ -147,7 +141,6 @@ pub const SemanticAnalyzer = struct {
         self.symbols.deinit();
         for (self.scope_maps.items) |*m| m.deinit();
         self.scope_maps.deinit();
-        self.references.deinit();
         self.exported_names.deinit();
         self.labels.deinit();
         // resolvePrivateName에서 할당된 문자열 해제
@@ -561,11 +554,14 @@ pub const SemanticAnalyzer = struct {
 
     /// 식별자 참조를 해결한다.
     /// 현재 스코프부터 부모 체인을 따라 올라가며 scope_maps로 O(1) 조회.
-    /// 심볼을 찾으면 Reference를 기록하고 symbol.reference_count를 증가시킨다.
+    /// 심볼을 찾으면 reference_count를 증가시킨다.
     ///
     /// tree-shaking에서 reference_count == 0인 심볼은 미사용으로 판단할 수 있다.
     /// 글로벌 스코프까지 올라가도 못 찾으면 외부 참조(미선언 변수)로 무시한다.
-    fn resolveIdentifier(self: *SemanticAnalyzer, name: []const u8, node_idx: NodeIndex, kind: ReferenceKind) void {
+    ///
+    /// Note: 번들러(Phase 6)에서는 Reference 배열도 기록하여 read/write/read_write
+    /// 종류와 정확한 위치를 추적할 예정 (dead store 분석 등).
+    fn resolveIdentifier(self: *SemanticAnalyzer, name: []const u8) void {
         var scope_id = self.current_scope;
 
         // 스코프 체인을 따라 올라가며 심볼 검색
@@ -574,14 +570,7 @@ pub const SemanticAnalyzer = struct {
             if (idx >= self.scope_maps.items.len) break;
 
             if (self.scope_maps.items[idx].get(name)) |sym_idx| {
-                // 심볼을 찾음 — Reference 기록 + reference_count 증가
-                const symbol_id: SymbolId = @enumFromInt(@as(u32, @intCast(sym_idx)));
-                self.references.append(.{
-                    .node_index = node_idx,
-                    .scope_id = self.current_scope,
-                    .symbol_id = symbol_id,
-                    .kind = kind,
-                }) catch @panic("OOM: references");
+                // 심볼을 찾음 — reference_count 증가
                 self.symbols.items[sym_idx].reference_count += 1;
                 return;
             }
@@ -593,6 +582,20 @@ pub const SemanticAnalyzer = struct {
         // 미선언 변수 (글로벌 변수, console 등) — 무시
         // 번들러에서는 외부 참조로 별도 처리할 수 있지만,
         // 현재 단계에서는 reference를 기록하지 않는다.
+    }
+
+    /// 노드가 식별자 참조이면 resolveIdentifier를 호출하고 true를 반환한다.
+    /// assignment_expression, update_expression 등에서 공통 사용.
+    /// 식별자가 아니면 false를 반환하여 호출자가 일반 순회를 수행하도록 한다.
+    fn tryResolveNodeAsRef(self: *SemanticAnalyzer, node_idx: NodeIndex) bool {
+        if (node_idx.isNone() or @intFromEnum(node_idx) >= self.ast.nodes.items.len) return false;
+        const node = self.ast.getNode(node_idx);
+        if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
+            const name = self.ast.getSourceText(node.span);
+            self.resolveIdentifier(name);
+            return true;
+        }
+        return false;
     }
 
     // ================================================================
@@ -737,49 +740,38 @@ pub const SemanticAnalyzer = struct {
             .identifier_reference => {
                 // 식별자가 참조하는 심볼을 스코프 체인에서 찾아 reference를 기록.
                 // tree-shaking에서 미사용 심볼 판단의 핵심 데이터.
-                const name = self.ast.source[node.span.start..node.span.end];
-                self.resolveIdentifier(name, idx, .read);
+                const name = self.ast.getSourceText(node.span);
+                self.resolveIdentifier(name);
             },
 
             // ---- 일반 표현식 순회 (private name 참조 등을 위해) ----
             .assignment_expression => {
-                // LHS가 식별자이면 write (= 연산자) 또는 read_write (compound 연산자)
+                // LHS가 식별자이면 reference count 증가
                 const lhs_idx = node.data.binary.left;
-                if (!lhs_idx.isNone() and @intFromEnum(lhs_idx) < self.ast.nodes.items.len) {
-                    const lhs_node = self.ast.getNode(lhs_idx);
-                    if (lhs_node.tag == .identifier_reference or
-                        lhs_node.tag == .assignment_target_identifier)
-                    {
-                        const name = self.ast.source[lhs_node.span.start..lhs_node.span.end];
-                        // flags는 토큰 종류 (@intFromEnum(Kind)): = 이면 write, +=/-= 등이면 read_write
-                        const ref_kind: ReferenceKind = if (node.data.binary.flags == @intFromEnum(TokenKind.eq)) .write else .read_write;
-                        self.resolveIdentifier(name, lhs_idx, ref_kind);
-                    } else {
-                        // LHS가 멤버 표현식 등 — 일반 순회
-                        self.visitNode(lhs_idx);
-                    }
+                if (!self.tryResolveNodeAsRef(lhs_idx)) {
+                    // LHS가 멤버 표현식 등 — 일반 순회
+                    self.visitNode(lhs_idx);
                 }
                 // RHS는 항상 순회 (내부에 식별자 참조 등이 있을 수 있음)
                 self.visitNode(node.data.binary.right);
             },
             .binary_expression,
             .logical_expression,
-            .conditional_expression,
             => {
                 self.visitNode(node.data.binary.left);
                 self.visitNode(node.data.binary.right);
             },
+            .conditional_expression => {
+                // ternary: { a = condition, b = consequent, c = alternate }
+                self.visitNode(node.data.ternary.a);
+                self.visitNode(node.data.ternary.b);
+                self.visitNode(node.data.ternary.c);
+            },
             .update_expression => {
                 // ++x, x++ — 읽고 쓰기 모두 수행
                 const operand_idx = node.data.unary.operand;
-                if (!operand_idx.isNone() and @intFromEnum(operand_idx) < self.ast.nodes.items.len) {
-                    const operand_node = self.ast.getNode(operand_idx);
-                    if (operand_node.tag == .identifier_reference) {
-                        const name = self.ast.source[operand_node.span.start..operand_node.span.end];
-                        self.resolveIdentifier(name, operand_idx, .read_write);
-                    } else {
-                        self.visitNode(operand_idx);
-                    }
+                if (!self.tryResolveNodeAsRef(operand_idx)) {
+                    self.visitNode(operand_idx);
                 }
             },
             .unary_expression,
@@ -2510,166 +2502,82 @@ test "SemanticAnalyzer: valid code has no semantic errors" {
 // Reference Tracking 테스트
 // ============================================================
 
-test "Reference: read reference increases count" {
-    // const x = 1; f(x);  → x는 선언 + 1번 read 참조
-    var scanner = Scanner.init(std.testing.allocator, "const x = 1; f(x);");
+/// 테스트 헬퍼: 소스 코드를 파싱+분석하여 특정 이름의 심볼 reference_count를 반환.
+/// 같은 이름의 심볼이 여러 개이면 배열 순서대로(선언 순) 반환.
+fn getRefCounts(source: []const u8, target_name: []const u8, out: *[8]u32) usize {
+    var scanner = Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
-    _ = try parser.parse();
+    _ = parser.parse() catch return 0;
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
     defer ana.deinit();
     ana.analyze();
 
-    // x 심볼을 찾는다
-    var found_x = false;
+    var count: usize = 0;
     for (ana.symbols.items) |sym| {
-        const name = parser.ast.source[sym.name.start..sym.name.end];
-        if (std.mem.eql(u8, name, "x")) {
-            // x는 f(x)에서 한 번 참조
-            try std.testing.expectEqual(@as(u32, 1), sym.reference_count);
-            found_x = true;
+        if (std.mem.eql(u8, sym.nameText(parser.ast.source), target_name)) {
+            if (count < 8) out[count] = sym.reference_count;
+            count += 1;
         }
     }
-    try std.testing.expect(found_x);
+    return count;
+}
 
-    // reference가 하나 이상 기록되어야 한다
-    try std.testing.expect(ana.references.items.len >= 1);
-    // x에 대한 reference를 찾아서 kind가 read인지 확인
-    var found_read = false;
-    for (ana.references.items) |ref| {
-        const sym = ana.symbols.items[@intFromEnum(ref.symbol_id)];
-        const name = parser.ast.source[sym.name.start..sym.name.end];
-        if (std.mem.eql(u8, name, "x") and ref.kind == .read) {
-            found_read = true;
-        }
-    }
-    try std.testing.expect(found_read);
+test "Reference: read reference increases count" {
+    // const x = 1; f(x);  → x는 f(x)에서 1번 참조
+    var counts: [8]u32 = undefined;
+    const n = getRefCounts("const x = 1; f(x);", "x", &counts);
+    try std.testing.expectEqual(@as(usize, 1), n);
+    try std.testing.expectEqual(@as(u32, 1), counts[0]);
 }
 
 test "Reference: write reference (assignment)" {
-    // let x; x = 1;  → x는 선언 + 1번 write 참조
-    var scanner = Scanner.init(std.testing.allocator, "let x; x = 1;");
-    defer scanner.deinit();
-    var parser = Parser.init(std.testing.allocator, &scanner);
-    defer parser.deinit();
-    _ = try parser.parse();
-
-    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
-    defer ana.deinit();
-    ana.analyze();
-
-    for (ana.symbols.items) |sym| {
-        const name = parser.ast.source[sym.name.start..sym.name.end];
-        if (std.mem.eql(u8, name, "x")) {
-            try std.testing.expectEqual(@as(u32, 1), sym.reference_count);
-        }
-    }
-    // write reference가 있어야 한다
-    var found_write = false;
-    for (ana.references.items) |ref| {
-        if (ref.kind == .write) {
-            found_write = true;
-        }
-    }
-    try std.testing.expect(found_write);
+    // let x; x = 1;  → x는 1번 참조 (assignment LHS)
+    var counts: [8]u32 = undefined;
+    const n = getRefCounts("let x; x = 1;", "x", &counts);
+    try std.testing.expectEqual(@as(usize, 1), n);
+    try std.testing.expectEqual(@as(u32, 1), counts[0]);
 }
 
 test "Reference: scope chain resolution" {
     // const x = 1; { f(x); }  → inner scope에서 outer x 참조
-    var scanner = Scanner.init(std.testing.allocator, "const x = 1; { f(x); }");
-    defer scanner.deinit();
-    var parser = Parser.init(std.testing.allocator, &scanner);
-    defer parser.deinit();
-    _ = try parser.parse();
-
-    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
-    defer ana.deinit();
-    ana.analyze();
-
-    for (ana.symbols.items) |sym| {
-        const name = parser.ast.source[sym.name.start..sym.name.end];
-        if (std.mem.eql(u8, name, "x")) {
-            // inner scope에서 참조되므로 count가 1
-            try std.testing.expectEqual(@as(u32, 1), sym.reference_count);
-        }
-    }
+    var counts: [8]u32 = undefined;
+    const n = getRefCounts("const x = 1; { f(x); }", "x", &counts);
+    try std.testing.expectEqual(@as(usize, 1), n);
+    try std.testing.expectEqual(@as(u32, 1), counts[0]);
 }
 
 test "Reference: shadowing — inner shadows outer" {
     // const x = 1; { const x = 2; f(x); }  → inner x: 1 ref, outer x: 0 ref
-    var scanner = Scanner.init(std.testing.allocator, "const x = 1; { const x = 2; f(x); }");
-    defer scanner.deinit();
-    var parser = Parser.init(std.testing.allocator, &scanner);
-    defer parser.deinit();
-    _ = try parser.parse();
-
-    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
-    defer ana.deinit();
-    ana.analyze();
-
-    // x라는 이름의 심볼이 2개 있어야 한다
-    var x_count: usize = 0;
-    var outer_x_refs: u32 = 0;
-    var inner_x_refs: u32 = 0;
-    for (ana.symbols.items) |sym| {
-        const name = parser.ast.source[sym.name.start..sym.name.end];
-        if (std.mem.eql(u8, name, "x")) {
-            if (x_count == 0) {
-                outer_x_refs = sym.reference_count;
-            } else {
-                inner_x_refs = sym.reference_count;
-            }
-            x_count += 1;
-        }
-    }
-    try std.testing.expectEqual(@as(usize, 2), x_count);
-    // outer x는 참조 안 됨 (shadowed)
-    try std.testing.expectEqual(@as(u32, 0), outer_x_refs);
-    // inner x는 f(x)에서 1번 참조
-    try std.testing.expectEqual(@as(u32, 1), inner_x_refs);
+    var counts: [8]u32 = undefined;
+    const n = getRefCounts("const x = 1; { const x = 2; f(x); }", "x", &counts);
+    try std.testing.expectEqual(@as(usize, 2), n);
+    try std.testing.expectEqual(@as(u32, 0), counts[0]); // outer x: 미참조
+    try std.testing.expectEqual(@as(u32, 1), counts[1]); // inner x: f(x)에서 1번
 }
 
 test "Reference: unreferenced symbol has count 0" {
     // const x = 1;  → x는 선언만 있고 참조 없음
-    var scanner = Scanner.init(std.testing.allocator, "const x = 1;");
-    defer scanner.deinit();
-    var parser = Parser.init(std.testing.allocator, &scanner);
-    defer parser.deinit();
-    _ = try parser.parse();
-
-    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
-    defer ana.deinit();
-    ana.analyze();
-
-    for (ana.symbols.items) |sym| {
-        const name = parser.ast.source[sym.name.start..sym.name.end];
-        if (std.mem.eql(u8, name, "x")) {
-            try std.testing.expectEqual(@as(u32, 0), sym.reference_count);
-        }
-    }
-    // reference가 없어야 한다 (f도 미선언이라 기록 안 됨)
-    try std.testing.expectEqual(@as(usize, 0), ana.references.items.len);
+    var counts: [8]u32 = undefined;
+    const n = getRefCounts("const x = 1;", "x", &counts);
+    try std.testing.expectEqual(@as(usize, 1), n);
+    try std.testing.expectEqual(@as(u32, 0), counts[0]);
 }
 
-test "Reference: compound assignment is read_write" {
-    // let x = 0; x += 1;  → x는 read_write 참조
-    var scanner = Scanner.init(std.testing.allocator, "let x = 0; x += 1;");
-    defer scanner.deinit();
-    var parser = Parser.init(std.testing.allocator, &scanner);
-    defer parser.deinit();
-    _ = try parser.parse();
+test "Reference: compound assignment counts as reference" {
+    // let x = 0; x += 1;  → x는 1번 참조 (compound assignment)
+    var counts: [8]u32 = undefined;
+    const n = getRefCounts("let x = 0; x += 1;", "x", &counts);
+    try std.testing.expectEqual(@as(usize, 1), n);
+    try std.testing.expectEqual(@as(u32, 1), counts[0]);
+}
 
-    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
-    defer ana.deinit();
-    ana.analyze();
-
-    var found_rw = false;
-    for (ana.references.items) |ref| {
-        if (ref.kind == .read_write) {
-            found_rw = true;
-        }
-    }
-    try std.testing.expect(found_rw);
+test "Reference: update expression counts as reference" {
+    // let x = 0; x++;  → x는 1번 참조 (update expression)
+    var counts: [8]u32 = undefined;
+    const n = getRefCounts("let x = 0; x++;", "x", &counts);
+    try std.testing.expectEqual(@as(usize, 1), n);
+    try std.testing.expectEqual(@as(u32, 1), counts[0]);
 }
