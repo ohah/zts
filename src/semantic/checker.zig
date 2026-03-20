@@ -244,6 +244,13 @@ pub fn checkObjectDuplicateProto(
         // object_property만 검사 (method_definition, spread_element 등은 스킵)
         if (node.tag != .object_property) continue;
 
+        // shorthand 프로퍼티는 제외 (ECMAScript Annex B.3.1):
+        // duplicate __proto__ 에러는 PropertyDefinition : PropertyName : AssignmentExpression
+        // 형태에서만 적용. shorthand({ __proto__ })는 IdentifierReference 형태.
+        // shorthand: right(value)가 none이고 flags가 0 (shorthand_with_default가 아닌 경우)
+        const right_idx = node.data.binary.right;
+        if (right_idx.isNone() and node.data.binary.flags == 0) continue;
+
         // key가 "__proto__" 인지 확인
         const key_idx = node.data.binary.left;
         if (!matchKeyName(ast, key_idx, "__proto__")) continue;
