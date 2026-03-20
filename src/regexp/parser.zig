@@ -1545,8 +1545,8 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 // operand 시도
                 if (self.parseClassSetOperand()) {
                     if (emit_ast) {
-                if (!self.bufAppend(buf, buf_len, @intFromEnum(self.last_node))) return;
-            }
+                        if (!self.bufAppend(buf, buf_len, @intFromEnum(self.last_node))) return;
+                    }
                     continue;
                 }
 
@@ -1577,8 +1577,8 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     return;
                 }
                 if (emit_ast) {
-                if (!self.bufAppend(buf, buf_len, @intFromEnum(self.last_node))) return;
-            }
+                    if (!self.bufAppend(buf, buf_len, @intFromEnum(self.last_node))) return;
+                }
             }
         }
 
@@ -1596,8 +1596,8 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     return;
                 }
                 if (emit_ast) {
-                if (!self.bufAppend(buf, buf_len, @intFromEnum(self.last_node))) return;
-            }
+                    if (!self.bufAppend(buf, buf_len, @intFromEnum(self.last_node))) return;
+                }
             }
         }
 
