@@ -1096,22 +1096,34 @@ pub const Scanner = struct {
             switch (prefix) {
                 'x', 'X' => {
                     self.current += 1;
-                    return self.scanHexLiteral();
+                    return self.checkNumericEnd(self.scanHexLiteral());
                 },
                 'o', 'O' => {
                     self.current += 1;
-                    return self.scanOctalLiteral();
+                    return self.checkNumericEnd(self.scanOctalLiteral());
                 },
                 'b', 'B' => {
                     self.current += 1;
-                    return self.scanBinaryLiteral();
+                    return self.checkNumericEnd(self.scanBinaryLiteral());
                 },
                 // 0_ → numeric separator in leading zero literal is invalid
                 '_' => return .syntax_error,
                 // 0 뒤에 숫자가 오면 legacy octal (00, 07) 또는 non-octal decimal (08, 09)
                 // 둘 다 strict mode에서 금지 (ECMAScript 12.8.3.1)
+                // Numeric separator(_)는 legacy octal/non-octal decimal에서 금지 (ECMAScript 12.8.3)
                 '0'...'9' => {
                     self.token.has_legacy_octal = true;
+                    // Legacy octal/non-octal decimal에서는 separator 없이 숫자만 소비
+                    if (self.scanLegacyOctalDigits()) return .syntax_error;
+                    // 소수점 (legacy octal 뒤에도 소수점 가능: 010.5 → 10.5)
+                    if (self.peek() == '.') {
+                        if (self.peekAt(1) != '.') {
+                            self.current += 1;
+                            if (self.scanDecimalDigits()) return .syntax_error;
+                            return self.checkNumericEnd(self.scanExponentPart(.float));
+                        }
+                    }
+                    return self.checkNumericEnd(self.scanExponentPart(.decimal));
                 },
                 else => {},
             }
@@ -1126,19 +1138,19 @@ pub const Scanner = struct {
             if (self.peekAt(1) != '.') {
                 self.current += 1;
                 if (self.scanDecimalDigits()) return .syntax_error;
-                return self.scanExponentPart(.float);
+                return self.checkNumericEnd(self.scanExponentPart(.float));
             }
         }
 
         // 지수
-        return self.scanExponentPart(.decimal);
+        return self.checkNumericEnd(self.scanExponentPart(.decimal));
     }
 
     /// 소수점 이후를 스캔한다 (.5, .123e10 등).
     /// '.'은 이미 소비된 상태. ('.' 자체는 scanDot에서 감지)
     fn scanDecimalAfterDot(self: *Scanner) Kind {
         if (self.scanDecimalDigits()) return .syntax_error;
-        return self.scanExponentPart(.float);
+        return self.checkNumericEnd(self.scanExponentPart(.float));
     }
 
     /// scanDecimalDigitsEx의 wrapper. 선행 숫자 없음.
@@ -1201,6 +1213,51 @@ pub const Scanner = struct {
         }
 
         return base_kind;
+    }
+
+    /// 숫자 리터럴 직후에 IdentifierStart 문자가 오는지 확인한다.
+    /// ECMAScript 명세: "The source character immediately following a NumericLiteral
+    /// must not be an IdentifierStart or DecimalDigit." (12.8.3)
+    /// 예: `3in []`, `0\u006f0`, `1\u005F0` 등은 SyntaxError.
+    fn checkNumericEnd(self: *Scanner, kind: Kind) Kind {
+        if (kind == .syntax_error) return kind;
+        if (self.isAtEnd()) return kind;
+        const c = self.peek();
+        // ASCII IdentifierStart: a-z, A-Z, _, $
+        if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_' or c == '$') {
+            return .syntax_error;
+        }
+        // Unicode escape (\uXXXX) — IdentifierStart를 unicode escape로 표현한 경우도 에러
+        if (c == '\\') {
+            return .syntax_error;
+        }
+        // Non-ASCII UTF-8 시작 바이트 — unicode IdentifierStart일 수 있음
+        if (c >= 0x80) {
+            const decoded = unicode.decodeUtf8(self.source[self.current..]);
+            if (decoded.len > 0 and unicode.isIdentifierStart(decoded.codepoint)) {
+                return .syntax_error;
+            }
+        }
+        return kind;
+    }
+
+    /// Legacy octal/non-octal decimal 숫자 시퀀스를 소비한다.
+    /// 00, 01, 07 (legacy octal) 또는 08, 09 (non-octal decimal) 이후의 숫자만 소비.
+    /// Numeric separator '_'는 금지 — 만나면 true(에러)를 반환.
+    /// 소수점과 지수는 호출자(scanNumericLiteral)에서 처리.
+    fn scanLegacyOctalDigits(self: *Scanner) bool {
+        while (!self.isAtEnd()) {
+            const c = self.peek();
+            if (c >= '0' and c <= '9') {
+                self.current += 1;
+            } else if (c == '_') {
+                // Legacy octal/non-octal decimal에서 separator는 금지
+                return true;
+            } else {
+                break;
+            }
+        }
+        return false;
     }
 
     /// 16진수 리터럴을 스캔한다 (0x 이후).
