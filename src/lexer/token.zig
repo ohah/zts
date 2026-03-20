@@ -54,6 +54,11 @@ pub const Token = struct {
     /// 이 토큰이 유니코드 이스케이프를 포함하는지 (oxc 방식).
     /// escaped keyword 감지에 사용: advance()에서 escaped && is_keyword → 에러.
     has_escape: bool = false,
+
+    /// 템플릿 리터럴에 잘못된 이스케이프 시퀀스가 포함되었는지.
+    /// tagged template에서는 허용되지만 (cooked가 undefined),
+    /// untagged template에서는 파서가 SyntaxError를 보고해야 한다.
+    has_invalid_escape: bool = false,
 };
 
 /// ECMAScript / TypeScript / JSX 토큰 종류.

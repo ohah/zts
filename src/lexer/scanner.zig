@@ -1425,11 +1425,85 @@ pub const Scanner = struct {
             if (c == '\\') {
                 self.current += 1; // skip '\'
                 if (!self.isAtEnd()) {
-                    // 줄바꿈 이스케이프 처리 (템플릿에서는 유효)
-                    if (self.peek() == '\n' or self.peek() == '\r') {
-                        _ = self.handleNewline();
-                    } else {
-                        self.current += 1; // skip escaped char
+                    const escaped = self.peek();
+                    switch (escaped) {
+                        // 단순 이스케이프: 1바이트 스킵
+                        'n', 'r', 't', '\\', '\'', '"', 'b', 'f', 'v', '`', '$' => {
+                            self.current += 1;
+                        },
+                        // \0 — 뒤에 숫자가 오면 legacy octal → invalid
+                        '0' => {
+                            self.current += 1;
+                            if (!self.isAtEnd() and self.peek() >= '0' and self.peek() <= '9') {
+                                self.token.has_invalid_escape = true;
+                                self.current += 1;
+                            }
+                        },
+                        // legacy octal \1..\9 → template에서는 항상 invalid
+                        '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
+                            self.token.has_invalid_escape = true;
+                            self.current += 1;
+                        },
+                        // 16진수 이스케이프: \xHH
+                        'x' => {
+                            self.current += 1;
+                            if (self.skipHexEscape(2)) {
+                                self.token.has_invalid_escape = true;
+                            }
+                        },
+                        // 유니코드 이스케이프: \uHHHH 또는 \u{H...H}
+                        'u' => {
+                            self.current += 1;
+                            if (!self.isAtEnd() and self.peek() == '{') {
+                                // \u{H...H} — 가변 길이, 닫는 }가 있어야 유효, 값 ≤ 0x10FFFF
+                                self.current += 1;
+                                var has_hex = false;
+                                var code_point: u32 = 0;
+                                var overflow = false;
+                                while (!self.isAtEnd() and self.peek() != '}') {
+                                    const hc = self.peek();
+                                    const digit: u32 = if (hc >= '0' and hc <= '9')
+                                        hc - '0'
+                                    else if (hc >= 'a' and hc <= 'f')
+                                        hc - 'a' + 10
+                                    else if (hc >= 'A' and hc <= 'F')
+                                        hc - 'A' + 10
+                                    else {
+                                        // 비-hex 문자 → invalid (문자를 소비하지 않음 — 템플릿 구분자일 수 있음)
+                                        self.token.has_invalid_escape = true;
+                                        break;
+                                    };
+                                    has_hex = true;
+                                    // overflow 방지: 0x10FFFF는 21비트이므로 24비트 이상이면 overflow
+                                    if (code_point > 0x10FFFF) {
+                                        overflow = true;
+                                    }
+                                    code_point = (code_point << 4) | digit;
+                                    self.current += 1;
+                                }
+                                if (!self.isAtEnd() and self.peek() == '}') {
+                                    self.current += 1; // consume '}'
+                                    if (!has_hex or overflow or code_point > 0x10FFFF) {
+                                        self.token.has_invalid_escape = true;
+                                    }
+                                } else {
+                                    self.token.has_invalid_escape = true;
+                                }
+                            } else {
+                                // \uHHHH — 고정 4자리
+                                if (self.skipHexEscape(4)) {
+                                    self.token.has_invalid_escape = true;
+                                }
+                            }
+                        },
+                        // 줄바꿈 이스케이프 처리 (템플릿에서는 유효)
+                        '\n', '\r' => {
+                            _ = self.handleNewline();
+                        },
+                        // 그 외: non-escape character (유효)
+                        else => {
+                            self.current += 1;
+                        },
                     }
                 }
                 continue;
