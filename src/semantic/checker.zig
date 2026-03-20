@@ -10,8 +10,7 @@
 //!   - checkDuplicateConstructors: class body에 constructor가 2개 이상이면 에러
 //!   - checkPrivateNameStaticConflict: static/instance private name이 같으면 에러
 //!   - checkObjectDuplicateProto: object literal에서 __proto__ 중복이면 에러
-//!   - checkGetterSetterParamCount: getter는 0개, setter는 1개 파라미터만 허용
-//!   - checkConstructorSpecialMethod: constructor에 제한된 modifier가 있으면 에러
+//!   - checkGetterSetterParams: getter는 0개, setter는 1개 파라미터만 허용
 
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
@@ -82,14 +81,11 @@ pub fn checkDuplicateConstructors(
         if ((flags & (METHOD_FLAG_GETTER | METHOD_FLAG_SETTER | METHOD_FLAG_ASYNC | METHOD_FLAG_GENERATOR)) != 0) continue;
 
         // key가 "constructor" 문자열인지 확인
-        if (!isConstructorKey(ast, key_idx)) continue;
+        if (!matchKeyName(ast, key_idx, "constructor")) continue;
 
         if (first_constructor_span) |_| {
             // 두 번째 constructor → 에러
-            errors.append(.{
-                .span = node.span,
-                .message = std.fmt.allocPrint(allocator, "A class may only have one constructor", .{}) catch @panic("OOM"),
-            }) catch @panic("OOM");
+            addError(errors, node.span, std.fmt.allocPrint(allocator, "A class may only have one constructor", .{}) catch @panic("OOM"));
             return; // 첫 중복만 보고
         } else {
             first_constructor_span = node.span;
@@ -97,23 +93,32 @@ pub fn checkDuplicateConstructors(
     }
 }
 
-/// key 노드가 "constructor" 이름인지 확인한다.
-/// identifier_reference("constructor") 또는 string_literal('"constructor"') 모두 처리.
-fn isConstructorKey(ast: *const Ast, key_idx: NodeIndex) bool {
+// ====================================================================
+// 공통 헬퍼
+// ====================================================================
+
+/// key 노드의 이름이 target과 일치하는지 확인한다.
+/// identifier_reference와 string_literal(따옴표 자동 제거) 모두 처리.
+fn matchKeyName(ast: *const Ast, key_idx: NodeIndex, target: []const u8) bool {
     if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
     const key_node = ast.getNode(key_idx);
 
     if (key_node.tag == .identifier_reference) {
-        return std.mem.eql(u8, ast.source[key_node.span.start..key_node.span.end], "constructor");
+        return std.mem.eql(u8, ast.source[key_node.span.start..key_node.span.end], target);
     }
     if (key_node.tag == .string_literal) {
-        // 따옴표 제거: "constructor" → constructor
+        // 따옴표 제거: "name" → name
         if (key_node.span.end > key_node.span.start + 2) {
             const inner = ast.source[key_node.span.start + 1 .. key_node.span.end - 1];
-            return std.mem.eql(u8, inner, "constructor");
+            return std.mem.eql(u8, inner, target);
         }
     }
     return false;
+}
+
+/// 에러를 errors 목록에 추가한다.
+fn addError(errors: *std.ArrayList(SemanticError), span: Span, msg: []const u8) void {
+    errors.append(.{ .span = span, .message = msg }) catch @panic("OOM: semantic error list");
 }
 
 // ====================================================================
@@ -160,9 +165,7 @@ pub fn checkPrivateNameStaticConflict(
             },
             .property_definition => {
                 // binary: { left = key, right = value, flags }
-                // property_definition의 static 플래그: flags에 인코딩
-                // parser.zig에서 property_definition의 flags에 static 비트를 넣는지 확인 필요
-                // 현재는 node.data.binary.flags를 사용
+                // static 비트는 parser.zig에서 flags 0x01로 인코딩 (확인 완료)
                 const key_idx = node.data.binary.left;
                 const is_static = (node.data.binary.flags & METHOD_FLAG_STATIC) != 0;
 
@@ -196,14 +199,11 @@ fn checkPrivateKeyStaticConflict(
     if (declared.get(name)) |existing| {
         // 같은 이름이 이미 등록됨 → static 상태가 다르면 에러
         if (existing.is_static != is_static) {
-            errors.append(.{
-                .span = key_node.span,
-                .message = std.fmt.allocPrint(
-                    allocator,
-                    "Private field '{s}' has already been declared",
-                    .{name},
-                ) catch @panic("OOM"),
-            }) catch @panic("OOM");
+            addError(errors, key_node.span, std.fmt.allocPrint(
+                allocator,
+                "Private field '{s}' has already been declared",
+                .{name},
+            ) catch @panic("OOM"));
         }
     } else {
         declared.put(name, .{ .is_static = is_static, .span = key_node.span }) catch @panic("OOM");
@@ -246,35 +246,15 @@ pub fn checkObjectDuplicateProto(
 
         // key가 "__proto__" 인지 확인
         const key_idx = node.data.binary.left;
-        if (!isProtoKey(ast, key_idx)) continue;
+        if (!matchKeyName(ast, key_idx, "__proto__")) continue;
 
         if (first_proto_span) |_| {
-            errors.append(.{
-                .span = node.span,
-                .message = std.fmt.allocPrint(allocator, "Property name __proto__ appears more than once in object literal", .{}) catch @panic("OOM"),
-            }) catch @panic("OOM");
+            addError(errors, node.span, std.fmt.allocPrint(allocator, "Property name __proto__ appears more than once in object literal", .{}) catch @panic("OOM"));
             return; // 첫 중복만 보고
         } else {
             first_proto_span = node.span;
         }
     }
-}
-
-/// key가 "__proto__" 식별자 또는 문자열인지 확인한다.
-fn isProtoKey(ast: *const Ast, key_idx: NodeIndex) bool {
-    if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
-    const key_node = ast.getNode(key_idx);
-
-    if (key_node.tag == .identifier_reference) {
-        return std.mem.eql(u8, ast.source[key_node.span.start..key_node.span.end], "__proto__");
-    }
-    if (key_node.tag == .string_literal) {
-        if (key_node.span.end > key_node.span.start + 2) {
-            const inner = ast.source[key_node.span.start + 1 .. key_node.span.end - 1];
-            return std.mem.eql(u8, inner, "__proto__");
-        }
-    }
-    return false;
 }
 
 // ====================================================================
@@ -305,17 +285,11 @@ pub fn checkGetterSetterParams(
     const params_len = ast.extra_data.items[extra_start + 2];
 
     if ((flags & METHOD_FLAG_GETTER) != 0 and params_len != 0) {
-        errors.append(.{
-            .span = node.span,
-            .message = std.fmt.allocPrint(allocator, "Getter must not have any formal parameters", .{}) catch @panic("OOM"),
-        }) catch @panic("OOM");
+        addError(errors, node.span, std.fmt.allocPrint(allocator, "Getter must not have any formal parameters", .{}) catch @panic("OOM"));
     }
 
     if ((flags & METHOD_FLAG_SETTER) != 0 and params_len != 1) {
-        errors.append(.{
-            .span = node.span,
-            .message = std.fmt.allocPrint(allocator, "Setter must have exactly one formal parameter", .{}) catch @panic("OOM"),
-        }) catch @panic("OOM");
+        addError(errors, node.span, std.fmt.allocPrint(allocator, "Setter must have exactly one formal parameter", .{}) catch @panic("OOM"));
     }
 }
 
@@ -342,10 +316,9 @@ test "checker: duplicate constructor is error" {
     // class body를 찾아서 검사
     // AST 마지막 노드는 program, 그 안에 class_declaration이 있음
     const ast = &parser.ast;
-    for (ast.nodes.items, 0..) |node, i| {
+    for (ast.nodes.items) |node| {
         if (node.tag == .class_body) {
             checkDuplicateConstructors(ast, node.data.list, &errs, std.testing.allocator);
-            _ = i;
             break;
         }
     }
