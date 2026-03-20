@@ -335,6 +335,14 @@ pub const Parser = struct {
         self.scratch.shrinkRetainingCapacity(top);
     }
 
+    /// rest parameter가 마지막이 아니면 에러.
+    /// spread_element 뒤에 comma가 오면 rest가 마지막이 아닌 것.
+    pub fn checkRestParameterLast(self: *Parser, param: NodeIndex) void {
+        if (!param.isNone() and self.ast.getNode(param).tag == .spread_element and self.current() == .comma) {
+            self.addError(self.currentSpan(), "Rest parameter must be last formal parameter");
+        }
+    }
+
     /// 현재 토큰의 소스 텍스트.
     pub fn tokenText(self: *const Parser) []const u8 {
         return self.scanner.tokenText();

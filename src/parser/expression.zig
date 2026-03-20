@@ -474,7 +474,7 @@ fn parseUnaryExpression(self: *Parser) ParseError2!NodeIndex {
                 while (!target.isNone()) {
                     const t = self.ast.getNode(target);
                     if (t.tag == .identifier_reference) {
-                        self.addError(t.span, "Delete of an identifier is not allowed in strict mode");
+                        self.addError(t.span, "Deleting an identifier is not allowed in strict mode");
                         break;
                     } else if (t.tag == .parenthesized_expression) {
                         target = t.data.unary.operand;
