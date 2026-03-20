@@ -1415,30 +1415,15 @@ pub const Codegen = struct {
 
     /// <div className="foo">hello</div> →
     /// React.createElement("div",{className:"foo"},"hello")
+    /// jsx_element: extra = [tag, attrs_start, attrs_len, children_start, children_len]
+    /// 항상 5 fields. self-closing은 children_len=0.
     fn emitJSXElement(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
         const tag_name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
         const attrs_start = self.ast.extra_data.items[e + 1];
         const attrs_len = self.ast.extra_data.items[e + 2];
-
-        // self-closing은 extra 3개, with-children은 5개
-        // extra_data 배열에서 이 노드 다음에 다른 노드의 데이터가 올 수 있으므로
-        // children 유무는 파서가 저장한 extra 개수로 판단해야 한다.
-        // self-closing: extra = [tag, attrs_start, attrs_len]
-        // with-children: extra = [tag, attrs_start, attrs_len, children_start, children_len]
-        // 판별: children_len > 0 이면 children 있음. self-closing이면 e+3, e+4가 다른 노드 데이터.
-        // 안전한 방법: 노드의 span으로 self-closing 여부 판별하거나, 파서에서 명시적으로 구분.
-        // 현재: extra_data[e+3]을 읽되, 값이 합리적인 범위인지 검증.
-        var children_start: u32 = 0;
-        var children_len: u32 = 0;
-        if (e + 5 <= self.ast.extra_data.items.len) {
-            const maybe_len = self.ast.extra_data.items[e + 4];
-            // children_len이 0이면 실질적으로 children 없음
-            if (maybe_len > 0 and maybe_len <= self.ast.extra_data.items.len) {
-                children_start = self.ast.extra_data.items[e + 3];
-                children_len = maybe_len;
-            }
-        }
+        const children_start = self.ast.extra_data.items[e + 3];
+        const children_len = self.ast.extra_data.items[e + 4];
 
         try self.write("React.createElement(");
         try self.emitJSXTagName(tag_name_idx);

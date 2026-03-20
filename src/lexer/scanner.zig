@@ -847,16 +847,12 @@ pub const Scanner = struct {
         const comment_text = self.source[comment_start..self.current];
         self.checkPureComment(comment_text);
 
-        // legal comment 감지 (D022): // @license 또는 // @preserve
-        const is_legal = std.mem.indexOf(u8, comment_text, "@license") != null or
-            std.mem.indexOf(u8, comment_text, "@preserve") != null;
-
         // 주석을 기록한다 (start = 첫 번째 '/' 위치, end = 줄바꿈 직전)
         self.comments.append(.{
             .start = self.start,
             .end = self.current,
             .is_multiline = false,
-            .is_legal = is_legal,
+            .is_legal = isLegalComment(comment_text, false),
         }) catch @panic("OOM: comments");
     }
 
@@ -876,17 +872,12 @@ pub const Scanner = struct {
                 self.current += 2; // skip */
                 self.checkPureComment(comment_text);
 
-                // legal comment 감지 (D022): /*! 또는 @license 또는 @preserve
-                const is_legal = (comment_text.len > 0 and comment_text[0] == '!') or
-                    std.mem.indexOf(u8, comment_text, "@license") != null or
-                    std.mem.indexOf(u8, comment_text, "@preserve") != null;
-
                 // 주석을 기록한다 (start = 첫 번째 '/' 위치, end = '*/' 직후)
                 self.comments.append(.{
                     .start = self.start,
                     .end = self.current,
                     .is_multiline = true,
-                    .is_legal = is_legal,
+                    .is_legal = isLegalComment(comment_text, true),
                 }) catch @panic("OOM: comments");
 
                 return false; // 정상 종료
@@ -904,6 +895,13 @@ pub const Scanner = struct {
         }
         // EOF까지 닫히지 않은 주석
         return true;
+    }
+
+    /// legal comment 감지 (D022): @license, @preserve, /*! (multi-line only)
+    fn isLegalComment(comment_text: []const u8, is_multiline: bool) bool {
+        if (is_multiline and comment_text.len > 0 and comment_text[0] == '!') return true;
+        return std.mem.indexOf(u8, comment_text, "@license") != null or
+            std.mem.indexOf(u8, comment_text, "@preserve") != null;
     }
 
     /// 주석 내용에서 @__PURE__ / #__PURE__ / @__NO_SIDE_EFFECTS__ 어노테이션을 확인한다.

@@ -544,47 +544,37 @@ pub const Transformer = struct {
     // JSX 노드 변환
     // ================================================================
 
-    /// jsx_element: extra = [tag_name, attrs_start, attrs_len] (self-closing)
-    ///          or extra = [tag_name, attrs_start, attrs_len, children_start, children_len] (with children)
+    /// jsx_element: extra = [tag_name, attrs_start, attrs_len, children_start, children_len]
+    /// 항상 5 fields. self-closing은 children_len=0.
     fn visitJSXElement(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
         const new_tag = try self.visitNode(self.readNodeIdx(e, 0));
         const new_attrs = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
-
-        // self-closing (3 fields) vs with-children (5 fields)
-        // children 유무는 extra_data 크기로 판별: children_len > 0이면 children 있음
-        var has_children = false;
-        if (e + 5 <= self.old_ast.extra_data.items.len) {
-            const maybe_len = self.readU32(e, 4);
-            if (maybe_len > 0 and maybe_len <= self.old_ast.extra_data.items.len) {
-                has_children = true;
-            }
-        }
-
-        if (has_children) {
-            const new_children = try self.visitExtraList(self.readU32(e, 3), self.readU32(e, 4));
-            return self.addExtraNode(.jsx_element, node.span, &.{
-                @intFromEnum(new_tag),
-                new_attrs.start,
-                new_attrs.len,
-                new_children.start,
-                new_children.len,
-            });
-        } else {
-            return self.addExtraNode(.jsx_element, node.span, &.{
-                @intFromEnum(new_tag),
-                new_attrs.start,
-                new_attrs.len,
-            });
-        }
+        const children_len = self.readU32(e, 4);
+        const new_children = if (children_len > 0)
+            try self.visitExtraList(self.readU32(e, 3), children_len)
+        else
+            NodeList{ .start = 0, .len = 0 };
+        return self.addExtraNode(.jsx_element, node.span, &.{
+            @intFromEnum(new_tag),
+            new_attrs.start,
+            new_attrs.len,
+            new_children.start,
+            new_children.len,
+        });
     }
 
     /// jsx_opening_element: extra = [tag_name, attrs_start, attrs_len]
     fn visitJSXOpeningElement(self: *Transformer, node: Node) Error!NodeIndex {
+        return self.visitJSXExtraNode(.jsx_opening_element, node);
+    }
+
+    /// JSX extra 노드 공통: tag + attrs만 복사 (opening element 등)
+    fn visitJSXExtraNode(self: *Transformer, tag: Tag, node: Node) Error!NodeIndex {
         const e = node.data.extra;
         const new_tag = try self.visitNode(self.readNodeIdx(e, 0));
         const new_attrs = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
-        return self.addExtraNode(.jsx_opening_element, node.span, &.{
+        return self.addExtraNode(tag, node.span, &.{
             @intFromEnum(new_tag),
             new_attrs.start,
             new_attrs.len,

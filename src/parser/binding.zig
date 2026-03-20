@@ -112,7 +112,7 @@ pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
             if (self.is_strict_mode) {
                 self.addError(self.currentSpan(), "Escaped reserved word cannot be used as identifier in strict mode");
             }
-            self.checkYieldAwaitUse(self.currentSpan(), "identifier");
+            _ = self.checkYieldAwaitUse(self.currentSpan(), "identifier");
             const span = self.currentSpan();
             self.advance();
             const node = try self.ast.addNode(.{
@@ -202,7 +202,7 @@ pub fn parseBindingName(self: *Parser) ParseError2!NodeIndex {
             if (self.is_strict_mode) {
                 self.addError(self.currentSpan(), "Escaped reserved word cannot be used as identifier in strict mode");
             }
-            self.checkYieldAwaitUse(self.currentSpan(), "identifier");
+            _ = self.checkYieldAwaitUse(self.currentSpan(), "identifier");
             const span = self.currentSpan();
             self.advance();
             return try self.ast.addNode(.{
