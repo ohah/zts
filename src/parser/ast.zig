@@ -403,10 +403,20 @@ pub const Ast = struct {
     /// 소스 코드 참조 (zero-copy)
     source: []const u8,
 
+    /// 합성 문자열 저장소.
+    /// 트랜스포머가 소스에 없는 텍스트를 생성할 때 사용 (예: enum IIFE의 숫자 리터럴).
+    /// Span의 bit 31이 1이면 source 대신 string_table에서 읽는다.
+    /// getText(span)으로 투명하게 접근.
+    string_table: std.ArrayList(u8),
+
+    /// string_table 마커. Span.start의 bit 31이 1이면 string_table 참조.
+    pub const STRING_TABLE_BIT: u32 = 0x80000000;
+
     pub fn init(allocator: std.mem.Allocator, source: []const u8) Ast {
         return .{
             .nodes = std.ArrayList(Node).init(allocator),
             .extra_data = std.ArrayList(u32).init(allocator),
+            .string_table = std.ArrayList(u8).init(allocator),
             .source = source,
         };
     }
@@ -414,6 +424,7 @@ pub const Ast = struct {
     pub fn deinit(self: *Ast) void {
         self.nodes.deinit();
         self.extra_data.deinit();
+        self.string_table.deinit();
     }
 
     /// 노드를 추가하고 인덱스를 반환한다.
@@ -466,6 +477,35 @@ pub const Ast = struct {
 
     /// span이 가리키는 소스 텍스트를 반환한다.
     pub fn getSourceText(self: *const Ast, span: Span) []const u8 {
+        return self.source[span.start..span.end];
+    }
+
+    /// 합성 문자열을 string_table에 추가하고, 이를 가리키는 Span을 반환한다.
+    /// 반환된 Span의 start에는 bit 31이 설정되어 getText()가 string_table에서 읽도록 한다.
+    ///
+    /// 사용 예:
+    ///   const span = try ast.addString("React");
+    ///   // 나중에 ast.getText(span)으로 "React" 반환
+    pub fn addString(self: *Ast, text: []const u8) !Span {
+        const start: u32 = @intCast(self.string_table.items.len);
+        try self.string_table.appendSlice(text);
+        const end: u32 = @intCast(self.string_table.items.len);
+        return .{
+            .start = start | STRING_TABLE_BIT,
+            .end = end | STRING_TABLE_BIT,
+        };
+    }
+
+    /// Span이 가리키는 텍스트를 반환한다.
+    /// bit 31이 설정되어 있으면 string_table에서, 아니면 source에서 읽는다.
+    /// 기존 getSourceText와 달리, 합성 문자열도 투명하게 처리한다.
+    pub fn getText(self: *const Ast, span: Span) []const u8 {
+        if (span.start & STRING_TABLE_BIT != 0) {
+            // string_table 참조
+            const start = span.start & ~STRING_TABLE_BIT;
+            const end = span.end & ~STRING_TABLE_BIT;
+            return self.string_table.items[start..end];
+        }
         return self.source[span.start..span.end];
     }
 };
@@ -528,4 +568,27 @@ test "Ast node list" {
 
     const list = try ast.addNodeList(&.{ a, b });
     try std.testing.expectEqual(@as(u32, 2), list.len);
+}
+
+test "Ast string_table: addString + getText" {
+    var ast = Ast.init(std.testing.allocator, "hello world");
+    defer ast.deinit();
+
+    // source에서 읽기 (기존 동작)
+    const src_span = Span{ .start = 0, .end = 5 };
+    try std.testing.expectEqualStrings("hello", ast.getText(src_span));
+
+    // string_table에서 읽기 (합성 문자열)
+    const synth_span = try ast.addString("React");
+    try std.testing.expectEqualStrings("React", ast.getText(synth_span));
+
+    // bit 31 마커 확인
+    try std.testing.expect(synth_span.start & Ast.STRING_TABLE_BIT != 0);
+
+    // 여러 합성 문자열 추가
+    const span2 = try ast.addString("createElement");
+    try std.testing.expectEqualStrings("createElement", ast.getText(span2));
+
+    // 이전 span은 여전히 유효
+    try std.testing.expectEqualStrings("React", ast.getText(synth_span));
 }
