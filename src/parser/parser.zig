@@ -3550,6 +3550,9 @@ pub const Parser = struct {
                 }
                 const decorators = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
                 self.restoreScratch(scratch_top);
+                if (self.current() != .kw_class) {
+                    self.addError(self.currentSpan(), "class expected after decorator");
+                }
                 return self.parseClassWithDecorators(.class_expression, decorators);
             },
             .kw_function => return self.parseFunctionExpression(),
