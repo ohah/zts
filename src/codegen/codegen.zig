@@ -2227,13 +2227,24 @@ test "Codegen: export all re-export" {
 // ============================================================
 // E2E Tests: JSX → React.createElement
 // ============================================================
-// 주의: jsx_element는 transformer에서 visitListNode로 처리되지만
-// 파서가 .extra 형식으로 저장하므로 transformer를 거치면 panic이 발생함.
-// JSX 테스트는 transformer가 jsx_element를 올바르게 처리할 때까지 보류.
-//
-// test "Codegen: JSX element" { ... }      -- transformer bug: jsx_element uses extra, not list
-// test "Codegen: JSX fragment" { ... }     -- transformer bug
-// test "Codegen: JSX self-closing" { ... } -- transformer bug
+
+test "Codegen: JSX self-closing" {
+    var r = try e2e(std.testing.allocator, "const x = <div />;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const x=React.createElement(\"div\",null);", r.output);
+}
+
+test "Codegen: JSX element with children" {
+    var r = try e2e(std.testing.allocator, "const x = <div>hello</div>;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const x=React.createElement(\"div\",null,\"hello\");", r.output);
+}
+
+test "Codegen: JSX fragment" {
+    var r = try e2e(std.testing.allocator, "const x = <>hello</>;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const x=React.createElement(React.Fragment,null,\"hello\");", r.output);
+}
 
 // ============================================================
 // E2E Tests: Namespace with export

@@ -159,58 +159,17 @@ pub const TsConfig = struct {
             if (co_val == .object) {
                 const co = co_val.object;
 
-                // 문자열 옵션 추출 헬퍼
+                // 문자열 옵션 추출
                 // JSON에서 가져온 문자열은 parsed가 소유하므로,
                 // config가 오래 살기 위해 allocator로 복사(dupe)한다.
-                if (co.get("target")) |v| {
-                    if (v == .string) {
-                        const duped = try allocator.dupe(u8, v.string);
-                        try config._allocated_strings.?.append(duped);
-                        config.target = duped;
-                    }
-                }
-                if (co.get("module")) |v| {
-                    if (v == .string) {
-                        const duped = try allocator.dupe(u8, v.string);
-                        try config._allocated_strings.?.append(duped);
-                        config.module = duped;
-                    }
-                }
-                if (co.get("jsx")) |v| {
-                    if (v == .string) {
-                        const duped = try allocator.dupe(u8, v.string);
-                        try config._allocated_strings.?.append(duped);
-                        config.jsx = duped;
-                    }
-                }
-                if (co.get("jsxFactory")) |v| {
-                    if (v == .string) {
-                        const duped = try allocator.dupe(u8, v.string);
-                        try config._allocated_strings.?.append(duped);
-                        config.jsx_factory = duped;
-                    }
-                }
-                if (co.get("jsxFragmentFactory")) |v| {
-                    if (v == .string) {
-                        const duped = try allocator.dupe(u8, v.string);
-                        try config._allocated_strings.?.append(duped);
-                        config.jsx_fragment_factory = duped;
-                    }
-                }
-                if (co.get("outDir")) |v| {
-                    if (v == .string) {
-                        const duped = try allocator.dupe(u8, v.string);
-                        try config._allocated_strings.?.append(duped);
-                        config.out_dir = duped;
-                    }
-                }
-                if (co.get("rootDir")) |v| {
-                    if (v == .string) {
-                        const duped = try allocator.dupe(u8, v.string);
-                        try config._allocated_strings.?.append(duped);
-                        config.root_dir = duped;
-                    }
-                }
+                // 키가 JSON에 있을 때만 덮어씀 — extends로 merge된 값을 보존.
+                if (try dupeJsonString(co, "target", allocator, &config._allocated_strings.?)) |v| config.target = v;
+                if (try dupeJsonString(co, "module", allocator, &config._allocated_strings.?)) |v| config.module = v;
+                if (try dupeJsonString(co, "jsx", allocator, &config._allocated_strings.?)) |v| config.jsx = v;
+                if (try dupeJsonString(co, "jsxFactory", allocator, &config._allocated_strings.?)) |v| config.jsx_factory = v;
+                if (try dupeJsonString(co, "jsxFragmentFactory", allocator, &config._allocated_strings.?)) |v| config.jsx_fragment_factory = v;
+                if (try dupeJsonString(co, "outDir", allocator, &config._allocated_strings.?)) |v| config.out_dir = v;
+                if (try dupeJsonString(co, "rootDir", allocator, &config._allocated_strings.?)) |v| config.root_dir = v;
 
                 // bool 옵션 추출
                 if (co.get("sourceMap")) |v| {
@@ -243,42 +202,12 @@ pub const TsConfig = struct {
         base: *const TsConfig,
         allocator: std.mem.Allocator,
     ) !void {
-        // 문자열 옵션: base에 값이 있으면 복사
-        if (base.target) |v| {
-            if (target.target == null) {
-                const duped = try allocator.dupe(u8, v);
-                try target._allocated_strings.?.append(duped);
-                target.target = duped;
-            }
-        }
-        if (base.module) |v| {
-            if (target.module == null) {
-                const duped = try allocator.dupe(u8, v);
-                try target._allocated_strings.?.append(duped);
-                target.module = duped;
-            }
-        }
-        if (base.jsx) |v| {
-            if (target.jsx == null) {
-                const duped = try allocator.dupe(u8, v);
-                try target._allocated_strings.?.append(duped);
-                target.jsx = duped;
-            }
-        }
-        if (base.out_dir) |v| {
-            if (target.out_dir == null) {
-                const duped = try allocator.dupe(u8, v);
-                try target._allocated_strings.?.append(duped);
-                target.out_dir = duped;
-            }
-        }
-        if (base.root_dir) |v| {
-            if (target.root_dir == null) {
-                const duped = try allocator.dupe(u8, v);
-                try target._allocated_strings.?.append(duped);
-                target.root_dir = duped;
-            }
-        }
+        // 문자열 옵션: base에 값이 있고 target이 null이면 복사
+        target.target = try mergeOptionalString(target.target, base.target, allocator, &target._allocated_strings.?);
+        target.module = try mergeOptionalString(target.module, base.module, allocator, &target._allocated_strings.?);
+        target.jsx = try mergeOptionalString(target.jsx, base.jsx, allocator, &target._allocated_strings.?);
+        target.out_dir = try mergeOptionalString(target.out_dir, base.out_dir, allocator, &target._allocated_strings.?);
+        target.root_dir = try mergeOptionalString(target.root_dir, base.root_dir, allocator, &target._allocated_strings.?);
 
         // 문자열 (non-optional) 필드: base가 기본값이 아니면 복사
         if (!std.mem.eql(u8, base.jsx_factory, "React.createElement")) {
@@ -305,6 +234,37 @@ pub const TsConfig = struct {
         if (base.emit_decorator_metadata) target.emit_decorator_metadata = true;
     }
 };
+
+/// JSON 객체에서 문자열 값을 복사(dupe)하여 반환한다.
+/// 키가 없거나 값이 문자열이 아니면 null을 반환한다.
+/// 복사된 문자열은 allocated_strings에 등록되어 deinit() 시 해제된다.
+fn dupeJsonString(
+    co: std.json.ObjectMap,
+    key: []const u8,
+    allocator: std.mem.Allocator,
+    allocated_strings: *std.ArrayList([]const u8),
+) !?[]const u8 {
+    const v = co.get(key) orelse return null;
+    if (v != .string) return null;
+    const duped = try allocator.dupe(u8, v.string);
+    try allocated_strings.append(duped);
+    return duped;
+}
+
+/// optional 문자열 merge: target이 null이고 base에 값이 있으면 복사.
+/// extends 상속에서 사용.
+fn mergeOptionalString(
+    target_val: ?[]const u8,
+    base_val: ?[]const u8,
+    allocator: std.mem.Allocator,
+    allocated_strings: *std.ArrayList([]const u8),
+) !?[]const u8 {
+    if (target_val != null) return target_val;
+    const v = base_val orelse return null;
+    const duped = try allocator.dupe(u8, v);
+    try allocated_strings.append(duped);
+    return duped;
+}
 
 /// JSONC (JSON with Comments)에서 주석을 제거한다.
 ///

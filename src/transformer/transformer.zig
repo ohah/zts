@@ -155,12 +155,14 @@ pub const Transformer = struct {
             .class_body,
             .formal_parameters,
             .template_literal,
-            // JSX
-            .jsx_element,
-            .jsx_opening_element,
+            // JSX — fragment는 .list, element/opening_element는 .extra
             .jsx_fragment,
             .function_body,
             => self.visitListNode(node),
+
+            // JSX element/opening_element: .extra 형식 (tag, attrs, children)
+            .jsx_element => self.visitJSXElement(node),
+            .jsx_opening_element => self.visitJSXOpeningElement(node),
 
             // === 단항 노드: 자식 1개 재귀 방문 ===
             .expression_statement,
@@ -536,6 +538,57 @@ pub const Transformer = struct {
     fn addExtraNode(self: *Transformer, tag: Tag, span: Span, extras: []const u32) Error!NodeIndex {
         const new_extra = try self.new_ast.addExtras(extras);
         return self.new_ast.addNode(.{ .tag = tag, .span = span, .data = .{ .extra = new_extra } });
+    }
+
+    // ================================================================
+    // JSX 노드 변환
+    // ================================================================
+
+    /// jsx_element: extra = [tag_name, attrs_start, attrs_len] (self-closing)
+    ///          or extra = [tag_name, attrs_start, attrs_len, children_start, children_len] (with children)
+    fn visitJSXElement(self: *Transformer, node: Node) Error!NodeIndex {
+        const e = node.data.extra;
+        const new_tag = try self.visitNode(self.readNodeIdx(e, 0));
+        const new_attrs = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
+
+        // self-closing (3 fields) vs with-children (5 fields)
+        // children 유무는 extra_data 크기로 판별: children_len > 0이면 children 있음
+        var has_children = false;
+        if (e + 5 <= self.old_ast.extra_data.items.len) {
+            const maybe_len = self.readU32(e, 4);
+            if (maybe_len > 0 and maybe_len <= self.old_ast.extra_data.items.len) {
+                has_children = true;
+            }
+        }
+
+        if (has_children) {
+            const new_children = try self.visitExtraList(self.readU32(e, 3), self.readU32(e, 4));
+            return self.addExtraNode(.jsx_element, node.span, &.{
+                @intFromEnum(new_tag),
+                new_attrs.start,
+                new_attrs.len,
+                new_children.start,
+                new_children.len,
+            });
+        } else {
+            return self.addExtraNode(.jsx_element, node.span, &.{
+                @intFromEnum(new_tag),
+                new_attrs.start,
+                new_attrs.len,
+            });
+        }
+    }
+
+    /// jsx_opening_element: extra = [tag_name, attrs_start, attrs_len]
+    fn visitJSXOpeningElement(self: *Transformer, node: Node) Error!NodeIndex {
+        const e = node.data.extra;
+        const new_tag = try self.visitNode(self.readNodeIdx(e, 0));
+        const new_attrs = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
+        return self.addExtraNode(.jsx_opening_element, node.span, &.{
+            @intFromEnum(new_tag),
+            new_attrs.start,
+            new_attrs.len,
+        });
     }
 
     // ================================================================

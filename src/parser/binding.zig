@@ -98,7 +98,7 @@ pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
             // 다른 reserved keyword의 escaped 형태는 항상 사용 불가.
             const is_escaped_await = self.isEscapedKeyword("await");
             if (!is_escaped_await or self.is_module or self.ctx.in_async) {
-                self.addError(self.currentSpan(), "escaped reserved word cannot be used as identifier");
+                self.addError(self.currentSpan(), "Escaped reserved word cannot be used as identifier");
             }
             const span = self.currentSpan();
             self.advance();
@@ -110,7 +110,7 @@ pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
         },
         .escaped_strict_reserved => {
             if (self.is_strict_mode) {
-                self.addError(self.currentSpan(), "escaped reserved word cannot be used as identifier in strict mode");
+                self.addError(self.currentSpan(), "Escaped reserved word cannot be used as identifier in strict mode");
             }
             self.checkYieldAwaitUse(self.currentSpan(), "identifier");
             const span = self.currentSpan();
@@ -138,7 +138,7 @@ pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
                 });
                 return tryWrapDefaultValue(self, node2);
             }
-            self.addError(self.currentSpan(), "binding pattern expected");
+            self.addError(self.currentSpan(), "Binding pattern expected");
             return NodeIndex.none;
         },
     }
@@ -188,7 +188,7 @@ pub fn parseBindingName(self: *Parser) ParseError2!NodeIndex {
             // 다른 reserved keyword의 escaped 형태는 항상 사용 불가.
             const is_escaped_await = self.isEscapedKeyword("await");
             if (!is_escaped_await or self.is_module or self.ctx.in_async) {
-                self.addError(self.currentSpan(), "escaped reserved word cannot be used as identifier");
+                self.addError(self.currentSpan(), "Escaped reserved word cannot be used as identifier");
             }
             const span = self.currentSpan();
             self.advance();
@@ -200,7 +200,7 @@ pub fn parseBindingName(self: *Parser) ParseError2!NodeIndex {
         },
         .escaped_strict_reserved => {
             if (self.is_strict_mode) {
-                self.addError(self.currentSpan(), "escaped reserved word cannot be used as identifier in strict mode");
+                self.addError(self.currentSpan(), "Escaped reserved word cannot be used as identifier in strict mode");
             }
             self.checkYieldAwaitUse(self.currentSpan(), "identifier");
             const span = self.currentSpan();
@@ -222,7 +222,7 @@ pub fn parseBindingName(self: *Parser) ParseError2!NodeIndex {
                     .data = .{ .string_ref = span },
                 });
             }
-            self.addError(self.currentSpan(), "binding pattern expected");
+            self.addError(self.currentSpan(), "Binding pattern expected");
             return NodeIndex.none;
         },
     }
@@ -236,9 +236,9 @@ pub fn parseSimpleIdentifier(self: *Parser) ParseError2!NodeIndex {
         self.current() == .escaped_strict_reserved or self.current().isKeyword())
     {
         if (self.current() == .escaped_keyword) {
-            self.addError(span, "escaped reserved word cannot be used as identifier");
+            self.addError(span, "Escaped reserved word cannot be used as identifier");
         } else if (self.current() == .escaped_strict_reserved and self.is_strict_mode) {
-            self.addError(span, "escaped reserved word cannot be used as identifier in strict mode");
+            self.addError(span, "Escaped reserved word cannot be used as identifier in strict mode");
         } else {
             self.checkKeywordBinding();
         }
@@ -249,7 +249,7 @@ pub fn parseSimpleIdentifier(self: *Parser) ParseError2!NodeIndex {
             .data = .{ .string_ref = span },
         });
     }
-    self.addError(span, "identifier expected");
+    self.addError(span, "Identifier expected");
     return NodeIndex.none;
 }
 
@@ -381,7 +381,7 @@ pub fn parseBindingProperty(self: *Parser) ParseError2!NodeIndex {
     // private name (#x) 은 object destructuring pattern에서 사용 불가
     // ECMAScript: ObjectAssignmentPattern의 PropertyName은 PrivateName을 포함하지 않음
     if (!key.isNone() and self.ast.getNode(key).tag == .private_identifier) {
-        self.addError(self.ast.getNode(key).span, "private name is not allowed in destructuring pattern");
+        self.addError(self.ast.getNode(key).span, "Private name is not allowed in destructuring pattern");
     }
     self.expect(.colon);
     const value_raw = try parseBindingPattern(self);

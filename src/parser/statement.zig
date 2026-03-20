@@ -68,38 +68,38 @@ pub fn parse(self: *Parser) !NodeIndex {
 pub fn parseStatementChecked(self: *Parser, comptime is_loop_body: bool) ParseError2!NodeIndex {
     switch (self.current()) {
         .kw_const => {
-            self.addError(self.currentSpan(), "lexical declaration is not allowed in statement position");
+            self.addError(self.currentSpan(), "Lexical declaration is not allowed in statement position");
         },
         .kw_let => {
             if (self.is_strict_mode) {
-                self.addError(self.currentSpan(), "lexical declaration is not allowed in statement position");
+                self.addError(self.currentSpan(), "Lexical declaration is not allowed in statement position");
             } else if (isLetDeclarationStart(self)) {
                 // sloppy mode에서도 `let`이 LexicalDeclaration으로 해석되면 에러
                 // isLetDeclarationStart: 줄바꿈 없이 identifier/[/{, 또는 줄바꿈 있어도 [
-                self.addError(self.currentSpan(), "lexical declaration is not allowed in statement position");
+                self.addError(self.currentSpan(), "Lexical declaration is not allowed in statement position");
             }
         },
         .kw_class => {
             // class declaration은 statement position에서 항상 금지 (Annex B에 class 예외 없음)
-            self.addError(self.currentSpan(), "class declaration is not allowed in statement position");
+            self.addError(self.currentSpan(), "Class declaration is not allowed in statement position");
         },
         .kw_function => {
             if (self.peekNextKind() == .star) {
                 // generator는 항상 금지
-                self.addError(self.currentSpan(), "generator declaration is not allowed in statement position");
+                self.addError(self.currentSpan(), "Generator declaration is not allowed in statement position");
             } else if (is_loop_body or self.in_labelled_fn_check) {
                 // loop/with body에서 function은 항상 금지 (ECMAScript 13.7.4, Annex B 미적용)
                 // labelled function이 if/with body를 통해 전파된 경우도 금지
-                self.addError(self.currentSpan(), "function declaration is not allowed in statement position");
+                self.addError(self.currentSpan(), "Function declaration is not allowed in statement position");
             } else if (self.is_strict_mode) {
                 // if/else/labeled body에서는 strict mode에서만 금지
-                self.addError(self.currentSpan(), "function declaration is not allowed in statement position in strict mode");
+                self.addError(self.currentSpan(), "Function declaration is not allowed in statement position in strict mode");
             }
         },
         .kw_async => {
             const peek = self.peekNext();
             if (peek.kind == .kw_function and !peek.has_newline_before) {
-                self.addError(self.currentSpan(), "async function declaration is not allowed in statement position");
+                self.addError(self.currentSpan(), "Async function declaration is not allowed in statement position");
             }
         },
         .kw_export => {
@@ -225,7 +225,7 @@ pub fn parseExpressionStatement(self: *Parser) ParseError2!NodeIndex {
     const expr = try self.parseExpression();
     // CoverInitializedName ({ x = 1 }) 이 destructuring으로 소비되지 않았으면 에러
     if (self.has_cover_init_name) {
-        self.addError(.{ .start = start, .end = self.currentSpan().start }, "invalid shorthand property initializer");
+        self.addError(.{ .start = start, .end = self.currentSpan().start }, "Invalid shorthand property initializer");
         self.has_cover_init_name = false;
     }
     const end = self.currentSpan().end;
@@ -303,15 +303,15 @@ fn parseExpressionOrLabeledStatement(self: *Parser) ParseError2!NodeIndex {
                 const is_escaped_await = std.mem.eql(u8, esc_text, "await");
                 if (is_escaped_await) {
                     if (self.is_module or self.ctx.in_async) {
-                        self.addError(self.currentSpan(), "escaped reserved word cannot be used as label");
+                        self.addError(self.currentSpan(), "Escaped reserved word cannot be used as label");
                     }
                 } else {
-                    self.addError(self.currentSpan(), "escaped reserved word cannot be used as label");
+                    self.addError(self.currentSpan(), "Escaped reserved word cannot be used as label");
                 }
             } else if (self.current() == .escaped_strict_reserved and self.is_strict_mode) {
-                self.addError(self.currentSpan(), "escaped reserved word cannot be used as label in strict mode");
+                self.addError(self.currentSpan(), "Escaped reserved word cannot be used as label in strict mode");
             } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
-                self.addError(self.currentSpan(), "reserved word in strict mode cannot be used as label");
+                self.addError(self.currentSpan(), "Reserved word in strict mode cannot be used as label");
             }
             return parseLabeledStatement(self);
         }
@@ -390,7 +390,7 @@ fn parseVariableDeclaration(self: *Parser) ParseError2!NodeIndex {
             if (decl_node.tag == .variable_declarator) {
                 const init_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[decl_node.data.extra + 2]);
                 if (init_idx.isNone()) {
-                    self.addError(decl_node.span, "const declarations must be initialized");
+                    self.addError(decl_node.span, "Const declarations must be initialized");
                 }
             }
         }
@@ -640,7 +640,7 @@ fn validateForInOfDeclaration(self: *Parser, init_expr: NodeIndex) void {
     const decl_len = extras[init_node.data.extra + 2];
 
     if (decl_len > 1) {
-        self.addError(init_node.span, "only a single variable declaration is allowed in a for-in/for-of statement");
+        self.addError(init_node.span, "Only a single variable declaration is allowed in a for-in/for-of statement");
     }
     if (decl_len == 0) return;
 
@@ -657,7 +657,7 @@ fn validateForInOfDeclaration(self: *Parser, init_expr: NodeIndex) void {
     const is_var = kind_flags == 0;
     const is_for_in = self.current() == .kw_in;
     if (is_for_in and is_var and !self.is_strict_mode) return; // Annex B.3.5
-    self.addError(decl_node.span, "for-in/for-of loop variable declaration may not have an initializer");
+    self.addError(decl_node.span, "For-in/for-of loop variable declaration may not have an initializer");
 }
 
 /// for(init; test; update) body — 나머지 파싱
@@ -776,7 +776,7 @@ fn parseSwitchStatement(self: *Parser) ParseError2!NodeIndex {
         const case_node = try parseSwitchCase(self);
         if (is_default) {
             if (has_default) {
-                self.addError(default_span, "only one default clause is allowed in a switch statement");
+                self.addError(default_span, "Only one default clause is allowed in a switch statement");
             }
             has_default = true;
         }
@@ -813,7 +813,7 @@ fn parseSwitchCase(self: *Parser) ParseError2!NodeIndex {
         self.expect(.colon);
     } else {
         const err_span = self.currentSpan();
-        self.addError(err_span, "case or default expected");
+        self.addError(err_span, "Case or default expected");
         self.advance();
         return try self.ast.addNode(.{ .tag = .invalid, .span = err_span, .data = .{ .none = 0 } });
     }
@@ -845,7 +845,7 @@ fn parseThrowStatement(self: *Parser) ParseError2!NodeIndex {
     self.advance(); // skip 'throw'
     // ECMAScript 14.14: throw [no LineTerminator here] Expression
     if (self.scanner.token.has_newline_before) {
-        self.addError(.{ .start = start, .end = self.currentSpan().start }, "no line break is allowed after 'throw'");
+        self.addError(.{ .start = start, .end = self.currentSpan().start }, "No line break is allowed after 'throw'");
     }
     const arg = try self.parseExpression();
     const end = self.currentSpan().end;
@@ -877,7 +877,7 @@ fn parseTryStatement(self: *Parser) ParseError2!NodeIndex {
 
     // catch도 finally도 없으면 에러
     if (handler.isNone() and finalizer.isNone()) {
-        self.addError(.{ .start = start, .end = self.currentSpan().start }, "catch or finally expected");
+        self.addError(.{ .start = start, .end = self.currentSpan().start }, "Catch or finally expected");
     }
 
     return try self.ast.addNode(.{

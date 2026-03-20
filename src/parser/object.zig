@@ -96,7 +96,7 @@ pub fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
 
     // object literal에서 private identifier는 키로 사용 불가
     if (!key.isNone() and self.ast.getNode(key).tag == .private_identifier) {
-        self.addError(self.ast.getNode(key).span, "private identifier is not allowed as object property key");
+        self.addError(self.ast.getNode(key).span, "Private identifier is not allowed as object property key");
     }
 
     // 메서드 shorthand: { foo() {} }
@@ -130,9 +130,9 @@ pub fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
                         else
                             kw.isReservedKeyword() or kw.isLiteralKeyword();
                         if (is_context_reserved) {
-                            self.addError(key_node.span, "reserved word cannot be used as shorthand property");
+                            self.addError(key_node.span, "Reserved word cannot be used as shorthand property");
                         } else if (self.is_strict_mode and kw.isStrictModeReserved()) {
-                            self.addError(key_node.span, "reserved word in strict mode cannot be used as shorthand property");
+                            self.addError(key_node.span, "Reserved word in strict mode cannot be used as shorthand property");
                         } else if (kw == .kw_yield and self.ctx.in_generator) {
                             self.addError(key_node.span, "'yield' cannot be used as shorthand property in generator");
                         } else if (kw == .kw_await and (self.ctx.in_async or self.is_module)) {
@@ -142,7 +142,7 @@ pub fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
                 },
                 // non-identifier keys (numeric, bigint, string, computed) 는 shorthand 불가
                 .numeric_literal, .bigint_literal, .string_literal, .computed_property_key => {
-                    self.addError(key_node.span, "expected ':' after property key");
+                    self.addError(key_node.span, "Expected ':' after property key");
                 },
                 else => {},
             }
@@ -172,7 +172,7 @@ pub fn parseObjectMethodBody(self: *Parser, start: u32, key: NodeIndex, flags: u
         const param = try self.parseBindingIdentifier();
         try self.scratch.append(param);
         if (!param.isNone() and self.ast.getNode(param).tag == .spread_element and self.current() == .comma) {
-            self.addError(self.currentSpan(), "rest parameter must be last formal parameter");
+            self.addError(self.currentSpan(), "Rest parameter must be last formal parameter");
         }
         if (!self.eat(.comma)) break;
     }

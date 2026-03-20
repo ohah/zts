@@ -192,7 +192,7 @@ fn parseJSXAttribute(self: *Parser) ParseError2!NodeIndex {
                 .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
             });
         }
-        self.addError(self.currentSpan(), "spread expected");
+        self.addError(self.currentSpan(), "Spread expected");
         return NodeIndex.none;
     }
 

@@ -220,7 +220,7 @@ pub fn parseDecoratedStatement(self: *Parser) ParseError2!NodeIndex {
         .kw_export => self.parseExportDeclaration(),
         .kw_abstract => parseTsAbstractClass(self),
         else => {
-            self.addError(self.currentSpan(), "class or export expected after decorator");
+            self.addError(self.currentSpan(), "Class or export expected after decorator");
             return self.parseExpressionStatement();
         },
     };
@@ -487,7 +487,7 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
             if (self.current().isKeyword()) {
                 return parseTypeReference(self);
             }
-            self.addError(span, "type expected");
+            self.addError(span, "Type expected");
             self.advance();
             return try self.ast.addNode(.{ .tag = .invalid, .span = span, .data = .{ .none = 0 } });
         },
