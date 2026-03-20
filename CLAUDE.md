@@ -126,7 +126,7 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
 ```
 
 #### 추천 구현 순서
-1. **Test262 마무리 + regexp validator** — 파서 안정화, AST 변경 완료
+1. ✅ **Test262 마무리** — 파서 안정화 완료 (regexp validator는 독립 기능으로 분리)
 2. **Arena allocator 설계 + 도입** — 번들러 전 필수 (1~3단계). 나중에 넣을수록 변경 범위 커짐
    - 1단계: Parser에 Arena 적용 (allocator 교체, 하루 소요)
    - 2단계: Semantic Analyzer에 적용 (스코프/심볼)
@@ -472,7 +472,7 @@ main ← feature/lexer-token-enum
 14. ✅ /simplify 리뷰 수정 + Test262 개선 — PR #14
 15. ⬜ SIMD 최적화 — 프로파일링 후 (BACKLOG)
 
-### 파서 구현 순서 (PR 단위) — Phase 2 핵심 완료, 후반 작업 남음
+### 파서 구현 순서 (PR 단위) — Phase 2 ✅ 완료
 1. ✅ Phase 2 의사결정 (D037-D040) — PR #16
 2. ✅ AST 노드 정의 (~200개 Tag, 24B 고정) — PR #17
 3. ✅ 파서 기본 (statement + expression + precedence climbing) — PR #18
