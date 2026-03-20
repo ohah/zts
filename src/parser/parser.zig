@@ -1642,9 +1642,9 @@ pub const Parser = struct {
         self.advance(); // skip 'for'
 
         // for await (...) — async iteration
-        // TODO: for-of 노드에 await 플래그 전달 (현재 파서 통과만 보장)
-        const _is_await = self.eat(.kw_await);
-        _ = _is_await;
+        // for-await-of: `for await (x of iterable)` — async iteration
+        // await 플래그는 for-of에서 `async` 식별자 사용 허용 여부에 영향
+        const is_await = self.eat(.kw_await);
 
         self.expect(.l_paren);
 
@@ -1706,10 +1706,12 @@ pub const Parser = struct {
         if (self.current() == .kw_of) {
             // for (async of [1]) — 'async' 키워드가 for-of의 LHS로 사용되면 에러
             // ECMAScript 14.7.5: [+Await] ForDeclaration에서 async는 금지
+            // 단, for-await-of에서는 async가 LHS로 사용 가능 (async는 일반 식별자)
+            // 예: `for await (async of [7])` → 유효
             const init_node = self.ast.getNode(init_expr);
             if (init_node.tag == .identifier_reference) {
                 const text = self.ast.source[init_node.span.start..init_node.span.end];
-                if (std.mem.eql(u8, text, "async")) {
+                if (std.mem.eql(u8, text, "async") and !is_await) {
                     self.addError(init_node.span, "'async' is not allowed as identifier in for-of left-hand side");
                 }
                 // for (let of []) — 'let' 키워드가 for-of의 LHS로 사용되면 에러
@@ -2278,9 +2280,14 @@ pub const Parser = struct {
         }
 
         // extends 절 (선택)
+        // ECMAScript: ClassHeritage : extends LeftHandSideExpression
+        // LeftHandSideExpression은 CallExpression | NewExpression | OptionalExpression이지
+        // ArrowFunctionExpression이나 AssignmentExpression은 아니다.
+        // parseCallExpression을 사용하여 arrow function이 heritage에서 파싱되지 않도록 한다.
+        // 예: `class extends () => {} {}` → SyntaxError (arrow의 {}가 class body와 충돌)
         var super_class = NodeIndex.none;
         if (self.eat(.kw_extends)) {
-            super_class = try self.parseAssignmentExpression();
+            super_class = try self.parseCallExpression();
         }
 
         // TS implements 절 (선택): class Foo implements Bar, Baz
@@ -2437,6 +2444,22 @@ pub const Parser = struct {
         } else if (self.current() == .kw_set and self.peekNextKind() != .l_paren) {
             flags |= 0x04; // setter
             self.advance();
+        }
+
+        // accessor (선택): ECMAScript Decorators proposal — `accessor x = 1`
+        // accessor는 kw_accessor 토큰으로 토크나이즈됨 (contextual keyword).
+        // `accessor` 뒤에 프로퍼티 이름이 오면 accessor field로 파싱.
+        // `accessor()`, `accessor;`, `accessor =` 는 "accessor"라는 이름의 일반 멤버.
+        var is_accessor = false;
+        if (self.current() == .kw_accessor) {
+            const next = self.peekNextKind();
+            // 다음 토큰이 프로퍼티 이름 시작이면 accessor field
+            if (next != .l_paren and next != .eq and next != .semicolon and
+                next != .r_curly and next != .eof)
+            {
+                is_accessor = true;
+                self.advance(); // skip 'accessor'
+            }
         }
 
         // async (선택): async [no LineTerminator here] MethodName
@@ -2617,17 +2640,20 @@ pub const Parser = struct {
         if (self.eat(.eq)) {
             const saved_in_class_field = self.in_class_field;
             const saved_new_target = self.allow_new_target;
+            const saved_super_property = self.allow_super_property;
             self.in_class_field = true;
             self.allow_new_target = true; // class field에서 new.target 허용 (ECMAScript 15.7.15)
+            self.allow_super_property = true; // class field에서 super.prop 허용 (ECMAScript 15.7.5)
             init_val = try self.parseAssignmentExpression();
             self.in_class_field = saved_in_class_field;
             self.allow_new_target = saved_new_target;
+            self.allow_super_property = saved_super_property;
         }
         // class field 끝에서 ASI 규칙 적용: 같은 줄에 다른 멤버가 오면 에러
         self.expectSemicolon();
 
         return try self.ast.addNode(.{
-            .tag = .property_definition,
+            .tag = if (is_accessor) .accessor_property else .property_definition,
             .span = .{ .start = start, .end = self.currentSpan().start },
             .data = .{ .binary = .{ .left = key, .right = init_val, .flags = flags } },
         });
@@ -3519,6 +3545,14 @@ pub const Parser = struct {
     fn parseBinaryExpression(self: *Parser, min_prec: u8) ParseError2!NodeIndex {
         var left = try self.parseUnaryExpression();
 
+        // ECMAScript: PrivateIdentifier는 독립 표현식이 아니라 `#field in obj` 형태로만 유효.
+        // bare #field가 `in` 연산자 없이 사용되면 SyntaxError.
+        if (!left.isNone() and self.ast.getNode(left).tag == .private_identifier) {
+            if (self.current() != .kw_in or !self.ctx.allow_in) {
+                self.addError(self.ast.getNode(left).span, "private name '#' is not valid outside of `in` expression");
+            }
+        }
+
         // ?? 와 &&/|| 혼합 감지용 — 괄호 없이 혼합하면 SyntaxError
         var has_coalesce = false;
         var has_logical_or_and = false;
@@ -3562,6 +3596,15 @@ pub const Parser = struct {
             // ** (star2)는 우결합: prec - 1로 재귀하여 같은 우선순위를 오른쪽에 허용
             const next_prec = if (op_kind == .star2) prec - 1 else prec;
             const right = try self.parseBinaryExpression(next_prec);
+
+            // ECMAScript: `#field in obj` — RHS는 ShiftExpression이어야 함.
+            // bare `#field`은 ShiftExpression이 아니므로 RHS에 올 수 없다.
+            // 예: `#field in #field in this` → 내부 `#field in #field`의 RHS `#field`이 bare → 에러
+            if (op_kind == .kw_in and !right.isNone()) {
+                if (self.ast.getNode(right).tag == .private_identifier) {
+                    self.addError(self.ast.getNode(right).span, "private name '#' is not valid as right-hand side of `in` expression");
+                }
+            }
 
             // ?? 의 오른쪽에 괄호 없는 &&/|| 이 있으면 에러 (재귀 호출로 감지 못한 케이스)
             // 예: 0 ?? 0 && true → right = (0 && true) = logical_expression
@@ -3863,9 +3906,22 @@ pub const Parser = struct {
     /// new는 중첩 가능하므로 new를 만나면 재귀한다.
     /// member access (.prop, [expr])만 허용하고 호출 ()은 상위에서 처리.
     fn parseNewCallee(self: *Parser) ParseError2!NodeIndex {
-        // ECMAScript: new import(...) 는 금지
+        // ECMAScript: new import(...) / new import.source(...) / new import.defer(...) は금지
+        // 단, new import.meta 는 허용 (import.meta는 MemberExpression)
         if (self.current() == .kw_import) {
-            self.addError(self.currentSpan(), "'import' cannot be used with 'new'");
+            const import_span = self.currentSpan();
+            // parsePrimaryExpression이 import를 파싱한 뒤 결과 tag를 확인:
+            // - meta_property (import.meta) → 유효
+            // - import_expression (import(...)) → 에러
+            // - call_expression (import.source/defer(...)) → 에러
+            // 미리 에러를 보고하되, import.meta인 경우만 통과시킴
+            const next = self.peekNextKind();
+            if (next != .dot) {
+                // import( → 동적 import는 new 불가
+                self.addError(import_span, "'import' cannot be used with 'new'");
+            }
+            // import. → parsePrimaryExpression에서 처리
+            // 결과를 확인하여 import.source/defer면 에러
         }
         if (self.current() == .kw_new) {
             const span = self.currentSpan();
@@ -3889,6 +3945,14 @@ pub const Parser = struct {
 
         // primary expression + member chain (호출 제외)
         var expr = try self.parsePrimaryExpression();
+        // import.source(...) / import.defer(...)는 ImportCall (CallExpression)이므로 new 불가
+        // parsePrimaryExpression이 전체 호출을 소비하므로 결과 tag를 확인
+        if (!expr.isNone()) {
+            const result_tag = self.ast.getNode(expr).tag;
+            if (result_tag == .import_expression) {
+                self.addError(self.ast.getNode(expr).span, "'import' cannot be used with 'new'");
+            }
+        }
         while (true) {
             const expr_start = self.ast.getNode(expr).span.start;
             switch (self.current()) {
@@ -4902,7 +4966,13 @@ pub const Parser = struct {
         const start = self.currentSpan().start;
 
         // shorthand: { x } = { x: x } 또는 { x = defaultVal }
-        if (self.current() == .identifier) {
+        // 컨텍스트에 따라 식별자로 사용 가능한 키워드도 shorthand로 처리:
+        // - await: async 함수 밖에서 식별자 가능 (ECMAScript 12.1.1)
+        // - yield: generator 밖에서 식별자 가능
+        const is_shorthand_eligible = self.current() == .identifier or
+            (self.current() == .kw_await and !self.ctx.in_async and (!self.is_module or self.ctx.in_function)) or
+            (self.current() == .kw_yield and !self.ctx.in_generator and !self.is_strict_mode);
+        if (is_shorthand_eligible) {
             const id_span = self.currentSpan();
             const next = self.peekNextKind();
             if (next == .comma or next == .r_curly or next == .eq) {
@@ -4924,6 +4994,11 @@ pub const Parser = struct {
 
         // key: pattern = default
         const key = try self.parsePropertyKey();
+        // private name (#x) 은 object destructuring pattern에서 사용 불가
+        // ECMAScript: ObjectAssignmentPattern의 PropertyName은 PrivateName을 포함하지 않음
+        if (!key.isNone() and self.ast.getNode(key).tag == .private_identifier) {
+            self.addError(self.ast.getNode(key).span, "private name is not allowed in destructuring pattern");
+        }
         self.expect(.colon);
         const value_raw = try self.parseBindingPattern();
         // { x: pattern = defaultValue } 형태
