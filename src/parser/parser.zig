@@ -3540,6 +3540,18 @@ pub const Parser = struct {
                 });
             },
             .kw_class => return self.parseClassExpression(),
+            // Decorator on class expression: @decorator class {}
+            // ECMAScript: ClassExpression includes optional DecoratorList
+            .at => {
+                const scratch_top = self.saveScratch();
+                while (self.current() == .at) {
+                    const dec = try self.parseDecorator();
+                    try self.scratch.append(dec);
+                }
+                const decorators = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+                self.restoreScratch(scratch_top);
+                return self.parseClassWithDecorators(.class_expression, decorators);
+            },
             .kw_function => return self.parseFunctionExpression(),
             .l_angle => return self.parseJSXElement(),
             .kw_import => {
