@@ -1470,7 +1470,19 @@ pub const Scanner = struct {
                     self.current += 1;
                 } else if (c == '\\') {
                     // \uXXXX 유니코드 이스케이프
+                    const esc_pos = self.current;
                     if (!self.scanIdentifierEscape()) break;
+                    // 디코딩된 코드포인트가 ID_Continue인지 검증
+                    const esc_slice = self.source[esc_pos..self.current];
+                    if (self.decodeIdentifierEscapes(esc_slice)) |decoded| {
+                        if (decoded.len == 1 and decoded[0] < 0x80) {
+                            if (!isAsciiIdentContinue(decoded[0])) {
+                                // \u0009 (TAB) 등 유효하지 않은 코드포인트
+                                self.current = esc_pos; // rollback
+                                break;
+                            }
+                        }
+                    }
                 } else {
                     break;
                 }
