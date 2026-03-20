@@ -40,6 +40,9 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         named_group_count: u8 = 0,
         /// 가장 큰 back reference 번호 (group_count와 비교)
         max_back_ref: u32 = 0,
+        /// named back reference 이름 목록 (파싱 끝에서 존재 검증)
+        named_refs: [32][]const u8 = undefined,
+        named_ref_count: u8 = 0,
 
         pub fn init(source: []const u8, parsed_flags: Flags) Self {
             return .{
@@ -61,6 +64,20 @@ pub fn PatternParser(comptime emit_ast: bool) type {
             // back reference가 group count보다 크면 에러 (unicode mode에서)
             if (self.flags.hasUnicodeMode() and self.max_back_ref > self.group_count) {
                 return "invalid back reference in regular expression";
+            }
+
+            // named back reference가 정의된 named group을 참조하는지 검증
+            for (self.named_refs[0..self.named_ref_count]) |ref_name| {
+                var found = false;
+                for (self.named_groups[0..self.named_group_count]) |group_name| {
+                    if (std.mem.eql(u8, ref_name, group_name)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    return "invalid named back reference: group not defined";
+                }
             }
 
             return self.err_message;
@@ -314,20 +331,23 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 },
                 // \k<name> named back reference
                 'k' => {
-                    if (self.flags.hasUnicodeMode() or self.named_group_count > 0) {
-                        self.advance();
-                        if (!self.eat('<')) {
-                            if (self.flags.hasUnicodeMode()) {
-                                self.setError("invalid named back reference");
-                                return false;
-                            }
-                            return true;
-                        }
-                        // 그룹 이름 검증
+                    self.advance();
+                    if (self.eat('<')) {
+                        const ref_name_start = self.pos;
                         if (!self.parseGroupName()) return false;
+                        // 참조 이름을 수집 (파싱 끝에서 존재 검증)
+                        const ref_name = self.source[ref_name_start .. self.pos - 1];
+                        if (self.named_ref_count < 32) {
+                            self.named_refs[self.named_ref_count] = ref_name;
+                            self.named_ref_count += 1;
+                        }
                         return true;
                     }
-                    self.advance();
+                    // \k 뒤에 <가 없으면: unicode에서 에러, non-unicode에서 identity escape
+                    if (self.flags.hasUnicodeMode()) {
+                        self.setError("invalid named back reference");
+                        return false;
+                    }
                     return true;
                 },
                 // Back reference \1-\9
