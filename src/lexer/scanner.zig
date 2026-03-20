@@ -14,6 +14,7 @@
 const std = @import("std");
 const token = @import("token.zig");
 const unicode = @import("unicode.zig");
+const regexp_mod = @import("../regexp/mod.zig");
 
 const Token = token.Token;
 const Kind = token.Kind;
@@ -751,8 +752,13 @@ pub const Scanner = struct {
 
             if (c == '/' and !in_class) {
                 self.current += 1; // consume closing /
-                // flags: g, i, m, s, u, v, y, d 등
+                // flags 스캔 + 검증: 중복, 미지원, u/v 충돌
+                const flags_start = self.current;
                 self.scanRegExpFlags();
+                const flags_text = self.source[flags_start..self.current];
+                if (regexp_mod.flags.validate(flags_text) != null) {
+                    return .syntax_error;
+                }
                 return .regexp_literal;
             }
 
