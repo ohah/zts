@@ -476,7 +476,9 @@ main ← feature/lexer-token-enum
 14. ✅ TS 선언 (interface, type alias, enum, namespace, declare, abstract) — PR #31
 15. ✅ TS 변환 대상 (parameter property, decorator, implements, class generics) — PR #32
 16. ✅ JSX 파싱 (element, fragment, attributes, expression, text) — PR #33
-17. ⬜ 에러 복구 강화 + Test262 파서 통과율 — Phase 2 후반
+17. 🔄 에러 복구 강화 + Test262 파서 통과율 — Phase 2 후반
+    - ✅ 에러 메시지 개선: "Expected X but found Y", 괄호 매칭 "opened here", 세미콜론 hint
+    - ⬜ ParseError/SemanticError → 공통 Diagnostic 타입 통합 (semantic 에러 CLI 표시 시 같이)
 18. 🔄 semantic analysis (D038, D051-D055) — Phase 2 후반
     - ✅ 파서 컨텍스트 추적 (strict/function/async/generator/loop/switch)
     - ✅ strict mode 에러 (with문), break/continue/return 검증
