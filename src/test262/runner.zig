@@ -202,7 +202,7 @@ pub fn runTest(allocator: mem.Allocator, source: []const u8, meta: TestMetadata,
         // 개행 전까지만 (에러 위치부터)
         var line_end: usize = err.span.start - before_start;
         while (line_end < snippet.len and snippet[line_end] != '\n') : (line_end += 1) {}
-        stderr.print("    error@{d}: {s} | ...{s}\n", .{ err.span.start, err.message, snippet[0..line_end] }) catch {};
+        stderr.print("    error@{d}: {s} | ...{s}\n", .{ err.span.start, err.message, snippet[0..line_end] }) catch {}; // stderr 출력 실패 무시
     }
 
     return result;

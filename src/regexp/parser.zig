@@ -116,8 +116,8 @@ pub fn PatternParser(comptime emit_ast: bool) type {
             var nodes = std.ArrayList(ast.Node).init(alloc);
             var extra = std.ArrayList(u32).init(alloc);
             // 대부분의 정규식은 32개 미만 노드 → 재할당 최소화
-            nodes.ensureTotalCapacity(32) catch {};
-            extra.ensureTotalCapacity(64) catch {};
+            nodes.ensureTotalCapacity(32) catch {}; // pre-alloc 실패해도 동작에 지장 없음
+            extra.ensureTotalCapacity(64) catch {}; // pre-alloc 실패해도 동작에 지장 없음
             return .{
                 .source = source,
                 .flags = parsed_flags,
