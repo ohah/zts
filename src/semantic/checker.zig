@@ -400,7 +400,7 @@ pub fn checkDuplicateArrowParams(
 
     // fast path: 단일 파라미터는 중복 불가능
     const node = ast.getNode(param_idx);
-    if (node.tag == .binding_identifier or node.tag == .identifier_reference) return;
+    if (node.tag == .binding_identifier or node.tag == .identifier_reference or node.tag == .assignment_target_identifier) return;
 
     var seen = std.StringHashMap(Span).init(allocator);
     defer seen.deinit();
@@ -437,12 +437,14 @@ fn collectArrowParamNames(
                 }
             }
         },
-        // identifier를 파라미터로 사용 (pre-cover-grammar, 방어적 처리)
-        .identifier_reference => {
+        // identifier를 파라미터로 사용 (cover grammar 변환 전후 모두 처리)
+        .identifier_reference, .assignment_target_identifier => {
             recordSeenName(ast.source[node.span.start..node.span.end], node.span, seen, errors, allocator);
         },
-        // destructuring 패턴
-        .array_pattern, .object_pattern, .array_expression, .object_expression => {
+        // destructuring 패턴 (cover grammar 변환 전후 모두 처리)
+        .array_pattern, .object_pattern, .array_expression, .object_expression,
+        .array_assignment_target, .object_assignment_target,
+        => {
             if (node.data.list.len == 0) return;
             if (node.data.list.start + node.data.list.len > ast.extra_data.items.len) return;
             const indices = ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
@@ -450,15 +452,17 @@ fn collectArrowParamNames(
                 collectArrowParamNames(ast, @enumFromInt(raw_idx), seen, errors, allocator);
             }
         },
-        .assignment_expression, .assignment_pattern => {
+        .assignment_expression, .assignment_pattern, .assignment_target_with_default => {
             // left = binding, right = default value
             collectArrowParamNames(ast, node.data.binary.left, seen, errors, allocator);
         },
-        .binding_property, .object_property => {
+        .binding_property, .object_property,
+        .assignment_target_property_identifier, .assignment_target_property_property,
+        => {
             // binary: { left = key, right = value }
             collectArrowParamNames(ast, node.data.binary.right, seen, errors, allocator);
         },
-        .spread_element, .binding_rest_element, .rest_element => {
+        .spread_element, .binding_rest_element, .rest_element, .assignment_target_rest => {
             collectArrowParamNames(ast, node.data.unary.operand, seen, errors, allocator);
         },
         else => {},

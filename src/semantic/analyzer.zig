@@ -1314,26 +1314,29 @@ pub const SemanticAnalyzer = struct {
         if (idx.isNone()) return;
         const node = self.ast.getNode(idx);
         switch (node.tag) {
-            .binding_identifier => {
+            .binding_identifier, .assignment_target_identifier => {
                 self.declareSymbol(node.span, kind, node.span);
             },
-            .array_pattern => {
+            .array_pattern, .array_assignment_target => {
                 // list of elements
                 self.registerBindingList(node.data.list, kind);
             },
-            .object_pattern => {
+            .object_pattern, .object_assignment_target => {
                 // list of binding_property
                 self.registerBindingList(node.data.list, kind);
             },
-            .binding_property => {
+            .binding_property,
+            .assignment_target_property_identifier,
+            .assignment_target_property_property,
+            => {
                 // binary: { left = key, right = value }
                 self.registerBinding(node.data.binary.right, kind);
             },
-            .assignment_pattern => {
+            .assignment_pattern, .assignment_target_with_default => {
                 // binary: { left = binding, right = default_value }
                 self.registerBinding(node.data.binary.left, kind);
             },
-            .binding_rest_element, .rest_element => {
+            .binding_rest_element, .rest_element, .assignment_target_rest => {
                 // unary: { operand = binding }
                 self.registerBinding(node.data.unary.operand, kind);
             },
