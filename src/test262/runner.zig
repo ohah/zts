@@ -181,8 +181,11 @@ pub fn runTest(allocator: mem.Allocator, source: []const u8, meta: TestMetadata,
         defer analyzer.deinit(); // deinit이 에러 메시지 메모리도 해제
         analyzer.is_strict_mode = parser.is_strict_mode;
         analyzer.is_module = parser.is_module;
-        analyzer.analyze();
-        semantic_error_count = analyzer.errors.items.len;
+        analyzer.analyze() catch {
+            semantic_error_count = 1; // OOM during analysis — treat as error
+        };
+        if (semantic_error_count == 0)
+            semantic_error_count = analyzer.errors.items.len;
     }
 
     // 렉서 에러 + 파서 에러 + semantic 에러 모두 체크
