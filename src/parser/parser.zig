@@ -651,6 +651,10 @@ pub const Parser = struct {
 
         // directive prologue: 본문 시작의 문자열 리터럴 expression statement 중 "use strict" 감지
         var in_directive_prologue = true;
+        // directive prologue에서 "use strict" 이전의 문자열에 legacy octal이 있으면
+        // retroactive하게 에러 보고 (ECMAScript 12.8.4.1)
+        var has_prologue_octal = false;
+        var prologue_octal_span: Span = Span.EMPTY;
 
         while (self.current() != .r_curly and self.current() != .eof) {
             if (in_directive_prologue) {
@@ -662,7 +666,17 @@ pub const Parser = struct {
                         self.addError(self.currentSpan(), "\"use strict\" not allowed in function with non-simple parameters");
                     }
                     self.ctx.is_strict_mode = true;
-                } else if (self.current() != .string_literal) {
+                    // "use strict" 이전에 octal escape가 있었으면 retroactive 에러
+                    if (has_prologue_octal) {
+                        self.addError(prologue_octal_span, "Octal escape sequences are not allowed in strict mode");
+                    }
+                } else if (self.current() == .string_literal) {
+                    // directive prologue의 문자열 — octal escape 추적
+                    if (self.scanner.token.has_legacy_octal and !has_prologue_octal) {
+                        has_prologue_octal = true;
+                        prologue_octal_span = self.currentSpan();
+                    }
+                } else {
                     in_directive_prologue = false;
                 }
             }
