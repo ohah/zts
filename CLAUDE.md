@@ -101,6 +101,14 @@ references/                 # 레퍼런스 프로젝트 (.gitignore, 로컬만)
 
 ### Advanced Features (Phase 6) — 구현 순서 및 의존성
 
+#### 번들러 선행 인프라 (✅ 완료)
+- ✅ **Symbol Reference Tracking** (PR #198) — `reference_count`로 미사용 심볼 판단, `resolveIdentifier`로 스코프 체인 해결
+- ✅ **Ast string_table** (PR #199) — 합성 문자열 저장소 (bit 31 마커), `getText(span)`으로 source/string_table 투명 전환
+- ✅ **Transformer pending_nodes** (PR #199) — 1→N 노드 확장 버퍼 (enum `var Color;` + IIFE 등)
+- ⏸ **Enum/Namespace IIFE → Transformer** — 번들러 tree-shaking 구현 시 같이 진행 (현재 codegen 방식이 잘 동작하므로 미리 할 필요 없음)
+- ⏸ **JSX React.createElement → Transformer** — 번들러 구현 시 같이 진행
+- ⏸ **Comment-Node 연결** — 번들러 모듈 합칠 때 같이 진행
+
 #### 의존성 관계
 ```
 AST 안정화 ──────────────┬──→ WASM 공개 AST API
@@ -109,6 +117,10 @@ AST 안정화 ──────────────┬──→ WASM 공개
 Arena allocator ─────────┬──→ 번들러 (파일별 arena reset)
 번들러 아키텍처 설계 ────┼──→ 멀티스레드
                          └──→ 미니파이어 (tree-shaking + minify 연동)
+
+번들러 선행 인프라 ✅ ───┬──→ tree-shaking (reference_count 활용)
+                         ├──→ Transform 분리 (string_table + pending_nodes 활용)
+                         └──→ Comment 보존 (번들러 모듈 합칠 때)
 
 독립 (아무 때나): ES 다운레벨링, React Fast Refresh, regexp, SIMD, Flow
 ```
