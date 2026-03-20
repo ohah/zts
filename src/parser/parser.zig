@@ -99,6 +99,10 @@ pub const Parser = struct {
     allow_super_call: bool = false,
     /// super.x / super[x] 허용 여부
     allow_super_property: bool = false,
+    /// static initializer (static { }) 안인지 — arguments 사용 금지
+    in_static_initializer: bool = false,
+    /// class extends 절 파싱 중인지
+    in_class_heritage: bool = false,
 
     // ================================================================
     // Context packed struct 정의
@@ -154,6 +158,7 @@ pub const Parser = struct {
         has_simple_params: bool,
         for_loop_init: bool,
         in_class_field: bool,
+        in_static_initializer: bool,
         allow_super_call: bool,
         allow_super_property: bool,
     };
@@ -534,6 +539,7 @@ pub const Parser = struct {
             .has_simple_params = self.has_simple_params,
             .for_loop_init = self.for_loop_init,
             .in_class_field = self.in_class_field,
+            .in_static_initializer = self.in_static_initializer,
             .allow_super_call = self.allow_super_call,
             .allow_super_property = self.allow_super_property,
         };
@@ -546,6 +552,7 @@ pub const Parser = struct {
         self.allow_super_call = false;
         self.allow_super_property = false;
         self.in_class_field = false;
+        self.in_static_initializer = false;
         return saved;
     }
 
@@ -558,6 +565,7 @@ pub const Parser = struct {
         self.has_simple_params = saved.has_simple_params;
         self.for_loop_init = saved.for_loop_init;
         self.in_class_field = saved.in_class_field;
+        self.in_static_initializer = saved.in_static_initializer;
         self.allow_super_call = saved.allow_super_call;
         self.allow_super_property = saved.allow_super_property;
     }
@@ -1710,9 +1718,13 @@ pub const Parser = struct {
         }
 
         // extends 절 (선택)
+        // class heritage에서는 await/yield 검증이 달라질 수 있음
         var super_class = NodeIndex.none;
         if (self.eat(.kw_extends)) {
+            const saved_heritage = self.in_class_heritage;
+            self.in_class_heritage = true;
             super_class = try self.parseAssignmentExpression();
+            self.in_class_heritage = saved_heritage;
         }
 
         // TS implements 절 (선택): class Foo implements Bar, Baz
@@ -1807,8 +1819,12 @@ pub const Parser = struct {
             const next = self.peekNextKind();
             if (next == .l_curly) {
                 // static { } — static block
+                // static initializer는 자체 arguments 바인딩이 없고 new.target도 금지
                 self.advance(); // skip 'static'
+                const saved_in_static = self.in_static_initializer;
+                self.in_static_initializer = true;
                 const body = try self.parseBlockStatement();
+                self.in_static_initializer = saved_in_static;
                 return try self.ast.addNode(.{
                     .tag = .static_block,
                     .span = .{ .start = start, .end = self.currentSpan().start },
@@ -1863,6 +1879,12 @@ pub const Parser = struct {
 
         // 메서드 (파라미터 리스트가 있으면)
         if (self.current() == .l_paren) {
+            // 메서드 파라미터는 자체 arguments 바인딩을 가지므로
+            // static initializer/class field의 arguments 제한이 적용되지 않는다.
+            const saved_in_static_init = self.in_static_initializer;
+            const saved_in_class_field_for_params = self.in_class_field;
+            self.in_static_initializer = false;
+            self.in_class_field = false;
             self.expect(.l_paren);
             const param_top = self.saveScratch();
             while (self.current() != .r_paren and self.current() != .eof) {
@@ -1936,6 +1958,9 @@ pub const Parser = struct {
                 body = try self.parseFunctionBody();
                 self.restoreFunctionContext(saved_ctx);
             } else {
+                // 바디 없는 메서드 (abstract 등) — 파라미터 전에 변경한 플래그 복원
+                self.in_static_initializer = saved_in_static_init;
+                self.in_class_field = saved_in_class_field_for_params;
                 _ = self.eat(.semicolon);
             }
             const param_list = try self.ast.addNodeList(self.scratch.items[param_top..]);
@@ -2576,9 +2601,10 @@ pub const Parser = struct {
     fn parseArrowBody(self: *Parser, is_async: bool) ParseError2!NodeIndex {
         // arrow function은 generator가 될 수 없으므로 is_generator=false
         const saved_ctx = self.enterFunctionContext(is_async, false);
-        // arrow function은 자체 arguments 바인딩이 없으므로 in_class_field를 유지해야 한다.
-        // class field 이니셜라이저 안의 arrow function에서 arguments 사용은 SyntaxError.
+        // arrow function은 자체 arguments 바인딩이 없으므로 in_class_field/in_static_initializer를 유지.
+        // class field 또는 static initializer 안의 arrow function에서 arguments 사용은 SyntaxError.
         self.in_class_field = saved_ctx.in_class_field;
+        self.in_static_initializer = saved_ctx.in_static_initializer;
         const body = if (self.current() == .l_curly)
             try self.parseFunctionBody()
         else
@@ -3175,8 +3201,10 @@ pub const Parser = struct {
 
         switch (self.current()) {
             .identifier => {
-                // class field 이니셜라이저에서 arguments 사용 금지 (ECMAScript 15.7.1)
-                if (self.in_class_field) {
+                // class field/static initializer에서 arguments 사용 금지
+                // ECMAScript 15.7.1 (class field), 15.7.14 (static block)
+                // 이 컨텍스트들은 자체 arguments 바인딩이 없다.
+                if (self.in_class_field or self.in_static_initializer) {
                     const text = self.ast.source[span.start..span.end];
                     if (std.mem.eql(u8, text, "arguments")) {
                         self.addError(span, "'arguments' is not allowed in class field initializer");
