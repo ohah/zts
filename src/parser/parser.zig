@@ -502,10 +502,8 @@ pub const Parser = struct {
             .identifier_reference => {
                 // escaped keyword 검증: v\u0061r → "var"이면 에러
                 self.checkIdentifierEscapedKeyword(node.span);
-                // strict mode: eval/arguments에 할당 금지
-                if (self.ctx.is_strict_mode) {
-                    self.checkStrictBinding(node.span);
-                }
+                // strict mode: eval/arguments에 할당 금지 (checkStrictBinding 내부에서 strict 체크)
+                self.checkStrictBinding(node.span);
                 return true;
             },
             .private_identifier, .private_field_expression => true,
@@ -553,8 +551,19 @@ pub const Parser = struct {
         };
     }
 
+    /// spread element의 operand를 검증하는 cover grammar 헬퍼.
+    /// rest에 initializer가 있으면 에러를 내고, operand를 재귀 검증한다.
+    /// coverArrayExpressionToTarget과 coverObjectExpressionToTarget에서 공통 사용.
+    fn coverSpreadElementToTarget(self: *Parser, operand_idx: NodeIndex) void {
+        const operand = self.ast.getNode(operand_idx);
+        if (operand.tag == .assignment_expression) {
+            self.addError(operand.span, rest_init_error);
+        }
+        _ = self.coverExpressionToAssignmentTarget(operand_idx, false);
+    }
+
     /// array expression 내부를 assignment target으로 검증 (coverExpressionToAssignmentTarget 헬퍼).
-    /// 각 요소의 spread rest-init 금지 + nested pattern 재귀 + escaped keyword 검증.
+    /// 각 요소의 spread rest-init 금지 + nested pattern 재귀 검증.
     fn coverArrayExpressionToTarget(self: *Parser, node: Node) void {
         const list = node.data.list;
         var i: u32 = 0;
@@ -564,27 +573,14 @@ pub const Parser = struct {
             const elem = self.ast.getNode(elem_idx);
             switch (elem.tag) {
                 .spread_element => {
-                    // [...x = 1] → rest에 initializer 금지
-                    const operand_idx = elem.data.unary.operand;
-                    const operand = self.ast.getNode(operand_idx);
-                    if (operand.tag == .assignment_expression) {
-                        self.addError(operand.span, rest_init_error);
-                    }
-                    // spread operand를 재귀 검증 (nested pattern일 수 있음)
-                    _ = self.coverExpressionToAssignmentTarget(operand_idx, false);
+                    self.coverSpreadElementToTarget(elem.data.unary.operand);
                 },
                 .assignment_expression => {
                     // [x = 1] → left를 재귀 검증 (nested pattern일 수 있음)
                     _ = self.coverExpressionToAssignmentTarget(elem.data.binary.left, false);
                 },
-                .identifier_reference => {
-                    self.checkIdentifierEscapedKeyword(elem.span);
-                    if (self.ctx.is_strict_mode) {
-                        self.checkStrictBinding(elem.span);
-                    }
-                },
                 else => {
-                    // nested array/object/member 등 재귀
+                    // identifier, nested array/object/member 등 → 재귀 검증
                     _ = self.coverExpressionToAssignmentTarget(elem_idx, false);
                 },
             }
@@ -592,7 +588,7 @@ pub const Parser = struct {
     }
 
     /// object expression 내부를 assignment target으로 검증 (coverExpressionToAssignmentTarget 헬퍼).
-    /// 각 프로퍼티의 shorthand escaped keyword + spread rest-init + nested value 재귀 검증.
+    /// 각 프로퍼티의 shorthand escaped keyword + strict eval/arguments + spread rest-init + nested value 재귀 검증.
     fn coverObjectExpressionToTarget(self: *Parser, node: Node) void {
         const list = node.data.list;
         var i: u32 = 0;
@@ -608,18 +604,14 @@ pub const Parser = struct {
                     const is_shorthand = key_span.start == val_node.span.start and key_span.end == val_node.span.end;
                     if (is_shorthand) {
                         self.checkIdentifierEscapedKeyword(key_span);
+                        // strict mode: shorthand에서 eval/arguments 할당 금지
+                        self.checkStrictBinding(key_span);
                     }
                     // value를 재귀 검증 (nested pattern일 수 있음)
                     _ = self.coverExpressionToAssignmentTarget(elem.data.binary.right, false);
                 }
             } else if (elem.tag == .spread_element) {
-                // {...x = 1} → rest에 initializer 금지
-                const operand_idx = elem.data.unary.operand;
-                const operand = self.ast.getNode(operand_idx);
-                if (operand.tag == .assignment_expression) {
-                    self.addError(operand.span, rest_init_error);
-                }
-                _ = self.coverExpressionToAssignmentTarget(operand_idx, false);
+                self.coverSpreadElementToTarget(elem.data.unary.operand);
             }
         }
     }
