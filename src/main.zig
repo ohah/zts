@@ -609,8 +609,12 @@ fn printErrorCodeFrame(writer: anytype, source: []const u8, file_path: []const u
     const line_num = lc.line + 1;
     const col_num = lc.column + 1;
 
-    // 에러 헤더
-    try writer.print("{s}:{d}:{d}: error: {s}\n", .{ file_path, line_num, col_num, err.message });
+    // 에러 헤더: "Expected X but found Y" 또는 "Expected X" (found가 없으면)
+    if (err.found) |found| {
+        try writer.print("{s}:{d}:{d}: error: Expected '{s}' but found '{s}'\n", .{ file_path, line_num, col_num, err.message, found });
+    } else {
+        try writer.print("{s}:{d}:{d}: error: {s}\n", .{ file_path, line_num, col_num, err.message });
+    }
 
     // 해당 줄 텍스트 추출
     const line_start = if (lc.line < scanner.line_offsets.items.len)
@@ -663,6 +667,20 @@ fn printErrorCodeFrame(writer: anytype, source: []const u8, file_path: []const u
         try writer.writeByte('^');
     }
     try writer.writeByte('\n');
+
+    // 힌트 출력 (예: "  hint: Try inserting a semicolon here")
+    if (err.hint) |hint| {
+        try writer.print("  hint: {s}\n", .{hint});
+    }
+
+    // 관련 위치 출력 (예: "  --> file.ts:1:10: opening '(' is here")
+    if (err.related_span) |rel_span| {
+        const rel_lc = scanner.getLineColumn(rel_span.start);
+        const rel_line = rel_lc.line + 1;
+        const rel_col = rel_lc.column + 1;
+        const label = err.related_label orelse "related";
+        try writer.print("  --> {s}:{d}:{d}: {s}\n", .{ file_path, rel_line, rel_col, label });
+    }
 }
 
 fn printUsage(writer: anytype) !void {

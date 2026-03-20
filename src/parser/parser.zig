@@ -22,15 +22,33 @@ const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
 
 /// 파서 에러 하나.
+/// oxc/swc 수준의 친절한 진단 정보를 제공한다.
 pub const ParseError = struct {
+    /// 에러 발생 위치
     span: Span,
+    /// 에러 메시지 (예: "Expected ';'")
     message: []const u8,
+    /// 실제로 발견된 토큰 (예: "'}'"). null이면 표시하지 않음.
+    found: ?[]const u8 = null,
+    /// 관련 위치 (예: 여는 괄호 위치). null이면 표시하지 않음.
+    related_span: ?Span = null,
+    /// 관련 위치 설명 (예: "opening bracket is here"). null이면 표시하지 않음.
+    related_label: ?[]const u8 = null,
+    /// 힌트 메시지 (예: "Try inserting a semicolon here"). null이면 표시하지 않음.
+    hint: ?[]const u8 = null,
 };
 
 /// 재귀 함수용 명시적 에러 타입.
 /// Zig는 재귀 함수에서 `!T` (inferred error set)를 사용할 수 없다.
 /// 파서의 모든 에러는 메모리 할당 실패뿐이므로 Allocator.Error로 충분하다.
 const ParseError2 = std.mem.Allocator.Error;
+
+/// 괄호 매칭 정보. 여는 괄호를 만나면 push, 닫는 괄호를 만나면 pop.
+/// 닫는 괄호 에러 시 "opened here" 위치를 보여주기 위해 사용.
+const BracketInfo = struct {
+    kind: Kind,
+    span: Span,
+};
 
 /// 재귀 하강 파서.
 /// Scanner에서 토큰을 하나씩 읽어 AST를 구축한다.
@@ -49,6 +67,9 @@ pub const Parser = struct {
 
     /// arrow 파라미터 중복 검사용 임시 이름 수집 버퍼.
     param_name_spans: std.ArrayList(Span),
+
+    /// 괄호 매칭 스택 — 여는 괄호의 위치를 추적하여 닫힘 에러 시 "opened here" 표시.
+    bracket_stack: std.ArrayList(BracketInfo),
 
     /// 메모리 할당자
     allocator: std.mem.Allocator,
@@ -181,6 +202,7 @@ pub const Parser = struct {
             .errors = std.ArrayList(ParseError).init(allocator),
             .scratch = std.ArrayList(NodeIndex).init(allocator),
             .param_name_spans = std.ArrayList(Span).init(allocator),
+            .bracket_stack = std.ArrayList(BracketInfo).init(allocator),
             .allocator = allocator,
         };
     }
@@ -190,6 +212,7 @@ pub const Parser = struct {
         self.errors.deinit();
         self.scratch.deinit();
         self.param_name_spans.deinit();
+        self.bracket_stack.deinit();
     }
 
     // ================================================================
@@ -206,8 +229,22 @@ pub const Parser = struct {
         return self.scanner.token.span;
     }
 
-    /// 다음 토큰으로 전진.
+    /// 다음 토큰으로 전진. 여는/닫는 괄호를 자동 추적한다.
     fn advance(self: *Parser) void {
+        const kind = self.current();
+        // 여는 괄호면 스택에 push
+        if (kind == .l_paren or kind == .l_bracket or kind == .l_curly) {
+            self.bracket_stack.append(.{
+                .kind = kind,
+                .span = self.currentSpan(),
+            }) catch {};
+        }
+        // 닫는 괄호면 스택에서 pop
+        if (kind == .r_paren or kind == .r_bracket or kind == .r_curly) {
+            if (self.bracket_stack.items.len > 0) {
+                _ = self.bracket_stack.pop();
+            }
+        }
         self.scanner.next();
     }
 
@@ -220,10 +257,33 @@ pub const Parser = struct {
         return false;
     }
 
-    /// 현재 토큰이 expected이면 소비, 아니면 에러 추가.
+    /// 현재 토큰이 expected이면 소비, 아니면 "Expected X but found Y" 에러 추가.
+    /// 닫는 괄호를 기대하는 경우, 매칭되는 여는 괄호 위치도 표시한다.
     fn expect(self: *Parser, expected: Kind) void {
         if (!self.eat(expected)) {
-            self.addError(self.currentSpan(), expected.symbol());
+            const found_sym = self.current().symbol();
+            // 닫는 괄호를 기대할 때 → 여는 괄호 위치 표시
+            const opening = self.findMatchingOpenBracket(expected);
+            if (opening) |open_info| {
+                self.errors.append(.{
+                    .span = self.currentSpan(),
+                    .message = expected.symbol(),
+                    .found = found_sym,
+                    .related_span = open_info.span,
+                    .related_label = switch (open_info.kind) {
+                        .l_paren => "opening '(' is here",
+                        .l_bracket => "opening '[' is here",
+                        .l_curly => "opening '{' is here",
+                        else => null,
+                    },
+                }) catch @panic("OOM: parser error list");
+            } else {
+                self.errors.append(.{
+                    .span = self.currentSpan(),
+                    .message = expected.symbol(),
+                    .found = found_sym,
+                }) catch @panic("OOM: parser error list");
+            }
         }
     }
 
@@ -231,20 +291,45 @@ pub const Parser = struct {
     /// - 세미콜론이 있으면 소비
     /// - 현재 토큰 앞에 개행이 있으면 OK (ASI)
     /// - 현재 토큰이 } 또는 EOF이면 OK (ASI)
-    /// - 그 외: 세미콜론이 필요하다는 에러 보고
+    /// - 그 외: "Expected ';' but found X" + 힌트
     fn expectSemicolon(self: *Parser) void {
         if (self.eat(.semicolon)) return;
         if (self.scanner.token.has_newline_before) return;
         if (self.current() == .r_curly or self.current() == .eof) return;
-        self.addError(self.currentSpan(), ";");
+        self.errors.append(.{
+            .span = self.currentSpan(),
+            .message = ";",
+            .found = self.current().symbol(),
+            .hint = "Try inserting a semicolon here",
+        }) catch @panic("OOM: parser error list");
     }
 
-    /// 에러를 추가한다.
+    /// 에러를 추가한다. 기존 호출부 하위 호환 — found/hint 등은 null.
     fn addError(self: *Parser, span: Span, expected: []const u8) void {
         self.errors.append(.{
             .span = span,
             .message = expected,
         }) catch @panic("OOM: parser error list");
+    }
+
+    /// 닫는 괄호에 매칭되는 여는 괄호를 bracket_stack에서 찾는다.
+    /// expect()에서 닫는 괄호 에러 시 "opened here" 표시용.
+    fn findMatchingOpenBracket(self: *const Parser, closing: Kind) ?BracketInfo {
+        const expected_open: Kind = switch (closing) {
+            .r_paren => .l_paren,
+            .r_bracket => .l_bracket,
+            .r_curly => .l_curly,
+            else => return null,
+        };
+        // 스택 맨 위부터 역순 탐색
+        var i: usize = self.bracket_stack.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (self.bracket_stack.items[i].kind == expected_open) {
+                return self.bracket_stack.items[i];
+            }
+        }
+        return null;
     }
 
     /// scratch 버퍼의 현재 위치를 저장한다. 중첩 사용 시 save/restore 패턴.
@@ -7593,4 +7678,237 @@ test "CoverGrammar: arrow params rest-init is error" {
         }
     }
     try std.testing.expect(found);
+}
+
+// ================================================================
+// 에러 메시지 품질 회귀 테스트
+// oxc/swc 수준의 친절한 에러 메시지가 유지되는지 검증한다.
+// ================================================================
+
+test "ErrorMsg: expect() shows 'found' token" {
+    // `if (true]` → Expected ')' but found ']'
+    // if 조건은 ( expr ) 순서로 expect(.r_paren) 호출이 확실함
+    var scanner = Scanner.init(std.testing.allocator, "if (true]");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+    // ')' 에러에 found가 있는지 확인
+    var found_err = false;
+    for (parser.errors.items) |err| {
+        if (std.mem.eql(u8, err.message, ")") and err.found != null) {
+            found_err = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_err);
+}
+
+test "ErrorMsg: expect() shows found for curly brace" {
+    // `if (true) {` → EOF에서 '}' 기대
+    var scanner = Scanner.init(std.testing.allocator, "if (true) {");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    // '}' 를 기대하는 에러가 found와 함께 있어야 함
+    var found_closing_error = false;
+    for (parser.errors.items) |err| {
+        if (std.mem.eql(u8, err.message, "}") and err.found != null) {
+            found_closing_error = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_closing_error);
+}
+
+test "ErrorMsg: bracket matching shows related_span for paren" {
+    // `function f(a, b ]` → Expected ')' but found ']', opening '(' is here
+    var scanner = Scanner.init(std.testing.allocator, "function f(a, b ]");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    // ')' 에러를 찾아서 related_span이 있는지 확인
+    var found_paren_error = false;
+    for (parser.errors.items) |err| {
+        if (std.mem.eql(u8, err.message, ")") and err.related_span != null) {
+            found_paren_error = true;
+            // related_label도 있어야 함
+            try std.testing.expect(err.related_label != null);
+            try std.testing.expectEqualStrings("opening '(' is here", err.related_label.?);
+            break;
+        }
+    }
+    try std.testing.expect(found_paren_error);
+}
+
+test "ErrorMsg: bracket matching shows related_span for curly" {
+    // `if (true) { return 1;` → EOF에서 '}' 기대, opening '{' is here
+    var scanner = Scanner.init(std.testing.allocator, "if (true) { var x = 1;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    var found_curly_error = false;
+    for (parser.errors.items) |err| {
+        if (std.mem.eql(u8, err.message, "}") and err.related_span != null) {
+            found_curly_error = true;
+            try std.testing.expectEqualStrings("opening '{' is here", err.related_label.?);
+            break;
+        }
+    }
+    try std.testing.expect(found_curly_error);
+}
+
+test "ErrorMsg: bracket matching shows related_span for bracket" {
+    // `var a = [1, 2` → EOF에서 ']' 기대, opening '[' is here
+    // EOF만 남기면 배열 루프가 종료 후 expect(.r_bracket) 호출됨
+    var scanner = Scanner.init(std.testing.allocator, "var a = [1, 2");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    var found_bracket_error = false;
+    for (parser.errors.items) |err| {
+        if (std.mem.eql(u8, err.message, "]") and err.related_span != null) {
+            found_bracket_error = true;
+            try std.testing.expectEqualStrings("opening '[' is here", err.related_label.?);
+            break;
+        }
+    }
+    try std.testing.expect(found_bracket_error);
+}
+
+test "ErrorMsg: expectSemicolon shows found and hint" {
+    // `var x = 1 var y = 2` → Expected ';' but found 'var', hint: Try inserting...
+    var scanner = Scanner.init(std.testing.allocator, "var x = 1 var y = 2");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    var found_semi_error = false;
+    for (parser.errors.items) |err| {
+        if (std.mem.eql(u8, err.message, ";")) {
+            found_semi_error = true;
+            // found 토큰이 있어야 함
+            try std.testing.expect(err.found != null);
+            // hint가 있어야 함
+            try std.testing.expect(err.hint != null);
+            try std.testing.expectEqualStrings("Try inserting a semicolon here", err.hint.?);
+            break;
+        }
+    }
+    try std.testing.expect(found_semi_error);
+}
+
+test "ErrorMsg: ASI still works with newline (no false error)" {
+    // ASI: 개행이 있으면 에러가 아님
+    var scanner = Scanner.init(std.testing.allocator, "var x = 1\nvar y = 2");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "ErrorMsg: ASI still works with closing curly (no false error)" {
+    // ASI: } 앞이면 에러가 아님
+    var scanner = Scanner.init(std.testing.allocator, "function f() { return 1 }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "ErrorMsg: addError backward compat (no found/hint)" {
+    // 기존 addError로 추가된 에러는 found, hint가 null
+    var scanner = Scanner.init(std.testing.allocator, "'use strict'; with (obj) {}");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    // 'with' is not allowed in strict mode — addError로 추가됨
+    var found_with_error = false;
+    for (parser.errors.items) |err| {
+        if (std.mem.indexOf(u8, err.message, "with") != null) {
+            found_with_error = true;
+            // addError로 추가된 에러는 found/hint가 null
+            try std.testing.expect(err.found == null);
+            try std.testing.expect(err.hint == null);
+            break;
+        }
+    }
+    try std.testing.expect(found_with_error);
+}
+
+test "ErrorMsg: multiple errors all have proper fields" {
+    // 여러 에러가 발생할 때 모든 에러가 올바른 필드를 갖는지
+    var scanner = Scanner.init(std.testing.allocator, "function( { ) }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    // 에러가 여러 개 발생해야 함
+    try std.testing.expect(parser.errors.items.len > 0);
+    // 모든 에러의 message가 비어있지 않아야 함
+    for (parser.errors.items) |err| {
+        try std.testing.expect(err.message.len > 0);
+    }
+}
+
+test "ErrorMsg: nested brackets track correctly" {
+    // 중첩 괄호: `if ([1, (2` → ')' 또는 ']' 에러에 related_span
+    var scanner = Scanner.init(std.testing.allocator, "if ([1, (2");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+    // 에러 중 related_span이 있는 것이 하나 이상 존재
+    var has_related = false;
+    for (parser.errors.items) |err| {
+        if (err.related_span != null) {
+            has_related = true;
+            break;
+        }
+    }
+    try std.testing.expect(has_related);
+}
+
+test "ErrorMsg: valid code has no errors (regression)" {
+    // 정상 코드는 에러가 없어야 함 — 새 기능이 false positive를 만들지 않는지
+    const cases = [_][]const u8{
+        "const x = [1, 2, 3];",
+        "function f(a, b) { return a + b; }",
+        "if (true) { console.log('yes'); } else { console.log('no'); }",
+        "for (let i = 0; i < 10; i++) { }",
+        "const obj = { a: 1, b: [2, 3], c: { d: 4 } };",
+        "class Foo { constructor() { this.x = 1; } }",
+        "const arrow = (x) => x * 2;",
+        "try { throw new Error(); } catch (e) { } finally { }",
+        "switch (x) { case 1: break; default: break; }",
+    };
+    for (cases) |src| {
+        var scanner = Scanner.init(std.testing.allocator, src);
+        defer scanner.deinit();
+        var parser = Parser.init(std.testing.allocator, &scanner);
+        defer parser.deinit();
+
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    }
 }
