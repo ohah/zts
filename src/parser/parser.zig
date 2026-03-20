@@ -319,23 +319,26 @@ pub const Parser = struct {
     /// checkSpreadRestInit + checkEscapedKeywordInPattern +
     /// checkStrictAssignmentTarget 5개 함수를 하나로 통합한다.
     ///
+    /// cover grammar: expression → assignment target으로 변환.
+    /// 태그를 변환하고 (setTag) 검증도 수행한다.
     /// 반환값: true면 valid assignment target, false면 에러를 이미 추가했거나 invalid.
     /// is_top이 true면 최상위 호출 (invalid일 때 "invalid assignment target" 에러 추가).
     fn coverExpressionToAssignmentTarget(self: *Parser, idx: NodeIndex, is_top: bool) bool {
         if (idx.isNone()) return false;
         const node = self.ast.getNode(idx);
         return switch (node.tag) {
-            // 1) identifier — valid target. escaped keyword + strict eval/arguments 검증.
+            // 1) identifier — valid target. 태그를 assignment_target_identifier로 변환.
             .identifier_reference => {
                 // escaped keyword 검증: v\u0061r → "var"이면 에러
                 self.checkIdentifierEscapedKeyword(node.span);
                 // strict mode: eval/arguments에 할당 금지 (checkStrictBinding 내부에서 strict 체크)
                 self.checkStrictBinding(node.span);
+                self.ast.setTag(idx, .assignment_target_identifier);
                 return true;
             },
             .private_identifier, .private_field_expression => true,
 
-            // 2) member expression — optional chaining이 아니면 valid
+            // 2) member expression — optional chaining이 아니면 valid (태그 유지)
             .static_member_expression, .computed_member_expression => {
                 if (node.data.binary.flags == 0) return true; // normal
                 // optional chaining (a?.b, a?.[b])은 assignment target이 아님
@@ -343,14 +346,16 @@ pub const Parser = struct {
                 return false;
             },
 
-            // 3) array destructuring — 각 요소를 재귀 검증
+            // 3) array destructuring — 태그를 array_assignment_target으로 변환 + 자식 재귀
             .array_expression => {
+                self.ast.setTag(idx, .array_assignment_target);
                 self.coverArrayExpressionToTarget(node);
                 return true;
             },
 
-            // 4) object destructuring — 각 프로퍼티를 재귀 검증
+            // 4) object destructuring — 태그를 object_assignment_target으로 변환 + 자식 재귀
             .object_expression => {
+                self.ast.setTag(idx, .object_assignment_target);
                 self.coverObjectExpressionToTarget(node);
                 return true;
             },
@@ -372,8 +377,12 @@ pub const Parser = struct {
                 return self.coverExpressionToAssignmentTarget(inner, is_top);
             },
 
-            // 6) assignment expression은 nested 위치에서 유효 (destructuring default)
-            //    하지만 이 함수는 assignment target 검증이므로 invalid
+            // 6) 이미 변환된 assignment target 태그는 유지
+            .assignment_target_identifier,
+            .array_assignment_target,
+            .object_assignment_target,
+            => true,
+
             else => {
                 if (is_top) self.addError(node.span, "invalid assignment target");
                 return false;
@@ -384,11 +393,13 @@ pub const Parser = struct {
     /// spread element의 operand를 검증하는 cover grammar 헬퍼.
     /// rest에 initializer가 있으면 에러를 내고, operand를 재귀 검증한다.
     /// coverArrayExpressionToTarget과 coverObjectExpressionToTarget에서 공통 사용.
-    fn coverSpreadElementToTarget(self: *Parser, operand_idx: NodeIndex) void {
+    fn coverSpreadElementToTarget(self: *Parser, spread_idx: NodeIndex, operand_idx: NodeIndex) void {
         const operand = self.ast.getNode(operand_idx);
         if (operand.tag == .assignment_expression) {
             self.addError(operand.span, rest_init_error);
         }
+        // spread_element → assignment_target_rest로 변환
+        self.ast.setTag(spread_idx, .assignment_target_rest);
         _ = self.coverExpressionToAssignmentTarget(operand_idx, false);
     }
 
@@ -403,10 +414,15 @@ pub const Parser = struct {
             const elem = self.ast.getNode(elem_idx);
             switch (elem.tag) {
                 .spread_element => {
-                    self.coverSpreadElementToTarget(elem.data.unary.operand);
+                    // rest는 마지막 요소여야 함: [...x, y] → SyntaxError
+                    if (i + 1 < list.len) {
+                        self.addError(elem.span, "rest element must be last element");
+                    }
+                    self.coverSpreadElementToTarget(elem_idx, elem.data.unary.operand);
                 },
                 .assignment_expression => {
-                    // [x = 1] → left를 재귀 검증 (nested pattern일 수 있음)
+                    // [x = 1] → assignment_target_with_default로 변환
+                    self.ast.setTag(elem_idx, .assignment_target_with_default);
                     _ = self.coverExpressionToAssignmentTarget(elem.data.binary.left, false);
                 },
                 else => {
@@ -436,12 +452,18 @@ pub const Parser = struct {
                         self.checkIdentifierEscapedKeyword(key_span);
                         // strict mode: shorthand에서 eval/arguments 할당 금지
                         self.checkStrictBinding(key_span);
+                        // shorthand → assignment_target_property_identifier
+                        self.ast.setTag(elem_idx, .assignment_target_property_identifier);
+                    } else {
+                        // long-form → assignment_target_property_property
+                        self.ast.setTag(elem_idx, .assignment_target_property_property);
                     }
                     // value를 재귀 검증 (nested pattern일 수 있음)
                     _ = self.coverExpressionToAssignmentTarget(elem.data.binary.right, false);
                 }
             } else if (elem.tag == .spread_element) {
-                self.coverSpreadElementToTarget(elem.data.unary.operand);
+                // object rest: {...x} = obj
+                self.coverSpreadElementToTarget(elem_idx, elem.data.unary.operand);
             }
         }
     }
