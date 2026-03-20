@@ -450,14 +450,23 @@ pub const Scanner = struct {
                         if (self.scanIdentifierEscape()) {
                             // 식별자 시작: 디코딩된 코드포인트가 ID_Start인지 검증
                             const esc_text = self.source[esc_start..self.current];
-                            if (self.decodeIdentifierEscapes(esc_text)) |decoded_name| {
-                                if (decoded_name.len > 0 and decoded_name[0] < 0x80) {
-                                    if (!isAsciiIdentStart(decoded_name[0])) {
-                                        // 유효한 식별자 시작 문자가 아님 (예: \u007B = '{')
-                                        self.current = esc_start + 1; // re-consume '\'
+                            const start_cp = self.decodeEscapeCodepoint(esc_text);
+                            if (start_cp) |cp| {
+                                if (cp < 0x80) {
+                                    if (!isAsciiIdentStart(@intCast(cp))) {
+                                        self.current = esc_start + 1;
+                                        break :blk .syntax_error;
+                                    }
+                                } else if (cp <= 0x10FFFF) {
+                                    if (!unicode.isIdentifierStart(@intCast(cp))) {
+                                        self.current = esc_start + 1;
                                         break :blk .syntax_error;
                                     }
                                 }
+                            } else {
+                                // 디코딩 실패 (예: \u{00_76}) → 유효하지 않은 이스케이프
+                                self.current = esc_start + 1;
+                                break :blk .syntax_error;
                             }
                             self.scanIdentifierTail();
                             // 이스케이프를 디코딩하여 키워드인지 판별.
@@ -1117,7 +1126,7 @@ pub const Scanner = struct {
                     if (self.scanLegacyOctalDigits()) return .syntax_error;
                     // 소수점 (legacy octal 뒤에도 소수점 가능: 010.5 → 10.5)
                     if (self.peek() == '.') {
-                        if (self.peekAt(1) != '.') {
+                        if (!(self.peekAt(1) == '.' and self.peekAt(2) == '.')) {
                             self.current += 1;
                             if (self.scanDecimalDigits()) return .syntax_error;
                             return self.checkNumericEnd(self.scanExponentPart(.float));
@@ -1134,8 +1143,11 @@ pub const Scanner = struct {
 
         // 소수점
         if (self.peek() == '.') {
-            // 1..toString() 같은 경우 방지: '..' 이면 소수점이 아님
-            if (self.peekAt(1) != '.') {
+            // 1..toString()에서 첫 번째 '.'은 소수점, 두 번째 '.'은 멤버 접근.
+            // '...'(spread)이면 소수점이 아님.
+            if (self.peekAt(1) == '.' and self.peekAt(2) == '.') {
+                // 1... → 1 다음에 spread operator → 소수점 아님
+            } else {
                 self.current += 1;
                 if (self.scanDecimalDigits()) return .syntax_error;
                 return self.checkNumericEnd(self.scanExponentPart(.float));
@@ -1415,11 +1427,19 @@ pub const Scanner = struct {
                     'u' => {
                         self.current += 1;
                         if (self.peek() == '{') {
-                            // \u{H...H} — 가변 길이
+                            // \u{H...H} — 가변 길이, 각 문자가 hex digit이어야 함
                             self.current += 1;
+                            var has_hex = false;
                             while (!self.isAtEnd() and self.peek() != '}') {
-                                self.current += 1;
+                                const hc = self.peek();
+                                if ((hc >= '0' and hc <= '9') or (hc >= 'a' and hc <= 'f') or (hc >= 'A' and hc <= 'F')) {
+                                    has_hex = true;
+                                    self.current += 1;
+                                } else {
+                                    return .syntax_error; // non-hex (예: '_' numeric separator)
+                                }
                             }
+                            if (!has_hex) return .syntax_error;
                             if (!self.isAtEnd()) self.current += 1; // consume '}'
                         } else {
                             // \uHHHH — 고정 4자리
@@ -1636,14 +1656,23 @@ pub const Scanner = struct {
                     if (!self.scanIdentifierEscape()) break;
                     // 디코딩된 코드포인트가 ID_Continue인지 검증
                     const esc_slice = self.source[esc_pos..self.current];
-                    if (self.decodeIdentifierEscapes(esc_slice)) |decoded| {
-                        if (decoded.len == 1 and decoded[0] < 0x80) {
-                            if (!isAsciiIdentContinue(decoded[0])) {
-                                // \u0009 (TAB) 등 유효하지 않은 코드포인트
-                                self.current = esc_pos; // rollback
+                    const cp = self.decodeEscapeCodepoint(esc_slice);
+                    if (cp) |codepoint| {
+                        if (codepoint < 0x80) {
+                            if (!isAsciiIdentContinue(@intCast(codepoint))) {
+                                self.current = esc_pos;
+                                break;
+                            }
+                        } else if (codepoint <= 0x10FFFF) {
+                            if (!unicode.isIdentifierContinue(@intCast(codepoint))) {
+                                self.current = esc_pos;
                                 break;
                             }
                         }
+                    } else {
+                        // 디코딩 실패 → 유효하지 않은 이스케이프
+                        self.current = esc_pos;
+                        break;
                     }
                 } else {
                     break;
@@ -1679,6 +1708,34 @@ pub const Scanner = struct {
             _ = self.skipHexEscape(4);
         }
         return true;
+    }
+
+    /// 단일 유니코드 이스케이프 시퀀스 (\uXXXX 또는 \u{XXXX})에서 코드포인트를 추출한다.
+    /// 식별자 시작/계속 문자의 유효성 검증에 사용한다.
+    fn decodeEscapeCodepoint(_: *Scanner, raw: []const u8) ?u32 {
+        // raw가 \uXXXX 또는 \u{XXXX} 형태인지 확인
+        if (raw.len < 2) return null;
+        var i: usize = 0;
+        // 여러 이스케이프가 연결된 경우 첫 번째만 추출
+        if (raw[i] != '\\' or raw[i + 1] != 'u') return null;
+        i += 2;
+        var codepoint: u32 = 0;
+        if (i < raw.len and raw[i] == '{') {
+            i += 1;
+            while (i < raw.len and raw[i] != '}') {
+                const digit = std.fmt.charToDigit(raw[i], 16) catch return null;
+                codepoint = codepoint * 16 + digit;
+                i += 1;
+            }
+        } else {
+            var j: usize = 0;
+            while (j < 4 and i < raw.len) : (j += 1) {
+                const digit = std.fmt.charToDigit(raw[i], 16) catch return null;
+                codepoint = codepoint * 16 + digit;
+                i += 1;
+            }
+        }
+        return codepoint;
     }
 
     /// 이스케이프가 포함된 식별자 텍스트를 디코딩하여 실제 문자열을 반환한다.
@@ -2251,19 +2308,20 @@ test "Scanner: numeric separator" {
     try std.testing.expectEqual(Kind.binary, scanner.token.kind);
 }
 
-test "Scanner: 1..toString is not float" {
-    // 1..toString() → decimal(1) dot dot identifier(toString) ...
+test "Scanner: 1..toString is float then dot" {
+    // 1..toString() → float(1.) dot identifier(toString) — 소수점 뒤 멤버 접근
     const source = "1..toString";
     var scanner = Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
     scanner.next();
-    try std.testing.expectEqual(Kind.decimal, scanner.token.kind);
-    try std.testing.expectEqualStrings("1", scanner.tokenText());
+    try std.testing.expectEqual(Kind.float, scanner.token.kind);
+    try std.testing.expectEqualStrings("1.", scanner.tokenText());
     scanner.next();
     try std.testing.expectEqual(Kind.dot, scanner.token.kind);
     scanner.next();
-    try std.testing.expectEqual(Kind.dot, scanner.token.kind);
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+    try std.testing.expectEqualStrings("toString", scanner.tokenText());
 }
 
 test "Scanner: float with exponent" {
