@@ -293,8 +293,38 @@
 - **결정**: parse + early 통합 (is_negative_parse 하나로 처리)
 - **이유**: ECMAScript에서 early error는 실행 전 검출 대상. 트랜스파일러 관점에서 parse/early 구분 불필요. oxc/SWC도 같은 파이프라인에서 처리
 
-### Phase 6 (Advanced) 시작 시
-- 번들러 아키텍처 (의존성 그래프, 청크 분할)
+### D056: 번들러 개발 전략
+- **결정**: 품질 먼저 → 속도 추가 (방법 B)
+- **비교**: 방법 A(속도 먼저, esbuild/Bun) vs 방법 B(품질 먼저, Rollup→Rolldown)
+- **이유**: 속도 최적화된 구조에 정교한 분석을 끼워넣기 어려움 (esbuild가 tree-shaking 개선 못 하는 이유). 반대로 정확한 알고리즘을 Zig/Arena/SIMD로 빠르게 만드는 건 인프라 최적화로 가능. ZTS 파서가 이미 정확도 우선(Test262 99%+)으로 만들어졌으므로 방법 B가 자연스러움.
+
+### D057: 모듈 그래프 최우선
+- **결정**: 모듈 그래프가 번들러의 최우선 구현 대상
+- **이유**: tree-shaking, code splitting, 스코프 호이스팅, HMR, 증분 재빌드 전부 모듈 그래프 위에서 동작. 그래프 없이는 나머지 기능 구현 불가. 구현 순서: 모듈 해석 → 모듈 그래프 → 단일 번들 → 스코프 호이스팅 → tree-shaking → code splitting.
+- **참고**: Rollup `src/Graph.ts`, Rolldown `crates/rolldown/src/module_loader/`
+
+### D058: ESM 실행 순서 보장
+- **결정**: 모듈 그래프 설계 시점에 ESM 실행 순서를 보장하는 구조 확립
+- **이유**: 나중에 끼워넣기 어려움. 병렬 파싱(속도) + 순서 보장(정확도)을 양립하려면 그래프에 슬롯을 import 순서대로 예약하고, 파싱은 병렬로 하되 슬롯 순서가 실행 순서를 결정하는 설계 필요. Rollup의 DFS 후위 순서 알고리즘(~100줄) 참고. Rollup 자체도 "현재 알고리즘이 불완전"이라 인정하므로, 더 정교한 설계 여지 있음.
+- **참고**: Rollup `src/utils/executionOrder.ts`, Rolldown의 슬롯 예약 방식
+
+### D059: 스코프 호이스팅 방식
+- **결정**: Rolldown식 (Rollup 알고리즘 + 네이티브 속도)
+- **비교**: Webpack식 래핑(A) vs esbuild식 보수적 호이스팅(B) vs Rolldown식 정교한 호이스팅(C)
+- **이유**: 안정성과 성능 둘 다 추구 (방법 B 전략). Rollup이 10년간 검증한 알고리즘으로 안정성 확보, Zig 네이티브로 성능 확보. 보수적 폴백(esbuild)은 번들 품질을 희생. 래핑(Webpack)은 런타임 오버헤드.
+- CJS 모듈은 래핑 폴백 (호이스팅 불가), 순환 참조는 Rollup 알고리즘으로 처리
+
+### D060: 플러그인 시스템
+- **결정**: Rolldown 방식 — Rollup 호환 JS 플러그인 + Zig 네이티브 + WASM (3층)
+- **비교**: esbuild(Go↔JS IPC, 느림) vs SWC(WASM only, Rust 필수) vs Rolldown(Rollup 호환 + 네이티브)
+- **이유**: Rollup 호환으로 Day 1부터 기존 생태계 활용 가능 (수천 개 플러그인). 성능 중요한 내장 기능(resolve, commonjs)은 Zig 네이티브. SWC처럼 WASM only로 가면 진입장벽 높고 생태계 부족.
+- **구현**: 내부 Plugin 인터페이스 하나 + 어댑터 3개 (ZigPlugin/JsPlugin/WasmPlugin). 번들러 코드는 Plugin 인터페이스만 사용.
+- **JS 플러그인**: N-API로 같은 프로세스에서 호출 (esbuild의 IPC 문제 없음)
+- Rollup 핵심 훅: resolveId, load, transform (3개만 알면 대부분 구현 가능)
+
+### Phase 6 (Advanced) 미결정 사항
+- Metro 호환 상세 (Haste 모듈, 플랫폼 확장자, RAM 번들)
 - 트리쉐이킹 수준 (문/식/프로퍼티)
-- WASM 플러그인 인터페이스 (ABI 설계, 데이터 직렬화)
+- CSS 번들링 (자체 파서 vs Lightning CSS 연동)
+- 개발 서버 (자체 HTTP vs 외부 연동)
 - WASM AST API 직렬화 (ESTree 호환? 자체 포맷?)

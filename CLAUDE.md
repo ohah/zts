@@ -32,12 +32,18 @@ src/
 tests/
   test262/                  # TC39 공식 Test262 (서브모듈)
 references/                 # 레퍼런스 프로젝트 (.gitignore, 로컬만)
-  bun/                      #   Zig — 파서/렉서 참고
-  esbuild/                  #   Go — 아키텍처/설정 참고
-  oxc/                      #   Rust — 트랜스포머/isolated declarations 참고
+  bun/                      #   Zig — 파서/렉서/SIMD 참고
+  esbuild/                  #   Go — 번들러 아키텍처/모듈 해석/설정 참고
+  oxc/                      #   Rust — 트랜스포머/isolated declarations/파서 참고
   swc/                      #   Rust — 전체 기능/Flow 참고
   hermes/                   #   C++ — Flow 파서 임베딩 소스
-  metro/                    #   JS — React Native 번들러 참고
+  metro/                    #   JS — React Native 번들러/Metro 호환 참고
+  rollup/                   #   JS — tree-shaking/스코프 호이스팅 원조 참고
+  rolldown/                 #   Rust — Rollup 호환 번들러/Vite 통합 참고
+  webpack/                  #   JS — code splitting/플러그인 시스템/HMR 참고
+  vite/                     #   JS — 개발 서버/HMR/플러그인 API 참고
+  turbopack/                #   Rust — 증분 컴파일/캐싱 전략 참고
+  babel/                    #   JS — 플러그인 시스템/스펙 추종 참고
 ```
 
 ## Architecture Decisions (요약, 전체는 DECISIONS.md 참조)
@@ -90,13 +96,266 @@ references/                 # 레퍼런스 프로젝트 (.gitignore, 로컬만)
 - Strict mode는 파서에서 추적 ("use strict" directive + module mode)
 - Test262 early phase는 parse와 통합
 
-### Advanced Features (Phase 6)
-- ES 다운레벨링: ES2024→ES2016 점진적, ES2015는 그 이후, ES5는 미정
-- WASM 플러그인, WASM 공개 AST API
-- .d.ts 생성 (isolatedDeclarations)
-- React Fast Refresh
-- 미니파이어 (whitespace/syntax/identifiers 개별)
-- 번들러 (paths/baseUrl/moduleResolution 활성화)
+### Advanced Features (Phase 6) — 구현 순서 및 의존성
+
+#### 의존성 관계
+```
+AST 안정화 ──────────────┬──→ WASM 공개 AST API
+                         └──→ .d.ts (isolatedDeclarations)
+
+Arena allocator ─────────┬──→ 번들러 (파일별 arena reset)
+번들러 아키텍처 설계 ────┼──→ 멀티스레드
+                         └──→ 미니파이어 (tree-shaking + minify 연동)
+
+독립 (아무 때나): ES 다운레벨링, React Fast Refresh, regexp, SIMD, Flow
+```
+
+#### 추천 구현 순서
+1. **Test262 마무리 + regexp validator** — 파서 안정화, AST 변경 완료
+2. **Arena allocator 설계 + 도입** — 번들러 전 필수. Phase별 lifetime 설계 (parse → transform → codegen). 나중에 넣을수록 변경 범위 커짐
+3. **ES 다운레벨링** (ES2024→ES2016 점진적, ES2015 이후, ES5 미정) — 트랜스포머 visitor 추가. 독립적이라 언제든 가능하지만 AST 안정화 후가 이상적
+4. **.d.ts 생성** (isolatedDeclarations) — AST 순회로 타입 추출. AST 태그가 안정화된 후
+5. **번들러 설계** (멀티스레드 모델 포함) — 아래 번들러 상세 참조
+6. **번들러 MVP** — Arena + 멀티스레드 + 모듈 해석 통합
+7. **프로파일링 → SIMD → 미니파이어** — 번들러 MVP로 현실적 벤치마크 가능. SIMD는 렉서 함수 3개 교체 (공백 스킵, 식별자 스캔, 문자열 스캔), 인터페이스 불변이라 언제 넣어도 비용 동일
+8. **WASM 공개 AST API** — 모든 게 안정화된 후. AST 변동 중 넣으면 매번 breaking change
+
+#### 번들러 상세 설계
+
+##### 경쟁 환경
+- **Rolldown** (Rust, oxc 기반): Vite 생태계 백업, Rollup+esbuild 대체 목표. Rollup 플러그인 호환
+- **esbuild** (Go): 속도 기준점, 범용 번들러, 플러그인 제한적
+- **Bun** (Zig+C++): 런타임 내장 번들러, 속도 최우선
+- **Turbopack** (Rust, SWC 기반): Next.js 전용, 증분 컴파일 특화
+
+##### ZTS 번들러 포지셔닝
+- **전략: 품질 먼저 → 속도 추가 (방법 B)** — Rollup→Rolldown 전략을 Zig로
+  - 1단계: 정확한 파서/트랜스포머 (✅ 완료, Test262 99.3%)
+  - 2단계: 정확한 tree-shaking/스코프 호이스팅 (Rollup 알고리즘 참고)
+  - 3단계: Arena + SIMD + 멀티스레드로 속도 확보 (알고리즘 타협 없이)
+- **핵심 목표**: React Native 지원 (Metro 대체), ESM 순서 보장, WASM 임베디드 번들러
+- **트레이드오프**: 코드베이스 최소화보다 정확도+기능 우선. 기능이 늘면 코드는 커짐을 수용
+
+##### 번들러 핵심 구현 순서 (의존성 순)
+```
+1. 모듈 해석 (경로 → 파일)       ← 그래프의 노드를 찾는 법
+2. 모듈 그래프 구축               ← 모든 것의 기반 (ESM 순서 보장 여기서 설계)
+3. 단일 파일 번들 (연결만)        ← 가장 단순한 출력, 동작 검증
+4. 스코프 호이스팅                ← 번들 품질 (변수 충돌 해결)
+5. Tree-shaking                  ← 번들 크기 (미사용 export 제거)
+6. Code splitting                ← 고급 (청크 분할, 런타임 로더)
+```
+모듈 그래프가 없으면 4~6 전부 불가능. 1→2가 번들러의 핵심.
+
+##### 번들러 Phase별 기능 분류
+```
+Phase B1: 기반                    Phase B2: 핵심           Phase B3: 고급
+─────────────────                 ──────────────           ──────────────
+모듈 해석 (Node/TS)               Tree-shaking             Code splitting
+  ├ node_modules 탐색              ├ export 사용 추적       ├ 동적 import 분할
+  ├ package.json exports           ├ @__PURE__              ├ 공통 청크 추출
+  ├ tsconfig paths/baseUrl         ├ sideEffects 필드       ├ 런타임 로더
+  └ 조건부 exports                 └ 깊은 분석 (점진적)     └ CSS code splitting
+모듈 그래프                       스코프 호이스팅           플러그인 시스템
+  ├ 정적 import/export             ├ 변수 이름 충돌 해결     ├ resolve/load/transform 훅
+  ├ 순환 참조 감지                 ├ ESM 실행 순서 보장      ├ Rollup 플러그인 호환
+  └ 동적 import                    └ CJS 호환 래핑          └ Vite 플러그인 호환
+단일 파일 번들 생성               개발 서버 + HMR          React Native 지원
+  └ 진입점 → 단일 출력              ├ HTTP + WebSocket       ├ Metro 호환 해석
+                                   ├ import.meta.hot         ├ 플랫폼 확장자 (.ios/.android)
+                                   ├ React Fast Refresh      ├ polyfill 주입
+                                   └ 증분 재빌드             └ Hermes 타겟 최적화
+```
+
+##### React Native 지원 (Rollipop 방식 — Metro 레거시 탈피)
+- **참고**: Rollipop (bungae/reference/rollipop) — Rolldown 위에서 Metro를 대체하는 프로젝트
+- **방향**: Metro의 `__d` 래핑/Haste/의존성 맵 등 레거시를 버리고 표준 번들링으로 RN 지원
+- **표준 모듈 해석**: Haste 대신 Node.js 표준 + Yarn PnP 호환
+- **표준 번들링**: `__d` 래핑 대신 스코프 호이스팅 (웹과 동일)
+- **플랫폼 확장자**: `Button.ios.js` / `Button.android.js` — resolver 플러그인으로 처리
+- **글로벌 주입**: `__DEV__`, `Platform.OS` 등 — define 치환 (이미 ZTS에 구현됨)
+- **Hermes 타겟**: `.hbc` 바이트코드 출력 — Hermes 컴파일러와 C ABI 연동
+- **증분 빌드**: DeltaBundler 개념을 모듈 그래프 + watch 기반으로 재구현
+
+##### ESM 실행 순서 보장
+- 스코프 호이스팅 시 원본 ESM의 top-level 코드 실행 순서가 바뀌면 안 됨
+- 예: `import './a'; import './b';` → a.js의 사이드이펙트가 b.js보다 먼저 실행 보장
+- 순환 참조 + 사이드이펙트 + 스코프 호이스팅이 충돌하는 복잡한 문제
+- **모듈 그래프 설계 단계에서 잡아야 함** — 나중에 끼워넣기 어려움
+- Rollup 참고: `rollup/src/utils/executionOrder.ts` (~100줄, DFS 후위 순서)
+- Rolldown 참고: `rolldown/crates/rolldown/src/chunk_graph/`
+
+##### 모듈 그래프 설계 (Rollup 코드 분석 기반)
+- Rollup의 `analyseModuleExecution`: DFS 후위 순서로 execIndex 부여
+  - 정적 dependencies 재귀 방문
+  - 순환 참조 → cyclePaths 기록 (에러 아닌 경고)
+  - 동적 import → 별도 Set, 정적 의존성 처리 후 방문
+  - top-level await 있는 동적 import → 정적 의존성으로 승격
+- Rollup 자체도 "현재 알고리즘이 불완전" 인정 (주석에 명시)
+
+**ZTS 번들러 모듈 설계 (책임 분리):**
+```
+src/bundler/
+  │
+  ├─ mod.zig              # 번들러 엔트리 (파이프라인 오케스트레이션만)
+  │
+  ├─ resolver.zig         # 모듈 해석 (경로 → 파일)
+  │   입력: import 경로 + 현재 파일 위치
+  │   출력: 절대 파일 경로
+  │   책임: node_modules, package.json, tsconfig paths
+  │   의존: 파일시스템만. 파서 불필요.
+  │
+  ├─ graph.zig            # 모듈 그래프
+  │   입력: 진입점 목록
+  │   출력: 정렬된 모듈 목록 + 의존성 관계
+  │   책임: DFS 순회, 순환 참조 감지, exec_index 부여
+  │   의존: resolver + parser (파싱은 위임)
+  │
+  ├─ module.zig           # 모듈 단위 데이터
+  │   입력: 파일 내용
+  │   출력: AST + import/export 목록 + 심볼 테이블
+  │   책임: 단일 모듈의 모든 정보 보유
+  │   의존: parser, semantic analyzer
+  │
+  ├─ linker.zig           # 링킹 (스코프 호이스팅)
+  │   입력: 모듈 그래프 + 각 모듈의 심볼
+  │   출력: 글로벌 심볼 테이블 + 이름 충돌 해결
+  │   책임: 심볼 바인딩, 이름 mangling, import→변수 교체
+  │   의존: graph, module
+  │
+  ├─ tree_shaker.zig      # Tree-shaking
+  │   입력: 링킹된 모듈 그래프
+  │   출력: 사용/미사용 마킹
+  │   책임: export 사용 추적, @__PURE__, sideEffects
+  │   의존: linker
+  │
+  ├─ chunk.zig            # 청크 분할 (Code splitting)
+  │   입력: tree-shaking된 모듈 그래프
+  │   출력: 청크 목록 (어떤 모듈이 어떤 청크에)
+  │   책임: 동적 import 분할, 공통 청크 추출
+  │   의존: tree_shaker
+  │
+  └─ emitter.zig          # 출력 생성
+      입력: 청크 목록 + 링킹 정보
+      출력: JS 파일 + 소스맵
+      책임: exec_index 순서로 코드 배치, 런타임 로더 생성
+      의존: codegen (기존 Phase 4 재사용)
+```
+설계 원칙:
+- **단방향 의존**: resolver → graph → linker → tree_shaker → chunk → emitter
+- **독립 테스트 가능**: 각 모듈이 입력/출력 명확, 다른 모듈의 내부를 모름
+- **기존 코드 재사용**: parser, semantic, codegen, transformer를 도구로 위임
+
+**Module에 필요한 정보 (Rollup 분석 결과):**
+```zig
+const Module = struct {
+    path: []const u8,
+    ast: ?Ast,                     // 파싱된 AST (파싱 전에는 null)
+    dependencies: []ModuleIndex,   // 정적 import (순서 보장 — 배열)
+    dynamic_imports: []ModuleIndex,// 동적 import (별도 관리)
+    implicit_before: []ModuleIndex,// 암시적 로딩 순서
+    exports: ExportMap,            // export 이름 → 심볼
+    side_effects: bool,            // tree-shaking 판단
+    exec_index: u32,               // DFS 후위 순서 = 실행 순서
+    cycle_group: u32,              // 순환 참조 그룹 ID
+    uses_top_level_await: bool,    // 동적→정적 승격 판단
+    state: enum { reserved, parsing, ready },
+};
+```
+
+**병렬 파싱 + 순서 보장 전략 (Rolldown 방식):**
+1. 진입점 파싱 → import 발견 → 그래프에 슬롯 예약 (import 순서대로)
+2. 예약된 모듈을 병렬 파싱 (파일별 Arena, 멀티스레드)
+3. 파싱 완료 → 예약 슬롯에 AST 채움 → 새로운 import 발견 → 다시 슬롯 예약
+4. 모든 파싱 완료 후 DFS 후위 순서로 exec_index 부여 (싱글스레드)
+5. 슬롯 예약 순서가 import 순서를 보장 → exec_index가 ESM 실행 순서 보장
+
+##### 성능 저하 위험 포인트
+| 기능 | 위험도 | 원인 | 대응 |
+|------|--------|------|------|
+| 모듈 해석 | **높음** | 파일시스템 I/O 폭발 (node_modules 탐색) | 해석 결과 캐시, 병렬 I/O |
+| Tree-shaking (깊은) | **높음** | 전체 AST 재순회 | 1단계는 export 추적만, 점진적 |
+| Code splitting | **높음** | 청크 분할이 NP-hard에 근접 | esbuild처럼 단순 자동 분리 먼저 |
+| 스코프 호이스팅 | 중간 | 변수 충돌 해결에 심볼 테이블 필요 | semantic analyzer 재활용 |
+| 모듈 그래프 | 중간 | 파싱 대기 | 파싱과 동시 구축 (esbuild 방식) |
+
+##### 번들러 핵심 기능 (구현 난이도 순)
+```
+1. 모듈 해석         ████░░░░░░  (paths, baseUrl, node_modules, exports 필드)
+2. 모듈 그래프 구축   ████░░░░░░  (import/export 관계, 순환 참조 감지)
+3. Tree-shaking      ████░░░░░░  (export 사용 추적, @__PURE__ 활용, 사이드 이펙트 분석)
+4. 번들 생성         █████░░░░░  (스코프 호이스팅, 네임스페이스 래핑)
+5. 플러그인 시스템    ██████░░░░  (resolve/load/transform 훅)
+6. HMR              ███████░░░  (모듈 그래프 diff, 핫 리로드 프로토콜)
+7. Code splitting    ████████░░  (청크 분할 알고리즘, 공통 청크 추출, 런타임 로더)
+8. CSS 번들링        ████████░░  (별도 파서, @import 해석, CSS modules)
+```
+
+##### Tree-shaking 구현 전략
+- **1단계**: export 사용 추적 — 모듈 그래프에서 미사용 export 제거 (쉬움)
+- **2단계**: `@__PURE__` 활용 — 렉서가 이미 추적 중, 순수 호출 제거 (중간)
+- **3단계**: 사이드 이펙트 분석 — getter/proxy/global 변수 판단 (어려움)
+- ZTS 유리점: semantic analyzer의 스코프/심볼이 이미 있고, `@__PURE__` 렉서 지원, 인덱스 기반 AST로 노드 제거가 태그 변경만으로 가능
+
+##### Code splitting 구현 전략
+- 동적 import (`import('./page')`) 기준 청크 분할
+- 공통 모듈 추출: 여러 진입점이 공유하는 모듈 → 별도 청크
+- 순환 참조: 같은 청크로 묶기
+- 런타임 로더: 청크를 동적 로드하는 코드 생성 (ESM 기반)
+
+##### 멀티스레드 모델
+- **파일 파싱**: 파일별 독립 Arena → lock-free 병렬 파싱
+- **모듈 그래프**: 싱글 스레드 (의존성 순서가 중요)
+- **변환/코드젠**: 파일별 병렬
+- Zig의 `std.Thread.Pool` + 파일별 Arena 독립으로 Rust 대비 lock contention 최소화 가능
+
+##### 파일 변경 감지 전략
+- **현재**: OS 파일시스템 이벤트 (macOS kqueue, Linux inotify, Windows ReadDirectoryChangesW) — Phase 5에서 구현 완료
+- **추가 예정**:
+  - 폴링 폴백: Docker 볼륨/NFS 등 OS 이벤트가 불안정한 환경 대응 (mtime 비교)
+  - LSP 연동: 에디터 didSave/didChange 이벤트로 파일 저장 전에도 감지 가능
+  - io_uring (Linux): inotify보다 시스템콜 오버헤드 적은 비동기 I/O (성능 최적화 시점)
+- **증분 재빌드**: 파일 변경 → 모듈 그래프에서 영향받는 모듈만 재빌드 → HMR 전송 (번들러와 같이 구현)
+
+##### HMR (Hot Module Replacement)
+- **단계적 구현**: 최소(바운더리 표시) → 중간(자체 서버) → 풀(프레임워크 통합)
+- 번들러가 담당: 모듈 그래프 diff, 변경 모듈 증분 재빌드, `import.meta.hot` API 주입
+- 개발 서버: HTTP + WebSocket 내장 (esbuild `--serve` 방식)
+- React Fast Refresh와 연동하여 컴포넌트 상태 유지 핫 리로드
+- watch 모드 + 증분 재빌드 + 파일 감지 전략을 기반으로 확장
+
+##### 외부 통합 (플러그인/라이브러리)
+ZTS 코어를 외부 빌드 도구에서 사용할 수 있도록 다층 인터페이스 제공:
+```
+Zig 코어 (parser + transformer + codegen)
+    │
+    ├─ CLI (직접 사용) — ✅ 이미 구현
+    ├─ C ABI (.so/.dylib) — Zig export fn으로 노출
+    │   └─ N-API 네이티브 모듈 (npm 패키지, 최고 속도)
+    │       ├─ vite-plugin-zts    (esbuild 자리 대체)
+    │       ├─ zts-loader         (swc-loader 자리 대체)
+    │       └─ rollup-plugin-zts
+    └─ WASM (.wasm) — ✅ 빌드 이미 가능
+        └─ @zts/wasm (npm 패키지)
+            ├─ 브라우저 playground / 온라인 REPL
+            └─ Deno/Bun/Cloudflare Workers 호환
+```
+- **도입 시점**: Phase 6 초반에 C ABI 노출 → N-API 바인딩 → npm 패키지 → 플러그인 래퍼
+- **핵심**: N-API 바인딩 하나만 만들면 Vite/Webpack/Rollup 플러그인은 JS 래퍼 수십 줄
+- esbuild, SWC가 동일한 구조로 생태계 확장에 성공한 검증된 패턴
+
+#### 성능 최적화 도입 시기
+| 최적화 | 추천 시점 | 이유 |
+|--------|-----------|------|
+| Arena allocator | Phase 6 시작 전 | 번들러에 필수, 늦을수록 비용 증가 |
+| SIMD | 번들러 MVP 후 | 프로파일링 후 적용이 정석, 렉서만 건드려서 언제든 동일 비용 |
+| 멀티스레드 | 번들러 설계 시 | 아키텍처에 스레드 모델 포함해야 함 |
+| 프로파일링 | 2단계 (번들러 MVP 후 + 프로덕션 전) | 실제 워크로드 필요 |
+
+#### 독립 기능 (아무 단계에 끼워 넣기 가능)
+- React Fast Refresh — 트랜스포머에 HMR boundary 주입
+- Flow 지원 — Hermes C++ 파서 C ABI 링크
+- regexp validator — 렉서 내부, 다른 모듈 영향 없음
 
 ## Commands
 ```bash

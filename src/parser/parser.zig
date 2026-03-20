@@ -1312,7 +1312,7 @@ pub const Parser = struct {
             self.has_cover_init_name = false;
         }
         const end = self.currentSpan().end;
-        _ = self.eat(.semicolon); // 세미콜론은 선택적 (ASI)
+        self.expectSemicolon(); // ASI 규칙 적용: 개행/}/EOF 있으면 삽입, 아니면 에러
         return try self.ast.addNode(.{
             .tag = .expression_statement,
             .span = .{ .start = start, .end = end },
@@ -1331,16 +1331,19 @@ pub const Parser = struct {
             // (ExpressionStatement의 lookahead 제한: `let [` 금지)
             return next.kind == .l_bracket;
         }
-        // 줄바꿈 없이 바로 오는 경우: identifier, [, { → LexicalDeclaration
+        // 줄바꿈 없이 바로 오는 경우: identifier, [, {, escaped_strict_reserved → LexicalDeclaration
         return next.kind == .identifier or next.kind == .l_bracket or next.kind == .l_curly or
+            next.kind == .escaped_strict_reserved or
             (next.kind.isKeyword() and !next.kind.isReservedKeyword() and !next.kind.isLiteralKeyword());
     }
 
     /// `identifier:` 패턴이면 labeled statement, 아니면 expression statement.
     fn parseExpressionOrLabeledStatement(self: *Parser) ParseError2!NodeIndex {
         // identifier/keyword: statement — labeled statement 판별
+        // kw_await/kw_yield도 조건부로 식별자/label 사용 가능 (non-async/non-generator)
         if (self.current() == .identifier or self.current() == .escaped_keyword or
             self.current() == .escaped_strict_reserved or
+            self.current() == .kw_await or self.current() == .kw_yield or
             (self.current().isKeyword() and !self.current().isReservedKeyword() and !self.current().isLiteralKeyword()))
         {
             const peek = self.peekNext();
@@ -1434,7 +1437,13 @@ pub const Parser = struct {
         }
 
         const end = self.currentSpan().end;
-        _ = self.eat(.semicolon);
+        // for 초기화절에서는 세미콜론을 for 루프 파서가 처리한다.
+        // 일반 문맥에서는 ASI 규칙으로 세미콜론을 처리한다.
+        if (self.for_loop_init) {
+            // for(var x = 0; ...) — 세미콜론은 parseForStatement에서 expect
+        } else {
+            self.expectSemicolon();
+        }
 
         const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
         self.restoreScratch(scratch_top);
@@ -1610,6 +1619,7 @@ pub const Parser = struct {
                 }
                 return self.parseForOf(start, init_expr);
             }
+            self.expect(.semicolon); // for 헤더의 첫 번째 세미콜론 (ASI 금지, 7.9.2)
             return self.parseForRest(start, init_expr);
         }
 
@@ -1643,7 +1653,7 @@ pub const Parser = struct {
             _ = self.coverExpressionToAssignmentTarget(init_expr, true);
             return self.parseForOf(start, init_expr);
         }
-        _ = self.eat(.semicolon);
+        self.expect(.semicolon); // for 헤더의 첫 번째 세미콜론 (ASI 금지, 7.9.2)
         return self.parseForRest(start, init_expr);
     }
 
@@ -1688,7 +1698,7 @@ pub const Parser = struct {
         if (self.current() != .semicolon) {
             test_expr = try self.parseExpression();
         }
-        _ = self.eat(.semicolon);
+        self.expect(.semicolon); // for 헤더의 두 번째 세미콜론 (ASI 금지, 7.9.2)
 
         var update_expr = NodeIndex.none;
         if (self.current() != .r_paren) {
@@ -1790,8 +1800,18 @@ pub const Parser = struct {
         self.ctx.is_top_level = false;
 
         const scratch_top = self.saveScratch();
+        var has_default = false;
         while (self.current() != .r_curly and self.current() != .eof) {
+            // duplicate default 검출 (ECMAScript 14.12.1)
+            const is_default = self.current() == .kw_default;
+            const default_span = self.currentSpan();
             const case_node = try self.parseSwitchCase();
+            if (is_default) {
+                if (has_default) {
+                    self.addError(default_span, "only one default clause is allowed in a switch statement");
+                }
+                has_default = true;
+            }
             try self.scratch.append(case_node);
         }
 
@@ -2295,11 +2315,31 @@ pub const Parser = struct {
                 self.advance(); // skip 'static'
                 const saved_in_static = self.in_static_initializer;
                 const saved_new_target = self.allow_new_target;
+                const saved_in_function = self.ctx.in_function;
+                const saved_in_loop = self.in_loop;
+                const saved_in_switch = self.in_switch;
+                const saved_in_generator = self.ctx.in_generator;
+                const saved_in_async = self.ctx.in_async;
+                const saved_super_property = self.allow_super_property;
                 self.in_static_initializer = true;
                 self.allow_new_target = true;
+                self.allow_super_property = true; // static block에서 super.prop 허용 (ECMAScript 15.7.14)
+                // static block은 독립 실행 컨텍스트: return/break/continue/yield 금지
+                // +Await: await은 binding identifier로 사용 불가 (ECMAScript 15.7.12)
+                self.ctx.in_function = false;
+                self.in_loop = false;
+                self.in_switch = false;
+                self.ctx.in_generator = false;
+                self.ctx.in_async = true;
                 const body = try self.parseBlockStatement();
                 self.in_static_initializer = saved_in_static;
                 self.allow_new_target = saved_new_target;
+                self.ctx.in_function = saved_in_function;
+                self.in_loop = saved_in_loop;
+                self.in_switch = saved_in_switch;
+                self.ctx.in_generator = saved_in_generator;
+                self.ctx.in_async = saved_in_async;
+                self.allow_super_property = saved_super_property;
                 return try self.ast.addNode(.{
                     .tag = .static_block,
                     .span = .{ .start = start, .end = self.currentSpan().start },
@@ -2331,9 +2371,10 @@ pub const Parser = struct {
             self.advance();
         }
 
-        // async (선택): async method() {}
+        // async (선택): async [no LineTerminator here] MethodName
+        // 스펙: async와 다음 토큰(*/PropertyName) 사이에 줄바꿈이 없어야 함
         if (self.current() == .kw_async and self.peekNextKind() != .l_paren and
-            !self.scanner.token.has_newline_before)
+            !self.peekNext().has_newline_before)
         {
             flags |= 0x08; // async flag
             self.advance();
@@ -2358,8 +2399,16 @@ pub const Parser = struct {
             // static initializer/class field의 arguments 제한이 적용되지 않는다.
             const saved_in_static_init = self.in_static_initializer;
             const saved_in_class_field_for_params = self.in_class_field;
+            const saved_in_async_for_params = self.ctx.in_async;
+            const saved_in_generator_for_params = self.ctx.in_generator;
+            const saved_super_prop_for_params = self.allow_super_property;
             self.in_static_initializer = false;
             self.in_class_field = false;
+            // async/generator 메서드의 파라미터에서 await/yield 금지
+            if ((flags & 0x08) != 0) self.ctx.in_async = true;
+            if ((flags & 0x10) != 0) self.ctx.in_generator = true;
+            // class 메서드의 파라미터에서 super.prop 허용 (ECMAScript 15.7.5)
+            self.allow_super_property = true;
             self.expect(.l_paren);
             self.in_formal_parameters = true;
             const param_top = self.saveScratch();
@@ -2442,6 +2491,9 @@ pub const Parser = struct {
             // 복원하므로, 여기서 원래 값으로 다시 복원해야 한다.
             self.in_static_initializer = saved_in_static_init;
             self.in_class_field = saved_in_class_field_for_params;
+            self.ctx.in_async = saved_in_async_for_params;
+            self.ctx.in_generator = saved_in_generator_for_params;
+            self.allow_super_property = saved_super_prop_for_params;
             const param_list = try self.ast.addNodeList(self.scratch.items[param_top..]);
             self.restoreScratch(param_top);
 
@@ -2502,7 +2554,8 @@ pub const Parser = struct {
             self.in_class_field = saved_in_class_field;
             self.allow_new_target = saved_new_target;
         }
-        _ = self.eat(.semicolon);
+        // class field 끝에서 ASI 규칙 적용: 같은 줄에 다른 멤버가 오면 에러
+        self.expectSemicolon();
 
         return try self.ast.addNode(.{
             .tag = .property_definition,
@@ -3865,7 +3918,7 @@ pub const Parser = struct {
                 // new.target — 메타 프로퍼티 (함수 안에서만 유효)
                 if (self.current() == .dot) {
                     const peek = self.peekNextKind();
-                    if (peek == .identifier or peek == .kw_target) {
+                    if (peek == .kw_target) {
                         self.advance(); // skip '.'
                         const target_span = self.currentSpan();
                         self.advance(); // skip 'target'
