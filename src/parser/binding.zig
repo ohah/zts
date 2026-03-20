@@ -22,7 +22,7 @@ pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
         self.current() == .kw_protected or self.current() == .kw_readonly)
     {
         const modifier_span = self.currentSpan();
-        const next = self.peekNextKind();
+        const next = try self.peekNextKind();
         // modifier 뒤에 식별자가 오면 parameter property
         if (next == .identifier or next == .l_bracket or next == .l_curly or
             next == .kw_readonly) // public readonly x
@@ -34,12 +34,12 @@ pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
                 .kw_readonly => 0x08,
                 else => 0,
             };
-            self.advance(); // skip first modifier
+            try self.advance(); // skip first modifier
 
             // 두 번째 modifier: public readonly x
             if (self.current() == .kw_readonly) {
                 modifier_flags |= 0x08;
-                self.advance();
+                try self.advance();
             }
 
             const inner = try parseBindingPattern(self);
@@ -54,9 +54,9 @@ pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
     // rest parameter: ...pattern
     if (self.current() == .dot3) {
         const rest_start = self.currentSpan().start;
-        self.advance(); // skip '...'
+        try self.advance(); // skip '...'
         const pattern = try parseBindingPattern(self);
-        self.checkBindingRestInit(pattern);
+        try self.checkBindingRestInit(pattern);
         return try self.ast.addNode(.{
             .tag = .spread_element,
             .span = .{ .start = rest_start, .end = self.currentSpan().start },
@@ -67,28 +67,28 @@ pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
     switch (self.current()) {
         .identifier => {
             const span = self.currentSpan();
-            self.checkStrictBinding(span);
-            self.advance();
+            try self.checkStrictBinding(span);
+            try self.advance();
             const node = try self.ast.addNode(.{
                 .tag = .binding_identifier,
                 .span = span,
                 .data = .{ .string_ref = span },
             });
             // TS: optional (?) + type annotation
-            _ = self.eat(.question); // optional parameter
+            _ = try self.eat(.question); // optional parameter
             _ = try self.tryParseTypeAnnotation();
             // default value: pattern = expr
             return tryWrapDefaultValue(self, node);
         },
         .l_bracket => {
             const pat = try parseArrayPattern(self);
-            _ = self.eat(.question);
+            _ = try self.eat(.question);
             _ = try self.tryParseTypeAnnotation();
             return tryWrapDefaultValue(self, pat);
         },
         .l_curly => {
             const pat = try parseObjectPattern(self);
-            _ = self.eat(.question);
+            _ = try self.eat(.question);
             _ = try self.tryParseTypeAnnotation();
             return tryWrapDefaultValue(self, pat);
         },
@@ -98,10 +98,10 @@ pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
             // 다른 reserved keyword의 escaped 형태는 항상 사용 불가.
             const is_escaped_await = self.isEscapedKeyword("await");
             if (!is_escaped_await or self.is_module or self.ctx.in_async) {
-                self.addError(self.currentSpan(), "Escaped reserved word cannot be used as identifier");
+                try self.addError(self.currentSpan(), "Escaped reserved word cannot be used as identifier");
             }
             const span = self.currentSpan();
-            self.advance();
+            try self.advance();
             return try self.ast.addNode(.{
                 .tag = .binding_identifier,
                 .span = span,
@@ -110,17 +110,17 @@ pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
         },
         .escaped_strict_reserved => {
             if (self.is_strict_mode) {
-                self.addError(self.currentSpan(), "Escaped reserved word cannot be used as identifier in strict mode");
+                try self.addError(self.currentSpan(), "Escaped reserved word cannot be used as identifier in strict mode");
             }
-            _ = self.checkYieldAwaitUse(self.currentSpan(), "identifier");
+            _ = try self.checkYieldAwaitUse(self.currentSpan(), "identifier");
             const span = self.currentSpan();
-            self.advance();
+            try self.advance();
             const node = try self.ast.addNode(.{
                 .tag = .binding_identifier,
                 .span = span,
                 .data = .{ .string_ref = span },
             });
-            _ = self.eat(.question);
+            _ = try self.eat(.question);
             _ = try self.tryParseTypeAnnotation();
             return tryWrapDefaultValue(self, node);
         },
@@ -128,9 +128,9 @@ pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
             // contextual 키워드는 바인딩 이름으로 사용 가능 (let, yield, async 등)
             // 단, reserved keyword / yield in generator / await in async 는 불가
             if (self.current().isKeyword()) {
-                self.checkKeywordBinding();
+                try self.checkKeywordBinding();
                 const span = self.currentSpan();
-                self.advance();
+                try self.advance();
                 const node2 = try self.ast.addNode(.{
                     .tag = .binding_identifier,
                     .span = span,
@@ -138,7 +138,7 @@ pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
                 });
                 return tryWrapDefaultValue(self, node2);
             }
-            self.addError(self.currentSpan(), "Binding pattern expected");
+            try self.addError(self.currentSpan(), "Binding pattern expected");
             return NodeIndex.none;
         },
     }
@@ -152,7 +152,7 @@ pub fn parseBindingIdentifier(self: *Parser) ParseError2!NodeIndex {
 /// `= expr` 이 있으면 assignment_pattern으로 감싼다. 없으면 원본 반환.
 /// 기본값 표현식에서는 `in` 연산자가 항상 허용된다 (ECMAScript: Initializer[+In]).
 pub fn tryWrapDefaultValue(self: *Parser, node: NodeIndex) ParseError2!NodeIndex {
-    if (self.eat(.eq)) {
+    if (try self.eat(.eq)) {
         const def_saved = self.enterAllowInContext(true);
         const default_val = try self.parseAssignmentExpression();
         self.restoreContext(def_saved);
@@ -172,8 +172,8 @@ pub fn parseBindingName(self: *Parser) ParseError2!NodeIndex {
     switch (self.current()) {
         .identifier => {
             const span = self.currentSpan();
-            self.checkStrictBinding(span);
-            self.advance();
+            try self.checkStrictBinding(span);
+            try self.advance();
             return try self.ast.addNode(.{
                 .tag = .binding_identifier,
                 .span = span,
@@ -188,10 +188,10 @@ pub fn parseBindingName(self: *Parser) ParseError2!NodeIndex {
             // 다른 reserved keyword의 escaped 형태는 항상 사용 불가.
             const is_escaped_await = self.isEscapedKeyword("await");
             if (!is_escaped_await or self.is_module or self.ctx.in_async) {
-                self.addError(self.currentSpan(), "Escaped reserved word cannot be used as identifier");
+                try self.addError(self.currentSpan(), "Escaped reserved word cannot be used as identifier");
             }
             const span = self.currentSpan();
-            self.advance();
+            try self.advance();
             return try self.ast.addNode(.{
                 .tag = .binding_identifier,
                 .span = span,
@@ -200,11 +200,11 @@ pub fn parseBindingName(self: *Parser) ParseError2!NodeIndex {
         },
         .escaped_strict_reserved => {
             if (self.is_strict_mode) {
-                self.addError(self.currentSpan(), "Escaped reserved word cannot be used as identifier in strict mode");
+                try self.addError(self.currentSpan(), "Escaped reserved word cannot be used as identifier in strict mode");
             }
-            _ = self.checkYieldAwaitUse(self.currentSpan(), "identifier");
+            _ = try self.checkYieldAwaitUse(self.currentSpan(), "identifier");
             const span = self.currentSpan();
-            self.advance();
+            try self.advance();
             return try self.ast.addNode(.{
                 .tag = .binding_identifier,
                 .span = span,
@@ -213,16 +213,16 @@ pub fn parseBindingName(self: *Parser) ParseError2!NodeIndex {
         },
         else => {
             if (self.current().isKeyword()) {
-                self.checkKeywordBinding();
+                try self.checkKeywordBinding();
                 const span = self.currentSpan();
-                self.advance();
+                try self.advance();
                 return try self.ast.addNode(.{
                     .tag = .binding_identifier,
                     .span = span,
                     .data = .{ .string_ref = span },
                 });
             }
-            self.addError(self.currentSpan(), "Binding pattern expected");
+            try self.addError(self.currentSpan(), "Binding pattern expected");
             return NodeIndex.none;
         },
     }
@@ -236,26 +236,26 @@ pub fn parseSimpleIdentifier(self: *Parser) ParseError2!NodeIndex {
         self.current() == .escaped_strict_reserved or self.current().isKeyword())
     {
         if (self.current() == .escaped_keyword) {
-            self.addError(span, "Escaped reserved word cannot be used as identifier");
+            try self.addError(span, "Escaped reserved word cannot be used as identifier");
         } else if (self.current() == .escaped_strict_reserved and self.is_strict_mode) {
-            self.addError(span, "Escaped reserved word cannot be used as identifier in strict mode");
+            try self.addError(span, "Escaped reserved word cannot be used as identifier in strict mode");
         } else {
-            self.checkKeywordBinding();
+            try self.checkKeywordBinding();
         }
-        self.advance();
+        try self.advance();
         return try self.ast.addNode(.{
             .tag = .binding_identifier,
             .span = span,
             .data = .{ .string_ref = span },
         });
     }
-    self.addError(span, "Identifier expected");
+    try self.addError(span, "Identifier expected");
     return NodeIndex.none;
 }
 
 pub fn parseArrayPattern(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    self.advance(); // skip [
+    try self.advance(); // skip [
 
     const scratch_top = self.saveScratch();
     while (self.current() != .r_bracket and self.current() != .eof) {
@@ -267,15 +267,15 @@ pub fn parseArrayPattern(self: *Parser) ParseError2!NodeIndex {
                 .span = hole_span,
                 .data = .{ .none = 0 },
             }));
-            self.advance();
+            try self.advance();
             continue;
         }
         if (self.current() == .dot3) {
             // rest element: ...pattern
             const rest_start = self.currentSpan().start;
-            self.advance(); // skip ...
+            try self.advance(); // skip ...
             const rest_arg = try parseBindingPattern(self);
-            self.checkBindingRestInit(rest_arg);
+            try self.checkBindingRestInit(rest_arg);
             const rest = try self.ast.addNode(.{
                 .tag = .rest_element,
                 .span = .{ .start = rest_start, .end = self.currentSpan().start },
@@ -288,14 +288,14 @@ pub fn parseArrayPattern(self: *Parser) ParseError2!NodeIndex {
         // default value: pattern = expr (배열/객체 패턴 뒤의 = default)
         var elem = try tryWrapDefaultValue(self, elem_raw);
         // TS: optional (?) + type annotation — 배열 패턴 요소에도 가능
-        _ = self.eat(.question);
+        _ = try self.eat(.question);
         _ = try self.tryParseTypeAnnotation();
         if (!elem.isNone()) try self.scratch.append(elem);
-        if (!self.eat(.comma)) break;
+        if (!try self.eat(.comma)) break;
     }
 
     const end = self.currentSpan().end;
-    self.expect(.r_bracket);
+    try self.expect(.r_bracket);
 
     const elements = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
@@ -309,16 +309,16 @@ pub fn parseArrayPattern(self: *Parser) ParseError2!NodeIndex {
 
 pub fn parseObjectPattern(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    self.advance(); // skip {
+    try self.advance(); // skip {
 
     const scratch_top = self.saveScratch();
     while (self.current() != .r_curly and self.current() != .eof) {
         if (self.current() == .dot3) {
             // rest element: ...pattern
             const rest_start = self.currentSpan().start;
-            self.advance(); // skip ...
+            try self.advance(); // skip ...
             const rest_arg = try parseBindingPattern(self);
-            self.checkBindingRestInit(rest_arg);
+            try self.checkBindingRestInit(rest_arg);
             const rest = try self.ast.addNode(.{
                 .tag = .rest_element,
                 .span = .{ .start = rest_start, .end = self.currentSpan().start },
@@ -330,11 +330,11 @@ pub fn parseObjectPattern(self: *Parser) ParseError2!NodeIndex {
 
         const prop = try parseBindingProperty(self);
         if (!prop.isNone()) try self.scratch.append(prop);
-        if (!self.eat(.comma)) break;
+        if (!try self.eat(.comma)) break;
     }
 
     const end = self.currentSpan().end;
-    self.expect(.r_curly);
+    try self.expect(.r_curly);
 
     const props = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
@@ -358,10 +358,10 @@ pub fn parseBindingProperty(self: *Parser) ParseError2!NodeIndex {
         (self.current() == .kw_yield and !self.ctx.in_generator and !self.is_strict_mode);
     if (is_shorthand_eligible) {
         const id_span = self.currentSpan();
-        const next = self.peekNextKind();
+        const next = try self.peekNextKind();
         if (next == .comma or next == .r_curly or next == .eq) {
             // shorthand property
-            self.advance();
+            try self.advance();
             const key = try self.ast.addNode(.{
                 .tag = .binding_identifier,
                 .span = id_span,
@@ -381,9 +381,9 @@ pub fn parseBindingProperty(self: *Parser) ParseError2!NodeIndex {
     // private name (#x) 은 object destructuring pattern에서 사용 불가
     // ECMAScript: ObjectAssignmentPattern의 PropertyName은 PrivateName을 포함하지 않음
     if (!key.isNone() and self.ast.getNode(key).tag == .private_identifier) {
-        self.addError(self.ast.getNode(key).span, "Private name is not allowed in destructuring pattern");
+        try self.addError(self.ast.getNode(key).span, "Private name is not allowed in destructuring pattern");
     }
-    self.expect(.colon);
+    try self.expect(.colon);
     const value_raw = try parseBindingPattern(self);
     // { x: pattern = defaultValue } 형태
     const value = try tryWrapDefaultValue(self, value_raw);

@@ -220,14 +220,14 @@ pub const Parser = struct {
     }
 
     /// 다음 토큰으로 전진. 여는/닫는 괄호를 자동 추적한다.
-    pub fn advance(self: *Parser) void {
+    pub fn advance(self: *Parser) !void {
         const kind = self.current();
         // 여는 괄호면 스택에 push
         if (kind == .l_paren or kind == .l_bracket or kind == .l_curly) {
-            self.bracket_stack.append(.{
+            try self.bracket_stack.append(.{
                 .kind = kind,
                 .span = self.currentSpan(),
-            }) catch @panic("OOM: bracket stack");
+            });
         } else if (kind == .r_paren or kind == .r_bracket or kind == .r_curly) {
             // 닫는 괄호면 스택에서 매칭되는 여는 괄호만 pop.
             // 매칭 안 되면 pop하지 않는다 — 에러 복구 시 스택 오염 방지.
@@ -243,13 +243,13 @@ pub const Parser = struct {
                 _ = self.bracket_stack.pop();
             }
         }
-        self.scanner.next();
+        try self.scanner.next();
     }
 
     /// 현재 토큰이 expected이면 소비하고 true, 아니면 false.
-    pub fn eat(self: *Parser, expected: Kind) bool {
+    pub fn eat(self: *Parser, expected: Kind) !bool {
         if (self.current() == expected) {
-            self.advance();
+            try self.advance();
             return true;
         }
         return false;
@@ -257,10 +257,10 @@ pub const Parser = struct {
 
     /// 현재 토큰이 expected이면 소비, 아니면 "Expected X but found Y" 에러 추가.
     /// 닫는 괄호를 기대하는 경우, 매칭되는 여는 괄호 위치도 표시한다.
-    pub fn expect(self: *Parser, expected: Kind) void {
-        if (!self.eat(expected)) {
+    pub fn expect(self: *Parser, expected: Kind) !void {
+        if (!try self.eat(expected)) {
             const opening = self.findMatchingOpenBracket(expected);
-            self.errors.append(.{
+            try self.errors.append(.{
                 .span = self.currentSpan(),
                 .message = expected.symbol(),
                 .found = self.current().symbol(),
@@ -271,7 +271,7 @@ pub const Parser = struct {
                     .l_curly => "opening '{' is here",
                     else => null,
                 } else null,
-            }) catch @panic("OOM: parser error list");
+            });
         }
     }
 
@@ -280,24 +280,24 @@ pub const Parser = struct {
     /// - 현재 토큰 앞에 개행이 있으면 OK (ASI)
     /// - 현재 토큰이 } 또는 EOF이면 OK (ASI)
     /// - 그 외: "Expected ';' but found X" + 힌트
-    pub fn expectSemicolon(self: *Parser) void {
-        if (self.eat(.semicolon)) return;
+    pub fn expectSemicolon(self: *Parser) !void {
+        if (try self.eat(.semicolon)) return;
         if (self.scanner.token.has_newline_before) return;
         if (self.current() == .r_curly or self.current() == .eof) return;
-        self.errors.append(.{
+        try self.errors.append(.{
             .span = self.currentSpan(),
             .message = ";",
             .found = self.current().symbol(),
             .hint = "Try inserting a semicolon here",
-        }) catch @panic("OOM: parser error list");
+        });
     }
 
     /// 에러를 추가한다. 기존 호출부 하위 호환 — found/hint 등은 null.
-    pub fn addError(self: *Parser, span: Span, expected: []const u8) void {
-        self.errors.append(.{
+    pub fn addError(self: *Parser, span: Span, expected: []const u8) !void {
+        try self.errors.append(.{
             .span = span,
             .message = expected,
-        }) catch @panic("OOM: parser error list");
+        });
     }
 
     /// 닫는 괄호에 매칭되는 여는 괄호를 bracket_stack에서 찾는다.
@@ -337,9 +337,9 @@ pub const Parser = struct {
 
     /// rest parameter가 마지막이 아니면 에러.
     /// spread_element 뒤에 comma가 오면 rest가 마지막이 아닌 것.
-    pub fn checkRestParameterLast(self: *Parser, param: NodeIndex) void {
+    pub fn checkRestParameterLast(self: *Parser, param: NodeIndex) ParseError2!void {
         if (!param.isNone() and self.ast.getNode(param).tag == .spread_element and self.current() == .comma) {
-            self.addError(self.currentSpan(), "Rest parameter must be last formal parameter");
+            try self.addError(self.currentSpan(), "Rest parameter must be last formal parameter");
         }
     }
 
@@ -350,11 +350,11 @@ pub const Parser = struct {
 
     /// strict mode에서 eval/arguments를 바인딩 이름으로 사용하면 에러.
     /// escaped 형태 (\u0065val → "eval")도 검증한다.
-    pub fn checkStrictBinding(self: *Parser, span: Span) void {
+    pub fn checkStrictBinding(self: *Parser, span: Span) ParseError2!void {
         if (!self.is_strict_mode) return;
         const text = self.resolveIdentifierText(span);
         if (std.mem.eql(u8, text, "eval") or std.mem.eql(u8, text, "arguments")) {
-            self.addError(span, "Assignment to 'eval' or 'arguments' is not allowed in strict mode");
+            try self.addError(span, "Assignment to 'eval' or 'arguments' is not allowed in strict mode");
         }
     }
 
@@ -368,12 +368,12 @@ pub const Parser = struct {
 
     /// binding pattern에서 rest element가 assignment_pattern(= initializer)이면 에러.
     /// parseArrayPattern, parseObjectPattern, parseBindingPattern의 rest 처리에서 공통 사용.
-    pub fn checkBindingRestInit(self: *Parser, rest_arg: NodeIndex) void {
+    pub fn checkBindingRestInit(self: *Parser, rest_arg: NodeIndex) ParseError2!void {
         if (rest_arg.isNone()) return;
         const rest_node = self.ast.getNode(rest_arg);
         // binding 위치에서는 assignment_pattern, cover grammar에서는 assignment_expression
         if (rest_node.tag == .assignment_pattern or rest_node.tag == .assignment_expression) {
-            self.addError(rest_node.span, rest_init_error);
+            try self.addError(rest_node.span, rest_init_error);
         }
     }
 
@@ -381,7 +381,7 @@ pub const Parser = struct {
     /// 소스에 `\`가 있고, 디코딩하면 reserved keyword이면 에러.
     /// strict mode에서는 escaped strict mode reserved도 에러.
     /// cover grammar 함수 내부 + parseObjectProperty에서 사용.
-    pub fn checkIdentifierEscapedKeyword(self: *Parser, span: Span) void {
+    pub fn checkIdentifierEscapedKeyword(self: *Parser, span: Span) ParseError2!void {
         // escape가 없으면 검사 불필요
         const raw = self.ast.source[span.start..span.end];
         if (std.mem.indexOfScalar(u8, raw, '\\') == null) return;
@@ -393,7 +393,7 @@ pub const Parser = struct {
             if (kw.isReservedKeyword() or kw.isLiteralKeyword() or
                 (self.is_strict_mode and kw.isStrictModeReserved()))
             {
-                self.addError(span, "Keywords cannot contain escape characters");
+                try self.addError(span, "Keywords cannot contain escape characters");
             }
         }
     }
@@ -436,16 +436,16 @@ pub const Parser = struct {
     /// 태그를 변환하고 (setTag) 검증도 수행한다.
     /// 반환값: true면 valid assignment target, false면 에러를 이미 추가했거나 invalid.
     /// is_top이 true면 최상위 호출 (invalid일 때 "Invalid assignment target" 에러 추가).
-    pub fn coverExpressionToAssignmentTarget(self: *Parser, idx: NodeIndex, is_top: bool) bool {
+    pub fn coverExpressionToAssignmentTarget(self: *Parser, idx: NodeIndex, is_top: bool) ParseError2!bool {
         if (idx.isNone()) return false;
         const node = self.ast.getNode(idx);
         return switch (node.tag) {
             // 1) identifier — valid target. 태그를 assignment_target_identifier로 변환.
             .identifier_reference => {
                 // escaped keyword 검증: v\u0061r → "var"이면 에러
-                self.checkIdentifierEscapedKeyword(node.span);
+                try self.checkIdentifierEscapedKeyword(node.span);
                 // strict mode: eval/arguments에 할당 금지 (checkStrictBinding 내부에서 strict 체크)
-                self.checkStrictBinding(node.span);
+                try self.checkStrictBinding(node.span);
                 self.ast.setTag(idx, .assignment_target_identifier);
                 return true;
             },
@@ -455,21 +455,21 @@ pub const Parser = struct {
             .static_member_expression, .computed_member_expression => {
                 if (node.data.binary.flags == 0) return true; // normal
                 // optional chaining (a?.b, a?.[b])은 assignment target이 아님
-                if (is_top) self.addError(node.span, "Invalid assignment target");
+                if (is_top) try self.addError(node.span, "Invalid assignment target");
                 return false;
             },
 
             // 3) array destructuring — 태그를 array_assignment_target으로 변환 + 자식 재귀
             .array_expression => {
                 self.ast.setTag(idx, .array_assignment_target);
-                self.coverArrayExpressionToTarget(node);
+                try self.coverArrayExpressionToTarget(node);
                 return true;
             },
 
             // 4) object destructuring — 태그를 object_assignment_target으로 변환 + 자식 재귀
             .object_expression => {
                 self.ast.setTag(idx, .object_assignment_target);
-                self.coverObjectExpressionToTarget(node);
+                try self.coverObjectExpressionToTarget(node);
                 // CoverInitializedName이 destructuring으로 정상 소비됨
                 self.has_cover_init_name = false;
                 return true;
@@ -479,17 +479,17 @@ pub const Parser = struct {
             .parenthesized_expression => {
                 const inner = node.data.unary.operand;
                 if (inner.isNone()) {
-                    if (is_top) self.addError(node.span, "Invalid assignment target");
+                    if (is_top) try self.addError(node.span, "Invalid assignment target");
                     return false;
                 }
                 const inner_tag = self.ast.getNode(inner).tag;
                 // ({x}) = 1, ([x]) = 1 → parenthesized destructuring 금지
                 if (inner_tag == .array_expression or inner_tag == .object_expression) {
-                    self.addError(node.span, "Invalid assignment target");
+                    try self.addError(node.span, "Invalid assignment target");
                     return false;
                 }
                 // (x) = 1 → 내부가 simple target이면 OK
-                return self.coverExpressionToAssignmentTarget(inner, is_top);
+                return try self.coverExpressionToAssignmentTarget(inner, is_top);
             },
 
             // 6) 이미 변환된 assignment target 태그는 유지
@@ -502,12 +502,12 @@ pub const Parser = struct {
             //    is_top 여부와 무관하게 항상 에러. else 분기는 is_top=false일 때 에러를 내지 않으므로
             //    destructuring 내부([import.meta] = arr)에서 잘못 통과하는 것을 방지.
             .meta_property => {
-                self.addError(node.span, "Invalid assignment target");
+                try self.addError(node.span, "Invalid assignment target");
                 return false;
             },
 
             else => {
-                if (is_top) self.addError(node.span, "Invalid assignment target");
+                if (is_top) try self.addError(node.span, "Invalid assignment target");
                 return false;
             },
         };
@@ -516,19 +516,19 @@ pub const Parser = struct {
     /// spread element의 operand를 검증하는 cover grammar 헬퍼.
     /// rest에 initializer가 있으면 에러를 내고, operand를 재귀 검증한다.
     /// coverArrayExpressionToTarget과 coverObjectExpressionToTarget에서 공통 사용.
-    pub fn coverSpreadElementToTarget(self: *Parser, spread_idx: NodeIndex, operand_idx: NodeIndex) void {
+    pub fn coverSpreadElementToTarget(self: *Parser, spread_idx: NodeIndex, operand_idx: NodeIndex) ParseError2!void {
         const operand = self.ast.getNode(operand_idx);
         if (operand.tag == .assignment_expression) {
-            self.addError(operand.span, rest_init_error);
+            try self.addError(operand.span, rest_init_error);
         }
         // spread_element → assignment_target_rest로 변환
         self.ast.setTag(spread_idx, .assignment_target_rest);
-        _ = self.coverExpressionToAssignmentTarget(operand_idx, true);
+        _ = try self.coverExpressionToAssignmentTarget(operand_idx, true);
     }
 
     /// array expression 내부를 assignment target으로 검증 (coverExpressionToAssignmentTarget 헬퍼).
     /// 각 요소의 spread rest-init 금지 + nested pattern 재귀 검증.
-    pub fn coverArrayExpressionToTarget(self: *Parser, node: Node) void {
+    pub fn coverArrayExpressionToTarget(self: *Parser, node: Node) ParseError2!void {
         const list = node.data.list;
         var i: u32 = 0;
         while (i < list.len) : (i += 1) {
@@ -540,23 +540,23 @@ pub const Parser = struct {
                 .spread_element => {
                     // rest는 마지막 요소여야 함: [...x, y] → SyntaxError
                     if (i + 1 < list.len) {
-                        self.addError(elem.span, "Rest element must be last element");
+                        try self.addError(elem.span, "Rest element must be last element");
                     }
                     // rest 뒤 trailing comma 금지: [...x,] → SyntaxError
                     // parseArrayExpression에서 spread_trailing_comma로 마킹됨
                     if ((elem.data.unary.flags & spread_trailing_comma) != 0) {
-                        self.addError(elem.span, "Rest element may not have a trailing comma");
+                        try self.addError(elem.span, "Rest element may not have a trailing comma");
                     }
-                    self.coverSpreadElementToTarget(elem_idx, elem.data.unary.operand);
+                    try self.coverSpreadElementToTarget(elem_idx, elem.data.unary.operand);
                 },
                 .assignment_expression => {
                     // [x = 1] → assignment_target_with_default로 변환
                     self.ast.setTag(elem_idx, .assignment_target_with_default);
-                    _ = self.coverExpressionToAssignmentTarget(elem.data.binary.left, true);
+                    _ = try self.coverExpressionToAssignmentTarget(elem.data.binary.left, true);
                 },
                 else => {
                     // identifier, nested array/object/member 등 → 재귀 검증
-                    _ = self.coverExpressionToAssignmentTarget(elem_idx, true);
+                    _ = try self.coverExpressionToAssignmentTarget(elem_idx, true);
                 },
             }
         }
@@ -564,7 +564,7 @@ pub const Parser = struct {
 
     /// object expression 내부를 assignment target으로 검증 (coverExpressionToAssignmentTarget 헬퍼).
     /// 각 프로퍼티의 shorthand escaped keyword + strict eval/arguments + spread rest-init + nested value 재귀 검증.
-    pub fn coverObjectExpressionToTarget(self: *Parser, node: Node) void {
+    pub fn coverObjectExpressionToTarget(self: *Parser, node: Node) ParseError2!void {
         const list = node.data.list;
         var i: u32 = 0;
         while (i < list.len) : (i += 1) {
@@ -577,8 +577,8 @@ pub const Parser = struct {
                     // shorthand without value: { eval } — right가 none인 경우
                     // parseObjectProperty에서 shorthand는 value를 생성하지 않으므로 right=none
                     const key_span = self.ast.getNode(elem.data.binary.left).span;
-                    self.checkIdentifierEscapedKeyword(key_span);
-                    self.checkStrictBinding(key_span);
+                    try self.checkIdentifierEscapedKeyword(key_span);
+                    try self.checkStrictBinding(key_span);
                     self.ast.setTag(elem_idx, .assignment_target_property_identifier);
                 } else if (!elem.data.binary.left.isNone() and !elem.data.binary.right.isNone()) {
                     // shorthand 검증: key와 value가 같은 span이면 shorthand
@@ -586,16 +586,16 @@ pub const Parser = struct {
                     const val_node = self.ast.getNode(elem.data.binary.right);
                     const is_shorthand = key_span.start == val_node.span.start and key_span.end == val_node.span.end;
                     if (is_shorthand) {
-                        self.checkIdentifierEscapedKeyword(key_span);
+                        try self.checkIdentifierEscapedKeyword(key_span);
                         // strict mode: shorthand에서 eval/arguments 할당 금지
-                        self.checkStrictBinding(key_span);
+                        try self.checkStrictBinding(key_span);
                         // shorthand → assignment_target_property_identifier
                         self.ast.setTag(elem_idx, .assignment_target_property_identifier);
                     } else if (is_shorthand_default) {
                         // shorthand with default: { eval = 0 } — key가 target, value가 default
                         // key의 eval/arguments 검증이 필요 (strict mode)
-                        self.checkIdentifierEscapedKeyword(key_span);
-                        self.checkStrictBinding(key_span);
+                        try self.checkIdentifierEscapedKeyword(key_span);
+                        try self.checkStrictBinding(key_span);
                         self.ast.setTag(elem_idx, .assignment_target_property_identifier);
                         // value(default)는 assignment target이 아니므로 검증하지 않음
                     } else {
@@ -605,30 +605,30 @@ pub const Parser = struct {
                         // { key: target = default } → target을 검증, default는 검증하지 않음
                         if (val_node.tag == .assignment_expression) {
                             self.ast.setTag(elem.data.binary.right, .assignment_target_with_default);
-                            _ = self.coverExpressionToAssignmentTarget(val_node.data.binary.left, true);
+                            _ = try self.coverExpressionToAssignmentTarget(val_node.data.binary.left, true);
                         } else {
                             // value를 재귀 검증 (nested pattern일 수 있음)
-                            _ = self.coverExpressionToAssignmentTarget(elem.data.binary.right, true);
+                            _ = try self.coverExpressionToAssignmentTarget(elem.data.binary.right, true);
                         }
                     }
                 }
             } else if (elem.tag == .spread_element) {
                 // rest는 마지막 요소여야 함: {...x, y} → SyntaxError
                 if (i + 1 < list.len) {
-                    self.addError(elem.span, "Rest element must be last element");
+                    try self.addError(elem.span, "Rest element must be last element");
                 }
                 // object rest: {...x} = obj
-                self.coverSpreadElementToTarget(elem_idx, elem.data.unary.operand);
+                try self.coverSpreadElementToTarget(elem_idx, elem.data.unary.operand);
             } else if (elem.tag == .method_definition) {
                 // method/getter/setter/async/generator는 destructuring target이 아님
-                self.addError(elem.span, "Invalid assignment target");
+                try self.addError(elem.span, "Invalid assignment target");
             }
         }
     }
 
     /// cover grammar 표현식에서 바인딩 이름의 span을 재귀 수집하여 중복 검사한다.
     /// 중복 발견 시 즉시 에러를 추가한다.
-    pub fn collectCoverParamNames(self: *Parser, idx: NodeIndex) void {
+    pub fn collectCoverParamNames(self: *Parser, idx: NodeIndex) ParseError2!void {
         if (idx.isNone()) return;
         const node = self.ast.getNode(idx);
         switch (node.tag) {
@@ -639,19 +639,19 @@ pub const Parser = struct {
                 for (self.param_name_spans.items) |prev_span| {
                     const prev_name = self.ast.source[prev_span.start..prev_span.end];
                     if (std.mem.eql(u8, name, prev_name)) {
-                        self.addError(node.span, "Duplicate parameter name");
+                        try self.addError(node.span, "Duplicate parameter name");
                         return;
                     }
                 }
-                self.param_name_spans.append(node.span) catch @panic("OOM: param_name_spans");
+                try self.param_name_spans.append(node.span);
             },
-            .parenthesized_expression => self.collectCoverParamNames(node.data.unary.operand),
+            .parenthesized_expression => try self.collectCoverParamNames(node.data.unary.operand),
             .sequence_expression => {
                 const list = node.data.list;
                 var i: u32 = 0;
                 while (i < list.len) : (i += 1) {
                     const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
-                    self.collectCoverParamNames(elem_idx);
+                    try self.collectCoverParamNames(elem_idx);
                 }
             },
             .object_expression, .array_expression, .object_assignment_target, .array_assignment_target => {
@@ -659,13 +659,13 @@ pub const Parser = struct {
                 var i: u32 = 0;
                 while (i < list.len) : (i += 1) {
                     const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
-                    self.collectCoverParamNames(elem_idx);
+                    try self.collectCoverParamNames(elem_idx);
                 }
             },
             .object_property, .assignment_target_property_identifier, .assignment_target_property_property => {
                 // shorthand: left=key(identifier_reference), right=none → key is the binding
                 if (node.data.binary.right.isNone()) {
-                    self.collectCoverParamNames(node.data.binary.left);
+                    try self.collectCoverParamNames(node.data.binary.left);
                 } else {
                     // long-form { key: value } → value is the binding
                     // BUT: for shorthand { x } where key==value (same span), also walk left
@@ -673,23 +673,23 @@ pub const Parser = struct {
                     const val_span = self.ast.getNode(node.data.binary.right).span;
                     if (key_span.start == val_span.start and key_span.end == val_span.end) {
                         // shorthand with value = same as key (e.g., {x} parsed with both key and value)
-                        self.collectCoverParamNames(node.data.binary.right);
+                        try self.collectCoverParamNames(node.data.binary.right);
                     } else {
-                        self.collectCoverParamNames(node.data.binary.right);
+                        try self.collectCoverParamNames(node.data.binary.right);
                     }
                 }
             },
             .binding_property => {
-                self.collectCoverParamNames(node.data.binary.right);
+                try self.collectCoverParamNames(node.data.binary.right);
             },
             .assignment_expression, .assignment_pattern, .assignment_target_with_default => {
                 // default value: left = binding, right = default_value
-                self.collectCoverParamNames(node.data.binary.left);
+                try self.collectCoverParamNames(node.data.binary.left);
                 // default value 내부의 yield/await 검사 (이름 수집하지 않고 검사만)
-                self.checkCoverParamDefaultForYieldAwait(node.data.binary.right);
+                try self.checkCoverParamDefaultForYieldAwait(node.data.binary.right);
             },
             .spread_element, .assignment_target_rest, .binding_rest_element, .rest_element => {
-                self.collectCoverParamNames(node.data.unary.operand);
+                try self.collectCoverParamNames(node.data.unary.operand);
             },
             else => {},
         }
@@ -710,7 +710,7 @@ pub const Parser = struct {
     /// async arrow 파라미터에서 'await' 식별자 사용을 금지한다.
     /// async arrow의 파라미터는 async context 진입 전에 파싱되므로 await가 identifier로 파싱된다.
     /// 이 함수는 cover grammar 변환 후 호출하여 identifier 이름이 "await"인 경우를 검출한다.
-    pub fn checkAsyncArrowParamsForAwait(self: *Parser, idx: NodeIndex) void {
+    pub fn checkAsyncArrowParamsForAwait(self: *Parser, idx: NodeIndex) ParseError2!void {
         if (idx.isNone()) return;
         if (@intFromEnum(idx) >= self.ast.nodes.items.len) return;
         const node = self.ast.getNode(idx);
@@ -718,11 +718,11 @@ pub const Parser = struct {
             .identifier_reference, .binding_identifier, .assignment_target_identifier => {
                 const name = self.ast.source[node.span.start..node.span.end];
                 if (std.mem.eql(u8, name, "await")) {
-                    self.addError(node.span, "'await' is not allowed in async arrow function parameters");
+                    try self.addError(node.span, "'await' is not allowed in async arrow function parameters");
                 }
             },
             .parenthesized_expression, .spread_element, .assignment_target_rest => {
-                self.checkAsyncArrowParamsForAwait(node.data.unary.operand);
+                try self.checkAsyncArrowParamsForAwait(node.data.unary.operand);
             },
             .sequence_expression,
             .array_expression,
@@ -734,7 +734,7 @@ pub const Parser = struct {
                 var i: u32 = 0;
                 while (i < list.len) : (i += 1) {
                     const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
-                    self.checkAsyncArrowParamsForAwait(elem_idx);
+                    try self.checkAsyncArrowParamsForAwait(elem_idx);
                 }
             },
             .assignment_expression,
@@ -745,12 +745,12 @@ pub const Parser = struct {
             .assignment_target_property_property,
             .binding_property,
             => {
-                self.checkAsyncArrowParamsForAwait(node.data.binary.left);
-                self.checkAsyncArrowParamsForAwait(node.data.binary.right);
+                try self.checkAsyncArrowParamsForAwait(node.data.binary.left);
+                try self.checkAsyncArrowParamsForAwait(node.data.binary.right);
             },
             // 중첩 arrow의 파라미터에도 await 사용 금지
             .arrow_function_expression => {
-                self.checkAsyncArrowParamsForAwait(node.data.binary.left);
+                try self.checkAsyncArrowParamsForAwait(node.data.binary.left);
             },
             else => {},
         }
@@ -758,23 +758,23 @@ pub const Parser = struct {
 
     /// arrow 파라미터 default value 내부에 yield/await가 있는지 검사한다.
     /// 이름 수집은 하지 않고 yield/await expression만 검출한다.
-    pub fn checkCoverParamDefaultForYieldAwait(self: *Parser, idx: NodeIndex) void {
+    pub fn checkCoverParamDefaultForYieldAwait(self: *Parser, idx: NodeIndex) ParseError2!void {
         if (idx.isNone()) return;
         if (@intFromEnum(idx) >= self.ast.nodes.items.len) return;
         const node = self.ast.getNode(idx);
         switch (node.tag) {
             .yield_expression => {
-                self.addError(node.span, "'yield' is not allowed in arrow function parameters");
+                try self.addError(node.span, "'yield' is not allowed in arrow function parameters");
             },
             .await_expression => {
-                self.addError(node.span, "'await' is not allowed in arrow function parameters");
+                try self.addError(node.span, "'await' is not allowed in arrow function parameters");
             },
             // unary node — operand만 검사
             .parenthesized_expression,
             .spread_element,
             .unary_expression,
             .update_expression,
-            => self.checkCoverParamDefaultForYieldAwait(node.data.unary.operand),
+            => try self.checkCoverParamDefaultForYieldAwait(node.data.unary.operand),
             // list node — 각 요소 검사
             .sequence_expression,
             .array_expression,
@@ -784,7 +784,7 @@ pub const Parser = struct {
                 var i: u32 = 0;
                 while (i < list.len) : (i += 1) {
                     const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
-                    self.checkCoverParamDefaultForYieldAwait(elem_idx);
+                    try self.checkCoverParamDefaultForYieldAwait(elem_idx);
                 }
             },
             // binary node — 양쪽 자식 검사
@@ -793,13 +793,13 @@ pub const Parser = struct {
             .logical_expression,
             .object_property,
             => {
-                self.checkCoverParamDefaultForYieldAwait(node.data.binary.left);
-                self.checkCoverParamDefaultForYieldAwait(node.data.binary.right);
+                try self.checkCoverParamDefaultForYieldAwait(node.data.binary.left);
+                try self.checkCoverParamDefaultForYieldAwait(node.data.binary.right);
             },
             // conditional은 ternary이지만 binary data 사용 (condition=left, consequent/alternate 조합=right)
             .conditional_expression => {
-                self.checkCoverParamDefaultForYieldAwait(node.data.binary.left);
-                self.checkCoverParamDefaultForYieldAwait(node.data.binary.right);
+                try self.checkCoverParamDefaultForYieldAwait(node.data.binary.left);
+                try self.checkCoverParamDefaultForYieldAwait(node.data.binary.right);
             },
             // 리프 노드 (identifier, literal 등)나 기타 — 더 이상 탐색 불필요
             else => {},
@@ -811,12 +811,12 @@ pub const Parser = struct {
     /// coverExpressionToAssignmentTarget을 위임한다.
     ///
     /// 기존 checkRestInitInArrowParams를 대체한다.
-    pub fn coverExpressionToArrowParams(self: *Parser, idx: NodeIndex) void {
+    pub fn coverExpressionToArrowParams(self: *Parser, idx: NodeIndex) ParseError2!void {
         if (idx.isNone()) return;
         const node = self.ast.getNode(idx);
         if (node.tag == .parenthesized_expression) {
             // (expr) → 내부를 다시 풀기
-            self.coverExpressionToArrowParams(node.data.unary.operand);
+            try self.coverExpressionToArrowParams(node.data.unary.operand);
         } else if (node.tag == .sequence_expression) {
             // (a, b, c) → 각 요소를 개별 검증
             const list = node.data.list;
@@ -827,65 +827,65 @@ pub const Parser = struct {
                 if (elem.tag == .spread_element) {
                     // rest 파라미터: 마지막 요소여야 하고 initializer 금지, trailing comma 금지
                     if (i + 1 < list.len) {
-                        self.addError(elem.span, "Rest element must be last element");
+                        try self.addError(elem.span, "Rest element must be last element");
                     }
                     if ((elem.data.unary.flags & spread_trailing_comma) != 0) {
-                        self.addError(elem.span, "Rest element may not have a trailing comma");
+                        try self.addError(elem.span, "Rest element may not have a trailing comma");
                     }
-                    self.checkBindingRestInit(elem.data.unary.operand);
+                    try self.checkBindingRestInit(elem.data.unary.operand);
                     // rest의 operand도 valid assignment target이어야 함
-                    _ = self.coverExpressionToAssignmentTarget(elem.data.unary.operand, false);
+                    _ = try self.coverExpressionToAssignmentTarget(elem.data.unary.operand, false);
                 } else {
-                    _ = self.coverExpressionToAssignmentTarget(elem_idx, false);
+                    _ = try self.coverExpressionToAssignmentTarget(elem_idx, false);
                 }
             }
         } else if (node.tag == .spread_element) {
             // 단일 rest 파라미터: (...x) → initializer 금지 + trailing comma 금지
             if ((node.data.unary.flags & spread_trailing_comma) != 0) {
-                self.addError(node.span, "Rest element may not have a trailing comma");
+                try self.addError(node.span, "Rest element may not have a trailing comma");
             }
-            self.checkBindingRestInit(node.data.unary.operand);
-            _ = self.coverExpressionToAssignmentTarget(node.data.unary.operand, false);
+            try self.checkBindingRestInit(node.data.unary.operand);
+            _ = try self.coverExpressionToAssignmentTarget(node.data.unary.operand, false);
         } else {
             // 단일 expression → 직접 검증
-            _ = self.coverExpressionToAssignmentTarget(idx, false);
+            _ = try self.coverExpressionToAssignmentTarget(idx, false);
         }
         // arrow 파라미터 중복 검사: (x, {x}) => 1 등
         // cover grammar 변환 후에 수행 (변환된 태그도 처리하므로)
         self.param_name_spans.clearRetainingCapacity();
-        self.collectCoverParamNames(idx);
+        try self.collectCoverParamNames(idx);
     }
 
     /// 키워드를 바인딩 위치에서 사용할 때의 검증.
     /// ECMAScript 12.1.1: reserved keyword, strict mode reserved, contextual keywords.
     /// escaped 형태 (\u0061wait 등)도 동일하게 검증한다.
-    pub fn checkKeywordBinding(self: *Parser) void {
+    pub fn checkKeywordBinding(self: *Parser) ParseError2!void {
         // await는 조건부 예약어 — async/module에서만 금지, script에서는 식별자로 사용 가능
         // yield도 조건부 — generator/strict에서만 금지
         // 둘 다 checkYieldAwaitUse에서 처리
         if (self.current() == .kw_await or self.current() == .kw_yield) {
-            _ = self.checkYieldAwaitUse(self.currentSpan(), "identifier");
+            _ = try self.checkYieldAwaitUse(self.currentSpan(), "identifier");
         } else if (self.current().isReservedKeyword() or self.current().isLiteralKeyword()) {
-            self.addError(self.currentSpan(), "Reserved word cannot be used as identifier");
+            try self.addError(self.currentSpan(), "Reserved word cannot be used as identifier");
         } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
-            self.addError(self.currentSpan(), "Reserved word in strict mode cannot be used as identifier");
+            try self.addError(self.currentSpan(), "Reserved word in strict mode cannot be used as identifier");
         } else if (self.current() == .escaped_keyword) {
             // escaped reserved keyword는 식별자로 사용 불가 (예: \u0061wait in script)
             // 단, escaped await는 script mode의 non-async에서는 허용
             const is_escaped_await = self.isEscapedKeyword("await");
             if (is_escaped_await) {
                 if (self.is_module or self.ctx.in_async) {
-                    self.addError(self.currentSpan(), "'await' cannot be used as identifier in this context");
+                    try self.addError(self.currentSpan(), "'await' cannot be used as identifier in this context");
                 }
             } else {
-                self.addError(self.currentSpan(), "Keywords cannot contain escape characters");
+                try self.addError(self.currentSpan(), "Keywords cannot contain escape characters");
             }
         } else if (self.current() == .escaped_strict_reserved) {
             // escaped strict reserved는 strict mode에서 금지
             // yield/await 컨텍스트 에러가 우선
-            const had_error = self.checkYieldAwaitUse(self.currentSpan(), "identifier");
+            const had_error = try self.checkYieldAwaitUse(self.currentSpan(), "identifier");
             if (!had_error and self.is_strict_mode) {
-                self.addError(self.currentSpan(), "Keywords cannot contain escape characters");
+                try self.addError(self.currentSpan(), "Keywords cannot contain escape characters");
             }
         }
     }
@@ -894,7 +894,7 @@ pub const Parser = struct {
     /// ECMAScript 13.1.1: yield는 [Yield] 또는 strict mode에서, await는 [Await] 또는 module에서 금지.
     /// context_noun: "identifier", "label" 등 — 에러 메시지에 사용 (comptime 문자열 연결).
     /// 에러를 추가했으면 true, 아니면 false를 반환한다.
-    pub fn checkYieldAwaitUse(self: *Parser, span: Span, comptime context_noun: []const u8) bool {
+    pub fn checkYieldAwaitUse(self: *Parser, span: Span, comptime context_noun: []const u8) ParseError2!bool {
         // yield/await는 escaped 형태(yi\u0065ld)도 동일 규칙 적용 (ECMAScript 12.1.1)
         // await는 reserved keyword이므로 escaped_keyword로 분류됨 → 여기서는 yield만 처리
         const is_yield = self.current() == .kw_yield or
@@ -903,18 +903,18 @@ pub const Parser = struct {
 
         if (is_yield) {
             if (self.ctx.in_generator) {
-                self.addError(span, "'yield' cannot be used as " ++ context_noun ++ " in generator");
+                try self.addError(span, "'yield' cannot be used as " ++ context_noun ++ " in generator");
                 return true;
             } else if (self.is_strict_mode) {
-                self.addError(span, "'yield' cannot be used as " ++ context_noun ++ " in strict mode");
+                try self.addError(span, "'yield' cannot be used as " ++ context_noun ++ " in strict mode");
                 return true;
             }
         } else if (is_await) {
             if (self.ctx.in_async) {
-                self.addError(span, "'await' cannot be used as " ++ context_noun ++ " in async function");
+                try self.addError(span, "'await' cannot be used as " ++ context_noun ++ " in async function");
                 return true;
             } else if (self.is_module) {
-                self.addError(span, "'await' cannot be used as " ++ context_noun ++ " in module code");
+                try self.addError(span, "'await' cannot be used as " ++ context_noun ++ " in module code");
                 return true;
             }
         }
@@ -1019,14 +1019,14 @@ pub const Parser = struct {
         // ECMAScript 14.7.5: It is a Syntax Error if IsLabelledFunction(Statement) is true.
         // 반복문의 body가 labelled function이면 에러 (중첩 label도 재귀 검사).
         // Annex B의 labelled function 예외는 반복문 body에서 적용되지 않는다.
-        self.checkLabelledFunction(body);
+        try self.checkLabelledFunction(body);
 
         return body;
     }
 
     /// IsLabelledFunction 검사: labeled statement을 재귀적으로 따라가서
     /// 최종 body가 function declaration이면 에러를 발생시킨다.
-    pub fn checkLabelledFunction(self: *Parser, idx: NodeIndex) void {
+    pub fn checkLabelledFunction(self: *Parser, idx: NodeIndex) ParseError2!void {
         if (idx.isNone()) return;
         const node = self.ast.getNode(idx);
         if (node.tag == .labeled_statement) {
@@ -1034,10 +1034,10 @@ pub const Parser = struct {
             const inner = node.data.binary.right;
             const inner_node = self.ast.getNode(inner);
             if (inner_node.tag == .function_declaration) {
-                self.addError(inner_node.span, "Labelled function declaration is not allowed in loop body");
+                try self.addError(inner_node.span, "Labelled function declaration is not allowed in loop body");
             } else if (inner_node.tag == .labeled_statement) {
                 // 중첩 label: label1: label2: function f() {}
-                self.checkLabelledFunction(inner);
+                try self.checkLabelledFunction(inner);
             }
         }
     }
@@ -1091,7 +1091,7 @@ pub const Parser = struct {
     /// ECMAScript 15.4.1/15.5.1: generator/async generator는 항상 에러
     /// strict mode에서도 항상 에러
     /// sloppy mode + simple params인 일반 function만 허용
-    pub fn checkDuplicateParams(self: *Parser, scratch_top: usize) void {
+    pub fn checkDuplicateParams(self: *Parser, scratch_top: usize) ParseError2!void {
         const must_check = self.is_strict_mode or !self.has_simple_params or
             self.ctx.in_generator or self.ctx.in_async;
         if (!must_check) return;
@@ -1105,7 +1105,7 @@ pub const Parser = struct {
             // 이 파라미터에서 나오는 모든 바인딩 이름을 수집한다.
             // 단순 식별자(a)는 1개, destructuring([a,b])은 여러 개.
             const names_before = self.param_name_spans.items.len;
-            self.collectBoundNames(param_idx);
+            try self.collectBoundNames(param_idx);
             // collectBoundNames 이후 재참조: append 시 재할당이 일어날 수 있으므로
             // names_before 이후 범위를 수집 완료 후에 인덱스로 순회한다.
             const names_after = self.param_name_spans.items.len;
@@ -1119,7 +1119,7 @@ pub const Parser = struct {
                 for (self.param_name_spans.items[0..j]) |prev_span| {
                     const prev_name = self.ast.source[prev_span.start..prev_span.end];
                     if (std.mem.eql(u8, name, prev_name)) {
-                        self.addError(name_span, "Duplicate parameter name");
+                        try self.addError(name_span, "Duplicate parameter name");
                         break;
                     }
                 }
@@ -1141,25 +1141,25 @@ pub const Parser = struct {
     ///   - object_pattern ({a, b: c})            → 각 property 재귀
     ///   - binding_property ({key: value})       → right(value) 재귀
     ///   - elision / invalid                    → 무시
-    pub fn collectBoundNames(self: *Parser, idx: NodeIndex) void {
+    pub fn collectBoundNames(self: *Parser, idx: NodeIndex) ParseError2!void {
         if (idx.isNone()) return;
         const node = self.ast.getNode(idx);
         switch (node.tag) {
             // 단말 노드: 이름 1개 추가
             .binding_identifier => {
-                self.param_name_spans.append(node.span) catch @panic("OOM: param_name_spans");
+                try self.param_name_spans.append(node.span);
             },
             // x = default → 왼쪽이 실제 바인딩
             .assignment_pattern => {
-                self.collectBoundNames(node.data.binary.left);
+                try self.collectBoundNames(node.data.binary.left);
             },
             // TS parameter property (public x) → operand가 실제 바인딩
             .formal_parameter => {
-                self.collectBoundNames(node.data.unary.operand);
+                try self.collectBoundNames(node.data.unary.operand);
             },
             // ...rest → operand가 실제 바인딩 (배열/객체 패턴 포함)
             .spread_element, .rest_element, .binding_rest_element => {
-                self.collectBoundNames(node.data.unary.operand);
+                try self.collectBoundNames(node.data.unary.operand);
             },
             // [a, b, [c, d]] → 각 element를 재귀적으로 처리
             .array_pattern => {
@@ -1167,7 +1167,7 @@ pub const Parser = struct {
                 var i: u32 = 0;
                 while (i < list.len) : (i += 1) {
                     const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
-                    self.collectBoundNames(elem_idx);
+                    try self.collectBoundNames(elem_idx);
                 }
             },
             // {a, b: c, ...rest} → 각 property를 재귀적으로 처리
@@ -1176,13 +1176,13 @@ pub const Parser = struct {
                 var i: u32 = 0;
                 while (i < list.len) : (i += 1) {
                     const prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
-                    self.collectBoundNames(prop_idx);
+                    try self.collectBoundNames(prop_idx);
                 }
             },
             // {key: value} → right(value)가 실제 바인딩 패턴
             // shorthand {a} 도 binding_property: left=key(binding_identifier), right=value(binding_identifier)
             .binding_property => {
-                self.collectBoundNames(node.data.binary.right);
+                try self.collectBoundNames(node.data.binary.right);
             },
             // elision, invalid 등 — 바인딩 없음, 무시
             else => {},
@@ -1212,29 +1212,29 @@ pub const Parser = struct {
 
     /// "use strict" directive가 발견된 후 함수 이름이 eval/arguments인지 소급 검증.
     /// ECMAScript 14.1.2: strict mode에서 eval/arguments를 바인딩 이름으로 사용 금지.
-    pub fn checkStrictFunctionName(self: *Parser, name_idx: NodeIndex) void {
+    pub fn checkStrictFunctionName(self: *Parser, name_idx: NodeIndex) ParseError2!void {
         if (name_idx.isNone()) return;
         const node = self.ast.getNode(name_idx);
         if (node.tag != .binding_identifier) return;
-        self.checkStrictBinding(node.span);
+        try self.checkStrictBinding(node.span);
     }
 
     /// "use strict" directive가 발견된 후 파라미터 이름을 소급 검증.
     /// ECMAScript 14.1.2: strict mode에서 eval/arguments + 중복 파라미터 금지.
     /// destructuring 패턴 안의 이름도 재귀적으로 검사한다.
-    pub fn checkStrictParamNames(self: *Parser, scratch_top: usize) void {
+    pub fn checkStrictParamNames(self: *Parser, scratch_top: usize) ParseError2!void {
         const params = self.scratch.items[scratch_top..];
         for (params) |param_idx| {
             // collectBoundNames로 destructuring 안의 이름도 포함하여 모두 검사
             self.param_name_spans.clearRetainingCapacity();
-            self.collectBoundNames(param_idx);
+            try self.collectBoundNames(param_idx);
             for (self.param_name_spans.items) |name_span| {
-                self.checkStrictBinding(name_span);
+                try self.checkStrictBinding(name_span);
             }
         }
         self.param_name_spans.clearRetainingCapacity();
         // 중복 파라미터도 소급 검사 (simple params + sloppy에서는 허용이지만 strict에서는 금지)
-        self.checkDuplicateParams(scratch_top);
+        try self.checkDuplicateParams(scratch_top);
     }
 
     /// 함수 선언의 본문을 파싱한다 (닫는 `}` 뒤의 `/`는 regexp로 토큰화).
@@ -1250,7 +1250,7 @@ pub const Parser = struct {
 
     pub fn parseFunctionBodyInner(self: *Parser, in_expression: bool) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
-        self.expect(.l_curly);
+        try self.expect(.l_curly);
 
         var stmts = std.ArrayList(NodeIndex).init(self.allocator);
         defer stmts.deinit();
@@ -1269,12 +1269,12 @@ pub const Parser = struct {
                     // ECMAScript 14.1.2: function with non-simple parameter list
                     // shall not contain a Use Strict Directive
                     if (!self.has_simple_params) {
-                        self.addError(self.currentSpan(), "\"use strict\" not allowed in function with non-simple parameters");
+                        try self.addError(self.currentSpan(), "\"use strict\" not allowed in function with non-simple parameters");
                     }
                     self.is_strict_mode = true;
                     // "use strict" 이전에 octal escape가 있었으면 retroactive 에러
                     if (has_prologue_octal) {
-                        self.addError(prologue_octal_span, "Octal escape sequences are not allowed in strict mode");
+                        try self.addError(prologue_octal_span, "Octal escape sequences are not allowed in strict mode");
                     }
                 } else if (self.current() == .string_literal) {
                     // directive prologue의 문자열 — octal escape 추적
@@ -1300,7 +1300,7 @@ pub const Parser = struct {
         if (in_expression) {
             self.scanner.prev_token_kind = .r_paren;
         }
-        self.expect(.r_curly);
+        try self.expect(.r_curly);
 
         const list = try self.ast.addNodeList(stmts.items);
         return try self.ast.addNode(.{
@@ -1424,10 +1424,10 @@ pub const Parser = struct {
     }
 
     /// 다음 토큰의 Kind와 줄바꿈 여부를 미리 본다 (현재 토큰을 소비하지 않음).
-    pub fn peekNext(self: *Parser) PeekResult {
+    pub fn peekNext(self: *Parser) !PeekResult {
         const saved = self.saveState();
 
-        self.scanner.next();
+        try self.scanner.next();
         const result = PeekResult{
             .kind = self.scanner.token.kind,
             .has_newline_before = self.scanner.token.has_newline_before,
@@ -1438,16 +1438,16 @@ pub const Parser = struct {
     }
 
     /// peekNext의 Kind만 반환하는 편의 함수.
-    pub fn peekNextKind(self: *Parser) Kind {
-        return self.peekNext().kind;
+    pub fn peekNextKind(self: *Parser) !Kind {
+        return (try self.peekNext()).kind;
     }
 
     /// JSX element 모드에서 다음 토큰의 Kind를 미리 본다 (현재 토큰을 소비하지 않음).
     /// JSX children 파싱 중 '<' 다음이 '/'인지 판별할 때 사용.
     /// normal 모드에서는 '/'가 regex로 해석될 수 있으므로 JSX 전용 peek이 필요하다.
-    pub fn peekNextKindJSX(self: *Parser) Kind {
+    pub fn peekNextKindJSX(self: *Parser) !Kind {
         const saved = self.saveState();
-        self.scanner.nextInsideJSXElement();
+        try self.scanner.nextInsideJSXElement();
         const peek_kind = self.scanner.token.kind;
         self.restoreState(saved);
         return peek_kind;
@@ -1589,7 +1589,7 @@ pub const Parser = struct {
 // ============================================================
 
 test "Parser: empty program" {
-    var scanner = Scanner.init(std.testing.allocator, "");
+    var scanner = try Scanner.init(std.testing.allocator, "");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1600,7 +1600,7 @@ test "Parser: empty program" {
 }
 
 test "Parser: variable declaration" {
-    var scanner = Scanner.init(std.testing.allocator, "const x = 1;");
+    var scanner = try Scanner.init(std.testing.allocator, "const x = 1;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1612,7 +1612,7 @@ test "Parser: variable declaration" {
 }
 
 test "Parser: binary expression" {
-    var scanner = Scanner.init(std.testing.allocator, "1 + 2 * 3;");
+    var scanner = try Scanner.init(std.testing.allocator, "1 + 2 * 3;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1624,7 +1624,7 @@ test "Parser: binary expression" {
 }
 
 test "Parser: if statement" {
-    var scanner = Scanner.init(std.testing.allocator, "function f(x) { if (x) { return 1; } else { return 2; } }");
+    var scanner = try Scanner.init(std.testing.allocator, "function f(x) { if (x) { return 1; } else { return 2; } }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1634,7 +1634,7 @@ test "Parser: if statement" {
 }
 
 test "Parser: function declaration" {
-    var scanner = Scanner.init(std.testing.allocator, "function add(a, b) { return a + b; }");
+    var scanner = try Scanner.init(std.testing.allocator, "function add(a, b) { return a + b; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1644,7 +1644,7 @@ test "Parser: function declaration" {
 }
 
 test "Parser: call expression" {
-    var scanner = Scanner.init(std.testing.allocator, "foo(1, 2, 3);");
+    var scanner = try Scanner.init(std.testing.allocator, "foo(1, 2, 3);");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1654,7 +1654,7 @@ test "Parser: call expression" {
 }
 
 test "Parser: member access" {
-    var scanner = Scanner.init(std.testing.allocator, "a.b.c;");
+    var scanner = try Scanner.init(std.testing.allocator, "a.b.c;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1664,7 +1664,7 @@ test "Parser: member access" {
 }
 
 test "Parser: array and object literals" {
-    var scanner = Scanner.init(std.testing.allocator, "[1, 2, 3];");
+    var scanner = try Scanner.init(std.testing.allocator, "[1, 2, 3];");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1674,7 +1674,7 @@ test "Parser: array and object literals" {
 }
 
 test "Parser: error recovery" {
-    var scanner = Scanner.init(std.testing.allocator, "@@@;");
+    var scanner = try Scanner.init(std.testing.allocator, "@@@;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1684,7 +1684,7 @@ test "Parser: error recovery" {
 }
 
 test "Parser: do-while statement" {
-    var scanner = Scanner.init(std.testing.allocator, "do { x++; } while (x < 10);");
+    var scanner = try Scanner.init(std.testing.allocator, "do { x++; } while (x < 10);");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1694,7 +1694,7 @@ test "Parser: do-while statement" {
 }
 
 test "Parser: for-in statement" {
-    var scanner = Scanner.init(std.testing.allocator, "for (var key in obj) { }");
+    var scanner = try Scanner.init(std.testing.allocator, "for (var key in obj) { }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1704,7 +1704,7 @@ test "Parser: for-in statement" {
 }
 
 test "Parser: for-of statement" {
-    var scanner = Scanner.init(std.testing.allocator, "for (const item of arr) { }");
+    var scanner = try Scanner.init(std.testing.allocator, "for (const item of arr) { }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1714,7 +1714,7 @@ test "Parser: for-of statement" {
 }
 
 test "Parser: switch statement" {
-    var scanner = Scanner.init(std.testing.allocator,
+    var scanner = try Scanner.init(std.testing.allocator,
         \\function f(x) {
         \\  switch (x) {
         \\    case 1: break;
@@ -1732,7 +1732,7 @@ test "Parser: switch statement" {
 }
 
 test "Parser: for with empty parts" {
-    var scanner = Scanner.init(std.testing.allocator, "for (;;) { }");
+    var scanner = try Scanner.init(std.testing.allocator, "for (;;) { }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1745,7 +1745,7 @@ test "Parser: switch with var in case body (scratch nesting)" {
     // 이 테스트는 scratch save/restore가 올바르게 동작하는지 검증한다.
     // case 본문에 var 선언이 있으면 scratch를 중첩 사용하게 되는데,
     // save/restore 없이 clearRetainingCapacity를 쓰면 이전 case가 사라진다.
-    var scanner = Scanner.init(std.testing.allocator,
+    var scanner = try Scanner.init(std.testing.allocator,
         \\switch (x) {
         \\  case 1:
         \\    var a = 1;
@@ -1767,7 +1767,7 @@ test "Parser: switch with var in case body (scratch nesting)" {
 
 test "Parser: nested call in var initializer (scratch nesting)" {
     // var x = foo(bar(1, 2), 3); — 중첩 호출에서 scratch가 안전한지 검증
-    var scanner = Scanner.init(std.testing.allocator, "var x = foo(bar(1, 2), 3);");
+    var scanner = try Scanner.init(std.testing.allocator, "var x = foo(bar(1, 2), 3);");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1777,7 +1777,7 @@ test "Parser: nested call in var initializer (scratch nesting)" {
 }
 
 test "Parser: try-catch" {
-    var scanner = Scanner.init(std.testing.allocator, "try { foo(); } catch (e) { bar(); }");
+    var scanner = try Scanner.init(std.testing.allocator, "try { foo(); } catch (e) { bar(); }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1787,7 +1787,7 @@ test "Parser: try-catch" {
 }
 
 test "Parser: try-finally" {
-    var scanner = Scanner.init(std.testing.allocator, "try { foo(); } finally { cleanup(); }");
+    var scanner = try Scanner.init(std.testing.allocator, "try { foo(); } finally { cleanup(); }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1797,7 +1797,7 @@ test "Parser: try-finally" {
 }
 
 test "Parser: try-catch-finally" {
-    var scanner = Scanner.init(std.testing.allocator, "try { foo(); } catch (e) { bar(); } finally { cleanup(); }");
+    var scanner = try Scanner.init(std.testing.allocator, "try { foo(); } catch (e) { bar(); } finally { cleanup(); }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1807,7 +1807,7 @@ test "Parser: try-catch-finally" {
 }
 
 test "Parser: try without catch or finally is error" {
-    var scanner = Scanner.init(std.testing.allocator, "try { foo(); }");
+    var scanner = try Scanner.init(std.testing.allocator, "try { foo(); }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1817,7 +1817,7 @@ test "Parser: try without catch or finally is error" {
 }
 
 test "Parser: optional catch binding (ES2019)" {
-    var scanner = Scanner.init(std.testing.allocator, "try { foo(); } catch { bar(); }");
+    var scanner = try Scanner.init(std.testing.allocator, "try { foo(); } catch { bar(); }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1827,7 +1827,7 @@ test "Parser: optional catch binding (ES2019)" {
 }
 
 test "Parser: arrow function (simple)" {
-    var scanner = Scanner.init(std.testing.allocator, "const f = x => x + 1;");
+    var scanner = try Scanner.init(std.testing.allocator, "const f = x => x + 1;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1837,7 +1837,7 @@ test "Parser: arrow function (simple)" {
 }
 
 test "Parser: arrow function (parenthesized)" {
-    var scanner = Scanner.init(std.testing.allocator, "const f = (a, b) => a + b;");
+    var scanner = try Scanner.init(std.testing.allocator, "const f = (a, b) => a + b;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1847,7 +1847,7 @@ test "Parser: arrow function (parenthesized)" {
 }
 
 test "Parser: arrow function with block body" {
-    var scanner = Scanner.init(std.testing.allocator, "const f = (x) => { return x * 2; };");
+    var scanner = try Scanner.init(std.testing.allocator, "const f = (x) => { return x * 2; };");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1857,7 +1857,7 @@ test "Parser: arrow function with block body" {
 }
 
 test "Parser: spread in array" {
-    var scanner = Scanner.init(std.testing.allocator, "[1, ...arr, 2];");
+    var scanner = try Scanner.init(std.testing.allocator, "[1, ...arr, 2];");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1867,7 +1867,7 @@ test "Parser: spread in array" {
 }
 
 test "Parser: spread in call" {
-    var scanner = Scanner.init(std.testing.allocator, "foo(...args);");
+    var scanner = try Scanner.init(std.testing.allocator, "foo(...args);");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1877,7 +1877,7 @@ test "Parser: spread in call" {
 }
 
 test "Parser: class declaration" {
-    var scanner = Scanner.init(std.testing.allocator,
+    var scanner = try Scanner.init(std.testing.allocator,
         \\class Foo {
         \\  constructor(x) { this.x = x; }
         \\  getX() { return this.x; }
@@ -1892,7 +1892,7 @@ test "Parser: class declaration" {
 }
 
 test "Parser: class with extends" {
-    var scanner = Scanner.init(std.testing.allocator, "class Bar extends Foo { }");
+    var scanner = try Scanner.init(std.testing.allocator, "class Bar extends Foo { }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1902,7 +1902,7 @@ test "Parser: class with extends" {
 }
 
 test "Parser: class with static method and property" {
-    var scanner = Scanner.init(std.testing.allocator,
+    var scanner = try Scanner.init(std.testing.allocator,
         \\class Config {
         \\  static defaultValue = 42;
         \\  static create() { return 1; }
@@ -1917,7 +1917,7 @@ test "Parser: class with static method and property" {
 }
 
 test "Parser: class expression" {
-    var scanner = Scanner.init(std.testing.allocator, "const Foo = class { bar() { } };");
+    var scanner = try Scanner.init(std.testing.allocator, "const Foo = class { bar() { } };");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1927,7 +1927,7 @@ test "Parser: class expression" {
 }
 
 test "Parser: function expression" {
-    var scanner = Scanner.init(std.testing.allocator, "const f = function(x) { return x; };");
+    var scanner = try Scanner.init(std.testing.allocator, "const f = function(x) { return x; };");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1937,7 +1937,7 @@ test "Parser: function expression" {
 }
 
 test "Parser: array destructuring" {
-    var scanner = Scanner.init(std.testing.allocator, "const [a, b, c] = arr;");
+    var scanner = try Scanner.init(std.testing.allocator, "const [a, b, c] = arr;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1947,7 +1947,7 @@ test "Parser: array destructuring" {
 }
 
 test "Parser: object destructuring" {
-    var scanner = Scanner.init(std.testing.allocator, "const { x, y } = obj;");
+    var scanner = try Scanner.init(std.testing.allocator, "const { x, y } = obj;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1957,7 +1957,7 @@ test "Parser: object destructuring" {
 }
 
 test "Parser: destructuring with default values" {
-    var scanner = Scanner.init(std.testing.allocator, "const [a = 1, b = 2] = arr;");
+    var scanner = try Scanner.init(std.testing.allocator, "const [a = 1, b = 2] = arr;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1967,7 +1967,7 @@ test "Parser: destructuring with default values" {
 }
 
 test "Parser: nested destructuring" {
-    var scanner = Scanner.init(std.testing.allocator, "const { a: { b } } = obj;");
+    var scanner = try Scanner.init(std.testing.allocator, "const { a: { b } } = obj;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1977,7 +1977,7 @@ test "Parser: nested destructuring" {
 }
 
 test "Parser: destructuring with rest" {
-    var scanner = Scanner.init(std.testing.allocator, "const [first, ...rest] = arr;");
+    var scanner = try Scanner.init(std.testing.allocator, "const [first, ...rest] = arr;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1987,7 +1987,7 @@ test "Parser: destructuring with rest" {
 }
 
 test "Parser: function with destructuring params" {
-    var scanner = Scanner.init(std.testing.allocator, "function foo({ x, y }, [a, b]) { }");
+    var scanner = try Scanner.init(std.testing.allocator, "function foo({ x, y }, [a, b]) { }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1999,7 +1999,7 @@ test "Parser: function with destructuring params" {
 test "Parser: duplicate param in array destructuring (strict)" {
     // strict mode에서 function f(a, [a, b]) {} 는 에러: a가 두 번 바인딩됨.
     // array_pattern 안의 이름을 collectBoundNames로 수집해야 잡을 수 있음.
-    var scanner = Scanner.init(std.testing.allocator, "\"use strict\"; function f(a, [a, b]) {}");
+    var scanner = try Scanner.init(std.testing.allocator, "\"use strict\"; function f(a, [a, b]) {}");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2010,7 +2010,7 @@ test "Parser: duplicate param in array destructuring (strict)" {
 
 test "Parser: duplicate param in object destructuring (strict)" {
     // strict mode에서 function f(a, {a}) {} 는 에러: a가 두 번 바인딩됨.
-    var scanner = Scanner.init(std.testing.allocator, "\"use strict\"; function f(a, {a}) {}");
+    var scanner = try Scanner.init(std.testing.allocator, "\"use strict\"; function f(a, {a}) {}");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2021,7 +2021,7 @@ test "Parser: duplicate param in object destructuring (strict)" {
 
 test "Parser: no duplicate in different destructuring names (strict)" {
     // 이름이 다르면 에러 없음
-    var scanner = Scanner.init(std.testing.allocator, "\"use strict\"; function f(a, [b, c]) {}");
+    var scanner = try Scanner.init(std.testing.allocator, "\"use strict\"; function f(a, [b, c]) {}");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2032,7 +2032,7 @@ test "Parser: no duplicate in different destructuring names (strict)" {
 
 test "Parser: duplicate param nested destructuring (strict)" {
     // 중첩 destructuring: function f(a, [{a}]) {} → a가 중복
-    var scanner = Scanner.init(std.testing.allocator, "\"use strict\"; function f(a, [{a}]) {}");
+    var scanner = try Scanner.init(std.testing.allocator, "\"use strict\"; function f(a, [{a}]) {}");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2043,7 +2043,7 @@ test "Parser: duplicate param nested destructuring (strict)" {
 
 test "Parser: duplicate param with default value in array (strict)" {
     // default value: function f(a, [a = 1]) {} → a가 중복
-    var scanner = Scanner.init(std.testing.allocator, "\"use strict\"; function f(a, [a = 1]) {}");
+    var scanner = try Scanner.init(std.testing.allocator, "\"use strict\"; function f(a, [a = 1]) {}");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2054,7 +2054,7 @@ test "Parser: duplicate param with default value in array (strict)" {
 
 test "Parser: duplicate param with rest in array (strict)" {
     // rest element: function f(a, [...a]) {} → a가 중복
-    var scanner = Scanner.init(std.testing.allocator, "\"use strict\"; function f(a, [...a]) {}");
+    var scanner = try Scanner.init(std.testing.allocator, "\"use strict\"; function f(a, [...a]) {}");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2066,7 +2066,7 @@ test "Parser: duplicate param with rest in array (strict)" {
 test "Parser: duplicate param within same destructuring (generator)" {
     // generator 함수에서도 destructuring 내 중복은 에러
     // function* f([a, a]) {} → a가 중복 (generator는 항상 중복 검사)
-    var scanner = Scanner.init(std.testing.allocator, "function* f([a, a]) {}");
+    var scanner = try Scanner.init(std.testing.allocator, "function* f([a, a]) {}");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2080,7 +2080,7 @@ test "Parser: duplicate param within same destructuring (generator)" {
 // ============================================================
 
 test "Parser: import side-effect" {
-    var scanner = Scanner.init(std.testing.allocator, "import 'module';");
+    var scanner = try Scanner.init(std.testing.allocator, "import 'module';");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     parser.is_module = true;
@@ -2091,7 +2091,7 @@ test "Parser: import side-effect" {
 }
 
 test "Parser: import default" {
-    var scanner = Scanner.init(std.testing.allocator, "import foo from 'module';");
+    var scanner = try Scanner.init(std.testing.allocator, "import foo from 'module';");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     parser.is_module = true;
@@ -2102,7 +2102,7 @@ test "Parser: import default" {
 }
 
 test "Parser: import named" {
-    var scanner = Scanner.init(std.testing.allocator, "import { a, b as c } from 'module';");
+    var scanner = try Scanner.init(std.testing.allocator, "import { a, b as c } from 'module';");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     parser.is_module = true;
@@ -2113,7 +2113,7 @@ test "Parser: import named" {
 }
 
 test "Parser: import namespace" {
-    var scanner = Scanner.init(std.testing.allocator, "import * as ns from 'module';");
+    var scanner = try Scanner.init(std.testing.allocator, "import * as ns from 'module';");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     parser.is_module = true;
@@ -2124,7 +2124,7 @@ test "Parser: import namespace" {
 }
 
 test "Parser: import default + named" {
-    var scanner = Scanner.init(std.testing.allocator, "import React, { useState } from 'react';");
+    var scanner = try Scanner.init(std.testing.allocator, "import React, { useState } from 'react';");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     parser.is_module = true;
@@ -2135,7 +2135,7 @@ test "Parser: import default + named" {
 }
 
 test "Parser: export default" {
-    var scanner = Scanner.init(std.testing.allocator, "export default 42;");
+    var scanner = try Scanner.init(std.testing.allocator, "export default 42;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     parser.is_module = true;
@@ -2146,7 +2146,7 @@ test "Parser: export default" {
 }
 
 test "Parser: export named" {
-    var scanner = Scanner.init(std.testing.allocator, "export { a, b as c };");
+    var scanner = try Scanner.init(std.testing.allocator, "export { a, b as c };");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     parser.is_module = true;
@@ -2157,7 +2157,7 @@ test "Parser: export named" {
 }
 
 test "Parser: export declaration" {
-    var scanner = Scanner.init(std.testing.allocator, "export const x = 1;");
+    var scanner = try Scanner.init(std.testing.allocator, "export const x = 1;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     parser.is_module = true;
@@ -2168,7 +2168,7 @@ test "Parser: export declaration" {
 }
 
 test "Parser: export all re-export" {
-    var scanner = Scanner.init(std.testing.allocator, "export * from 'module';");
+    var scanner = try Scanner.init(std.testing.allocator, "export * from 'module';");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     parser.is_module = true;
@@ -2179,7 +2179,7 @@ test "Parser: export all re-export" {
 }
 
 test "Parser: export named re-export" {
-    var scanner = Scanner.init(std.testing.allocator, "export { foo } from 'module';");
+    var scanner = try Scanner.init(std.testing.allocator, "export { foo } from 'module';");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     parser.is_module = true;
@@ -2190,7 +2190,7 @@ test "Parser: export named re-export" {
 }
 
 test "Parser: export default function" {
-    var scanner = Scanner.init(std.testing.allocator, "export default function foo() { }");
+    var scanner = try Scanner.init(std.testing.allocator, "export default function foo() { }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     parser.is_module = true;
@@ -2201,7 +2201,7 @@ test "Parser: export default function" {
 }
 
 test "Parser: dynamic import expression" {
-    var scanner = Scanner.init(std.testing.allocator, "const m = import('module');");
+    var scanner = try Scanner.init(std.testing.allocator, "const m = import('module');");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2211,7 +2211,7 @@ test "Parser: dynamic import expression" {
 }
 
 test "Parser: async function declaration" {
-    var scanner = Scanner.init(std.testing.allocator, "async function fetchData() { return await fetch(); }");
+    var scanner = try Scanner.init(std.testing.allocator, "async function fetchData() { return await fetch(); }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2221,7 +2221,7 @@ test "Parser: async function declaration" {
 }
 
 test "Parser: generator function" {
-    var scanner = Scanner.init(std.testing.allocator, "function* gen() { yield 1; yield 2; }");
+    var scanner = try Scanner.init(std.testing.allocator, "function* gen() { yield 1; yield 2; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2231,7 +2231,7 @@ test "Parser: generator function" {
 }
 
 test "Parser: yield delegate" {
-    var scanner = Scanner.init(std.testing.allocator, "function* gen() { yield* other(); }");
+    var scanner = try Scanner.init(std.testing.allocator, "function* gen() { yield* other(); }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2241,7 +2241,7 @@ test "Parser: yield delegate" {
 }
 
 test "Parser: async arrow function" {
-    var scanner = Scanner.init(std.testing.allocator, "const f = async () => { await fetch(); };");
+    var scanner = try Scanner.init(std.testing.allocator, "const f = async () => { await fetch(); };");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2251,7 +2251,7 @@ test "Parser: async arrow function" {
 }
 
 test "Parser: class with private field and method" {
-    var scanner = Scanner.init(std.testing.allocator,
+    var scanner = try Scanner.init(std.testing.allocator,
         \\class Counter {
         \\  #count = 0;
         \\  #increment() { this.#count++; }
@@ -2267,7 +2267,7 @@ test "Parser: class with private field and method" {
 }
 
 test "Parser: private field access" {
-    var scanner = Scanner.init(std.testing.allocator, "this.#name;");
+    var scanner = try Scanner.init(std.testing.allocator, "this.#name;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2279,7 +2279,7 @@ test "Parser: private field access" {
 test "Parser: assignment destructuring (array)" {
     // 배열 대입 구조분해 — 현재 array_expression + assignment로 파싱됨
     // semantic analysis에서 assignment target으로 변환 예정
-    var scanner = Scanner.init(std.testing.allocator, "[a, b] = [1, 2];");
+    var scanner = try Scanner.init(std.testing.allocator, "[a, b] = [1, 2];");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2289,7 +2289,7 @@ test "Parser: assignment destructuring (array)" {
 }
 
 test "Parser: assignment destructuring (object)" {
-    var scanner = Scanner.init(std.testing.allocator, "({ x, y } = obj);");
+    var scanner = try Scanner.init(std.testing.allocator, "({ x, y } = obj);");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2299,7 +2299,7 @@ test "Parser: assignment destructuring (object)" {
 }
 
 test "Parser: import.meta" {
-    var scanner = Scanner.init(std.testing.allocator, "const url = import.meta.url;");
+    var scanner = try Scanner.init(std.testing.allocator, "const url = import.meta.url;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     parser.is_module = true;
@@ -2310,7 +2310,7 @@ test "Parser: import.meta" {
 }
 
 test "Parser: array elision [, , x]" {
-    var scanner = Scanner.init(std.testing.allocator, "const [, , x] = arr;");
+    var scanner = try Scanner.init(std.testing.allocator, "const [, , x] = arr;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2324,7 +2324,7 @@ test "Parser: array elision [, , x]" {
 // ============================================================
 
 test "Parser: TS variable with type annotation" {
-    var scanner = Scanner.init(std.testing.allocator, "const x: number = 1;");
+    var scanner = try Scanner.init(std.testing.allocator, "const x: number = 1;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2334,7 +2334,7 @@ test "Parser: TS variable with type annotation" {
 }
 
 test "Parser: TS function with typed params and return" {
-    var scanner = Scanner.init(std.testing.allocator, "function add(a: number, b: number): number { return a + b; }");
+    var scanner = try Scanner.init(std.testing.allocator, "function add(a: number, b: number): number { return a + b; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2344,7 +2344,7 @@ test "Parser: TS function with typed params and return" {
 }
 
 test "Parser: TS union type" {
-    var scanner = Scanner.init(std.testing.allocator, "const x: string | number = 1;");
+    var scanner = try Scanner.init(std.testing.allocator, "const x: string | number = 1;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2354,7 +2354,7 @@ test "Parser: TS union type" {
 }
 
 test "Parser: TS array type" {
-    var scanner = Scanner.init(std.testing.allocator, "const arr: number[] = [];");
+    var scanner = try Scanner.init(std.testing.allocator, "const arr: number[] = [];");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2364,7 +2364,7 @@ test "Parser: TS array type" {
 }
 
 test "Parser: TS generic type" {
-    var scanner = Scanner.init(std.testing.allocator, "const arr: Array<string> = [];");
+    var scanner = try Scanner.init(std.testing.allocator, "const arr: Array<string> = [];");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2374,7 +2374,7 @@ test "Parser: TS generic type" {
 }
 
 test "Parser: TS as expression" {
-    var scanner = Scanner.init(std.testing.allocator, "const x = value as string;");
+    var scanner = try Scanner.init(std.testing.allocator, "const x = value as string;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2384,7 +2384,7 @@ test "Parser: TS as expression" {
 }
 
 test "Parser: TS non-null assertion" {
-    var scanner = Scanner.init(std.testing.allocator, "const x = value!;");
+    var scanner = try Scanner.init(std.testing.allocator, "const x = value!;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2394,7 +2394,7 @@ test "Parser: TS non-null assertion" {
 }
 
 test "Parser: TS object type literal" {
-    var scanner = Scanner.init(std.testing.allocator, "const obj: { x: number; y: string } = { x: 1, y: 'a' };");
+    var scanner = try Scanner.init(std.testing.allocator, "const obj: { x: number; y: string } = { x: 1, y: 'a' };");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2404,7 +2404,7 @@ test "Parser: TS object type literal" {
 }
 
 test "Parser: TS tuple type" {
-    var scanner = Scanner.init(std.testing.allocator, "const t: [string, number] = ['a', 1];");
+    var scanner = try Scanner.init(std.testing.allocator, "const t: [string, number] = ['a', 1];");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2414,7 +2414,7 @@ test "Parser: TS tuple type" {
 }
 
 test "Parser: TS typeof and keyof" {
-    var scanner = Scanner.init(std.testing.allocator, "const k: keyof typeof obj = 'x';");
+    var scanner = try Scanner.init(std.testing.allocator, "const k: keyof typeof obj = 'x';");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2428,7 +2428,7 @@ test "Parser: TS typeof and keyof" {
 // ============================================================
 
 test "Parser: TS type alias" {
-    var scanner = Scanner.init(std.testing.allocator, "type StringOrNumber = string | number;");
+    var scanner = try Scanner.init(std.testing.allocator, "type StringOrNumber = string | number;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2438,7 +2438,7 @@ test "Parser: TS type alias" {
 }
 
 test "Parser: TS generic type alias" {
-    var scanner = Scanner.init(std.testing.allocator, "type Result<T, E> = { ok: T } | { err: E };");
+    var scanner = try Scanner.init(std.testing.allocator, "type Result<T, E> = { ok: T } | { err: E };");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2448,7 +2448,7 @@ test "Parser: TS generic type alias" {
 }
 
 test "Parser: TS interface" {
-    var scanner = Scanner.init(std.testing.allocator,
+    var scanner = try Scanner.init(std.testing.allocator,
         \\interface User {
         \\  name: string;
         \\  age: number;
@@ -2464,7 +2464,7 @@ test "Parser: TS interface" {
 
 test "Parser: TS interface extends" {
     // interface Admin extends User — 단일 extends를 NodeList(len=1)로 저장
-    var scanner = Scanner.init(std.testing.allocator, "interface Admin extends User { role: string; }");
+    var scanner = try Scanner.init(std.testing.allocator, "interface Admin extends User { role: string; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2487,7 +2487,7 @@ test "Parser: TS interface extends" {
 
 test "Parser: TS interface multiple extends" {
     // interface Foo extends Bar, Baz — 다중 extends를 NodeList로 정확히 저장
-    var scanner = Scanner.init(std.testing.allocator, "interface Foo extends Bar, Baz { }");
+    var scanner = try Scanner.init(std.testing.allocator, "interface Foo extends Bar, Baz { }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2516,7 +2516,7 @@ test "Parser: TS interface multiple extends" {
 
 test "Parser: TS interface no extends" {
     // extends 없는 경우 extends_len = 0
-    var scanner = Scanner.init(std.testing.allocator, "interface Empty { }");
+    var scanner = try Scanner.init(std.testing.allocator, "interface Empty { }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2535,7 +2535,7 @@ test "Parser: TS interface no extends" {
 }
 
 test "Parser: TS enum" {
-    var scanner = Scanner.init(std.testing.allocator,
+    var scanner = try Scanner.init(std.testing.allocator,
         \\enum Color {
         \\  Red,
         \\  Green = 10,
@@ -2551,7 +2551,7 @@ test "Parser: TS enum" {
 }
 
 test "Parser: TS namespace" {
-    var scanner = Scanner.init(std.testing.allocator, "namespace Utils { const x = 1; }");
+    var scanner = try Scanner.init(std.testing.allocator, "namespace Utils { const x = 1; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2561,7 +2561,7 @@ test "Parser: TS namespace" {
 }
 
 test "Parser: TS declare" {
-    var scanner = Scanner.init(std.testing.allocator, "declare const VERSION: string;");
+    var scanner = try Scanner.init(std.testing.allocator, "declare const VERSION: string;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2571,7 +2571,7 @@ test "Parser: TS declare" {
 }
 
 test "Parser: TS abstract class" {
-    var scanner = Scanner.init(std.testing.allocator, "abstract class Shape { abstract area(): number; }");
+    var scanner = try Scanner.init(std.testing.allocator, "abstract class Shape { abstract area(): number; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2581,7 +2581,7 @@ test "Parser: TS abstract class" {
 }
 
 test "Parser: TS generic type parameter with constraint and default" {
-    var scanner = Scanner.init(std.testing.allocator, "type Foo<T extends string = 'hello'> = T;");
+    var scanner = try Scanner.init(std.testing.allocator, "type Foo<T extends string = 'hello'> = T;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2591,7 +2591,7 @@ test "Parser: TS generic type parameter with constraint and default" {
 }
 
 test "Parser: TS parameter property" {
-    var scanner = Scanner.init(std.testing.allocator, "class Foo { constructor(public x: number, private y: string) { } }");
+    var scanner = try Scanner.init(std.testing.allocator, "class Foo { constructor(public x: number, private y: string) { } }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2601,7 +2601,7 @@ test "Parser: TS parameter property" {
 }
 
 test "Parser: decorator on class" {
-    var scanner = Scanner.init(std.testing.allocator, "@Component class Foo { }");
+    var scanner = try Scanner.init(std.testing.allocator, "@Component class Foo { }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2611,7 +2611,7 @@ test "Parser: decorator on class" {
 }
 
 test "Parser: decorator with arguments" {
-    var scanner = Scanner.init(std.testing.allocator, "@Injectable() class Service { }");
+    var scanner = try Scanner.init(std.testing.allocator, "@Injectable() class Service { }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2621,7 +2621,7 @@ test "Parser: decorator with arguments" {
 }
 
 test "Parser: decorator on class member" {
-    var scanner = Scanner.init(std.testing.allocator,
+    var scanner = try Scanner.init(std.testing.allocator,
         \\class Foo {
         \\  @log
         \\  public greet(): void { }
@@ -2636,7 +2636,7 @@ test "Parser: decorator on class member" {
 }
 
 test "Parser: class implements" {
-    var scanner = Scanner.init(std.testing.allocator, "class Foo implements Bar, Baz { }");
+    var scanner = try Scanner.init(std.testing.allocator, "class Foo implements Bar, Baz { }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2646,7 +2646,7 @@ test "Parser: class implements" {
 }
 
 test "Parser: static readonly member" {
-    var scanner = Scanner.init(std.testing.allocator, "class Foo { static readonly MAX = 100; }");
+    var scanner = try Scanner.init(std.testing.allocator, "class Foo { static readonly MAX = 100; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2656,7 +2656,7 @@ test "Parser: static readonly member" {
 }
 
 test "Parser: class with generics" {
-    var scanner = Scanner.init(std.testing.allocator, "class Box<T> { value: T; }");
+    var scanner = try Scanner.init(std.testing.allocator, "class Box<T> { value: T; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2670,7 +2670,7 @@ test "Parser: class with generics" {
 // ============================================================
 
 test "Parser: JSX self-closing element" {
-    var scanner = Scanner.init(std.testing.allocator, "const x = <br />;");
+    var scanner = try Scanner.init(std.testing.allocator, "const x = <br />;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2680,7 +2680,7 @@ test "Parser: JSX self-closing element" {
 }
 
 test "Parser: JSX element with children" {
-    var scanner = Scanner.init(std.testing.allocator,
+    var scanner = try Scanner.init(std.testing.allocator,
         \\const x = <div>hello</div>;
     );
     defer scanner.deinit();
@@ -2692,7 +2692,7 @@ test "Parser: JSX element with children" {
 }
 
 test "Parser: JSX with attributes" {
-    var scanner = Scanner.init(std.testing.allocator,
+    var scanner = try Scanner.init(std.testing.allocator,
         \\const x = <div className="foo" id="bar" />;
     );
     defer scanner.deinit();
@@ -2704,7 +2704,7 @@ test "Parser: JSX with attributes" {
 }
 
 test "Parser: JSX with expression" {
-    var scanner = Scanner.init(std.testing.allocator,
+    var scanner = try Scanner.init(std.testing.allocator,
         \\const x = <span>{name}</span>;
     );
     defer scanner.deinit();
@@ -2719,7 +2719,7 @@ test "Parser: function call with division in args" {
     // arrow lookahead가 prev_token_kind를 복구하지 않으면
     // / 가 regex로 해석되어 실패하던 버그 테스트
     const source = "truncate(x / y)";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2733,7 +2733,7 @@ test "Parser: function call with division in args" {
 // ================================================================
 
 test "Parser: return outside function is error" {
-    var scanner = Scanner.init(std.testing.allocator, "return 1;");
+    var scanner = try Scanner.init(std.testing.allocator, "return 1;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2744,7 +2744,7 @@ test "Parser: return outside function is error" {
 }
 
 test "Parser: return inside function is valid" {
-    var scanner = Scanner.init(std.testing.allocator, "function f() { return 1; }");
+    var scanner = try Scanner.init(std.testing.allocator, "function f() { return 1; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2754,7 +2754,7 @@ test "Parser: return inside function is valid" {
 }
 
 test "Parser: return inside arrow function is valid" {
-    var scanner = Scanner.init(std.testing.allocator, "const f = () => { return 1; };");
+    var scanner = try Scanner.init(std.testing.allocator, "const f = () => { return 1; };");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2764,7 +2764,7 @@ test "Parser: return inside arrow function is valid" {
 }
 
 test "Parser: break outside loop/switch is error" {
-    var scanner = Scanner.init(std.testing.allocator, "break;");
+    var scanner = try Scanner.init(std.testing.allocator, "break;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2775,7 +2775,7 @@ test "Parser: break outside loop/switch is error" {
 }
 
 test "Parser: break inside loop is valid" {
-    var scanner = Scanner.init(std.testing.allocator, "while (true) { break; }");
+    var scanner = try Scanner.init(std.testing.allocator, "while (true) { break; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2785,7 +2785,7 @@ test "Parser: break inside loop is valid" {
 }
 
 test "Parser: break inside switch is valid" {
-    var scanner = Scanner.init(std.testing.allocator, "function f(x) { switch (x) { case 1: break; } }");
+    var scanner = try Scanner.init(std.testing.allocator, "function f(x) { switch (x) { case 1: break; } }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2795,7 +2795,7 @@ test "Parser: break inside switch is valid" {
 }
 
 test "Parser: continue outside loop is error" {
-    var scanner = Scanner.init(std.testing.allocator, "continue;");
+    var scanner = try Scanner.init(std.testing.allocator, "continue;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2806,7 +2806,7 @@ test "Parser: continue outside loop is error" {
 }
 
 test "Parser: continue inside for loop is valid" {
-    var scanner = Scanner.init(std.testing.allocator, "for (var i = 0; i < 10; i++) { continue; }");
+    var scanner = try Scanner.init(std.testing.allocator, "for (var i = 0; i < 10; i++) { continue; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2817,7 +2817,7 @@ test "Parser: continue inside for loop is valid" {
 
 test "Parser: break in nested function inside loop is error" {
     // 함수 경계에서 loop 컨텍스트가 리셋되므로, 내부 함수의 break는 에러
-    var scanner = Scanner.init(std.testing.allocator, "while (true) { function f() { break; } }");
+    var scanner = try Scanner.init(std.testing.allocator, "while (true) { function f() { break; } }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2828,7 +2828,7 @@ test "Parser: break in nested function inside loop is error" {
 }
 
 test "Parser: with statement in strict mode is error" {
-    var scanner = Scanner.init(std.testing.allocator,
+    var scanner = try Scanner.init(std.testing.allocator,
         \\"use strict";
         \\with (obj) { x; }
     );
@@ -2842,7 +2842,7 @@ test "Parser: with statement in strict mode is error" {
 }
 
 test "Parser: with statement in non-strict mode is valid" {
-    var scanner = Scanner.init(std.testing.allocator, "with (obj) { x; }");
+    var scanner = try Scanner.init(std.testing.allocator, "with (obj) { x; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2853,7 +2853,7 @@ test "Parser: with statement in non-strict mode is valid" {
 
 test "Parser: use strict in function body" {
     // 함수 내부 "use strict"가 strict mode를 설정하는지 확인
-    var scanner = Scanner.init(std.testing.allocator,
+    var scanner = try Scanner.init(std.testing.allocator,
         \\function f() {
         \\  "use strict";
         \\  with (obj) { x; }
@@ -2869,7 +2869,7 @@ test "Parser: use strict in function body" {
 }
 
 test "Parser: module mode is always strict" {
-    var scanner = Scanner.init(std.testing.allocator, "with (obj) { x; }");
+    var scanner = try Scanner.init(std.testing.allocator, "with (obj) { x; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2885,7 +2885,7 @@ test "Parser: module mode is always strict" {
 // ================================================================
 
 test "Parser: reserved word as variable name is error" {
-    var scanner = Scanner.init(std.testing.allocator, "var var = 123;");
+    var scanner = try Scanner.init(std.testing.allocator, "var var = 123;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2895,7 +2895,7 @@ test "Parser: reserved word as variable name is error" {
 }
 
 test "Parser: strict mode reserved word as binding in strict mode is error" {
-    var scanner = Scanner.init(std.testing.allocator,
+    var scanner = try Scanner.init(std.testing.allocator,
         \\"use strict";
         \\var implements = 1;
     );
@@ -2908,7 +2908,7 @@ test "Parser: strict mode reserved word as binding in strict mode is error" {
 }
 
 test "Parser: strict mode reserved word as binding in non-strict is valid" {
-    var scanner = Scanner.init(std.testing.allocator, "var implements = 1;");
+    var scanner = try Scanner.init(std.testing.allocator, "var implements = 1;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2918,7 +2918,7 @@ test "Parser: strict mode reserved word as binding in non-strict is valid" {
 }
 
 test "Parser: let as variable name is valid in non-strict" {
-    var scanner = Scanner.init(std.testing.allocator, "var let = 1;");
+    var scanner = try Scanner.init(std.testing.allocator, "var let = 1;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2932,7 +2932,7 @@ test "Parser: let as variable name is valid in non-strict" {
 // ============================================================
 
 test "Parser: ++this is invalid assignment target" {
-    var scanner = Scanner.init(std.testing.allocator, "++this;");
+    var scanner = try Scanner.init(std.testing.allocator, "++this;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2942,7 +2942,7 @@ test "Parser: ++this is invalid assignment target" {
 }
 
 test "Parser: delete identifier in strict mode is error" {
-    var scanner = Scanner.init(std.testing.allocator, "\"use strict\"; delete x;");
+    var scanner = try Scanner.init(std.testing.allocator, "\"use strict\"; delete x;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2952,7 +2952,7 @@ test "Parser: delete identifier in strict mode is error" {
 }
 
 test "Parser: const without initializer is error" {
-    var scanner = Scanner.init(std.testing.allocator, "const x;");
+    var scanner = try Scanner.init(std.testing.allocator, "const x;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2962,7 +2962,7 @@ test "Parser: const without initializer is error" {
 }
 
 test "Parser: for-of const without init is valid" {
-    var scanner = Scanner.init(std.testing.allocator, "for (const x of [1]) {}");
+    var scanner = try Scanner.init(std.testing.allocator, "for (const x of [1]) {}");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2973,7 +2973,7 @@ test "Parser: for-of const without init is valid" {
 
 test "Parser: import/export only at module top-level" {
     // import in function body — error even in module
-    var scanner = Scanner.init(std.testing.allocator, "function f() { import 'x'; }");
+    var scanner = try Scanner.init(std.testing.allocator, "function f() { import 'x'; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     parser.is_module = true;
@@ -2984,7 +2984,7 @@ test "Parser: import/export only at module top-level" {
 }
 
 test "Parser: function in loop body is error" {
-    var scanner = Scanner.init(std.testing.allocator, "for (;;) function f() {}");
+    var scanner = try Scanner.init(std.testing.allocator, "for (;;) function f() {}");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2994,7 +2994,7 @@ test "Parser: function in loop body is error" {
 }
 
 test "Parser: yield is identifier outside generator" {
-    var scanner = Scanner.init(std.testing.allocator, "var yield = 1;");
+    var scanner = try Scanner.init(std.testing.allocator, "var yield = 1;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -3004,7 +3004,7 @@ test "Parser: yield is identifier outside generator" {
 }
 
 test "Parser: await is identifier in script mode" {
-    var scanner = Scanner.init(std.testing.allocator, "var await = 1;");
+    var scanner = try Scanner.init(std.testing.allocator, "var await = 1;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -3014,7 +3014,7 @@ test "Parser: await is identifier in script mode" {
 }
 
 test "Parser: await is reserved in module mode" {
-    var scanner = Scanner.init(std.testing.allocator, "var await = 1;");
+    var scanner = try Scanner.init(std.testing.allocator, "var await = 1;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     parser.is_module = true;
@@ -3025,7 +3025,7 @@ test "Parser: await is reserved in module mode" {
 }
 
 test "Parser: super outside method is error" {
-    var scanner = Scanner.init(std.testing.allocator, "super.x;");
+    var scanner = try Scanner.init(std.testing.allocator, "super.x;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -3035,7 +3035,7 @@ test "Parser: super outside method is error" {
 }
 
 test "Parser: new.target outside function is error" {
-    var scanner = Scanner.init(std.testing.allocator, "new.target;");
+    var scanner = try Scanner.init(std.testing.allocator, "new.target;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -3045,7 +3045,7 @@ test "Parser: new.target outside function is error" {
 }
 
 test "Parser: object shorthand reserved word is error" {
-    var scanner = Scanner.init(std.testing.allocator, "({true});");
+    var scanner = try Scanner.init(std.testing.allocator, "({true});");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -3055,7 +3055,7 @@ test "Parser: object shorthand reserved word is error" {
 }
 
 test "Parser: optional chaining is not assignment target" {
-    var scanner = Scanner.init(std.testing.allocator, "x?.y = 1;");
+    var scanner = try Scanner.init(std.testing.allocator, "x?.y = 1;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -3065,7 +3065,7 @@ test "Parser: optional chaining is not assignment target" {
 }
 
 test "Parser: parenthesized destructuring is not assignment target" {
-    var scanner = Scanner.init(std.testing.allocator, "({}) = 1;");
+    var scanner = try Scanner.init(std.testing.allocator, "({}) = 1;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -3077,7 +3077,7 @@ test "Parser: parenthesized destructuring is not assignment target" {
 test "Parser: arguments in class field initializer is error" {
     // class field에서 arguments 직접 사용 — SyntaxError
     {
-        var scanner = Scanner.init(std.testing.allocator, "var C = class { x = arguments; };");
+        var scanner = try Scanner.init(std.testing.allocator, "var C = class { x = arguments; };");
         defer scanner.deinit();
         var parser = Parser.init(std.testing.allocator, &scanner);
         defer parser.deinit();
@@ -3087,7 +3087,7 @@ test "Parser: arguments in class field initializer is error" {
     }
     // arrow function 안에서 arguments 사용 — arrow는 자체 arguments가 없으므로 SyntaxError
     {
-        var scanner = Scanner.init(std.testing.allocator, "class C { x = () => arguments; }");
+        var scanner = try Scanner.init(std.testing.allocator, "class C { x = () => arguments; }");
         defer scanner.deinit();
         var parser = Parser.init(std.testing.allocator, &scanner);
         defer parser.deinit();
@@ -3097,7 +3097,7 @@ test "Parser: arguments in class field initializer is error" {
     }
     // 일반 function 안에서 arguments 사용 — 자체 arguments 바인딩이 있으므로 OK
     {
-        var scanner = Scanner.init(std.testing.allocator, "class C { x = function() { return arguments; }; }");
+        var scanner = try Scanner.init(std.testing.allocator, "class C { x = function() { return arguments; }; }");
         defer scanner.deinit();
         var parser = Parser.init(std.testing.allocator, &scanner);
         defer parser.deinit();
@@ -3113,7 +3113,7 @@ test "Parser: arguments in class field initializer is error" {
 
 test "CoverGrammar: rest element with initializer in array destructuring" {
     // [...x = 1] = arr → rest에 initializer 금지
-    var scanner = Scanner.init(std.testing.allocator, "[...x = 1] = arr;");
+    var scanner = try Scanner.init(std.testing.allocator, "[...x = 1] = arr;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -3133,7 +3133,7 @@ test "CoverGrammar: rest element with initializer in array destructuring" {
 
 test "CoverGrammar: valid array destructuring" {
     // [a, b, ...c] = arr → 에러 없음
-    var scanner = Scanner.init(std.testing.allocator, "[a, b, ...c] = arr;");
+    var scanner = try Scanner.init(std.testing.allocator, "[a, b, ...c] = arr;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -3144,7 +3144,7 @@ test "CoverGrammar: valid array destructuring" {
 
 test "CoverGrammar: valid object destructuring" {
     // ({ a, b: c } = obj) → 에러 없음
-    var scanner = Scanner.init(std.testing.allocator, "({ a, b: c } = obj);");
+    var scanner = try Scanner.init(std.testing.allocator, "({ a, b: c } = obj);");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -3155,7 +3155,7 @@ test "CoverGrammar: valid object destructuring" {
 
 test "CoverGrammar: strict mode eval assignment" {
     // "use strict"; eval = 1 → 에러
-    var scanner = Scanner.init(std.testing.allocator, "\"use strict\"; eval = 1;");
+    var scanner = try Scanner.init(std.testing.allocator, "\"use strict\"; eval = 1;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -3166,7 +3166,7 @@ test "CoverGrammar: strict mode eval assignment" {
 
 test "CoverGrammar: parenthesized destructuring is invalid" {
     // ([x]) = 1 → parenthesized destructuring 금지
-    var scanner = Scanner.init(std.testing.allocator, "([x]) = 1;");
+    var scanner = try Scanner.init(std.testing.allocator, "([x]) = 1;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -3177,7 +3177,7 @@ test "CoverGrammar: parenthesized destructuring is invalid" {
 
 test "CoverGrammar: for-in with rest-init is error" {
     // for ([...x = 1] in obj) {} → rest-init 금지
-    var scanner = Scanner.init(std.testing.allocator, "for ([...x = 1] in obj) {}");
+    var scanner = try Scanner.init(std.testing.allocator, "for ([...x = 1] in obj) {}");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -3195,7 +3195,7 @@ test "CoverGrammar: for-in with rest-init is error" {
 
 test "CoverGrammar: arrow params rest-init is error" {
     // ([...x = 1]) => {} → rest-init 금지
-    var scanner = Scanner.init(std.testing.allocator, "([...x = 1]) => {};");
+    var scanner = try Scanner.init(std.testing.allocator, "([...x = 1]) => {};");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -3237,7 +3237,7 @@ const ErrorCheck = struct {
 
 /// 테스트 헬퍼: 소스를 파싱하고 조건에 맞는 에러가 있는지 검증한다.
 fn expectParseError(source: []const u8, check: ErrorCheck) !void {
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -3270,7 +3270,7 @@ fn expectParseError(source: []const u8, check: ErrorCheck) !void {
 
 /// 테스트 헬퍼: 소스를 파싱하고 에러가 없는지 검증한다.
 fn expectNoParseError(source: []const u8) !void {
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -3343,7 +3343,7 @@ test "ErrorMsg: addError backward compat (no found/hint)" {
 }
 
 test "ErrorMsg: multiple errors all have proper fields" {
-    var scanner = Scanner.init(std.testing.allocator, "function( { ) }");
+    var scanner = try Scanner.init(std.testing.allocator, "function( { ) }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -3357,7 +3357,7 @@ test "ErrorMsg: multiple errors all have proper fields" {
 
 test "ErrorMsg: nested brackets track correctly" {
     // 중첩 괄호: `if ([1, (2` → 에러에 related_span이 하나 이상 존재
-    var scanner = Scanner.init(std.testing.allocator, "if ([1, (2");
+    var scanner = try Scanner.init(std.testing.allocator, "if ([1, (2");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -3397,7 +3397,7 @@ test "ErrorMsg: valid code has no errors (regression)" {
 // ================================================================
 
 test "Diagnostic: parser errors have kind=parse" {
-    var scanner = Scanner.init(std.testing.allocator, "var 123bad;");
+    var scanner = try Scanner.init(std.testing.allocator, "var 123bad;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();

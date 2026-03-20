@@ -1760,7 +1760,7 @@ const Transformer = @import("../transformer/transformer.zig").Transformer;
 /// end-to-end 헬퍼: 소스 → 파싱 → 변환 → codegen → JS 문자열
 fn generateJS(allocator: std.mem.Allocator, source: []const u8) !struct { output: []const u8, scanner: *Scanner, parser: *Parser, codegen_inst: *Codegen, transformed_ast: Ast } {
     const scanner_ptr = try allocator.create(Scanner);
-    scanner_ptr.* = Scanner.init(allocator, source);
+    scanner_ptr.* = try Scanner.init(allocator, source);
 
     const parser_ptr = try allocator.create(Parser);
     parser_ptr.* = Parser.init(allocator, scanner_ptr);
@@ -1812,7 +1812,7 @@ const TransformOptions = @import("../transformer/transformer.zig").TransformOpti
 /// 풀 옵션 e2e. transform + codegen 옵션 모두 전달.
 fn e2eFull(allocator: std.mem.Allocator, source: []const u8, t_options: TransformOptions, cg_options: CodegenOptions) !TestResult {
     const scanner_ptr = try allocator.create(Scanner);
-    scanner_ptr.* = Scanner.init(allocator, source);
+    scanner_ptr.* = try Scanner.init(allocator, source);
 
     const parser_ptr = try allocator.create(Parser);
     parser_ptr.* = Parser.init(allocator, scanner_ptr);
