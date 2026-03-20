@@ -126,7 +126,7 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
 ```
 
 #### 추천 구현 순서
-1. ✅ **Test262 마무리** — 파서 안정화 완료 (regexp validator는 독립 기능으로 분리)
+1. ✅ **Test262 마무리 + regexp validator** — 23,384건 100% 통과 (실패 0건)
 2. **Arena allocator 설계 + 도입** — 번들러 전 필수 (1~3단계). 나중에 넣을수록 변경 범위 커짐
    - 1단계: Parser에 Arena 적용 (allocator 교체, 하루 소요)
    - 2단계: Semantic Analyzer에 적용 (스코프/심볼)
@@ -414,7 +414,7 @@ Zig 코어 (parser + transformer + codegen)
 #### 독립 기능 (아무 단계에 끼워 넣기 가능)
 - React Fast Refresh — 트랜스포머에 HMR boundary 주입
 - Flow 지원 — Hermes C++ 파서 C ABI 링크
-- regexp validator — 렉서 내부, 다른 모듈 영향 없음
+- ✅ regexp validator — 렉서 내부, Test262 100% 통과
 
 ## Commands
 ```bash
@@ -505,7 +505,7 @@ main ← feature/lexer-token-enum
     - ✅ Context u8 분리 + cover grammar 변환 — PR #168~#174
     - ✅ 예약어/contextual keyword 검증 (escaped keyword, strict mode, eval/arguments)
 
-### 트랜스포머 구현 순서 (PR 단위) — Phase 3 진행 중
+### 트랜스포머 구현 순서 (PR 단위) — Phase 3 ✅ 완료
 1. ✅ Phase 3 의사결정 (D041-D043) — PR #36
 2. ✅ Visitor/순회 인프라 + 새 AST 빌더 + Node 24B 수정 — PR #37
 3. ✅ 타입 스트리핑 + 통합 테스트 — PR #38
@@ -522,7 +522,7 @@ main ← feature/lexer-token-enum
 14. ✅ --drop console/debugger + define 글로벌 치환 — PR #48
 15. ✅ import.meta CJS 변환 (D021) — PR #49
 
-### 코드젠 + CLI 구현 순서 (PR 단위) — Phase 4 진행 중
+### 코드젠 + CLI 구현 순서 (PR 단위) — Phase 4 ✅ 완료
 1. ✅ Phase 4 의사결정 (D044-D046) — PR #50
 2. ✅ 코드 포맷팅 (들여쓰기, 줄바꿈, minify) — PR #51
 3. ✅ CLI 기본 (파일 → 파싱 → 변환 → 출력) — PR #52
