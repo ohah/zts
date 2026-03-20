@@ -989,9 +989,19 @@ pub const Codegen = struct {
     }
 
     fn emitAccessorProp(self: *Codegen, node: Node) !void {
-        try self.emitNode(node.data.binary.left);
-        try self.writeByte('=');
-        try self.emitNode(node.data.binary.right);
+        const key = node.data.binary.left;
+        const value = node.data.binary.right;
+        const flags = node.data.binary.flags;
+
+        if (flags & 0x01 != 0) try self.write("static ");
+        try self.write("accessor ");
+        try self.emitNode(key);
+        if (!value.isNone()) {
+            try self.writeSpace();
+            try self.writeByte('=');
+            try self.writeSpace();
+            try self.emitNode(value);
+        }
         try self.writeByte(';');
     }
 
