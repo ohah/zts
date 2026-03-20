@@ -47,6 +47,9 @@ pub const Parser = struct {
     /// 재사용 가능한 임시 버퍼 (리스트 수집용). 매 사용 시 clearRetainingCapacity.
     scratch: std.ArrayList(NodeIndex),
 
+    /// arrow 파라미터 중복 검사용 임시 이름 수집 버퍼.
+    param_name_spans: std.ArrayList(Span),
+
     /// 메모리 할당자
     allocator: std.mem.Allocator,
 
@@ -168,6 +171,7 @@ pub const Parser = struct {
             .ast = Ast.init(allocator, scanner.source),
             .errors = std.ArrayList(ParseError).init(allocator),
             .scratch = std.ArrayList(NodeIndex).init(allocator),
+            .param_name_spans = std.ArrayList(Span).init(allocator),
             .allocator = allocator,
         };
     }
@@ -176,6 +180,7 @@ pub const Parser = struct {
         self.ast.deinit();
         self.errors.deinit();
         self.scratch.deinit();
+        self.param_name_spans.deinit();
     }
 
     // ================================================================
@@ -275,7 +280,8 @@ pub const Parser = struct {
     fn checkBindingRestInit(self: *Parser, rest_arg: NodeIndex) void {
         if (rest_arg.isNone()) return;
         const rest_node = self.ast.getNode(rest_arg);
-        if (rest_node.tag == .assignment_pattern) {
+        // binding 위치에서는 assignment_pattern, cover grammar에서는 assignment_expression
+        if (rest_node.tag == .assignment_pattern or rest_node.tag == .assignment_expression) {
             self.addError(rest_node.span, rest_init_error);
         }
     }
@@ -518,6 +524,182 @@ pub const Parser = struct {
         }
     }
 
+    /// cover grammar 표현식에서 바인딩 이름의 span을 재귀 수집하여 중복 검사한다.
+    /// 중복 발견 시 즉시 에러를 추가한다.
+    fn collectCoverParamNames(self: *Parser, idx: NodeIndex) void {
+        if (idx.isNone()) return;
+        const node = self.ast.getNode(idx);
+        switch (node.tag) {
+            .identifier_reference, .binding_identifier, .assignment_target_identifier => {
+                const name = self.ast.source[node.span.start..node.span.end];
+                // 이전에 수집된 이름과 비교하여 중복 검사
+                // param_name_spans를 사용 — coverExpressionToArrowParams에서 초기화
+                for (self.param_name_spans.items) |prev_span| {
+                    const prev_name = self.ast.source[prev_span.start..prev_span.end];
+                    if (std.mem.eql(u8, name, prev_name)) {
+                        self.addError(node.span, "duplicate parameter name");
+                        return;
+                    }
+                }
+                self.param_name_spans.append(node.span) catch @panic("OOM");
+            },
+            .parenthesized_expression => self.collectCoverParamNames(node.data.unary.operand),
+            .sequence_expression => {
+                const list = node.data.list;
+                var i: u32 = 0;
+                while (i < list.len) : (i += 1) {
+                    const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+                    self.collectCoverParamNames(elem_idx);
+                }
+            },
+            .object_expression, .array_expression, .object_assignment_target, .array_assignment_target => {
+                const list = node.data.list;
+                var i: u32 = 0;
+                while (i < list.len) : (i += 1) {
+                    const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+                    self.collectCoverParamNames(elem_idx);
+                }
+            },
+            .object_property, .assignment_target_property_identifier, .assignment_target_property_property => {
+                // shorthand: left=key(identifier_reference), right=none → key is the binding
+                if (node.data.binary.right.isNone()) {
+                    self.collectCoverParamNames(node.data.binary.left);
+                } else {
+                    // long-form { key: value } → value is the binding
+                    // BUT: for shorthand { x } where key==value (same span), also walk left
+                    const key_span = if (!node.data.binary.left.isNone()) self.ast.getNode(node.data.binary.left).span else node.span;
+                    const val_span = self.ast.getNode(node.data.binary.right).span;
+                    if (key_span.start == val_span.start and key_span.end == val_span.end) {
+                        // shorthand with value = same as key (e.g., {x} parsed with both key and value)
+                        self.collectCoverParamNames(node.data.binary.right);
+                    } else {
+                        self.collectCoverParamNames(node.data.binary.right);
+                    }
+                }
+            },
+            .binding_property => {
+                self.collectCoverParamNames(node.data.binary.right);
+            },
+            .assignment_expression, .assignment_pattern, .assignment_target_with_default => {
+                // default value: left = binding, right = default_value
+                self.collectCoverParamNames(node.data.binary.left);
+                // default value 내부의 yield/await 검사 (이름 수집하지 않고 검사만)
+                self.checkCoverParamDefaultForYieldAwait(node.data.binary.right);
+            },
+            .spread_element, .assignment_target_rest, .binding_rest_element, .rest_element => {
+                self.collectCoverParamNames(node.data.unary.operand);
+            },
+            else => {},
+        }
+    }
+
+    /// expression이 arrow function 파라미터로 유효한 형태인지 확인한다.
+    /// parenthesized_expression, identifier_reference 등만 arrow 파라미터가 될 수 있다.
+    /// call_expression, member_expression 등은 불가능.
+    fn isValidArrowParamForm(self: *const Parser, idx: NodeIndex) bool {
+        if (idx.isNone()) return false;
+        const node = self.ast.getNode(idx);
+        return switch (node.tag) {
+            .parenthesized_expression, .identifier_reference, .binding_identifier => true,
+            else => false,
+        };
+    }
+
+    /// async arrow 파라미터에서 'await' 식별자 사용을 금지한다.
+    /// async arrow의 파라미터는 async context 진입 전에 파싱되므로 await가 identifier로 파싱된다.
+    /// 이 함수는 cover grammar 변환 후 호출하여 identifier 이름이 "await"인 경우를 검출한다.
+    fn checkAsyncArrowParamsForAwait(self: *Parser, idx: NodeIndex) void {
+        if (idx.isNone()) return;
+        if (@intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        const node = self.ast.getNode(idx);
+        switch (node.tag) {
+            .identifier_reference, .binding_identifier, .assignment_target_identifier => {
+                const name = self.ast.source[node.span.start..node.span.end];
+                if (std.mem.eql(u8, name, "await")) {
+                    self.addError(node.span, "'await' is not allowed in async arrow function parameters");
+                }
+            },
+            .parenthesized_expression, .spread_element, .assignment_target_rest => {
+                self.checkAsyncArrowParamsForAwait(node.data.unary.operand);
+            },
+            .sequence_expression,
+            .array_expression,
+            .object_expression,
+            .array_assignment_target,
+            .object_assignment_target,
+            => {
+                const list = node.data.list;
+                var i: u32 = 0;
+                while (i < list.len) : (i += 1) {
+                    const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+                    self.checkAsyncArrowParamsForAwait(elem_idx);
+                }
+            },
+            .assignment_expression,
+            .assignment_pattern,
+            .assignment_target_with_default,
+            .object_property,
+            .assignment_target_property_identifier,
+            .assignment_target_property_property,
+            .binding_property,
+            => {
+                self.checkAsyncArrowParamsForAwait(node.data.binary.left);
+                self.checkAsyncArrowParamsForAwait(node.data.binary.right);
+            },
+            else => {},
+        }
+    }
+
+    /// arrow 파라미터 default value 내부에 yield/await가 있는지 검사한다.
+    /// 이름 수집은 하지 않고 yield/await expression만 검출한다.
+    fn checkCoverParamDefaultForYieldAwait(self: *Parser, idx: NodeIndex) void {
+        if (idx.isNone()) return;
+        if (@intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        const node = self.ast.getNode(idx);
+        switch (node.tag) {
+            .yield_expression => {
+                self.addError(node.span, "'yield' is not allowed in arrow function parameters");
+            },
+            .await_expression => {
+                self.addError(node.span, "'await' is not allowed in arrow function parameters");
+            },
+            // unary node — operand만 검사
+            .parenthesized_expression,
+            .spread_element,
+            .unary_expression,
+            .update_expression,
+            => self.checkCoverParamDefaultForYieldAwait(node.data.unary.operand),
+            // list node — 각 요소 검사
+            .sequence_expression,
+            .array_expression,
+            .object_expression,
+            => {
+                const list = node.data.list;
+                var i: u32 = 0;
+                while (i < list.len) : (i += 1) {
+                    const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+                    self.checkCoverParamDefaultForYieldAwait(elem_idx);
+                }
+            },
+            // binary node — 양쪽 자식 검사
+            .assignment_expression,
+            .binary_expression,
+            .logical_expression,
+            .object_property,
+            => {
+                self.checkCoverParamDefaultForYieldAwait(node.data.binary.left);
+                self.checkCoverParamDefaultForYieldAwait(node.data.binary.right);
+            },
+            // conditional은 ternary이지만 binary data 사용 (condition=left, consequent/alternate 조합=right)
+            .conditional_expression => {
+                self.checkCoverParamDefaultForYieldAwait(node.data.binary.left);
+                self.checkCoverParamDefaultForYieldAwait(node.data.binary.right);
+            },
+            // 리프 노드 (identifier, literal 등)나 기타 — 더 이상 탐색 불필요
+            else => {},
+        }
+    }
+
     /// arrow function 파라미터를 cover grammar으로 검증.
     /// parenthesized/sequence expression을 풀어서 각 요소에
     /// coverExpressionToAssignmentTarget을 위임한다.
@@ -535,12 +717,37 @@ pub const Parser = struct {
             var i: u32 = 0;
             while (i < list.len) : (i += 1) {
                 const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
-                _ = self.coverExpressionToAssignmentTarget(elem_idx, false);
+                const elem = self.ast.getNode(elem_idx);
+                if (elem.tag == .spread_element) {
+                    // rest 파라미터: 마지막 요소여야 하고 initializer 금지, trailing comma 금지
+                    if (i + 1 < list.len) {
+                        self.addError(elem.span, "rest element must be last element");
+                    }
+                    if ((elem.data.unary.flags & spread_trailing_comma) != 0) {
+                        self.addError(elem.span, "rest element may not have a trailing comma");
+                    }
+                    self.checkBindingRestInit(elem.data.unary.operand);
+                    // rest의 operand도 valid assignment target이어야 함
+                    _ = self.coverExpressionToAssignmentTarget(elem.data.unary.operand, false);
+                } else {
+                    _ = self.coverExpressionToAssignmentTarget(elem_idx, false);
+                }
             }
+        } else if (node.tag == .spread_element) {
+            // 단일 rest 파라미터: (...x) → initializer 금지 + trailing comma 금지
+            if ((node.data.unary.flags & spread_trailing_comma) != 0) {
+                self.addError(node.span, "rest element may not have a trailing comma");
+            }
+            self.checkBindingRestInit(node.data.unary.operand);
+            _ = self.coverExpressionToAssignmentTarget(node.data.unary.operand, false);
         } else {
             // 단일 expression → 직접 검증
             _ = self.coverExpressionToAssignmentTarget(idx, false);
         }
+        // arrow 파라미터 중복 검사: (x, {x}) => 1 등
+        // cover grammar 변환 후에 수행 (변환된 태그도 처리하므로)
+        self.param_name_spans.clearRetainingCapacity();
+        self.collectCoverParamNames(idx);
     }
 
     /// 키워드를 바인딩 위치에서 사용할 때의 검증.
@@ -703,6 +910,35 @@ pub const Parser = struct {
 
     /// 파라미터 리스트가 simple인지 검사한다.
     /// simple = 모든 파라미터가 binding_identifier (destructuring, default, rest 없음)
+    /// arrow function의 cover grammar 파라미터가 simple인지 확인한다.
+    /// simple = 모든 파라미터가 plain identifier (destructuring, default, rest 없음).
+    /// "use strict" + non-simple params → SyntaxError (ECMAScript 14.2.1).
+    fn isSimpleArrowParams(self: *const Parser, param_idx: NodeIndex) bool {
+        if (param_idx.isNone()) return true; // () → simple
+        const node = self.ast.getNode(param_idx);
+        return switch (node.tag) {
+            // 단일 식별자: x => ... → simple
+            .binding_identifier, .identifier_reference, .assignment_target_identifier => true,
+            // 괄호 표현식: (x) → 내부 확인
+            .parenthesized_expression => {
+                if (node.data.unary.operand.isNone()) return true; // () → simple
+                return self.isSimpleArrowParams(node.data.unary.operand);
+            },
+            // 콤마 리스트: (a, b, c) → 각 요소 확인
+            .sequence_expression => {
+                const list = node.data.list;
+                var i: u32 = 0;
+                while (i < list.len) : (i += 1) {
+                    const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+                    if (!self.isSimpleArrowParams(elem_idx)) return false;
+                }
+                return true;
+            },
+            // destructuring, default, rest, spread → non-simple
+            else => false,
+        };
+    }
+
     fn checkSimpleParams(self: *const Parser, scratch_top: usize) bool {
         const params = self.scratch.items[scratch_top..];
         for (params) |param_idx| {
@@ -2766,6 +3002,49 @@ pub const Parser = struct {
     /// ECMAScript: Expression = AssignmentExpression (',' AssignmentExpression)*
     /// 콤마가 없으면 단일 AssignmentExpression을 그대로 반환하고,
     /// 콤마가 있으면 sequence_expression 노드로 감싼다.
+    /// parseExpression과 동일하지만 `...`(rest) 요소도 허용한다.
+    /// arrow function 파라미터의 cover grammar: `(a, ...b) => {}`.
+    /// 일반 expression 위치에서 `...`는 invalid이지만, arrow 파라미터로 재해석될 수 있으므로
+    /// 여기서 parseSpreadOrAssignment을 사용하여 spread_element 노드를 생성한다.
+    fn parseExpressionOrRest(self: *Parser) ParseError2!NodeIndex {
+        const first = try self.parseSpreadOrAssignment();
+
+        if (self.current() != .comma) return first;
+
+        const scratch_top = self.saveScratch();
+        try self.scratch.append(first);
+        var had_trailing_comma = false;
+        while (self.eat(.comma)) {
+            if (self.current() == .r_paren) {
+                had_trailing_comma = true;
+                break;
+            }
+            const elem = try self.parseSpreadOrAssignment();
+            try self.scratch.append(elem);
+        }
+        // rest element 뒤 trailing comma 감지: (...a,) → SyntaxError
+        // 마지막 요소가 spread이고 while이 trailing comma 때문에 break했으면 플래그 설정
+        if (had_trailing_comma) {
+            const items = self.scratch.items[scratch_top..];
+            if (items.len > 0) {
+                const last_idx = items[items.len - 1];
+                if (!last_idx.isNone() and self.ast.getNode(last_idx).tag == .spread_element) {
+                    self.ast.nodes.items[@intFromEnum(last_idx)].data = .{
+                        .unary = .{ .operand = self.ast.getNode(last_idx).data.unary.operand, .flags = spread_trailing_comma },
+                    };
+                }
+            }
+        }
+        const first_span = self.ast.getNode(first).span;
+        const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        self.restoreScratch(scratch_top);
+        return try self.ast.addNode(.{
+            .tag = .sequence_expression,
+            .span = .{ .start = first_span.start, .end = self.currentSpan().start },
+            .data = .{ .list = list },
+        });
+    }
+
     fn parseExpression(self: *Parser) ParseError2!NodeIndex {
         const first = try self.parseAssignmentExpression();
 
@@ -2794,15 +3073,21 @@ pub const Parser = struct {
     /// arrow function의 body를 파싱한다.
     /// arrow function은 함수이므로 in_function=true, loop/switch 리셋.
     /// block body면 parseFunctionBody(), expression body면 parseAssignmentExpression().
-    fn parseArrowBody(self: *Parser, is_async: bool) ParseError2!NodeIndex {
+    fn parseArrowBody(self: *Parser, is_async: bool, param_idx: NodeIndex) ParseError2!NodeIndex {
         // arrow function은 generator가 될 수 없으므로 is_generator=false
         const saved_ctx = self.enterFunctionContext(is_async, false);
         // arrow function은 자체 바인딩이 없으므로 외부 컨텍스트를 상속:
         // - in_class_field/in_static_initializer: arguments 사용 제한
         // - allow_new_target: new.target 허용 여부 (global arrow에서는 false)
+        // - allow_super_call/allow_super_property: super 접근 허용 여부 (메서드 내 arrow에서 super 사용)
         self.in_class_field = saved_ctx.in_class_field;
         self.in_static_initializer = saved_ctx.in_static_initializer;
         self.allow_new_target = saved_ctx.allow_new_target;
+        self.allow_super_call = saved_ctx.allow_super_call;
+        self.allow_super_property = saved_ctx.allow_super_property;
+        // ECMAScript 14.2.1: non-simple params + "use strict" body → SyntaxError
+        // cover grammar에서 파라미터가 simple인지 확인하여 parseFunctionBody에서 검증.
+        self.has_simple_params = self.isSimpleArrowParams(param_idx);
         const body = if (self.current() == .l_curly)
             try self.parseFunctionBodyExpr()
         else
@@ -2825,13 +3110,15 @@ pub const Parser = struct {
                     const id_span = self.currentSpan();
                     self.advance(); // skip identifier
                     if (self.current() == .arrow and !self.scanner.token.has_newline_before) {
+                        // ECMAScript 14.2.1: strict mode에서 eval/arguments를 arrow 파라미터로 사용 금지
+                        self.checkStrictBinding(id_span);
                         self.advance(); // skip =>
                         const param = try self.ast.addNode(.{
                             .tag = .binding_identifier,
                             .span = id_span,
                             .data = .{ .string_ref = id_span },
                         });
-                        const body = try self.parseArrowBody(true);
+                        const body = try self.parseArrowBody(true, param);
                         return try self.ast.addNode(.{
                             .tag = .arrow_function_expression,
                             .span = .{ .start = async_span.start, .end = self.currentSpan().start },
@@ -2853,7 +3140,7 @@ pub const Parser = struct {
                         self.advance(); // skip )
                         if (self.current() == .arrow and !self.scanner.token.has_newline_before) {
                             self.advance(); // skip =>
-                            const body = try self.parseArrowBody(true);
+                            const body = try self.parseArrowBody(true, .none);
                             return try self.ast.addNode(.{
                                 .tag = .arrow_function_expression,
                                 .span = .{ .start = async_span.start, .end = self.currentSpan().start },
@@ -2866,8 +3153,10 @@ pub const Parser = struct {
                         const params_expr = try self.parseConditionalExpression();
                         if (self.current() == .arrow and !self.scanner.token.has_newline_before) {
                             self.coverExpressionToArrowParams(params_expr);
+                            // async arrow: 파라미터에 'await' 식별자 사용 금지
+                            self.checkAsyncArrowParamsForAwait(params_expr);
                             self.advance(); // skip =>
-                            const body = try self.parseArrowBody(true);
+                            const body = try self.parseArrowBody(true, params_expr);
                             return try self.ast.addNode(.{
                                 .tag = .arrow_function_expression,
                                 .span = .{ .start = async_span.start, .end = self.currentSpan().start },
@@ -2888,13 +3177,15 @@ pub const Parser = struct {
             self.advance(); // skip identifier
             if (self.current() == .arrow and !self.scanner.token.has_newline_before) {
                 // identifier => body
+                // ECMAScript 14.2.1: strict mode에서 eval/arguments를 arrow 파라미터로 사용 금지
+                self.checkStrictBinding(id_span);
                 self.advance(); // skip =>
                 const param = try self.ast.addNode(.{
                     .tag = .binding_identifier,
                     .span = id_span,
                     .data = .{ .string_ref = id_span },
                 });
-                const body = try self.parseArrowBody(false);
+                const body = try self.parseArrowBody(false, param);
 
                 return try self.ast.addNode(.{
                     .tag = .arrow_function_expression,
@@ -2915,7 +3206,7 @@ pub const Parser = struct {
             self.advance(); // skip )
             if (self.current() == .arrow and !self.scanner.token.has_newline_before) {
                 self.advance(); // skip =>
-                const body = try self.parseArrowBody(false);
+                const body = try self.parseArrowBody(false, .none);
                 return try self.ast.addNode(.{
                     .tag = .arrow_function_expression,
                     .span = .{ .start = arrow_start, .end = self.currentSpan().start },
@@ -2958,12 +3249,16 @@ pub const Parser = struct {
 
         // => 를 만나면 arrow function (괄호 형태)
         // left가 parenthesized_expression이면 파라미터 리스트로 취급
-        if (self.current() == .arrow) {
+        // ECMAScript 14.2: [no LineTerminator here] => ConciseBody
+        // call_expression 등은 arrow 파라미터가 될 수 없음 (e.g., async() => {})
+        if (self.current() == .arrow and !self.scanner.token.has_newline_before and
+            self.isValidArrowParamForm(left))
+        {
             // arrow 파라미터 cover grammar 검증 (ECMAScript: ArrowFormalParameters)
             self.coverExpressionToArrowParams(left);
             const left_start = self.ast.getNode(left).span.start;
             self.advance(); // skip =>
-            const body = try self.parseArrowBody(false);
+            const body = try self.parseArrowBody(false, left);
 
             return try self.ast.addNode(.{
                 .tag = .arrow_function_expression,
@@ -3556,8 +3851,10 @@ pub const Parser = struct {
                     });
                 }
 
+                // `(a, ...b) => {}` 형태의 rest 파라미터를 cover grammar으로 지원.
+                // `...`는 일반 expression에서는 나올 수 없으므로 arrow 파라미터로만 해석된다.
                 const paren_saved = self.enterAllowInContext(true);
-                const expr = try self.parseExpression();
+                const expr = try self.parseExpressionOrRest();
                 self.restoreContext(paren_saved);
                 self.expect(.r_paren);
                 return try self.ast.addNode(.{
