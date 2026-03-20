@@ -270,47 +270,6 @@ pub const Parser = struct {
         }
     }
 
-    /// strict mode에서 eval/arguments에 할당하면 에러 (ECMAScript 13.15.1).
-    fn checkStrictAssignmentTarget(self: *Parser, idx: NodeIndex) void {
-        if (idx.isNone()) return;
-        const node = self.ast.getNode(idx);
-        if (node.tag == .identifier_reference) {
-            self.checkStrictBinding(node.span);
-        } else if (node.tag == .parenthesized_expression) {
-            self.checkStrictAssignmentTarget(node.data.unary.operand);
-        }
-    }
-
-    /// assignment target이 유효한지 검증한다.
-    /// valid: identifier, member expression, parenthesized(valid target)
-    /// invalid: literal, binary, call, arrow, etc.
-    fn isValidAssignmentTarget(self: *const Parser, idx: NodeIndex) bool {
-        if (idx.isNone()) return false;
-        const node = self.ast.getNode(idx);
-        return switch (node.tag) {
-            .identifier_reference, .private_identifier => true,
-            .static_member_expression, .computed_member_expression => {
-                // optional chaining (a?.b, a?.[b])은 assignment target이 아님
-                return node.data.binary.flags == 0; // 0 = normal, 1 = optional
-            },
-            .private_field_expression => true,
-            // destructuring assignment: [a, b] = [1, 2], { a } = obj
-            .array_expression, .object_expression => true,
-            .parenthesized_expression => {
-                // (x) = 1 → x가 simple target이면 OK
-                // ({x}) = 1, ([x]) = 1 → parenthesized destructuring 금지
-                const inner = node.data.unary.operand;
-                if (inner.isNone()) return false;
-                const inner_tag = self.ast.getNode(inner).tag;
-                if (inner_tag == .array_expression or inner_tag == .object_expression) return false;
-                return self.isValidAssignmentTarget(inner);
-            },
-            // super.x, super[x]는 static/computed_member_expression으로 처리됨
-            // bare super는 assignment target이 아님
-            else => false,
-        };
-    }
-
     const rest_init_error = "rest element may not have a default initializer";
 
     /// binding pattern에서 rest element가 assignment_pattern(= initializer)이면 에러.
@@ -323,110 +282,9 @@ pub const Parser = struct {
         }
     }
 
-    /// spread element의 operand가 assignment_expression이면 에러를 내고,
-    /// operand가 nested pattern이면 재귀 검증.
-    fn checkSpreadRestInit(self: *Parser, spread_operand: NodeIndex) void {
-        const operand = self.ast.getNode(spread_operand);
-        if (operand.tag == .assignment_expression) {
-            self.addError(operand.span, rest_init_error);
-        }
-        self.checkRestInitInAssignmentPattern(spread_operand);
-    }
-
-    /// assignment destructuring에서 rest/spread element에 initializer가 있으면 에러.
-    /// ECMAScript: AssignmentRestElement에는 Initializer가 올 수 없다.
-    /// `[...x = 1] = arr` → SyntaxError
-    fn checkRestInitInAssignmentPattern(self: *Parser, idx: NodeIndex) void {
-        if (idx.isNone()) return;
-        const node = self.ast.getNode(idx);
-        if (node.tag == .array_expression) {
-            const list = node.data.list;
-            var i: u32 = 0;
-            while (i < list.len) : (i += 1) {
-                const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
-                if (elem_idx.isNone()) continue;
-                const elem = self.ast.getNode(elem_idx);
-                if (elem.tag == .spread_element) {
-                    self.checkSpreadRestInit(elem.data.unary.operand);
-                }
-                // nested destructuring: [x = [...y = 1]] → left가 pattern이면 재귀 검증
-                if (elem.tag == .assignment_expression) {
-                    self.checkRestInitInAssignmentPattern(elem.data.binary.left);
-                }
-            }
-        } else if (node.tag == .object_expression) {
-            const list = node.data.list;
-            var i: u32 = 0;
-            while (i < list.len) : (i += 1) {
-                const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
-                if (elem_idx.isNone()) continue;
-                const elem = self.ast.getNode(elem_idx);
-                if (elem.tag == .spread_element) {
-                    self.checkSpreadRestInit(elem.data.unary.operand);
-                }
-                // nested destructuring: {a: [...x = 1]} → value가 pattern이면 재귀 검증
-                if (elem.tag == .object_property) {
-                    self.checkRestInitInAssignmentPattern(elem.data.binary.right);
-                }
-            }
-        }
-    }
-
-    /// assignment destructuring에서 escaped keyword를 identifier로 사용하면 에러.
-    /// `({ v\u0061r }) = x` 또는 `({ v\u0061r }) => {}` — escaped reserved word는 binding 불가.
-    /// Token.has_escape 대신 소스 텍스트에서 `\`를 확인 (O(L), identifier 길이만큼).
-    /// arrow params / for-in/of / assignment에서 호출.
-    fn checkEscapedKeywordInPattern(self: *Parser, idx: NodeIndex) void {
-        if (idx.isNone()) return;
-        const node = self.ast.getNode(idx);
-        if (node.tag == .object_expression) {
-            const list = node.data.list;
-            var i: u32 = 0;
-            while (i < list.len) : (i += 1) {
-                const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
-                if (elem_idx.isNone()) continue;
-                const elem = self.ast.getNode(elem_idx);
-                if (elem.tag == .object_property) {
-                    if (!elem.data.binary.left.isNone() and !elem.data.binary.right.isNone()) {
-                        // shorthand: key와 value가 같은 span이면 shorthand
-                        const key_span = self.ast.getNode(elem.data.binary.left).span;
-                        const val_node = self.ast.getNode(elem.data.binary.right);
-                        const is_shorthand = key_span.start == val_node.span.start and key_span.end == val_node.span.end;
-                        if (is_shorthand) {
-                            self.checkIdentifierEscapedKeyword(key_span);
-                        }
-                        // value가 nested pattern이면 재귀
-                        self.checkEscapedKeywordInPattern(elem.data.binary.right);
-                    }
-                } else if (elem.tag == .spread_element) {
-                    self.checkEscapedKeywordInPattern(elem.data.unary.operand);
-                }
-            }
-        } else if (node.tag == .array_expression) {
-            const list = node.data.list;
-            var i: u32 = 0;
-            while (i < list.len) : (i += 1) {
-                const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
-                if (elem_idx.isNone()) continue;
-                const elem = self.ast.getNode(elem_idx);
-                if (elem.tag == .identifier_reference) {
-                    self.checkIdentifierEscapedKeyword(elem.span);
-                } else if (elem.tag == .assignment_expression) {
-                    // [v\u0061r = 1] — left를 재귀 체크 (identifier 또는 nested pattern)
-                    self.checkEscapedKeywordInPattern(elem.data.binary.left);
-                } else if (elem.tag == .spread_element) {
-                    self.checkEscapedKeywordInPattern(elem.data.unary.operand);
-                } else {
-                    self.checkEscapedKeywordInPattern(elem_idx);
-                }
-            }
-        } else if (node.tag == .identifier_reference) {
-            self.checkIdentifierEscapedKeyword(node.span);
-        }
-    }
-
     /// identifier의 소스 텍스트가 escaped reserved keyword인지 확인.
     /// 소스에 `\`가 있고, 디코딩하면 reserved keyword이면 에러.
+    /// cover grammar 함수 내부 + parseObjectProperty에서 사용.
     fn checkIdentifierEscapedKeyword(self: *Parser, span: Span) void {
         const text = self.resolveIdentifierText(span);
         if (token_mod.keywords.get(text)) |kw| {
@@ -442,28 +300,6 @@ pub const Parser = struct {
         const text = self.ast.source[span.start..span.end];
         if (std.mem.indexOfScalar(u8, text, '\\') == null) return text;
         return self.scanner.decodeIdentifierEscapes(text) orelse text;
-    }
-
-    /// arrow function 파라미터에서 rest-init 검증.
-    /// `([...x = 1]) => {}` — 파라미터가 expression으로 파싱된 경우,
-    /// parenthesized/sequence를 풀어 내부 패턴을 검증한다.
-    fn checkRestInitInArrowParams(self: *Parser, idx: NodeIndex) void {
-        if (idx.isNone()) return;
-        const node = self.ast.getNode(idx);
-        if (node.tag == .parenthesized_expression) {
-            self.checkRestInitInArrowParams(node.data.unary.operand);
-        } else if (node.tag == .sequence_expression) {
-            const list = node.data.list;
-            var i: u32 = 0;
-            while (i < list.len) : (i += 1) {
-                const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
-                self.checkRestInitInAssignmentPattern(elem_idx);
-                self.checkEscapedKeywordInPattern(elem_idx);
-            }
-        } else {
-            self.checkRestInitInAssignmentPattern(idx);
-            self.checkEscapedKeywordInPattern(idx);
-        }
     }
 
     // ================================================================
