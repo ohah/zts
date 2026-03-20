@@ -323,14 +323,8 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             }
                             return true;
                         }
-                        // skip group name
-                        while (!self.isEnd() and self.peek() != '>') {
-                            self.advance();
-                        }
-                        if (!self.eat('>')) {
-                            self.setError("unterminated named back reference");
-                            return false;
-                        }
+                        // 그룹 이름 검증
+                        if (!self.parseGroupName()) return false;
                         return true;
                     }
                     self.advance();
@@ -426,18 +420,9 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         // named group (?<name>...)
                         self.advance();
                         const name_start = self.pos;
-                        while (!self.isEnd() and self.peek() != '>') {
-                            self.advance();
-                        }
-                        if (!self.eat('>')) {
-                            self.setError("unterminated group name");
-                            return false;
-                        }
-                        const name = self.source[name_start .. self.pos - 1];
-                        if (name.len == 0) {
-                            self.setError("empty group name");
-                            return false;
-                        }
+                        // 그룹 이름 유효성: IdentifierName (ID_Start + ID_Continue*)
+                        if (!self.parseGroupName()) return false;
+                        const name = self.source[name_start .. self.pos - 1]; // -1 for '>'
                         // 중복 이름 체크
                         for (self.named_groups[0..self.named_group_count]) |existing| {
                             if (std.mem.eql(u8, existing, name)) {
@@ -484,14 +469,65 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         // ================================================================
 
         fn parseModifiers(self: *Self) bool {
-            // parse positive modifiers
+            var seen_i: bool = false;
+            var seen_m: bool = false;
+            var seen_s: bool = false;
+            // positive modifiers
             while (!self.isEnd() and isModifierChar(self.peek())) {
+                switch (self.peek()) {
+                    'i' => {
+                        if (seen_i) {
+                            self.setError("duplicate modifier 'i'");
+                            return false;
+                        }
+                        seen_i = true;
+                    },
+                    'm' => {
+                        if (seen_m) {
+                            self.setError("duplicate modifier 'm'");
+                            return false;
+                        }
+                        seen_m = true;
+                    },
+                    's' => {
+                        if (seen_s) {
+                            self.setError("duplicate modifier 's'");
+                            return false;
+                        }
+                        seen_s = true;
+                    },
+                    else => {},
+                }
                 self.advance();
             }
             // optional '-' for negative modifiers
             if (!self.isEnd() and self.peek() == '-') {
                 self.advance();
                 while (!self.isEnd() and isModifierChar(self.peek())) {
+                    switch (self.peek()) {
+                        'i' => {
+                            if (seen_i) {
+                                self.setError("modifier 'i' already set");
+                                return false;
+                            }
+                            seen_i = true;
+                        },
+                        'm' => {
+                            if (seen_m) {
+                                self.setError("modifier 'm' already set");
+                                return false;
+                            }
+                            seen_m = true;
+                        },
+                        's' => {
+                            if (seen_s) {
+                                self.setError("modifier 's' already set");
+                                return false;
+                            }
+                            seen_s = true;
+                        },
+                        else => {},
+                    }
                     self.advance();
                 }
             }
@@ -500,6 +536,98 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 return false;
             }
             return true;
+        }
+
+        // ================================================================
+        // Group Name (IdentifierName)
+        // ================================================================
+
+        /// named group 이름을 파싱하고 `>`로 닫힘을 검증한다.
+        /// ECMAScript: GroupName = `<` RegExpIdentifierName `>`
+        /// RegExpIdentifierName = RegExpIdentifierStart RegExpIdentifierPart*
+        fn parseGroupName(self: *Self) bool {
+            if (self.isEnd() or self.peek() == '>') {
+                self.setError("empty group name");
+                return false;
+            }
+            // 첫 글자: ID_Start 또는 \u escape
+            if (!self.parseGroupNameChar(true)) {
+                self.setError("invalid group name start character");
+                return false;
+            }
+            // 나머지: ID_Continue 또는 \u escape
+            while (!self.isEnd() and self.peek() != '>') {
+                if (!self.parseGroupNameChar(false)) {
+                    self.setError("invalid character in group name");
+                    return false;
+                }
+            }
+            if (!self.eat('>')) {
+                self.setError("unterminated group name");
+                return false;
+            }
+            return true;
+        }
+
+        /// 그룹 이름의 한 문자를 파싱한다.
+        /// is_start=true이면 ID_Start, false이면 ID_Continue 체크.
+        fn parseGroupNameChar(self: *Self, is_start: bool) bool {
+            if (self.isEnd()) return false;
+            const c = self.peek();
+
+            // \u escape in group name
+            if (c == '\\') {
+                if (self.pos + 1 < self.source.len and self.source[self.pos + 1] == 'u') {
+                    self.pos += 2; // skip \u
+                    // \u{HHHH} or \uHHHH
+                    if (self.eat('{')) {
+                        if (!self.eatHexDigitsUntil('}')) {
+                            self.setError("invalid unicode escape in group name");
+                            return false;
+                        }
+                    } else {
+                        if (!self.eatHexDigits(4)) {
+                            self.setError("invalid unicode escape in group name");
+                            return false;
+                        }
+                    }
+                    return true; // escape의 코드포인트 검증은 생략 (대부분의 케이스를 잡음)
+                }
+                return false;
+            }
+
+            // ASCII 식별자 문자 체크
+            if (c == '_' or c == '$') {
+                self.advance();
+                return true;
+            }
+            if (is_start) {
+                if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z')) {
+                    self.advance();
+                    return true;
+                }
+            } else {
+                if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9')) {
+                    self.advance();
+                    return true;
+                }
+            }
+
+            // Non-ASCII: UTF-8 multi-byte 문자 (Unicode ID_Start/ID_Continue)
+            if (c >= 0x80) {
+                // unicode mode에서 non-ASCII는 에러 (유효한 Unicode escape를 사용해야 함)
+                if (self.flags.hasUnicodeMode()) {
+                    return false;
+                }
+                self.advance();
+                // multi-byte UTF-8: 후속 바이트 스킵
+                while (!self.isEnd() and (self.peek() & 0xC0) == 0x80) {
+                    self.advance();
+                }
+                return true;
+            }
+
+            return false;
         }
 
         // ================================================================
