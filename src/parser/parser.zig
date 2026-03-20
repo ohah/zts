@@ -262,6 +262,9 @@ pub const Parser = struct {
     }
 
     const rest_init_error = "rest element may not have a default initializer";
+    /// object_property의 binary.flags에 설정하여 shorthand-with-default를 표시.
+    /// parseObjectProperty에서 마킹, coverObjectExpressionToTarget에서 검증.
+    const shorthand_with_default: u16 = 0x01;
     /// spread_element의 unary.flags에 설정하여 trailing comma를 표시.
     /// parseArrayExpression에서 마킹, coverArrayExpressionToTarget에서 검증.
     const spread_trailing_comma: u16 = 0x01;
@@ -403,7 +406,7 @@ pub const Parser = struct {
         }
         // spread_element → assignment_target_rest로 변환
         self.ast.setTag(spread_idx, .assignment_target_rest);
-        _ = self.coverExpressionToAssignmentTarget(operand_idx, false);
+        _ = self.coverExpressionToAssignmentTarget(operand_idx, true);
     }
 
     /// array expression 내부를 assignment target으로 검증 (coverExpressionToAssignmentTarget 헬퍼).
@@ -413,8 +416,9 @@ pub const Parser = struct {
         var i: u32 = 0;
         while (i < list.len) : (i += 1) {
             const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
-            if (elem_idx.isNone()) continue; // elision
+            if (elem_idx.isNone()) continue; // elision (none)
             const elem = self.ast.getNode(elem_idx);
+            if (elem.tag == .elision) continue; // elision node — destructuring에서는 무시
             switch (elem.tag) {
                 .spread_element => {
                     // rest는 마지막 요소여야 함: [...x, y] → SyntaxError
@@ -431,11 +435,11 @@ pub const Parser = struct {
                 .assignment_expression => {
                     // [x = 1] → assignment_target_with_default로 변환
                     self.ast.setTag(elem_idx, .assignment_target_with_default);
-                    _ = self.coverExpressionToAssignmentTarget(elem.data.binary.left, false);
+                    _ = self.coverExpressionToAssignmentTarget(elem.data.binary.left, true);
                 },
                 else => {
                     // identifier, nested array/object/member 등 → 재귀 검증
-                    _ = self.coverExpressionToAssignmentTarget(elem_idx, false);
+                    _ = self.coverExpressionToAssignmentTarget(elem_idx, true);
                 },
             }
         }
@@ -451,7 +455,15 @@ pub const Parser = struct {
             if (elem_idx.isNone()) continue;
             const elem = self.ast.getNode(elem_idx);
             if (elem.tag == .object_property) {
-                if (!elem.data.binary.left.isNone() and !elem.data.binary.right.isNone()) {
+                const is_shorthand_default = (elem.data.binary.flags & shorthand_with_default) != 0;
+                if (!elem.data.binary.left.isNone() and elem.data.binary.right.isNone()) {
+                    // shorthand without value: { eval } — right가 none인 경우
+                    // parseObjectProperty에서 shorthand는 value를 생성하지 않으므로 right=none
+                    const key_span = self.ast.getNode(elem.data.binary.left).span;
+                    self.checkIdentifierEscapedKeyword(key_span);
+                    self.checkStrictBinding(key_span);
+                    self.ast.setTag(elem_idx, .assignment_target_property_identifier);
+                } else if (!elem.data.binary.left.isNone() and !elem.data.binary.right.isNone()) {
                     // shorthand 검증: key와 value가 같은 span이면 shorthand
                     const key_span = self.ast.getNode(elem.data.binary.left).span;
                     const val_node = self.ast.getNode(elem.data.binary.right);
@@ -462,12 +474,26 @@ pub const Parser = struct {
                         self.checkStrictBinding(key_span);
                         // shorthand → assignment_target_property_identifier
                         self.ast.setTag(elem_idx, .assignment_target_property_identifier);
+                    } else if (is_shorthand_default) {
+                        // shorthand with default: { eval = 0 } — key가 target, value가 default
+                        // key의 eval/arguments 검증이 필요 (strict mode)
+                        self.checkIdentifierEscapedKeyword(key_span);
+                        self.checkStrictBinding(key_span);
+                        self.ast.setTag(elem_idx, .assignment_target_property_identifier);
+                        // value(default)는 assignment target이 아니므로 검증하지 않음
                     } else {
                         // long-form → assignment_target_property_property
                         self.ast.setTag(elem_idx, .assignment_target_property_property);
+                        // value가 assignment_expression이면 default-value 구문:
+                        // { key: target = default } → target을 검증, default는 검증하지 않음
+                        if (val_node.tag == .assignment_expression) {
+                            self.ast.setTag(elem.data.binary.right, .assignment_target_with_default);
+                            _ = self.coverExpressionToAssignmentTarget(val_node.data.binary.left, true);
+                        } else {
+                            // value를 재귀 검증 (nested pattern일 수 있음)
+                            _ = self.coverExpressionToAssignmentTarget(elem.data.binary.right, true);
+                        }
                     }
-                    // value를 재귀 검증 (nested pattern일 수 있음)
-                    _ = self.coverExpressionToAssignmentTarget(elem.data.binary.right, false);
                 }
             } else if (elem.tag == .spread_element) {
                 // rest는 마지막 요소여야 함: {...x, y} → SyntaxError
@@ -636,7 +662,31 @@ pub const Parser = struct {
         self.in_loop = true;
         const body = try self.parseStatementChecked(true);
         self.in_loop = saved_in_loop;
+
+        // ECMAScript 14.7.5: It is a Syntax Error if IsLabelledFunction(Statement) is true.
+        // 반복문의 body가 labelled function이면 에러 (중첩 label도 재귀 검사).
+        // Annex B의 labelled function 예외는 반복문 body에서 적용되지 않는다.
+        self.checkLabelledFunction(body);
+
         return body;
+    }
+
+    /// IsLabelledFunction 검사: labeled statement을 재귀적으로 따라가서
+    /// 최종 body가 function declaration이면 에러를 발생시킨다.
+    fn checkLabelledFunction(self: *Parser, idx: NodeIndex) void {
+        if (idx.isNone()) return;
+        const node = self.ast.getNode(idx);
+        if (node.tag == .labeled_statement) {
+            // labeled_statement의 body는 binary.right에 저장됨
+            const inner = node.data.binary.right;
+            const inner_node = self.ast.getNode(inner);
+            if (inner_node.tag == .function_declaration) {
+                self.addError(inner_node.span, "labelled function declaration is not allowed in loop body");
+            } else if (inner_node.tag == .labeled_statement) {
+                // 중첩 label: label1: label2: function f() {}
+                self.checkLabelledFunction(inner);
+            }
+        }
     }
 
     /// 파라미터 리스트가 simple인지 검사한다.
@@ -818,14 +868,10 @@ pub const Parser = struct {
             .kw_let => {
                 if (self.is_strict_mode) {
                     self.addError(self.currentSpan(), "lexical declaration is not allowed in statement position");
-                } else {
-                    const next = self.peekNext();
-                    // let 뒤에 줄바꿈 없이 identifier/[/{가 오면 lexical declaration
-                    if (!next.has_newline_before and
-                        (next.kind == .identifier or next.kind == .l_bracket or next.kind == .l_curly))
-                    {
-                        self.addError(self.currentSpan(), "lexical declaration is not allowed in statement position");
-                    }
+                } else if (self.isLetDeclarationStart()) {
+                    // sloppy mode에서도 `let`이 LexicalDeclaration으로 해석되면 에러
+                    // isLetDeclarationStart: 줄바꿈 없이 identifier/[/{, 또는 줄바꿈 있어도 [
+                    self.addError(self.currentSpan(), "lexical declaration is not allowed in statement position");
                 }
             },
             .kw_class => {
@@ -869,7 +915,14 @@ pub const Parser = struct {
         return switch (self.current()) {
             .l_curly => self.parseBlockStatement(),
             .semicolon => self.parseEmptyStatement(),
-            .kw_var, .kw_let => self.parseVariableDeclaration(),
+            .kw_var => self.parseVariableDeclaration(),
+            // ECMAScript: sloppy mode에서 `let`은 LexicalDeclaration으로 취급되려면
+            // 뒤에 줄바꿈 없이 BindingIdentifier, `[`, `{`가 와야 한다.
+            // 그렇지 않으면 식별자로 취급하여 expression statement로 파싱한다.
+            .kw_let => if (self.is_strict_mode or self.isLetDeclarationStart())
+                self.parseVariableDeclaration()
+            else
+                self.parseExpressionStatement(),
             .kw_const => if (self.peekNextKind() == .kw_enum)
                 self.parseConstEnum()
             else
@@ -962,6 +1015,21 @@ pub const Parser = struct {
     }
 
     /// expression statement 또는 labeled statement를 파싱한다.
+    /// ECMAScript: sloppy mode에서 `let`이 LexicalDeclaration의 시작인지 판별한다.
+    /// `let` 뒤에 줄바꿈 없이 BindingIdentifier, `[`, `{`가 오면 LexicalDeclaration이다.
+    /// 그 외에는 `let`을 식별자로 취급한다 (expression statement).
+    fn isLetDeclarationStart(self: *Parser) bool {
+        const next = self.peekNext();
+        if (next.has_newline_before) {
+            // `let` 뒤에 줄바꿈이 있으면 `[`인 경우만 LexicalDeclaration
+            // (ExpressionStatement의 lookahead 제한: `let [` 금지)
+            return next.kind == .l_bracket;
+        }
+        // 줄바꿈 없이 바로 오는 경우: identifier, [, { → LexicalDeclaration
+        return next.kind == .identifier or next.kind == .l_bracket or next.kind == .l_curly or
+            (next.kind.isKeyword() and !next.kind.isReservedKeyword() and !next.kind.isLiteralKeyword());
+    }
+
     /// `identifier:` 패턴이면 labeled statement, 아니면 expression statement.
     fn parseExpressionOrLabeledStatement(self: *Parser) ParseError2!NodeIndex {
         // identifier/keyword: statement — labeled statement 판별
@@ -1211,7 +1279,19 @@ pub const Parser = struct {
         const saved_for_loop_init = self.for_loop_init;
         self.for_loop_init = true;
 
-        if (self.current() == .kw_var or self.current() == .kw_let or self.current() == .kw_const) {
+        // ECMAScript 14.7.5: for ( [lookahead ∉ { let [ }] LeftHandSideExpression in Expression )
+        // sloppy mode에서 `let`이 LexicalDeclaration의 시작이 아닌 경우 식별자로 취급.
+        // 예: `for (let in x)`, `for (let of x)`, `for (let; ;)`, `for (let = 3; ;)`
+        // sloppy mode에서 isLetDeclarationStart가 false이면 `let`을 식별자로 처리.
+        // 예: `for (let in x)` — `let`은 식별자.
+        // 특수: `for (let of [])` — `let of`를 선언이 아닌 for-of로 해석 (스펙: SyntaxError).
+        //   `let` 뒤에 `of`가 오면 식별자로 취급하여 for-of LHS 검증에서 에러 보고.
+        //   단, `for (let of = 1;;)` 같은 경우는 isLetDeclarationStart가 true → 선언 경로.
+        //   `kw_of` 뒤에 `=`이 오면 isLetDeclarationStart가 true (keyword + not reserved).
+        const is_let_as_identifier = self.current() == .kw_let and !self.is_strict_mode and
+            (!self.isLetDeclarationStart() or self.peekNextKind() == .kw_of);
+
+        if ((self.current() == .kw_var or self.current() == .kw_let or self.current() == .kw_const) and !is_let_as_identifier) {
             const init_expr = try self.parseVariableDeclaration();
             self.restoreContext(for_saved);
             self.for_loop_init = saved_for_loop_init;
@@ -1236,11 +1316,25 @@ pub const Parser = struct {
         self.restoreContext(for_saved);
         self.for_loop_init = saved_for_loop_init;
         if (self.current() == .kw_in) {
-            _ = self.coverExpressionToAssignmentTarget(init_expr, false);
+            _ = self.coverExpressionToAssignmentTarget(init_expr, true);
             return self.parseForIn(start, init_expr);
         }
         if (self.current() == .kw_of) {
-            _ = self.coverExpressionToAssignmentTarget(init_expr, false);
+            // for (async of [1]) — 'async' 키워드가 for-of의 LHS로 사용되면 에러
+            // ECMAScript 14.7.5: [+Await] ForDeclaration에서 async는 금지
+            const init_node = self.ast.getNode(init_expr);
+            if (init_node.tag == .identifier_reference) {
+                const text = self.ast.source[init_node.span.start..init_node.span.end];
+                if (std.mem.eql(u8, text, "async")) {
+                    self.addError(init_node.span, "'async' is not allowed as identifier in for-of left-hand side");
+                }
+                // for (let of []) — 'let' 키워드가 for-of의 LHS로 사용되면 에러
+                // ECMAScript 14.7.5: [lookahead ≠ let] LeftHandSideExpression of
+                if (std.mem.eql(u8, text, "let")) {
+                    self.addError(init_node.span, "'let' is not allowed as identifier in for-of left-hand side");
+                }
+            }
+            _ = self.coverExpressionToAssignmentTarget(init_expr, true);
             return self.parseForOf(start, init_expr);
         }
         _ = self.eat(.semicolon);
@@ -3751,11 +3845,13 @@ pub const Parser = struct {
 
         // key: value
         var value = NodeIndex.none;
+        var prop_flags: u16 = 0;
         if (self.eat(.colon)) {
             value = try self.parseAssignmentExpression();
         } else if (self.eat(.eq)) {
             // shorthand with default: { x = 1 }  (destructuring default)
             value = try self.parseAssignmentExpression();
+            prop_flags = shorthand_with_default;
         } else {
             // shorthand: { x } — key가 identifier shorthand로 사용 가능한지 검증
             if (!key.isNone()) {
@@ -3780,7 +3876,7 @@ pub const Parser = struct {
         return try self.ast.addNode(.{
             .tag = .object_property,
             .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = key, .right = value, .flags = 0 } },
+            .data = .{ .binary = .{ .left = key, .right = value, .flags = prop_flags } },
         });
     }
 
