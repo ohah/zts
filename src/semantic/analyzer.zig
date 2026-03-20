@@ -275,19 +275,18 @@ pub const SemanticAnalyzer = struct {
 
         // escape가 포함된 경우: 디코딩하여 새 문자열 생성
         var buf = std.ArrayList(u8).init(self.allocator);
-        defer buf.deinit();
         var i: usize = 0;
 
         while (i < raw.len) {
             if (raw[i] == '\\' and i + 1 < raw.len and raw[i + 1] == 'u') {
                 i += 2; // skip \u
-                var codepoint: u21 = 0;
+                var codepoint: u32 = 0;
                 if (i < raw.len and raw[i] == '{') {
                     // \u{XXXX} 형식 (가변 길이)
                     i += 1; // skip {
                     while (i < raw.len and raw[i] != '}') {
                         const digit = std.fmt.charToDigit(raw[i], 16) catch return raw;
-                        codepoint = @intCast(@as(u32, codepoint) * 16 + digit);
+                        codepoint = codepoint * 16 + digit;
                         i += 1;
                     }
                     if (i < raw.len) i += 1; // skip }
@@ -296,22 +295,23 @@ pub const SemanticAnalyzer = struct {
                     var j: usize = 0;
                     while (j < 4 and i < raw.len) : (j += 1) {
                         const digit = std.fmt.charToDigit(raw[i], 16) catch return raw;
-                        codepoint = @intCast(@as(u32, codepoint) * 16 + digit);
+                        codepoint = codepoint * 16 + digit;
                         i += 1;
                     }
                 }
-                // UTF-8로 인코딩
+                // 유효 범위 검증 후 UTF-8로 인코딩
+                if (codepoint > 0x10FFFF) return raw;
                 var encode_buf: [4]u8 = undefined;
-                const len = std.unicode.utf8Encode(codepoint, &encode_buf) catch return raw;
-                buf.appendSlice(encode_buf[0..len]) catch return raw;
+                const len = std.unicode.utf8Encode(@intCast(codepoint), &encode_buf) catch return raw;
+                buf.appendSlice(encode_buf[0..len]) catch @panic("OOM: resolvePrivateName");
             } else {
-                buf.append(raw[i]) catch return raw;
+                buf.append(raw[i]) catch @panic("OOM: resolvePrivateName");
                 i += 1;
             }
         }
 
-        // allocator 소유의 복사본을 반환 (deinit 시 해제 불필요 — arena 방식)
-        return self.allocator.dupe(u8, buf.items) catch return raw;
+        // ArrayList의 소유권을 직접 이전 (추가 할당 없음)
+        return buf.toOwnedSlice() catch @panic("OOM: resolvePrivateName");
     }
 
     /// private name 참조를 기록한다 (class body 퇴장 시 검증).
