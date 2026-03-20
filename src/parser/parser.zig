@@ -2817,9 +2817,8 @@ pub const Parser = struct {
             // ?? 의 오른쪽에 괄호 없는 &&/|| 이 있으면 에러 (재귀 호출로 감지 못한 케이스)
             // 예: 0 ?? 0 && true → right = (0 && true) = logical_expression
             if (op_kind == .question2 and !right.isNone()) {
-                const right_tag = self.ast.getNode(right).tag;
-                if (right_tag == .logical_expression) {
-                    const right_node = self.ast.getNode(right);
+                const right_node = self.ast.getNode(right);
+                if (right_node.tag == .logical_expression) {
                     const right_op: Kind = @enumFromInt(right_node.data.binary.flags);
                     if (right_op == .amp2 or right_op == .pipe2) {
                         self.addError(right_node.span, "cannot mix '??' with '&&' or '||' without parentheses");
