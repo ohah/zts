@@ -3142,6 +3142,10 @@ pub const Parser = struct {
                 });
             },
             .decimal, .float, .hex, .octal, .binary, .positive_exponential, .negative_exponential => {
+                // strict mode에서 legacy octal 숫자 금지 (ECMAScript 12.8.3.1)
+                if (self.scanner.token.has_legacy_octal and self.ctx.is_strict_mode) {
+                    self.addError(span, "Octal literals are not allowed in strict mode");
+                }
                 self.advance();
                 return try self.ast.addNode(.{
                     .tag = .numeric_literal,
@@ -3158,6 +3162,10 @@ pub const Parser = struct {
                 });
             },
             .string_literal => {
+                // strict mode에서 legacy octal escape 금지 (ECMAScript 12.8.4.1)
+                if (self.scanner.token.has_legacy_octal and self.ctx.is_strict_mode) {
+                    self.addError(span, "Octal escape sequences are not allowed in strict mode");
+                }
                 self.advance();
                 return try self.ast.addNode(.{
                     .tag = .string_literal,
