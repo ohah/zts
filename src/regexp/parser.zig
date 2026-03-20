@@ -225,6 +225,12 @@ pub fn PatternParser(comptime emit_ast: bool) type {
             return 0;
         }
 
+        /// class atom의 codepoint 값을 설정한다 (range 검증용).
+        fn setClassValue(self: *Self, value: u32) void {
+            self.last_class_value = value;
+            self.last_class_is_class_escape = false;
+        }
+
         /// 고정 크기 버퍼에 값을 추가한다. 오버플로 시 에러를 설정하고 false 반환.
         fn bufAppend(self: *Self, buf: anytype, len: anytype, value: u32) bool {
             if (emit_ast) {
@@ -563,8 +569,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         'v' => 0x0B,
                         else => unreachable,
                     };
-                    self.last_class_value = value;
-                    self.last_class_is_class_escape = false;
+                    self.setClassValue(value);
                     if (emit_ast) {
                         self.last_node = self.addNode(.character, .{
                             .start = bs_pos,
@@ -580,8 +585,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         const ctrl = self.peek();
                         if ((ctrl >= 'a' and ctrl <= 'z') or (ctrl >= 'A' and ctrl <= 'Z')) {
                             self.advance();
-                            self.last_class_value = ctrl & 0x1F;
-                            self.last_class_is_class_escape = false;
+                            self.setClassValue(ctrl & 0x1F);
                             if (emit_ast) {
                                 self.last_node = self.addNode(.character, .{
                                     .start = bs_pos,
@@ -595,8 +599,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         self.setError("invalid control character escape");
                         return false;
                     }
-                    self.last_class_value = 'c';
-                    self.last_class_is_class_escape = false;
+                    self.setClassValue('c');
                     if (emit_ast) {
                         self.last_node = self.addNode(.character, .{
                             .start = bs_pos,
@@ -618,8 +621,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             self.advance();
                         }
                         const val = computeOctalValue(self.source, octal_start, self.pos);
-                        self.last_class_value = val;
-                        self.last_class_is_class_escape = false;
+                        self.setClassValue(val);
                         if (emit_ast) {
                             self.last_node = self.addNode(.character, .{
                                 .start = bs_pos,
@@ -627,8 +629,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             }, .{ val, @intFromEnum(ast.CharacterKind.octal), 0 });
                         }
                     } else {
-                        self.last_class_value = 0;
-                        self.last_class_is_class_escape = false;
+                        self.setClassValue(0);
                         if (emit_ast) {
                             self.last_node = self.addNode(.character, .{
                                 .start = bs_pos,
@@ -647,8 +648,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             self.setError("invalid hex escape in regular expression");
                             return false;
                         }
-                        self.last_class_value = 'x';
-                        self.last_class_is_class_escape = false;
+                        self.setClassValue('x');
                         if (emit_ast) {
                             self.last_node = self.addNode(.character, .{
                                 .start = bs_pos,
@@ -657,8 +657,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         }
                     } else {
                         const val = computeHexValue(self.source, hex_start, self.pos);
-                        self.last_class_value = val;
-                        self.last_class_is_class_escape = false;
+                        self.setClassValue(val);
                         if (emit_ast) {
                             self.last_node = self.addNode(.character, .{
                                 .start = bs_pos,
@@ -683,8 +682,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             self.setError("unicode codepoint must not be greater than 0x10FFFF");
                             return false;
                         }
-                        self.last_class_value = val;
-                        self.last_class_is_class_escape = false;
+                        self.setClassValue(val);
                         if (emit_ast) {
                             self.last_node = self.addNode(.character, .{
                                 .start = bs_pos,
@@ -698,8 +696,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                                 self.setError("invalid unicode escape in regular expression");
                                 return false;
                             }
-                            self.last_class_value = 'u';
-                            self.last_class_is_class_escape = false;
+                            self.setClassValue('u');
                             if (emit_ast) {
                                 self.last_node = self.addNode(.character, .{
                                     .start = bs_pos,
@@ -708,8 +705,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             }
                         } else {
                             const val = computeHexValue(self.source, hex_start, self.pos);
-                            self.last_class_value = val;
-                            self.last_class_is_class_escape = false;
+                            self.setClassValue(val);
                             if (emit_ast) {
                                 self.last_node = self.addNode(.character, .{
                                     .start = bs_pos,
@@ -794,8 +790,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     }
                     // non-unicode: literal
                     self.advance();
-                    self.last_class_value = c;
-                    self.last_class_is_class_escape = false;
+                    self.setClassValue(c);
                     if (emit_ast) {
                         self.last_node = self.addNode(.character, .{
                             .start = bs_pos,
@@ -861,8 +856,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     if (self.flags.hasUnicodeMode()) {
                         if (isSyntaxChar(c)) {
                             self.advance();
-                            self.last_class_value = c;
-                            self.last_class_is_class_escape = false;
+                            self.setClassValue(c);
                             if (emit_ast) {
                                 self.last_node = self.addNode(.character, .{
                                     .start = bs_pos,
@@ -875,8 +869,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         return false;
                     }
                     self.advance();
-                    self.last_class_value = c;
-                    self.last_class_is_class_escape = false;
+                    self.setClassValue(c);
                     if (emit_ast) {
                         self.last_node = self.addNode(.character, .{
                             .start = bs_pos,
@@ -917,12 +910,15 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         if (!self.parseClassAtom()) {
                             if (self.err_message != null) return false;
                         }
-                        // unicode mode: range 유효성 검증
+                        // unicode mode: class escape(\d 등)를 range endpoint로 사용 금지
                         if (self.flags.hasUnicodeMode()) {
                             if (first_is_escape or self.last_class_is_class_escape) {
                                 self.setError("character class escape cannot be used in range");
                                 return false;
                             }
+                        }
+                        // 모든 모드: range 순서 검증 (ECMAScript 22.2.2.9.1)
+                        if (!first_is_escape and !self.last_class_is_class_escape) {
                             if (first_value > self.last_class_value) {
                                 self.setError("character class range out of order");
                                 return false;
@@ -2098,11 +2094,11 @@ test "range: [z-a] out of order in unicode mode" {
     try std.testing.expect(p.validate() != null);
 }
 
-test "range: [z-a] allowed in non-unicode mode" {
+test "range: [z-a] error in non-unicode mode too" {
     const P = PatternParser(false);
-    // non-unicode mode에서는 [z-a]를 허용 (legacy behavior)
+    // ECMAScript 22.2.2.9.1: range 순서는 모든 모드에서 에러
     var p = P.init("[z-a]", .{});
-    try std.testing.expect(p.validate() == null);
+    try std.testing.expect(p.validate() != null);
 }
 
 test "range: [\\d-x] class escape in range (unicode mode)" {
