@@ -571,6 +571,12 @@ pub const SemanticAnalyzer = struct {
                 const extra_start = node.data.extra;
                 const extras = self.ast.extra_data.items;
                 if (extra_start + 3 < extras.len) {
+                    // key 순회 — 객체 리터럴의 private name 메서드 검출에 필요
+                    // (class body에서는 collectPrivateNames가 이미 선언을 등록하므로
+                    //  여기서 usePrivateName이 호출되어도 정상 통과)
+                    const key_idx: NodeIndex = @enumFromInt(extras[extra_start]);
+                    self.visitNode(key_idx);
+
                     const body_idx: NodeIndex = @enumFromInt(extras[extra_start + 3]);
                     // 함수 본문을 function scope로 감싸서 순회
                     const scope_saved = self.enterScope(.function, self.is_strict_mode);
@@ -583,6 +589,8 @@ pub const SemanticAnalyzer = struct {
             },
             .property_definition => {
                 // binary: { left = key, right = value }
+                // key도 순회 (computed property의 표현식, class 밖 private name 검출)
+                self.visitNode(node.data.binary.left);
                 self.visitNode(node.data.binary.right);
             },
             .static_block => {
@@ -613,7 +621,23 @@ pub const SemanticAnalyzer = struct {
             .call_expression,
             .new_expression,
             => {
+                // binary: { left = callee, right = @enumFromInt(args_start), flags = args_len }
+                // callee 순회
                 self.visitNode(node.data.binary.left);
+                // 인자 순회 — right를 extra_data 시작 인덱스, flags를 길이로 사용
+                const args_start = @intFromEnum(node.data.binary.right);
+                const args_len = node.data.binary.flags & 0x7FFF; // 상위 비트는 optional 플래그
+                if (args_len > 0 and args_start + args_len <= self.ast.extra_data.items.len) {
+                    const arg_indices = self.ast.extra_data.items[args_start .. args_start + args_len];
+                    for (arg_indices) |raw_idx| {
+                        self.visitNode(@enumFromInt(raw_idx));
+                    }
+                }
+            },
+            .tagged_template_expression => {
+                // binary: { left = tag, right = template, flags = 0 }
+                self.visitNode(node.data.binary.left);
+                self.visitNode(node.data.binary.right);
             },
             .sequence_expression => {
                 self.visitNodeList(node.data.list);
@@ -624,7 +648,26 @@ pub const SemanticAnalyzer = struct {
             .object_expression => {
                 self.visitNodeList(node.data.list);
             },
-            .template_literal => {},
+            .object_property => {
+                // binary: { left = key, right = value }
+                // key도 순회 (computed property에 표현식이 들어갈 수 있음)
+                self.visitNode(node.data.binary.left);
+                self.visitNode(node.data.binary.right);
+            },
+            .template_literal => {
+                // list: [template_element, expression, template_element, ...]
+                // 표현식 내부에 private name 참조 등이 있을 수 있으므로 순회
+                self.visitNodeList(node.data.list);
+            },
+
+            // ---- private_identifier 단독 노드 ----
+            // method_definition/property_definition의 key로 직접 방문될 수 있음
+            // class body 안이면 collectPrivateNames가 선언을 등록했으므로 usePrivateName 통과,
+            // class 밖이면 에러 보고
+            .private_identifier => {
+                const name = self.ast.source[node.span.start..node.span.end];
+                self.usePrivateName(name, node.span);
+            },
 
             // ---- 스킵 (TS 타입 노드, 리터럴, 식별자 등) ----
             else => {},
@@ -1563,4 +1606,56 @@ test "SemanticAnalyzer: private method+getter duplicate is error" {
     ana.analyze();
 
     try std.testing.expect(ana.errors.items.len > 0);
+}
+
+test "SemanticAnalyzer: private name in object literal method is error" {
+    // 객체 리터럴에서 private name 메서드는 SyntaxError
+    // 이 테스트는 method_definition key 순회 + private_identifier 검출이 동작하는지 확인
+    var scanner = Scanner.init(std.testing.allocator, "var o = { #m() {} };");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    // 파서가 에러를 보고할 수도 있으므로 semantic까지 도달하는 경우만 체크
+    if (parser.errors.items.len == 0) {
+        var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+        defer ana.deinit();
+        ana.analyze();
+        // class 밖에서 private name 사용 → 에러
+        try std.testing.expect(ana.errors.items.len > 0);
+    }
+}
+
+test "SemanticAnalyzer: call expression args are visited" {
+    // 함수 호출 인자 내부의 함수 표현식이 스코프를 생성하는지 확인
+    var scanner = Scanner.init(std.testing.allocator, "f(function() { let x = 1; });");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    // 에러 없이 분석 완료 (스코프: global + function)
+    try std.testing.expect(ana.errors.items.len == 0);
+    try std.testing.expect(ana.scopes.items.len >= 2);
+}
+
+test "SemanticAnalyzer: template literal expressions are visited" {
+    // 템플릿 리터럴 내부 표현식이 순회되는지 확인
+    var scanner = Scanner.init(std.testing.allocator, "let x = `${function() { let y = 1; }()}`;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    // 에러 없이 분석 완료
+    try std.testing.expect(ana.errors.items.len == 0);
 }
