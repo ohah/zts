@@ -2437,6 +2437,21 @@ pub const Parser = struct {
             self.advance();
         }
 
+        // accessor (선택): TC39 Decorators proposal — `accessor x = 1`
+        // accessor는 modifier이므로 get/set보다 먼저 파싱.
+        // `accessor get(){}` → "get"이라는 이름의 accessor field (get은 메서드 이름).
+        // `accessor()`, `accessor;`, `accessor =` 는 "accessor"라는 이름의 일반 멤버.
+        var is_accessor = false;
+        if (self.current() == .kw_accessor) {
+            const next = self.peekNextKind();
+            if (next != .l_paren and next != .eq and next != .semicolon and
+                next != .r_curly and next != .eof)
+            {
+                is_accessor = true;
+                self.advance(); // skip 'accessor'
+            }
+        }
+
         // get/set (선택)
         if (self.current() == .kw_get and self.peekNextKind() != .l_paren) {
             flags |= 0x02; // getter
@@ -2444,22 +2459,6 @@ pub const Parser = struct {
         } else if (self.current() == .kw_set and self.peekNextKind() != .l_paren) {
             flags |= 0x04; // setter
             self.advance();
-        }
-
-        // accessor (선택): ECMAScript Decorators proposal — `accessor x = 1`
-        // accessor는 kw_accessor 토큰으로 토크나이즈됨 (contextual keyword).
-        // `accessor` 뒤에 프로퍼티 이름이 오면 accessor field로 파싱.
-        // `accessor()`, `accessor;`, `accessor =` 는 "accessor"라는 이름의 일반 멤버.
-        var is_accessor = false;
-        if (self.current() == .kw_accessor) {
-            const next = self.peekNextKind();
-            // 다음 토큰이 프로퍼티 이름 시작이면 accessor field
-            if (next != .l_paren and next != .eq and next != .semicolon and
-                next != .r_curly and next != .eof)
-            {
-                is_accessor = true;
-                self.advance(); // skip 'accessor'
-            }
         }
 
         // async (선택): async [no LineTerminator here] MethodName
