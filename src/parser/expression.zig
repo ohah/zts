@@ -998,7 +998,7 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
                 const is_source = std.mem.eql(u8, prop_text, "source");
                 const is_defer = std.mem.eql(u8, prop_text, "defer");
                 if (!is_source and !is_defer) {
-                    self.addError(.{ .start = span.start, .end = prop_span.end }, "Import.meta/source/defer expected, got unknown property");
+                    self.addError(.{ .start = span.start, .end = prop_span.end }, "Expected 'import.meta', 'import.source', or 'import.defer'");
                     return try self.ast.addNode(.{
                         .tag = .meta_property,
                         .span = .{ .start = span.start, .end = prop_span.end },
@@ -1012,7 +1012,7 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
                 }
 
                 // import.source/defer without () → 에러
-                self.addError(.{ .start = span.start, .end = prop_span.end }, "Import.source/defer requires arguments");
+                self.addError(.{ .start = span.start, .end = prop_span.end }, "'import.source'/'import.defer' requires arguments");
                 return try self.ast.addNode(.{
                     .tag = .meta_property,
                     .span = .{ .start = span.start, .end = prop_span.end },
@@ -1101,7 +1101,7 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
                 if (self.is_strict_mode) {
                     self.addError(span, "Escaped reserved word cannot be used as identifier in strict mode");
                 }
-                self.checkYieldAwaitUse(span, "identifier");
+                _ = self.checkYieldAwaitUse(span, "identifier");
                 self.advance();
                 return try self.ast.addNode(.{
                     .tag = .identifier_reference,
@@ -1117,7 +1117,7 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
                 if (self.is_strict_mode and self.current().isStrictModeReserved()) {
                     self.addError(span, "Reserved word in strict mode cannot be used as identifier");
                 } else {
-                    self.checkYieldAwaitUse(span, "identifier");
+                    _ = self.checkYieldAwaitUse(span, "identifier");
                 }
                 self.advance();
                 return try self.ast.addNode(.{

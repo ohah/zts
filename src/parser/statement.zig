@@ -296,7 +296,7 @@ fn parseExpressionOrLabeledStatement(self: *Parser) ParseError2!NodeIndex {
         const peek = self.peekNext();
         if (peek.kind == .colon) {
             // yield/await를 label로 사용하면 generator/async에서 에러
-            self.checkYieldAwaitUse(self.currentSpan(), "label");
+            _ = self.checkYieldAwaitUse(self.currentSpan(), "label");
             if (self.current() == .escaped_keyword) {
                 // escaped `await` is only reserved in module/async context
                 const esc_text = self.resolveIdentifierText(self.currentSpan());

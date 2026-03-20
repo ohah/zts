@@ -42,9 +42,13 @@ pub fn parseJSXElement(self: *Parser) ParseError2!NodeIndex {
         // expect >
         self.scanner.next(); // back to normal mode after >
 
+        // 항상 5 fields: [tag, attrs_start, attrs_len, children_start, children_len]
+        // self-closing은 children_len=0으로 통일하여 transformer에서 heuristic 불필요
         const extra_start = try self.ast.addExtra(@intFromEnum(tag_name));
         _ = try self.ast.addExtra(attrs.start);
         _ = try self.ast.addExtra(attrs.len);
+        _ = try self.ast.addExtra(0); // children_start (unused)
+        _ = try self.ast.addExtra(0); // children_len = 0
 
         return try self.ast.addNode(.{
             .tag = .jsx_element,

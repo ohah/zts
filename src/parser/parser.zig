@@ -856,7 +856,7 @@ pub const Parser = struct {
         // yield도 조건부 — generator/strict에서만 금지
         // 둘 다 checkYieldAwaitUse에서 처리
         if (self.current() == .kw_await or self.current() == .kw_yield) {
-            self.checkYieldAwaitUse(self.currentSpan(), "identifier");
+            _ = self.checkYieldAwaitUse(self.currentSpan(), "identifier");
         } else if (self.current().isReservedKeyword() or self.current().isLiteralKeyword()) {
             self.addError(self.currentSpan(), "Reserved word cannot be used as identifier");
         } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
@@ -874,10 +874,9 @@ pub const Parser = struct {
             }
         } else if (self.current() == .escaped_strict_reserved) {
             // escaped strict reserved는 strict mode에서 금지
-            // yield/await 컨텍스트 에러가 우선 — 이미 에러가 추가되면 중복 방지
-            const err_count = self.errors.items.len;
-            self.checkYieldAwaitUse(self.currentSpan(), "identifier");
-            if (self.errors.items.len == err_count and self.is_strict_mode) {
+            // yield/await 컨텍스트 에러가 우선
+            const had_error = self.checkYieldAwaitUse(self.currentSpan(), "identifier");
+            if (!had_error and self.is_strict_mode) {
                 self.addError(self.currentSpan(), "Keywords cannot contain escape characters");
             }
         }
@@ -886,7 +885,8 @@ pub const Parser = struct {
     /// yield/await를 식별자/레이블/바인딩으로 사용할 때의 검증.
     /// ECMAScript 13.1.1: yield는 [Yield] 또는 strict mode에서, await는 [Await] 또는 module에서 금지.
     /// context_noun: "identifier", "label" 등 — 에러 메시지에 사용 (comptime 문자열 연결).
-    pub fn checkYieldAwaitUse(self: *Parser, span: Span, comptime context_noun: []const u8) void {
+    /// 에러를 추가했으면 true, 아니면 false를 반환한다.
+    pub fn checkYieldAwaitUse(self: *Parser, span: Span, comptime context_noun: []const u8) bool {
         // yield/await는 escaped 형태(yi\u0065ld)도 동일 규칙 적용 (ECMAScript 12.1.1)
         // await는 reserved keyword이므로 escaped_keyword로 분류됨 → 여기서는 yield만 처리
         const is_yield = self.current() == .kw_yield or
@@ -896,16 +896,21 @@ pub const Parser = struct {
         if (is_yield) {
             if (self.ctx.in_generator) {
                 self.addError(span, "'yield' cannot be used as " ++ context_noun ++ " in generator");
+                return true;
             } else if (self.is_strict_mode) {
                 self.addError(span, "'yield' cannot be used as " ++ context_noun ++ " in strict mode");
+                return true;
             }
         } else if (is_await) {
             if (self.ctx.in_async) {
                 self.addError(span, "'await' cannot be used as " ++ context_noun ++ " in async function");
+                return true;
             } else if (self.is_module) {
                 self.addError(span, "'await' cannot be used as " ++ context_noun ++ " in module code");
+                return true;
             }
         }
+        return false;
     }
 
     /// escaped_strict_reserved 토큰이 특정 키워드인지 확인한다.
