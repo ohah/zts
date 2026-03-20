@@ -66,6 +66,10 @@ pub const SemanticAnalyzer = struct {
     /// 메모리 할당자
     allocator: std.mem.Allocator,
 
+    /// module의 exported name 추적 (중복 export 검사).
+    /// key: 내보낸 이름 (default 포함), value: 첫 선언의 span.
+    exported_names: std.StringHashMap(Span),
+
     /// class private name 스택 (중첩 class 지원, oxc 방식).
     /// 각 항목은 해당 class body에서 선언된 private name 집합.
     class_private_declared: std.ArrayList(std.StringHashMap(PrivateNameInfo)),
@@ -108,6 +112,7 @@ pub const SemanticAnalyzer = struct {
             .ast = ast,
             .scopes = std.ArrayList(Scope).init(allocator),
             .symbols = std.ArrayList(Symbol).init(allocator),
+            .exported_names = std.StringHashMap(Span).init(allocator),
             .class_private_declared = std.ArrayList(std.StringHashMap(PrivateNameInfo)).init(allocator),
             .class_private_refs = std.ArrayList(std.ArrayList(PrivateRef)).init(allocator),
             .labels = std.ArrayList(LabelEntry).init(allocator),
@@ -123,6 +128,7 @@ pub const SemanticAnalyzer = struct {
         }
         self.scopes.deinit();
         self.symbols.deinit();
+        self.exported_names.deinit();
         self.labels.deinit();
         self.errors.deinit();
         for (self.class_private_declared.items) |*map| map.deinit();
@@ -433,6 +439,21 @@ pub const SemanticAnalyzer = struct {
             return false;
         }
 
+        // module scope에서의 특별 규칙:
+        // ECMAScript: "At the top level of a Module, function declarations are treated
+        // like lexical declarations rather than like var declarations."
+        // → function + function 재선언 불가
+        // → var + function, function + var 충돌
+        if (self.is_module and !target_scope.isNone()) {
+            const scope = self.scopes.items[target_scope.toIndex()];
+            if (scope.kind == .module) {
+                // module top-level: function은 lexical → 같은 이름 재선언 불가
+                if (existing.isFunctionLike() and new.isFunctionLike()) return false;
+                if (existing.isFunctionLike() and new == .variable_var) return false;
+                if (existing == .variable_var and new.isFunctionLike()) return false;
+            }
+        }
+
         // block scope에서의 특별 규칙:
         // function + function → sloppy mode block에서만 허용 (ECMAScript B.3.2)
         // strict mode block에서는 duplicate lexical → 에러
@@ -521,10 +542,8 @@ pub const SemanticAnalyzer = struct {
             .switch_case => self.visitSwitchCase(node),
             .try_statement => self.visitTryStatement(node),
             .export_named_declaration => self.visitExportNamedDeclaration(node),
-            .export_default_declaration => {
-                // unary: { operand = declaration }
-                self.visitNode(node.data.unary.operand);
-            },
+            .export_default_declaration => self.visitExportDefaultDeclaration(node),
+            .export_all_declaration => self.visitExportAllDeclaration(node),
 
             // ---- private name 참조 ----
             .private_field_expression, .static_member_expression => {
@@ -572,6 +591,40 @@ pub const SemanticAnalyzer = struct {
                 self.visitNode(node.data.unary.operand);
                 self.restoreLabelLen(saved_labels);
             },
+
+            // ---- 일반 표현식 순회 (private name 참조 등을 위해) ----
+            .assignment_expression,
+            .binary_expression,
+            .logical_expression,
+            .conditional_expression,
+            => {
+                self.visitNode(node.data.binary.left);
+                self.visitNode(node.data.binary.right);
+            },
+            .unary_expression,
+            .update_expression,
+            .yield_expression,
+            .await_expression,
+            .parenthesized_expression,
+            .spread_element,
+            => {
+                self.visitNode(node.data.unary.operand);
+            },
+            .call_expression,
+            .new_expression,
+            => {
+                self.visitNode(node.data.binary.left);
+            },
+            .sequence_expression => {
+                self.visitNodeList(node.data.list);
+            },
+            .array_expression => {
+                self.visitNodeList(node.data.list);
+            },
+            .object_expression => {
+                self.visitNodeList(node.data.list);
+            },
+            .template_literal => {},
 
             // ---- 스킵 (TS 타입 노드, 리터럴, 식별자 등) ----
             else => {},
@@ -983,10 +1036,12 @@ pub const SemanticAnalyzer = struct {
             switch (spec_node.tag) {
                 .import_default_specifier => {
                     // string_ref — span 자체가 식별자 이름
+                    self.checkStrictBindingName(spec_node.span);
                     self.declareSymbol(spec_node.span, .import_binding, spec_node.span);
                 },
                 .import_namespace_specifier => {
                     // string_ref — span 자체가 식별자 이름
+                    self.checkStrictBindingName(spec_node.span);
                     self.declareSymbol(spec_node.span, .import_binding, spec_node.span);
                 },
                 .import_specifier => {
@@ -994,11 +1049,26 @@ pub const SemanticAnalyzer = struct {
                     const local_idx = spec_node.data.binary.right;
                     if (!local_idx.isNone() and @intFromEnum(local_idx) < self.ast.nodes.items.len) {
                         const local_node = self.ast.getNode(local_idx);
+                        self.checkStrictBindingName(local_node.span);
                         self.declareSymbol(local_node.span, .import_binding, spec_node.span);
                     }
                 },
                 else => {},
             }
+        }
+    }
+
+    /// strict mode에서 eval/arguments를 바인딩 이름으로 사용할 수 없다.
+    /// module code는 항상 strict mode.
+    fn checkStrictBindingName(self: *SemanticAnalyzer, span: Span) void {
+        if (!self.isCurrentStrict()) return;
+        const name = self.ast.source[span.start..span.end];
+        if (std.mem.eql(u8, name, "eval") or std.mem.eql(u8, name, "arguments")) {
+            self.addErrorMsg(span, std.fmt.allocPrint(
+                self.allocator,
+                "'{s}' cannot be used as a binding identifier in strict mode",
+                .{name},
+            ) catch @panic("OOM"));
         }
     }
 
@@ -1008,7 +1078,161 @@ pub const SemanticAnalyzer = struct {
         const extras = self.ast.extra_data.items;
         if (extra_start + 3 >= extras.len) return;
         const decl_idx: NodeIndex = @enumFromInt(extras[extra_start]);
+        const specs_start = extras[extra_start + 1];
+        const specs_len = extras[extra_start + 2];
+        const source_idx: NodeIndex = @enumFromInt(extras[extra_start + 3]);
+
+        // export { a, b as c } — specifier로 내보낸 이름 추적
+        if (specs_len > 0 and specs_start + specs_len <= extras.len) {
+            const spec_indices = extras[specs_start .. specs_start + specs_len];
+            for (spec_indices) |raw_idx| {
+                const spec_idx: NodeIndex = @enumFromInt(raw_idx);
+                if (spec_idx.isNone() or @intFromEnum(spec_idx) >= self.ast.nodes.items.len) continue;
+                const spec_node = self.ast.getNode(spec_idx);
+                if (spec_node.tag == .export_specifier) {
+                    // exported name = right (the "as" name, or same as local if no "as")
+                    const exported_idx = spec_node.data.binary.right;
+                    if (!exported_idx.isNone() and @intFromEnum(exported_idx) < self.ast.nodes.items.len) {
+                        const exported_node = self.ast.getNode(exported_idx);
+                        const name = self.ast.source[exported_node.span.start..exported_node.span.end];
+                        // string literal은 따옴표 제거
+                        const effective_name = if (name.len >= 2 and (name[0] == '\'' or name[0] == '"'))
+                            name[1 .. name.len - 1]
+                        else
+                            name;
+                        self.registerExportedName(effective_name, exported_node.span);
+                    }
+
+                    // source 없는 export { x } — local 바인딩이 존재하는지 검증 필요
+                    if (source_idx.isNone() and self.is_module) {
+                        const local_idx = spec_node.data.binary.left;
+                        if (!local_idx.isNone() and @intFromEnum(local_idx) < self.ast.nodes.items.len) {
+                            const local_node = self.ast.getNode(local_idx);
+                            if (local_node.tag != .string_literal) {
+                                const local_name = self.ast.source[local_node.span.start..local_node.span.end];
+                                self.checkExportBinding(local_name, local_node.span);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // export declaration (export var/let/const/function/class)
+        if (!decl_idx.isNone() and @intFromEnum(decl_idx) < self.ast.nodes.items.len) {
+            const decl_node = self.ast.getNode(decl_idx);
+            // 선언에서 내보내는 이름 추적
+            self.collectExportedDeclNames(decl_node);
+        }
+
         self.visitNode(decl_idx);
+    }
+
+    /// export default 시 "default" 이름을 등록한다.
+    fn visitExportDefaultDeclaration(self: *SemanticAnalyzer, node: Node) void {
+        self.registerExportedName("default", node.span);
+        // 내부 선언 순회
+        self.visitNode(node.data.unary.operand);
+    }
+
+    /// export * as name — name을 등록한다.
+    fn visitExportAllDeclaration(self: *SemanticAnalyzer, node: Node) void {
+        // binary: { left = exported_name, right = source }
+        const name_idx = node.data.binary.left;
+        if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
+            const name_node = self.ast.getNode(name_idx);
+            const name = self.ast.source[name_node.span.start..name_node.span.end];
+            const effective_name = if (name.len >= 2 and (name[0] == '\'' or name[0] == '"'))
+                name[1 .. name.len - 1]
+            else
+                name;
+            self.registerExportedName(effective_name, name_node.span);
+        }
+    }
+
+    /// 선언에서 내보내는 이름을 추적한다 (export var x, export function f, etc.)
+    fn collectExportedDeclNames(self: *SemanticAnalyzer, node: Node) void {
+        switch (node.tag) {
+            .variable_declaration => {
+                // variable_declaration → declarator → binding name
+                const extra_start = node.data.extra;
+                const extras = self.ast.extra_data.items;
+                if (extra_start + 2 >= extras.len) return;
+                const decl_start = extras[extra_start + 1];
+                const decl_len = extras[extra_start + 2];
+                if (decl_start + decl_len > extras.len) return;
+                for (extras[decl_start .. decl_start + decl_len]) |raw_idx| {
+                    const decl_idx: NodeIndex = @enumFromInt(raw_idx);
+                    if (decl_idx.isNone() or @intFromEnum(decl_idx) >= self.ast.nodes.items.len) continue;
+                    const decl_node = self.ast.getNode(decl_idx);
+                    if (decl_node.tag == .variable_declarator) {
+                        const binding_idx: NodeIndex = @enumFromInt(extras[decl_node.data.extra]);
+                        self.collectBindingExportNames(binding_idx);
+                    }
+                }
+            },
+            .function_declaration => {
+                const extras = self.ast.extra_data.items;
+                if (node.data.extra >= extras.len) return;
+                const name_idx: NodeIndex = @enumFromInt(extras[node.data.extra]);
+                if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
+                    const name_node = self.ast.getNode(name_idx);
+                    const name = self.ast.source[name_node.span.start..name_node.span.end];
+                    self.registerExportedName(name, name_node.span);
+                }
+            },
+            .class_declaration => {
+                const extras = self.ast.extra_data.items;
+                if (node.data.extra >= extras.len) return;
+                const name_idx: NodeIndex = @enumFromInt(extras[node.data.extra]);
+                if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
+                    const name_node = self.ast.getNode(name_idx);
+                    const name = self.ast.source[name_node.span.start..name_node.span.end];
+                    self.registerExportedName(name, name_node.span);
+                }
+            },
+            else => {},
+        }
+    }
+
+    /// 바인딩 패턴에서 내보내는 이름을 수집한다.
+    fn collectBindingExportNames(self: *SemanticAnalyzer, idx: NodeIndex) void {
+        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        const node = self.ast.getNode(idx);
+        if (node.tag == .binding_identifier) {
+            const name = self.ast.source[node.span.start..node.span.end];
+            self.registerExportedName(name, node.span);
+        }
+    }
+
+    /// 내보낸 이름을 등록한다. 중복이면 에러.
+    fn registerExportedName(self: *SemanticAnalyzer, name: []const u8, span: Span) void {
+        if (!self.is_module) return;
+        if (self.exported_names.get(name)) |_| {
+            self.addErrorMsg(span, std.fmt.allocPrint(
+                self.allocator,
+                "Duplicate export name '{s}'",
+                .{name},
+            ) catch @panic("OOM"));
+        } else {
+            self.exported_names.put(name, span) catch @panic("OOM");
+        }
+    }
+
+    /// export { x } (without from) — x가 선언된 바인딩인지 검증한다.
+    /// module scope에서 VarDeclaredNames + LexicallyDeclaredNames에 없으면 에러.
+    fn checkExportBinding(self: *SemanticAnalyzer, name: []const u8, span: Span) void {
+        // 현재 module scope에서 해당 이름의 심볼을 찾는다
+        for (self.symbols.items) |sym| {
+            const sym_name = self.ast.source[sym.name.start..sym.name.end];
+            if (std.mem.eql(u8, sym_name, name)) return; // 존재
+        }
+        // 찾지 못함 → 에러
+        self.addErrorMsg(span, std.fmt.allocPrint(
+            self.allocator,
+            "Export '{s}' is not defined",
+            .{name},
+        ) catch @panic("OOM"));
     }
 
     // ================================================================
