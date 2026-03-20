@@ -340,7 +340,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
                     var ref_num: u32 = 0;
                     while (!self.isEnd() and self.peek() >= '0' and self.peek() <= '9') {
-                        ref_num = ref_num * 10 + (self.peek() - '0');
+                        ref_num = ref_num *| 10 +| (self.peek() - '0'); // saturating arithmetic
                         self.advance();
                     }
                     if (ref_num > self.max_back_ref) self.max_back_ref = ref_num;
@@ -448,6 +448,9 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         if (self.named_group_count < 32) {
                             self.named_groups[self.named_group_count] = name;
                             self.named_group_count += 1;
+                        } else {
+                            self.setError("too many named capturing groups");
+                            return false;
                         }
                         self.group_count += 1;
                     },
