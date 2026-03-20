@@ -23,18 +23,18 @@ const ParseError2 = @import("parser.zig").ParseError2;
 /// `(` 를 소비하고, 1~2개 인자를 파싱하고, `)` 를 기대한다.
 /// import() 내부에서는 `in` 연산자를 허용 (+In context).
 pub fn parseImportCallArgs(self: *Parser, start: u32) ParseError2!NodeIndex {
-    self.expect(.l_paren);
+    try self.expect(.l_paren);
     const saved_ctx = self.enterAllowInContext(true);
     defer self.restoreContext(saved_ctx);
     const arg = try self.parseAssignmentExpression();
     // 두 번째 인자 (import attributes/options) — 있으면 파싱하고 무시
-    if (self.eat(.comma)) {
+    if (try self.eat(.comma)) {
         if (self.current() != .r_paren) {
             _ = try self.parseAssignmentExpression();
-            _ = self.eat(.comma); // trailing comma
+            _ = try self.eat(.comma); // trailing comma
         }
     }
-    self.expect(.r_paren);
+    try self.expect(.r_paren);
     return try self.ast.addNode(.{
         .tag = .import_expression,
         .span = .{ .start = start, .end = self.currentSpan().start },
@@ -46,11 +46,11 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     // ECMAScript 15.2: import 선언은 module의 top-level에서만 허용
     if (!self.is_module) {
-        self.addError(self.currentSpan(), "'import' declaration is only allowed in module code");
+        try self.addError(self.currentSpan(), "'import' declaration is only allowed in module code");
     } else if (!self.ctx.is_top_level) {
-        self.addError(self.currentSpan(), "'import' declaration must be at the top level");
+        try self.addError(self.currentSpan(), "'import' declaration must be at the top level");
     }
-    self.advance(); // skip 'import'
+    try self.advance(); // skip 'import'
 
     // import defer / import source — Stage 3 proposals
     // defer/source를 스킵하고 나머지는 일반 import로 처리
@@ -60,16 +60,16 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
             std.mem.eql(u8, self.ast.source[self.currentSpan().start..self.currentSpan().end], "source")))
     {
         has_phase_modifier = true;
-        self.advance(); // skip defer/source
+        try self.advance(); // skip defer/source
     }
 
     // import "module" — side-effect import
     if (self.current() == .string_literal) {
         if (has_phase_modifier) {
-            self.addError(self.currentSpan(), "'import defer/source' requires a binding");
+            try self.addError(self.currentSpan(), "'import defer/source' requires a binding");
         }
         const source_node = try parseModuleSource(self);
-        _ = self.eat(.semicolon);
+        _ = try self.eat(.semicolon);
         return try self.ast.addNode(.{
             .tag = .import_declaration,
             .span = .{ .start = start, .end = self.currentSpan().start },
@@ -81,16 +81,16 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     if (self.current() == .l_paren) {
         // import 키워드는 이미 advance()됨. parsePrimaryExpression에 위임하기 위해
         // 수동으로 import expression 생성.
-        self.expect(.l_paren);
+        try self.expect(.l_paren);
         const arg = try self.parseAssignmentExpression();
-        self.expect(.r_paren);
+        try self.expect(.r_paren);
         const import_expr = try self.ast.addNode(.{
             .tag = .import_expression,
             .span = .{ .start = start, .end = self.currentSpan().start },
             .data = .{ .unary = .{ .operand = arg, .flags = 0 } },
         });
         // 후속 .then() 등의 member/call 체이닝 처리
-        _ = self.eat(.semicolon);
+        _ = try self.eat(.semicolon);
         return try self.ast.addNode(.{
             .tag = .expression_statement,
             .span = .{ .start = start, .end = self.currentSpan().start },
@@ -104,10 +104,10 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     // default import: import foo from "module"
     var has_default = false;
     if (self.current() == .identifier) {
-        const next = self.peekNextKind();
+        const next = try self.peekNextKind();
         if (next == .comma or next == .kw_from) {
             const spec_span = self.currentSpan();
-            self.advance();
+            try self.advance();
             const spec = try self.ast.addNode(.{
                 .tag = .import_default_specifier,
                 .span = spec_span,
@@ -116,14 +116,14 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
             try self.scratch.append(spec);
             has_default = true;
 
-            if (self.eat(.comma)) {
+            if (try self.eat(.comma)) {
                 // import default, { ... } from "module"
                 // import default, * as ns from "module"
             } else {
                 // import default from "module"
-                self.expect(.kw_from);
+                try self.expect(.kw_from);
                 const source_node = try parseModuleSource(self);
-                _ = self.eat(.semicolon);
+                _ = try self.eat(.semicolon);
 
                 const specifiers = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
                 self.restoreScratch(scratch_top);
@@ -142,10 +142,10 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
 
     // namespace import: import * as ns from "module"
     if (self.current() == .star) {
-        self.advance(); // skip *
-        self.expect(.kw_as);
+        try self.advance(); // skip *
+        try self.expect(.kw_as);
         const local_span = self.currentSpan();
-        self.expect(.identifier);
+        try self.expect(.identifier);
         const spec = try self.ast.addNode(.{
             .tag = .import_namespace_specifier,
             .span = local_span,
@@ -156,18 +156,18 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
 
     // named imports: import { a, b as c } from "module"
     if (self.current() == .l_curly) {
-        self.advance(); // skip {
+        try self.advance(); // skip {
         while (self.current() != .r_curly and self.current() != .eof) {
             const spec = try parseImportSpecifier(self);
             try self.scratch.append(spec);
-            if (!self.eat(.comma)) break;
+            if (!try self.eat(.comma)) break;
         }
-        self.expect(.r_curly);
+        try self.expect(.r_curly);
     }
 
-    self.expect(.kw_from);
+    try self.expect(.kw_from);
     const source_node = try parseModuleSource(self);
-    _ = self.eat(.semicolon);
+    _ = try self.eat(.semicolon);
 
     const specifiers = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
@@ -192,14 +192,14 @@ fn parseImportSpecifier(self: *Parser) ParseError2!NodeIndex {
     // import { "☿" as Ami } from ... (OK)
     // import { "☿" } from ... (Error — string cannot be used as binding)
     var local = imported;
-    if (self.eat(.kw_as)) {
+    if (try self.eat(.kw_as)) {
         // `as` 뒤는 반드시 BindingIdentifier (string literal 불가)
         local = try self.parseIdentifierName();
     } else if (!imported.isNone() and @intFromEnum(imported) < self.ast.nodes.items.len and
         self.ast.getNode(imported).tag == .string_literal)
     {
         // string literal without `as` — binding 이름이 없으므로 에러
-        self.addError(self.ast.getNode(imported).span, "String literal in import specifier requires 'as' binding");
+        try self.addError(self.ast.getNode(imported).span, "String literal in import specifier requires 'as' binding");
     }
 
     return try self.ast.addNode(.{
@@ -213,14 +213,14 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     // ECMAScript 15.2: export 선언은 module의 top-level에서만 허용
     if (!self.is_module) {
-        self.addError(self.currentSpan(), "'export' declaration is only allowed in module code");
+        try self.addError(self.currentSpan(), "'export' declaration is only allowed in module code");
     } else if (!self.ctx.is_top_level) {
-        self.addError(self.currentSpan(), "'export' declaration must be at the top level");
+        try self.addError(self.currentSpan(), "'export' declaration must be at the top level");
     }
-    self.advance(); // skip 'export'
+    try self.advance(); // skip 'export'
 
     // export default
-    if (self.eat(.kw_default)) {
+    if (try self.eat(.kw_default)) {
         const decl = switch (self.current()) {
             // export default function / export default function* — 이름 선택적
             .kw_function => blk: {
@@ -228,7 +228,7 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
                 // anonymous function declaration은 호출 불가 (IIFE가 아님)
                 // export default function() {}() → SyntaxError
                 if (self.current() == .l_paren) {
-                    self.addError(self.currentSpan(), "Anonymous function declaration cannot be invoked");
+                    try self.addError(self.currentSpan(), "Anonymous function declaration cannot be invoked");
                 }
                 break :blk fn_decl;
             },
@@ -236,17 +236,17 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
             else => blk: {
                 // export default async function / export default async function* — 이름 선택적
                 if (self.current() == .kw_async) {
-                    const peek = self.peekNext();
+                    const peek = try self.peekNext();
                     if (peek.kind == .kw_function and !peek.has_newline_before) {
                         const fn_decl = try self.parseAsyncFunctionDeclarationDefaultExport();
                         if (self.current() == .l_paren) {
-                            self.addError(self.currentSpan(), "Anonymous function declaration cannot be invoked");
+                            try self.addError(self.currentSpan(), "Anonymous function declaration cannot be invoked");
                         }
                         break :blk fn_decl;
                     }
                 }
                 const expr = try self.parseAssignmentExpression();
-                self.expectSemicolon();
+                try self.expectSemicolon();
                 break :blk expr;
             },
         };
@@ -259,14 +259,14 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
 
     // export * from "module" / export * as ns from "module"
     if (self.current() == .star) {
-        self.advance(); // skip *
+        try self.advance(); // skip *
         var exported_name = NodeIndex.none;
-        if (self.eat(.kw_as)) {
+        if (try self.eat(.kw_as)) {
             exported_name = try self.parseModuleExportName();
         }
-        self.expect(.kw_from);
+        try self.expect(.kw_from);
         const source_node = try parseModuleSource(self);
-        self.expectSemicolon();
+        try self.expectSemicolon();
 
         return try self.ast.addNode(.{
             .tag = .export_all_declaration,
@@ -277,22 +277,22 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
 
     // export { a, b } / export { a } from "module"
     if (self.current() == .l_curly) {
-        self.advance(); // skip {
+        try self.advance(); // skip {
 
         const scratch_top = self.saveScratch();
         while (self.current() != .r_curly and self.current() != .eof) {
             const spec = try parseExportSpecifier(self);
             try self.scratch.append(spec);
-            if (!self.eat(.comma)) break;
+            if (!try self.eat(.comma)) break;
         }
-        self.expect(.r_curly);
+        try self.expect(.r_curly);
 
         // re-export: export { a } from "module"
         var source_node = NodeIndex.none;
-        if (self.eat(.kw_from)) {
+        if (try self.eat(.kw_from)) {
             source_node = try parseModuleSource(self);
         }
-        self.expectSemicolon();
+        try self.expectSemicolon();
 
         // export NamedExports ; (without `from`) →
         // local 이름에 string literal 사용 불가
@@ -307,7 +307,7 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
                     if (!local_idx.isNone() and @intFromEnum(local_idx) < self.ast.nodes.items.len) {
                         const local_node = self.ast.getNode(local_idx);
                         if (local_node.tag == .string_literal) {
-                            self.addError(local_node.span, "String literal cannot be used as local binding in export");
+                            try self.addError(local_node.span, "String literal cannot be used as local binding in export");
                         }
                     }
                 }
@@ -354,7 +354,7 @@ fn parseExportSpecifier(self: *Parser) ParseError2!NodeIndex {
     const local = try self.parseModuleExportName();
 
     var exported = local;
-    if (self.eat(.kw_as)) {
+    if (try self.eat(.kw_as)) {
         exported = try self.parseModuleExportName();
     }
 
@@ -368,32 +368,32 @@ fn parseExportSpecifier(self: *Parser) ParseError2!NodeIndex {
 fn parseModuleSource(self: *Parser) ParseError2!NodeIndex {
     const span = self.currentSpan();
     if (self.current() == .string_literal) {
-        self.advance();
+        try self.advance();
         // import attributes: with { type: 'json' } 또는 assert { type: 'json' }
-        skipImportAttributes(self);
+        try skipImportAttributes(self);
         return try self.ast.addNode(.{
             .tag = .string_literal,
             .span = span,
             .data = .{ .string_ref = span },
         });
     }
-    self.addError(span, "Module source string expected");
+    try self.addError(span, "Module source string expected");
     return NodeIndex.none;
 }
 
 /// import attributes (with/assert { ... })를 파싱한다.
 /// AST에 저장하지 않고 소비만 한다 (트랜스포머에서 필요 시 추가).
 /// 중복 키 검사도 수행한다 (ECMAScript: WithClauseToAttributes 중복 에러).
-fn skipImportAttributes(self: *Parser) void {
+fn skipImportAttributes(self: *Parser) !void {
     // with { ... }: 줄바꿈 허용 (ECMAScript: AttributesKeyword = with)
     // assert { ... }: 줄바꿈 불허 (ECMAScript: [no LineTerminator here] assert)
     const is_with = self.current() == .kw_with;
     const is_assert = self.current() == .kw_assert and !self.scanner.token.has_newline_before;
     if (!is_with and !is_assert) return;
 
-    self.advance(); // skip with/assert
+    try self.advance(); // skip with/assert
     if (self.current() == .l_curly) {
-        self.advance(); // skip {
+        try self.advance(); // skip {
 
         // 중복 키 검사를 위한 키 수집 (최대 16개, 초과 시 검사 생략)
         var keys: [16][]const u8 = undefined;
@@ -404,7 +404,7 @@ fn skipImportAttributes(self: *Parser) void {
             // key: identifier 또는 string literal
             const key_span = self.currentSpan();
             const key_text = self.ast.source[key_span.start..key_span.end];
-            self.advance(); // key
+            try self.advance(); // key
 
             // 중복 키 검사
             if (key_count < 16) {
@@ -417,7 +417,7 @@ fn skipImportAttributes(self: *Parser) void {
 
                 for (0..key_count) |i| {
                     if (std.mem.eql(u8, keys[i], effective_key)) {
-                        self.addError(key_span, "Duplicate import attribute key");
+                        try self.addError(key_span, "Duplicate import attribute key");
                         break;
                     }
                 }
@@ -426,13 +426,13 @@ fn skipImportAttributes(self: *Parser) void {
                 key_count += 1;
             }
 
-            _ = self.eat(.colon);
+            _ = try self.eat(.colon);
             if (self.current() != .r_curly and self.current() != .eof) {
-                self.advance(); // value
+                try self.advance(); // value
             }
-            _ = self.eat(.comma);
+            _ = try self.eat(.comma);
         }
-        _ = self.eat(.r_curly);
+        _ = try self.eat(.r_curly);
     }
 }
 

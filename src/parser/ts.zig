@@ -23,7 +23,7 @@ const ParseError2 = @import("parser.zig").ParseError2;
 /// type Foo = Type;
 pub fn parseTsTypeAliasDeclaration(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    self.advance(); // skip 'type'
+    try self.advance(); // skip 'type'
 
     const name = try self.parseSimpleIdentifier();
 
@@ -33,9 +33,9 @@ pub fn parseTsTypeAliasDeclaration(self: *Parser) ParseError2!NodeIndex {
         type_params = try parseTsTypeParameterDeclaration(self);
     }
 
-    self.expect(.eq);
+    try self.expect(.eq);
     const ty = try parseType(self);
-    _ = self.eat(.semicolon);
+    _ = try self.eat(.semicolon);
 
     const extra_start = try self.ast.addExtra(@intFromEnum(name));
     _ = try self.ast.addExtra(@intFromEnum(type_params));
@@ -53,7 +53,7 @@ pub fn parseTsTypeAliasDeclaration(self: *Parser) ParseError2!NodeIndex {
 /// extra = [name, type_params, extends_start, extends_len, body]
 pub fn parseTsInterfaceDeclaration(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    self.advance(); // skip 'interface'
+    try self.advance(); // skip 'interface'
 
     const name = try self.parseSimpleIdentifier();
 
@@ -67,10 +67,10 @@ pub fn parseTsInterfaceDeclaration(self: *Parser) ParseError2!NodeIndex {
     // NodeList(start, len)로 저장하여 다중 extends를 지원한다.
     // extends 없으면 extends_list.len = 0.
     const scratch_top = self.saveScratch();
-    if (self.eat(.kw_extends)) {
+    if (try self.eat(.kw_extends)) {
         const first = try parseType(self);
         try self.scratch.append(first);
-        while (self.eat(.comma)) {
+        while (try self.eat(.comma)) {
             const next = try parseType(self);
             try self.scratch.append(next);
         }
@@ -99,7 +99,7 @@ pub fn parseTsInterfaceDeclaration(self: *Parser) ParseError2!NodeIndex {
 /// const enum Foo { A, B, C }
 /// const enum은 일반 enum과 동일하게 파싱하되, flags=1로 표시.
 pub fn parseConstEnum(self: *Parser) ParseError2!NodeIndex {
-    self.advance(); // skip 'const'
+    try self.advance(); // skip 'const'
     return parseTsEnumDeclarationWithFlags(self, 1);
 }
 
@@ -112,20 +112,20 @@ pub fn parseTsEnumDeclaration(self: *Parser) ParseError2!NodeIndex {
 /// extra = [name, members_start, members_len, flags]
 fn parseTsEnumDeclarationWithFlags(self: *Parser, flags: u32) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    self.advance(); // skip 'enum'
+    try self.advance(); // skip 'enum'
 
     const name = try self.parseSimpleIdentifier();
-    self.expect(.l_curly);
+    try self.expect(.l_curly);
 
     const scratch_top = self.saveScratch();
     while (self.current() != .r_curly and self.current() != .eof) {
         const member = try parseTsEnumMember(self);
         try self.scratch.append(member);
-        if (!self.eat(.comma)) break;
+        if (!try self.eat(.comma)) break;
     }
 
     const end = self.currentSpan().end;
-    self.expect(.r_curly);
+    try self.expect(.r_curly);
 
     const members = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
@@ -146,7 +146,7 @@ fn parseTsEnumMember(self: *Parser) ParseError2!NodeIndex {
     const name = try self.parsePropertyKey();
 
     var init_val = NodeIndex.none;
-    if (self.eat(.eq)) {
+    if (try self.eat(.eq)) {
         init_val = try self.parseAssignmentExpression();
     }
 
@@ -160,7 +160,7 @@ fn parseTsEnumMember(self: *Parser) ParseError2!NodeIndex {
 /// namespace Foo { ... } / module "name" { ... }
 pub fn parseTsModuleDeclaration(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    self.advance(); // skip 'namespace' or 'module'
+    try self.advance(); // skip 'namespace' or 'module'
     return parseTsModuleBody(self, start);
 }
 
@@ -169,7 +169,7 @@ fn parseTsModuleBody(self: *Parser, start: u32) ParseError2!NodeIndex {
     const name = try self.parseSimpleIdentifier();
 
     // 중첩: namespace A.B.C { }
-    if (self.eat(.dot)) {
+    if (try self.eat(.dot)) {
         const inner = try parseTsModuleBody(self, start);
         return try self.ast.addNode(.{
             .tag = .ts_module_declaration,
@@ -189,7 +189,7 @@ fn parseTsModuleBody(self: *Parser, start: u32) ParseError2!NodeIndex {
 
 /// declare var/let/const/function/class/...
 pub fn parseTsDeclareStatement(self: *Parser) ParseError2!NodeIndex {
-    self.advance(); // skip 'declare'
+    try self.advance(); // skip 'declare'
     // declare 뒤의 선언은 ambient context (const 이니셜라이저 불필요 등)
     const saved = self.ctx;
     self.ctx.in_ambient = true;
@@ -200,7 +200,7 @@ pub fn parseTsDeclareStatement(self: *Parser) ParseError2!NodeIndex {
 
 /// abstract class Foo { }
 pub fn parseTsAbstractClass(self: *Parser) ParseError2!NodeIndex {
-    self.advance(); // skip 'abstract'
+    try self.advance(); // skip 'abstract'
     return self.parseClassDeclaration();
 }
 
@@ -220,7 +220,7 @@ pub fn parseDecoratedStatement(self: *Parser) ParseError2!NodeIndex {
         .kw_export => self.parseExportDeclaration(),
         .kw_abstract => parseTsAbstractClass(self),
         else => {
-            self.addError(self.currentSpan(), "Class or export expected after decorator");
+            try self.addError(self.currentSpan(), "Class or export expected after decorator");
             return self.parseExpressionStatement();
         },
     };
@@ -229,7 +229,7 @@ pub fn parseDecoratedStatement(self: *Parser) ParseError2!NodeIndex {
 /// @expr — 단일 데코레이터 파싱
 pub fn parseDecorator(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    self.advance(); // skip @
+    try self.advance(); // skip @
     const expr = try self.parseCallExpression();
 
     return try self.ast.addNode(.{
@@ -246,15 +246,15 @@ pub fn parseDecorator(self: *Parser) ParseError2!NodeIndex {
 /// <T, U extends V = W>
 pub fn parseTsTypeParameterDeclaration(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    self.advance(); // skip <
+    try self.advance(); // skip <
 
     const scratch_top = self.saveScratch();
     while (self.current() != .r_angle and self.current() != .eof) {
         const param = try parseTsTypeParameter(self);
         try self.scratch.append(param);
-        if (!self.eat(.comma)) break;
+        if (!try self.eat(.comma)) break;
     }
-    self.expect(.r_angle);
+    try self.expect(.r_angle);
 
     const params = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
@@ -272,13 +272,13 @@ fn parseTsTypeParameter(self: *Parser) ParseError2!NodeIndex {
 
     // T extends U
     var constraint = NodeIndex.none;
-    if (self.eat(.kw_extends)) {
+    if (try self.eat(.kw_extends)) {
         constraint = try parseType(self);
     }
 
     // T = DefaultType
     var default_type = NodeIndex.none;
-    if (self.eat(.eq)) {
+    if (try self.eat(.eq)) {
         default_type = try parseType(self);
     }
 
@@ -303,14 +303,14 @@ pub fn tryParseTypeAnnotation(self: *Parser) ParseError2!NodeIndex {
     // 타입 어노테이션이 아닌 colon인 경우 구분 필요:
     // object literal `{ key: value }`, ternary `? : `, switch `case:` 등
     // 여기서는 binding pattern/variable declarator 컨텍스트에서만 호출되므로 안전
-    self.advance(); // skip ':'
+    try self.advance(); // skip ':'
     return parseType(self);
 }
 
 /// 리턴 타입 어노테이션 (`: Type`). 함수 선언에서 사용.
 pub fn tryParseReturnType(self: *Parser) ParseError2!NodeIndex {
     if (self.current() != .colon) return NodeIndex.none;
-    self.advance();
+    try self.advance();
     return parseType(self);
 }
 
@@ -321,7 +321,7 @@ pub fn parseType(self: *Parser) ParseError2!NodeIndex {
     // 유니온: A | B | C
     while (self.current() == .pipe) {
         const start = self.ast.getNode(left).span.start;
-        self.advance(); // skip |
+        try self.advance(); // skip |
         const right = try parseIntersectionType(self);
         left = try self.ast.addNode(.{
             .tag = .ts_union_type,
@@ -339,7 +339,7 @@ fn parseIntersectionType(self: *Parser) ParseError2!NodeIndex {
     // 인터섹션: A & B & C
     while (self.current() == .amp) {
         const start = self.ast.getNode(left).span.start;
-        self.advance(); // skip &
+        try self.advance(); // skip &
         const right = try parsePostfixType(self);
         left = try self.ast.addNode(.{
             .tag = .ts_intersection_type,
@@ -356,10 +356,10 @@ fn parsePostfixType(self: *Parser) ParseError2!NodeIndex {
 
     while (self.current() == .l_bracket) {
         const start = self.ast.getNode(base).span.start;
-        if (self.peekNextKind() == .r_bracket) {
+        if (try self.peekNextKind() == .r_bracket) {
             // 배열 타입: T[]
-            self.advance(); // [
-            self.advance(); // ]
+            try self.advance(); // [
+            try self.advance(); // ]
             base = try self.ast.addNode(.{
                 .tag = .ts_array_type,
                 .span = .{ .start = start, .end = self.currentSpan().start },
@@ -367,9 +367,9 @@ fn parsePostfixType(self: *Parser) ParseError2!NodeIndex {
             });
         } else {
             // 인덱스 접근 타입: T[K]
-            self.advance(); // [
+            try self.advance(); // [
             const index_type = try parseType(self);
-            self.expect(.r_bracket);
+            try self.expect(.r_bracket);
             base = try self.ast.addNode(.{
                 .tag = .ts_indexed_access_type,
                 .span = .{ .start = start, .end = self.currentSpan().start },
@@ -400,7 +400,7 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
             else => .ts_type_reference, // 다른 TS 키워드는 타입 참조로
         };
         if (tag != .ts_type_reference) {
-            self.advance();
+            try self.advance();
             return try self.ast.addNode(.{
                 .tag = tag,
                 .span = span,
@@ -412,7 +412,7 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
     switch (self.current()) {
         // void
         .kw_void => {
-            self.advance();
+            try self.advance();
             return try self.ast.addNode(.{
                 .tag = .ts_void_keyword,
                 .span = span,
@@ -421,7 +421,7 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
         },
         // null
         .kw_null => {
-            self.advance();
+            try self.advance();
             return try self.ast.addNode(.{
                 .tag = .ts_null_keyword,
                 .span = span,
@@ -430,7 +430,7 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
         },
         // this
         .kw_this => {
-            self.advance();
+            try self.advance();
             return try self.ast.addNode(.{
                 .tag = .ts_this_type,
                 .span = span,
@@ -439,7 +439,7 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
         },
         // 리터럴 타입 (true, false, 숫자, 문자열)
         .kw_true, .kw_false => {
-            self.advance();
+            try self.advance();
             return try self.ast.addNode(.{
                 .tag = .ts_literal_type,
                 .span = span,
@@ -447,7 +447,7 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
             });
         },
         .decimal, .float, .hex, .string_literal => {
-            self.advance();
+            try self.advance();
             return try self.ast.addNode(.{
                 .tag = .ts_literal_type,
                 .span = span,
@@ -464,7 +464,7 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
         .l_bracket => return parseTupleType(self),
         // typeof T
         .kw_typeof => {
-            self.advance();
+            try self.advance();
             const operand = try parseType(self);
             return try self.ast.addNode(.{
                 .tag = .ts_type_query,
@@ -474,7 +474,7 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
         },
         // keyof T
         .kw_keyof => {
-            self.advance();
+            try self.advance();
             const operand = try parseType(self);
             return try self.ast.addNode(.{
                 .tag = .ts_type_operator,
@@ -487,8 +487,8 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
             if (self.current().isKeyword()) {
                 return parseTypeReference(self);
             }
-            self.addError(span, "Type expected");
-            self.advance();
+            try self.addError(span, "Type expected");
+            try self.advance();
             return try self.ast.addNode(.{ .tag = .invalid, .span = span, .data = .{ .none = 0 } });
         },
     }
@@ -497,13 +497,13 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
 fn parseTypeReference(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     const name_span = self.currentSpan();
-    self.advance(); // type name
+    try self.advance(); // type name
 
     // Foo.Bar 형태
     var name_end = name_span.end;
-    while (self.eat(.dot)) {
+    while (try self.eat(.dot)) {
         name_end = self.currentSpan().end;
-        self.advance(); // Bar
+        try self.advance(); // Bar
     }
 
     // 제네릭: Foo<T, U>
@@ -525,15 +525,15 @@ fn parseTypeReference(self: *Parser) ParseError2!NodeIndex {
 
 fn parseTypeArguments(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    self.advance(); // skip <
+    try self.advance(); // skip <
 
     const scratch_top = self.saveScratch();
     while (self.current() != .r_angle and self.current() != .eof) {
         const ty = try parseType(self);
         try self.scratch.append(ty);
-        if (!self.eat(.comma)) break;
+        if (!try self.eat(.comma)) break;
     }
-    self.expect(.r_angle);
+    try self.expect(.r_angle);
 
     const types = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
@@ -547,13 +547,13 @@ fn parseTypeArguments(self: *Parser) ParseError2!NodeIndex {
 
 fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    self.advance(); // skip (
+    try self.advance(); // skip (
 
     // 빈 괄호 + => → 함수 타입 () => R
     if (self.current() == .r_paren) {
-        self.advance();
+        try self.advance();
         if (self.current() == .arrow) {
-            self.advance();
+            try self.advance();
             const return_type = try parseType(self);
             return try self.ast.addNode(.{
                 .tag = .ts_function_type,
@@ -568,9 +568,9 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
     // 파라미터가 있는 경우 — 단순히 첫 번째 타입을 파싱하고 ) 뒤에 =>가 있으면 함수 타입
     const inner = try parseType(self);
     if (self.current() == .r_paren) {
-        self.advance();
+        try self.advance();
         if (self.current() == .arrow) {
-            self.advance();
+            try self.advance();
             const return_type = try parseType(self);
             return try self.ast.addNode(.{
                 .tag = .ts_function_type,
@@ -579,7 +579,7 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
             });
         }
     } else {
-        self.expect(.r_paren);
+        try self.expect(.r_paren);
     }
 
     // 괄호 타입: (Type)
@@ -592,20 +592,20 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
 
 fn parseObjectType(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    self.advance(); // skip {
+    try self.advance(); // skip {
 
     const scratch_top = self.saveScratch();
     while (self.current() != .r_curly and self.current() != .eof) {
         const member = try parseTypeMember(self);
         try self.scratch.append(member);
         // ; 또는 , 로 구분
-        if (!self.eat(.semicolon) and !self.eat(.comma)) {
+        if (!try self.eat(.semicolon) and !try self.eat(.comma)) {
             if (self.current() != .r_curly) break;
         }
     }
 
     const end = self.currentSpan().end;
-    self.expect(.r_curly);
+    try self.expect(.r_curly);
 
     const members = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
@@ -621,8 +621,8 @@ fn parseTypeMember(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     // 간단: key: Type 또는 key?: Type
     const key = try self.parsePropertyKey();
-    _ = self.eat(.question); // optional
-    self.expect(.colon);
+    _ = try self.eat(.question); // optional
+    try self.expect(.colon);
     const value_type = try parseType(self);
 
     return try self.ast.addNode(.{
@@ -634,17 +634,17 @@ fn parseTypeMember(self: *Parser) ParseError2!NodeIndex {
 
 fn parseTupleType(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    self.advance(); // skip [
+    try self.advance(); // skip [
 
     const scratch_top = self.saveScratch();
     while (self.current() != .r_bracket and self.current() != .eof) {
         const ty = try parseType(self);
         try self.scratch.append(ty);
-        if (!self.eat(.comma)) break;
+        if (!try self.eat(.comma)) break;
     }
 
     const end = self.currentSpan().end;
-    self.expect(.r_bracket);
+    try self.expect(.r_bracket);
 
     const types = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);

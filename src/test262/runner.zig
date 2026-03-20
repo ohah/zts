@@ -150,7 +150,9 @@ pub fn parseMetadata(source: []const u8) TestMetadata {
 /// - is_negative_parse == false → 에러 없이 파싱 완료되면 pass
 pub fn runTest(allocator: mem.Allocator, source: []const u8, meta: TestMetadata, verbose: bool) TestResult {
     // Scanner → Parser로 파싱
-    var scanner = Scanner.init(allocator, source);
+    var scanner = Scanner.init(allocator, source) catch {
+        return .skip; // OOM은 인프라 문제 → skip
+    };
     defer scanner.deinit();
 
     var parser = Parser.init(allocator, &scanner);

@@ -100,13 +100,13 @@ pub const Scanner = struct {
 
     /// 소스를 UTF-8로 읽고 Scanner를 초기화한다.
     /// BOM이 있으면 스킵한다 (D019).
-    pub fn init(allocator: std.mem.Allocator, source: []const u8) Scanner {
+    pub fn init(allocator: std.mem.Allocator, source: []const u8) !Scanner {
         // 4GB 이상의 소스는 u32 offset으로 표현 불가 (D015)
         std.debug.assert(source.len <= std.math.maxInt(u32));
 
         var line_offsets = std.ArrayList(u32).init(allocator);
         // 첫 번째 줄의 시작 offset은 항상 0. 이 append가 실패하면 getLineColumn()이 동작 불가.
-        line_offsets.append(0) catch @panic("OOM: failed to allocate initial line offset");
+        try line_offsets.append(0);
 
         var scanner = Scanner{
             .source = source,
@@ -209,31 +209,31 @@ pub const Scanner = struct {
     }
 
     /// 줄 offset 테이블에 새 줄을 기록한다.
-    fn recordNewline(self: *Scanner) void {
+    fn recordNewline(self: *Scanner) !void {
         self.line += 1;
         self.line_start = self.current;
-        self.line_offsets.append(self.current) catch @panic("OOM: line_offsets");
+        try self.line_offsets.append(self.current);
     }
 
     /// 줄바꿈 문자를 처리한다.
     /// \n, \r\n, \r, U+2028 (LS), U+2029 (PS) 전부 인식 (D019).
     /// 줄바꿈이면 true를 반환하고 current를 전진시킨다.
-    fn handleNewline(self: *Scanner) bool {
+    fn handleNewline(self: *Scanner) !bool {
         const c = self.peek();
         if (c == '\n') {
             self.current += 1;
-            self.recordNewline();
+            try self.recordNewline();
             return true;
         }
         if (c == '\r') {
             self.current += 1;
             if (self.peek() == '\n') self.current += 1;
-            self.recordNewline();
+            try self.recordNewline();
             return true;
         }
         if (self.isLineSeparator()) {
             self.current += 3;
-            self.recordNewline();
+            try self.recordNewline();
             return true;
         }
         return false;
@@ -245,7 +245,7 @@ pub const Scanner = struct {
 
     /// 공백 문자를 스킵한다.
     /// 줄바꿈을 만나면 has_newline_before를 true로 설정.
-    fn skipWhitespace(self: *Scanner) void {
+    fn skipWhitespace(self: *Scanner) !void {
         while (!self.isAtEnd()) {
             const c = self.peek();
             switch (c) {
@@ -255,12 +255,12 @@ pub const Scanner = struct {
                 },
                 '\n', '\r' => {
                     // 줄바꿈
-                    _ = self.handleNewline();
+                    _ = try self.handleNewline();
                     self.token.has_newline_before = true;
                 },
                 0xE2 => {
                     // U+2028 (LS), U+2029 (PS) — 줄바꿈
-                    if (self.handleNewline()) {
+                    if (try self.handleNewline()) {
                         self.token.has_newline_before = true;
                     } else if (self.current + 2 < self.source.len) {
                         // Unicode Space_Separator (USP): U+2000-U+200A, U+202F, U+205F
@@ -325,7 +325,7 @@ pub const Scanner = struct {
 
     /// 다음 토큰을 스캔한다.
     /// 파서가 이 함수를 반복 호출하여 토큰을 소비한다.
-    pub fn next(self: *Scanner) void {
+    pub fn next(self: *Scanner) !void {
         self.token.has_newline_before = false;
         self.token.has_pure_comment_before = false;
         self.token.has_escape = false;
@@ -334,7 +334,7 @@ pub const Scanner = struct {
         // 주석을 만나면 스킵하고 다시 스캔해야 하므로 루프
         while (true) {
             // 공백 스킵 (줄바꿈 추적 포함)
-            self.skipWhitespace();
+            try self.skipWhitespace();
 
             // 토큰 시작 위치 기록
             self.start = self.current;
@@ -365,7 +365,7 @@ pub const Scanner = struct {
                     if (self.template_depth_stack.items.len > 0 and
                         self.brace_depth == self.template_depth_stack.items[self.template_depth_stack.items.len - 1])
                     {
-                        break :blk self.scanTemplateContinuation();
+                        break :blk try self.scanTemplateContinuation();
                     }
                     break :blk .r_curly;
                 },
@@ -381,7 +381,7 @@ pub const Scanner = struct {
                 '+' => self.scanPlus(),
                 '-' => self.scanMinus(),
                 '*' => self.scanStar(),
-                '/' => self.scanSlash(),
+                '/' => try self.scanSlash(),
                 '%' => self.scanPercent(),
                 '<' => self.scanLAngle(),
                 '>' => self.scanRAngle(),
@@ -394,8 +394,8 @@ pub const Scanner = struct {
 
                 // 리터럴 — 추후 PR에서 세부 구현
                 '0'...'9' => self.scanNumericLiteral(c),
-                '\'', '"' => self.scanStringLiteral(c),
-                '`' => self.scanTemplateLiteral(),
+                '\'', '"' => try self.scanStringLiteral(c),
+                '`' => try self.scanTemplateLiteral(),
 
                 '#' => blk: {
                     // hashbang (파일 시작) 또는 private identifier
@@ -540,9 +540,9 @@ pub const Scanner = struct {
     /// JSX 태그 안에서는 식별자에 하이픈(-)을 허용하고 (data-value),
     /// 속성 값 문자열은 이스케이프를 처리하지 않는다.
     /// 파서가 `<` 뒤에서 이 함수를 호출한다.
-    pub fn nextInsideJSXElement(self: *Scanner) void {
+    pub fn nextInsideJSXElement(self: *Scanner) !void {
         self.token.has_newline_before = false;
-        self.skipWhitespace();
+        try self.skipWhitespace();
         self.start = self.current;
 
         if (self.isAtEnd()) {
@@ -585,7 +585,7 @@ pub const Scanner = struct {
 
     /// JSX 자식 위치에서 다음 토큰을 스캔한다 (태그 사이의 텍스트).
     /// `<` 또는 `{`를 만날 때까지 텍스트를 소비한다.
-    pub fn nextJSXChild(self: *Scanner) void {
+    pub fn nextJSXChild(self: *Scanner) !void {
         self.token.has_newline_before = false;
         self.start = self.current;
 
@@ -605,7 +605,7 @@ pub const Scanner = struct {
             self.token.kind = .l_curly;
         } else {
             // JSX 텍스트: < 또는 { 또는 EOF 전까지 전부 소비
-            self.scanJSXText();
+            try self.scanJSXText();
             self.token.kind = .jsx_text;
         }
 
@@ -614,12 +614,12 @@ pub const Scanner = struct {
     }
 
     /// JSX 텍스트를 스캔한다. `<`, `{`, `}` 전까지 소비.
-    fn scanJSXText(self: *Scanner) void {
+    fn scanJSXText(self: *Scanner) !void {
         while (!self.isAtEnd()) {
             const c = self.peek();
             if (c == '<' or c == '{' or c == '}') break;
             if (isNewlineStart(c)) {
-                if (self.handleNewline()) {
+                if (try self.handleNewline()) {
                     self.token.has_newline_before = true;
                 } else {
                     self.current += 1; // 0xE2이지만 줄바꿈이 아닌 경우
@@ -718,14 +718,14 @@ pub const Scanner = struct {
         return .star;
     }
 
-    fn scanSlash(self: *Scanner) Kind {
+    fn scanSlash(self: *Scanner) !Kind {
         const next_char = self.peek();
         if (next_char == '/') {
-            self.scanSingleLineComment();
+            try self.scanSingleLineComment();
             return .undetermined;
         }
         if (next_char == '*') {
-            if (self.scanMultiLineComment()) return .syntax_error; // 미닫힌 주석
+            if (try self.scanMultiLineComment()) return .syntax_error; // 미닫힌 주석
             return .undetermined;
         }
 
@@ -825,7 +825,7 @@ pub const Scanner = struct {
 
     /// single-line comment를 스캔한다 (// ... \n).
     /// JSX pragma (@jsx, @jsxFrag, @jsxRuntime, @jsxImportSource)를 감지한다 (D026).
-    fn scanSingleLineComment(self: *Scanner) void {
+    fn scanSingleLineComment(self: *Scanner) !void {
         self.current += 1; // skip second '/'
 
         const comment_start = self.current;
@@ -848,19 +848,19 @@ pub const Scanner = struct {
         self.checkPureComment(comment_text);
 
         // 주석을 기록한다 (start = 첫 번째 '/' 위치, end = 줄바꿈 직전)
-        self.comments.append(.{
+        try self.comments.append(.{
             .start = self.start,
             .end = self.current,
             .is_multiline = false,
             .is_legal = isLegalComment(comment_text, false),
-        }) catch @panic("OOM: comments");
+        });
     }
 
     /// multi-line comment를 스캔한다 (/* ... */).
     /// @__PURE__ / @__NO_SIDE_EFFECTS__ 주석을 감지한다 (D025).
     /// @license / @preserve 주석도 감지한다 (D022, 추후 코드젠에서 활용).
     /// 미닫힌 주석이면 true(에러)를 반환.
-    fn scanMultiLineComment(self: *Scanner) bool {
+    fn scanMultiLineComment(self: *Scanner) !bool {
         self.current += 1; // skip '*'
 
         const comment_start = self.current;
@@ -873,18 +873,18 @@ pub const Scanner = struct {
                 self.checkPureComment(comment_text);
 
                 // 주석을 기록한다 (start = 첫 번째 '/' 위치, end = '*/' 직후)
-                self.comments.append(.{
+                try self.comments.append(.{
                     .start = self.start,
                     .end = self.current,
                     .is_multiline = true,
                     .is_legal = isLegalComment(comment_text, true),
-                }) catch @panic("OOM: comments");
+                });
 
                 return false; // 정상 종료
             }
             // 줄바꿈 추적 (소스맵 정확성)
             if (isNewlineStart(c)) {
-                if (self.handleNewline()) {
+                if (try self.handleNewline()) {
                     self.token.has_newline_before = true;
                 } else {
                     self.current += 1;
@@ -1414,7 +1414,7 @@ pub const Scanner = struct {
     /// 에러 감지:
     /// - 닫히지 않은 문자열 → syntax_error
     /// - 문자열 안 줄바꿈 (JS 스펙 위반) → syntax_error
-    fn scanStringLiteral(self: *Scanner, quote: u8) Kind {
+    fn scanStringLiteral(self: *Scanner, quote: u8) !Kind {
         while (!self.isAtEnd()) {
             const c = self.peek();
 
@@ -1476,10 +1476,10 @@ pub const Scanner = struct {
                     },
                     // 줄 연속: \ 뒤에 줄바꿈이 오면 줄바꿈을 건너뜀
                     '\n' => {
-                        _ = self.handleNewline();
+                        _ = try self.handleNewline();
                     },
                     '\r' => {
-                        _ = self.handleNewline();
+                        _ = try self.handleNewline();
                     },
                     // 그 외: legacy octal (\1..\7) 또는 알 수 없는 이스케이프 → 1바이트 스킵
                     // (엄격한 에러 검사는 파서에서)
@@ -1523,8 +1523,8 @@ pub const Scanner = struct {
     /// - no_substitution_template: `string` (보간 없음)
     /// - template_head: `text${ (보간 시작)
     /// - syntax_error: 닫히지 않은 템플릿
-    fn scanTemplateLiteral(self: *Scanner) Kind {
-        return self.scanTemplateContent(.no_substitution_template, .template_head);
+    fn scanTemplateLiteral(self: *Scanner) !Kind {
+        return try self.scanTemplateContent(.no_substitution_template, .template_head);
     }
 
     /// 템플릿 중간/끝을 스캔한다 (}에서 호출).
@@ -1533,15 +1533,15 @@ pub const Scanner = struct {
     /// - template_middle: }text${ (보간 계속)
     /// - template_tail: }text` (템플릿 끝)
     /// - syntax_error: 닫히지 않은 템플릿
-    fn scanTemplateContinuation(self: *Scanner) Kind {
+    fn scanTemplateContinuation(self: *Scanner) !Kind {
         // 스택에서 현재 템플릿 depth를 pop
         _ = self.template_depth_stack.pop();
-        return self.scanTemplateContent(.template_tail, .template_middle);
+        return try self.scanTemplateContent(.template_tail, .template_middle);
     }
 
     /// 템플릿 내용을 스캔하는 공통 로직.
     /// backtick을 만나면 complete_kind, ${를 만나면 interpolation_kind를 반환.
-    fn scanTemplateContent(self: *Scanner, complete_kind: Kind, interpolation_kind: Kind) Kind {
+    fn scanTemplateContent(self: *Scanner, complete_kind: Kind, interpolation_kind: Kind) !Kind {
         while (!self.isAtEnd()) {
             const c = self.peek();
 
@@ -1553,7 +1553,7 @@ pub const Scanner = struct {
             if (c == '$' and self.peekAt(1) == '{') {
                 self.current += 2; // skip ${
                 // 현재 brace depth를 스택에 push (나중에 }에서 매칭)
-                self.template_depth_stack.append(self.brace_depth) catch @panic("OOM: template_depth_stack");
+                try self.template_depth_stack.append(self.brace_depth);
                 self.brace_depth += 1;
                 return interpolation_kind;
             }
@@ -1634,7 +1634,7 @@ pub const Scanner = struct {
                         },
                         // 줄바꿈 이스케이프 처리 (템플릿에서는 유효)
                         '\n', '\r' => {
-                            _ = self.handleNewline();
+                            _ = try self.handleNewline();
                         },
                         // 그 외: non-escape character (유효)
                         else => {
@@ -1647,7 +1647,7 @@ pub const Scanner = struct {
 
             // 줄바꿈: 템플릿 리터럴에서는 허용됨 (일반 문자열과 다름)
             if (c == '\n' or c == '\r') {
-                _ = self.handleNewline();
+                _ = try self.handleNewline();
                 self.token.has_newline_before = true;
                 continue;
             }
@@ -1889,23 +1889,23 @@ pub const Scanner = struct {
 // ============================================================
 
 test "Scanner: empty source" {
-    var scanner = Scanner.init(std.testing.allocator, "");
+    var scanner = try Scanner.init(std.testing.allocator, "");
     defer scanner.deinit();
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.eof, scanner.token.kind);
 }
 
 test "Scanner: BOM skip" {
-    var scanner = Scanner.init(std.testing.allocator, "\xEF\xBB\xBF;");
+    var scanner = try Scanner.init(std.testing.allocator, "\xEF\xBB\xBF;");
     defer scanner.deinit();
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.semicolon, scanner.token.kind);
     try std.testing.expectEqual(@as(u32, 3), scanner.token.span.start);
 }
 
 test "Scanner: single character tokens" {
     const source = "(){};,~@:";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
     const expected = [_]Kind{
@@ -1914,16 +1914,16 @@ test "Scanner: single character tokens" {
         .colon,
     };
     for (expected) |kind| {
-        scanner.next();
+        try scanner.next();
         try std.testing.expectEqual(kind, scanner.token.kind);
     }
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.eof, scanner.token.kind);
 }
 
 test "Scanner: compound operators" {
     const source = "++ -- ** === !== => ... ?? ?. ??= &&= ||=";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
     const expected = [_]Kind{
@@ -1932,14 +1932,14 @@ test "Scanner: compound operators" {
         .amp2_eq, .pipe2_eq,
     };
     for (expected) |kind| {
-        scanner.next();
+        try scanner.next();
         try std.testing.expectEqual(kind, scanner.token.kind);
     }
 }
 
 test "Scanner: shift operators" {
     const source = "<< >> >>> <<= >>= >>>=";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
     const expected = [_]Kind{
@@ -1947,61 +1947,61 @@ test "Scanner: shift operators" {
         .shift_left_eq, .shift_right_eq, .shift_right3_eq,
     };
     for (expected) |kind| {
-        scanner.next();
+        try scanner.next();
         try std.testing.expectEqual(kind, scanner.token.kind);
     }
 }
 
 test "Scanner: identifiers and keywords" {
     const source = "const foo let bar";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.kw_const, scanner.token.kind);
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
     try std.testing.expectEqualStrings("foo", scanner.tokenText());
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.kw_let, scanner.token.kind);
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
     try std.testing.expectEqualStrings("bar", scanner.tokenText());
 }
 
 test "Scanner: whitespace and newlines set has_newline_before" {
     const source = "a\nb";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
     try std.testing.expect(!scanner.token.has_newline_before);
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
     try std.testing.expect(scanner.token.has_newline_before);
 }
 
 test "Scanner: CRLF counts as one newline" {
     const source = "a\r\nb";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next(); // a
-    scanner.next(); // b
+    try scanner.next(); // a
+    try scanner.next(); // b
     try std.testing.expect(scanner.token.has_newline_before);
     try std.testing.expectEqual(@as(u32, 1), scanner.line);
 }
 
 test "Scanner: line offset table" {
     const source = "a\nb\nc";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
     // 전체를 스캔하여 line offset 테이블 구축
     while (scanner.token.kind != .eof or scanner.start == 0) {
-        scanner.next();
+        try scanner.next();
         if (scanner.token.kind == .eof) break;
     }
 
@@ -2013,12 +2013,12 @@ test "Scanner: line offset table" {
 
 test "Scanner: getLineColumn" {
     const source = "ab\ncde\nf";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
     // 전체 스캔
     while (true) {
-        scanner.next();
+        try scanner.next();
         if (scanner.token.kind == .eof) break;
     }
 
@@ -2040,21 +2040,21 @@ test "Scanner: getLineColumn" {
 
 test "Scanner: hashbang" {
     const source = "#!/usr/bin/env node\nconst x = 1;";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.hashbang_comment, scanner.token.kind);
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.kw_const, scanner.token.kind);
 }
 
 test "Scanner: private identifier" {
     const source = "#name";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.private_identifier, scanner.token.kind);
     try std.testing.expectEqualStrings("#name", scanner.tokenText());
 }
@@ -2062,69 +2062,69 @@ test "Scanner: private identifier" {
 test "Scanner: optional chaining vs ternary + number" {
     // ?. → optional chaining
     const source1 = "?.";
-    var s1 = Scanner.init(std.testing.allocator, source1);
+    var s1 = try Scanner.init(std.testing.allocator, source1);
     defer s1.deinit();
-    s1.next();
+    try s1.next();
     try std.testing.expectEqual(Kind.question_dot, s1.token.kind);
 
     // ?.5 → question + .5 (ternary + number)
     const source2 = "?.5";
-    var s2 = Scanner.init(std.testing.allocator, source2);
+    var s2 = try Scanner.init(std.testing.allocator, source2);
     defer s2.deinit();
-    s2.next();
+    try s2.next();
     try std.testing.expectEqual(Kind.question, s2.token.kind);
 }
 
 test "Scanner: string literal basic" {
     const source = "'hello' \"world\"";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
 }
 
 test "Scanner: empty string literals" {
     const source = "'' \"\"";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
     try std.testing.expectEqualStrings("''", scanner.tokenText());
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
     try std.testing.expectEqualStrings("\"\"", scanner.tokenText());
 }
 
 test "Scanner: slash_eq operator" {
     const source = "/=";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.slash_eq, scanner.token.kind);
 }
 
 test "Scanner: CR alone as line terminator" {
     const source = "a\rb";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next(); // a
-    scanner.next(); // b
+    try scanner.next(); // a
+    try scanner.next(); // b
     try std.testing.expect(scanner.token.has_newline_before);
     try std.testing.expectEqual(@as(u32, 1), scanner.line);
 }
 
 test "Scanner: whitespace only source" {
     const source = "   \t\t  \n  ";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.eof, scanner.token.kind);
     try std.testing.expect(scanner.token.has_newline_before);
 }
@@ -2132,20 +2132,20 @@ test "Scanner: whitespace only source" {
 test "Scanner: NBSP whitespace (U+00A0)" {
     // U+00A0 = C2 A0
     const source = "a\xC2\xA0b";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
     try std.testing.expectEqualStrings("a", scanner.tokenText());
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
     try std.testing.expectEqualStrings("b", scanner.tokenText());
 }
 
 test "Scanner: all assignment operators" {
     const source = "= += -= *= /= %= **= &= |= ^= <<= >>= >>>= &&= ||= ??=";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
     const expected = [_]Kind{
@@ -2155,7 +2155,7 @@ test "Scanner: all assignment operators" {
         .shift_right3_eq, .amp2_eq,    .pipe2_eq,      .question2_eq,
     };
     for (expected) |kind| {
-        scanner.next();
+        try scanner.next();
         try std.testing.expectEqual(kind, scanner.token.kind);
     }
 }
@@ -2166,14 +2166,14 @@ test "Scanner: all assignment operators" {
 
 test "Scanner: single-line comment is skipped" {
     const source = "a // comment\nb";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
     try std.testing.expectEqualStrings("a", scanner.tokenText());
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
     try std.testing.expectEqualStrings("b", scanner.tokenText());
     try std.testing.expect(scanner.token.has_newline_before);
@@ -2181,34 +2181,34 @@ test "Scanner: single-line comment is skipped" {
 
 test "Scanner: multi-line comment is skipped" {
     const source = "a /* comment */ b";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
     try std.testing.expectEqualStrings("a", scanner.tokenText());
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
     try std.testing.expectEqualStrings("b", scanner.tokenText());
 }
 
 test "Scanner: multi-line comment with newline sets has_newline_before" {
     const source = "a /*\n*/ b";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next(); // a
-    scanner.next(); // b
+    try scanner.next(); // a
+    try scanner.next(); // b
     try std.testing.expect(scanner.token.has_newline_before);
 }
 
 test "Scanner: @__PURE__ comment sets flag" {
     const source = "/* @__PURE__ */ foo()";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
     try std.testing.expectEqualStrings("foo", scanner.tokenText());
     try std.testing.expect(scanner.token.has_pure_comment_before);
@@ -2216,106 +2216,106 @@ test "Scanner: @__PURE__ comment sets flag" {
 
 test "Scanner: #__PURE__ comment sets flag" {
     const source = "/* #__PURE__ */ bar()";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expect(scanner.token.has_pure_comment_before);
 }
 
 test "Scanner: @__NO_SIDE_EFFECTS__ comment sets flag" {
     const source = "/* @__NO_SIDE_EFFECTS__ */ function f() {}";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.kw_function, scanner.token.kind);
     try std.testing.expect(scanner.token.has_pure_comment_before);
 }
 
 test "Scanner: normal comment does not set pure flag" {
     const source = "/* normal comment */ x";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expect(!scanner.token.has_pure_comment_before);
 }
 
 test "Scanner: single-line comment at end of file" {
     const source = "a // comment";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.eof, scanner.token.kind);
 }
 
 test "Scanner: comment-only source" {
     const source = "// just a comment";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.eof, scanner.token.kind);
 }
 
 test "Scanner: slash after comment is not confused" {
     const source = "a /* */ / b";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next(); // a
+    try scanner.next(); // a
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
-    scanner.next(); // /
+    try scanner.next(); // /
     try std.testing.expectEqual(Kind.slash, scanner.token.kind);
-    scanner.next(); // b
+    try scanner.next(); // b
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
 }
 
 test "Scanner: multi-line legal comment @license" {
     const source = "/* @license MIT */ var x;";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
-    scanner.next();
+    try scanner.next();
     try std.testing.expect(scanner.comments.items.len > 0);
     try std.testing.expect(scanner.comments.items[0].is_legal);
 }
 
 test "Scanner: multi-line legal comment /*!" {
     const source = "/*! Copyright 2024 */ var x;";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
-    scanner.next();
+    try scanner.next();
     try std.testing.expect(scanner.comments.items.len > 0);
     try std.testing.expect(scanner.comments.items[0].is_legal);
 }
 
 test "Scanner: single-line legal comment @license" {
     const source = "// @license MIT\nvar x;";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
-    scanner.next();
+    try scanner.next();
     try std.testing.expect(scanner.comments.items.len > 0);
     try std.testing.expect(scanner.comments.items[0].is_legal);
 }
 
 test "Scanner: single-line legal comment @preserve" {
     const source = "// @preserve\nvar x;";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
-    scanner.next();
+    try scanner.next();
     try std.testing.expect(scanner.comments.items.len > 0);
     try std.testing.expect(scanner.comments.items[0].is_legal);
 }
 
 test "Scanner: normal comment is not legal" {
     const source = "// just a comment\nvar x;";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
-    scanner.next();
+    try scanner.next();
     try std.testing.expect(scanner.comments.items.len > 0);
     try std.testing.expect(!scanner.comments.items[0].is_legal);
 }
@@ -2326,134 +2326,134 @@ test "Scanner: normal comment is not legal" {
 
 test "Scanner: decimal integer" {
     const source = "123 0 42";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.decimal, scanner.token.kind);
     try std.testing.expectEqualStrings("123", scanner.tokenText());
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.decimal, scanner.token.kind);
     try std.testing.expectEqualStrings("0", scanner.tokenText());
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.decimal, scanner.token.kind);
 }
 
 test "Scanner: hex literal" {
     const source = "0xFF 0X1A";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.hex, scanner.token.kind);
     try std.testing.expectEqualStrings("0xFF", scanner.tokenText());
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.hex, scanner.token.kind);
 }
 
 test "Scanner: octal literal" {
     const source = "0o77 0O10";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.octal, scanner.token.kind);
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.octal, scanner.token.kind);
 }
 
 test "Scanner: binary literal" {
     const source = "0b1010 0B11";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.binary, scanner.token.kind);
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.binary, scanner.token.kind);
 }
 
 test "Scanner: float literal" {
     const source = "1.5 0.1 .5";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.float, scanner.token.kind);
     try std.testing.expectEqualStrings("1.5", scanner.tokenText());
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.float, scanner.token.kind);
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.float, scanner.token.kind);
     try std.testing.expectEqualStrings(".5", scanner.tokenText());
 }
 
 test "Scanner: exponential literal" {
     const source = "1e10 1E10 1e+10 1e-10";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.positive_exponential, scanner.token.kind);
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.positive_exponential, scanner.token.kind);
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.positive_exponential, scanner.token.kind);
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.negative_exponential, scanner.token.kind);
 }
 
 test "Scanner: bigint literal" {
     const source = "123n 0xFFn 0o77n 0b1010n";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.decimal_bigint, scanner.token.kind);
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.hex_bigint, scanner.token.kind);
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.octal_bigint, scanner.token.kind);
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.binary_bigint, scanner.token.kind);
 }
 
 test "Scanner: numeric separator" {
     const source = "1_000_000 0xFF_FF 0b1010_0001";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.decimal, scanner.token.kind);
     try std.testing.expectEqualStrings("1_000_000", scanner.tokenText());
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.hex, scanner.token.kind);
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.binary, scanner.token.kind);
 }
 
 test "Scanner: 1..toString is float then dot" {
     // 1..toString() → float(1.) dot identifier(toString) — 소수점 뒤 멤버 접근
     const source = "1..toString";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.float, scanner.token.kind);
     try std.testing.expectEqualStrings("1.", scanner.tokenText());
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.dot, scanner.token.kind);
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
     try std.testing.expectEqualStrings("toString", scanner.tokenText());
 }
 
 test "Scanner: float with exponent" {
     const source = "1.5e10";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.positive_exponential, scanner.token.kind);
     try std.testing.expectEqualStrings("1.5e10", scanner.tokenText());
 }
@@ -2464,99 +2464,99 @@ test "Scanner: float with exponent" {
 
 test "Scanner: string with escape sequences" {
     const source = "\"hello\\nworld\"";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
     try std.testing.expectEqualStrings("\"hello\\nworld\"", scanner.tokenText());
 }
 
 test "Scanner: string with hex escape" {
     const source = "'\\x41'";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
 }
 
 test "Scanner: string with unicode escape \\uHHHH" {
     const source = "'\\u0041'";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
 }
 
 test "Scanner: string with unicode escape \\u{}" {
     const source = "'\\u{1F600}'";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
 }
 
 test "Scanner: string with escaped quote" {
     const source = "'it\\'s'";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
 }
 
 test "Scanner: string with line continuation" {
     // '\' + newline = line continuation (valid)
     const source = "'hello\\\nworld'";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
 }
 
 test "Scanner: unterminated string at EOF" {
     const source = "\"hello";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.syntax_error, scanner.token.kind);
 }
 
 test "Scanner: newline inside string is error" {
     const source = "\"hello\nworld\"";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.syntax_error, scanner.token.kind);
 }
 
 test "Scanner: string with backslash at EOF" {
     const source = "'test\\";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.syntax_error, scanner.token.kind);
 }
 
 test "Scanner: consecutive strings" {
     const source = "'a' \"b\" 'c'";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
     try std.testing.expectEqualStrings("'a'", scanner.tokenText());
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
     try std.testing.expectEqualStrings("\"b\"", scanner.tokenText());
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
 }
 
@@ -2566,10 +2566,10 @@ test "Scanner: consecutive strings" {
 
 test "Scanner: no substitution template" {
     const source = "`hello world`";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.no_substitution_template, scanner.token.kind);
     try std.testing.expectEqualStrings("`hello world`", scanner.tokenText());
 }
@@ -2577,18 +2577,18 @@ test "Scanner: no substitution template" {
 test "Scanner: template with interpolation" {
     // `hello ${name}!`
     const source = "`hello ${name}!`";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.template_head, scanner.token.kind);
     try std.testing.expectEqualStrings("`hello ${", scanner.tokenText());
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
     try std.testing.expectEqualStrings("name", scanner.tokenText());
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.template_tail, scanner.token.kind);
     try std.testing.expectEqualStrings("}!`", scanner.tokenText());
 }
@@ -2596,105 +2596,105 @@ test "Scanner: template with interpolation" {
 test "Scanner: template with multiple interpolations" {
     // `${a} + ${b} = ${c}`
     const source = "`${a} + ${b} = ${c}`";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.template_head, scanner.token.kind);
 
-    scanner.next(); // a
+    try scanner.next(); // a
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
 
-    scanner.next(); // } + ${
+    try scanner.next(); // } + ${
     try std.testing.expectEqual(Kind.template_middle, scanner.token.kind);
 
-    scanner.next(); // b
+    try scanner.next(); // b
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
 
-    scanner.next(); // } = ${
+    try scanner.next(); // } = ${
     try std.testing.expectEqual(Kind.template_middle, scanner.token.kind);
 
-    scanner.next(); // c
+    try scanner.next(); // c
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
 
-    scanner.next(); // }`
+    try scanner.next(); // }`
     try std.testing.expectEqual(Kind.template_tail, scanner.token.kind);
 }
 
 test "Scanner: nested template literals" {
     // `a${`b${c}d`}e`
     const source = "`a${`b${c}d`}e`";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next(); // `a${
+    try scanner.next(); // `a${
     try std.testing.expectEqual(Kind.template_head, scanner.token.kind);
 
-    scanner.next(); // `b${
+    try scanner.next(); // `b${
     try std.testing.expectEqual(Kind.template_head, scanner.token.kind);
 
-    scanner.next(); // c
+    try scanner.next(); // c
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
 
-    scanner.next(); // }d`
+    try scanner.next(); // }d`
     try std.testing.expectEqual(Kind.template_tail, scanner.token.kind);
 
-    scanner.next(); // }e`
+    try scanner.next(); // }e`
     try std.testing.expectEqual(Kind.template_tail, scanner.token.kind);
 }
 
 test "Scanner: template with object literal inside" {
     // `${{a: 1}}`
     const source = "`${{a: 1}}`";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next(); // `${
+    try scanner.next(); // `${
     try std.testing.expectEqual(Kind.template_head, scanner.token.kind);
 
-    scanner.next(); // {
+    try scanner.next(); // {
     try std.testing.expectEqual(Kind.l_curly, scanner.token.kind);
 
-    scanner.next(); // a
+    try scanner.next(); // a
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
 
-    scanner.next(); // :
+    try scanner.next(); // :
     try std.testing.expectEqual(Kind.colon, scanner.token.kind);
 
-    scanner.next(); // 1
+    try scanner.next(); // 1
     try std.testing.expectEqual(Kind.decimal, scanner.token.kind);
 
-    scanner.next(); // }
+    try scanner.next(); // }
     try std.testing.expectEqual(Kind.r_curly, scanner.token.kind);
 
-    scanner.next(); // }`
+    try scanner.next(); // }`
     try std.testing.expectEqual(Kind.template_tail, scanner.token.kind);
 }
 
 test "Scanner: empty template" {
     const source = "``";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.no_substitution_template, scanner.token.kind);
 }
 
 test "Scanner: template with newline" {
     const source = "`line1\nline2`";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.no_substitution_template, scanner.token.kind);
 }
 
 test "Scanner: unterminated template" {
     const source = "`hello";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.syntax_error, scanner.token.kind);
 }
 
@@ -2705,91 +2705,91 @@ test "Scanner: unterminated template" {
 test "Scanner: regex after =" {
     // = /pattern/gi → eq, regexp
     const source = "= /abc/gi";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next(); // =
+    try scanner.next(); // =
     try std.testing.expectEqual(Kind.eq, scanner.token.kind);
-    scanner.next(); // /abc/gi
+    try scanner.next(); // /abc/gi
     try std.testing.expectEqual(Kind.regexp_literal, scanner.token.kind);
     try std.testing.expectEqualStrings("/abc/gi", scanner.tokenText());
 }
 
 test "Scanner: regex after (" {
     const source = "(/test/)";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next(); // (
+    try scanner.next(); // (
     try std.testing.expectEqual(Kind.l_paren, scanner.token.kind);
-    scanner.next(); // /test/
+    try scanner.next(); // /test/
     try std.testing.expectEqual(Kind.regexp_literal, scanner.token.kind);
 }
 
 test "Scanner: division after identifier" {
     // a / b → identifier, slash, identifier
     const source = "a / b";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next(); // a
+    try scanner.next(); // a
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
-    scanner.next(); // /
+    try scanner.next(); // /
     try std.testing.expectEqual(Kind.slash, scanner.token.kind);
-    scanner.next(); // b
+    try scanner.next(); // b
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
 }
 
 test "Scanner: division after number" {
     const source = "10 / 2";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next(); // 10
-    scanner.next(); // /
+    try scanner.next(); // 10
+    try scanner.next(); // /
     try std.testing.expectEqual(Kind.slash, scanner.token.kind);
 }
 
 test "Scanner: regex with character class" {
     // character class 안의 / 는 regex를 끝내지 않음
     const source = "= /[a/b]/";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next(); // =
-    scanner.next(); // /[a/b]/
+    try scanner.next(); // =
+    try scanner.next(); // /[a/b]/
     try std.testing.expectEqual(Kind.regexp_literal, scanner.token.kind);
     try std.testing.expectEqualStrings("/[a/b]/", scanner.tokenText());
 }
 
 test "Scanner: regex with escape" {
     const source = "= /a\\/b/";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next(); // =
-    scanner.next(); // /a\/b/
+    try scanner.next(); // =
+    try scanner.next(); // /a\/b/
     try std.testing.expectEqual(Kind.regexp_literal, scanner.token.kind);
 }
 
 test "Scanner: regex after return keyword" {
     const source = "return /test/g";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next(); // return
+    try scanner.next(); // return
     try std.testing.expectEqual(Kind.kw_return, scanner.token.kind);
-    scanner.next(); // /test/g
+    try scanner.next(); // /test/g
     try std.testing.expectEqual(Kind.regexp_literal, scanner.token.kind);
 }
 
 test "Scanner: regex after comma" {
     const source = ", /re/";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next(); // ,
-    scanner.next(); // /re/
+    try scanner.next(); // ,
+    try scanner.next(); // /re/
     try std.testing.expectEqual(Kind.regexp_literal, scanner.token.kind);
 }
 
@@ -2800,10 +2800,10 @@ test "Scanner: regex after comma" {
 test "Scanner: unicode identifier (Latin)" {
     // café = UTF-8: 63 61 66 C3 A9
     const source = "caf\xC3\xA9";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
     try std.testing.expectEqualStrings("caf\xC3\xA9", scanner.tokenText());
 }
@@ -2811,34 +2811,34 @@ test "Scanner: unicode identifier (Latin)" {
 test "Scanner: unicode identifier (CJK)" {
     // 변수 = UTF-8: EB B3 80 EC 88 98
     const source = "\xEB\xB3\x80\xEC\x88\x98";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
 }
 
 test "Scanner: unicode identifier (Greek)" {
     // α = UTF-8: CE B1
     const source = "\xCE\xB1 = 1";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
     try std.testing.expectEqualStrings("\xCE\xB1", scanner.tokenText());
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.eq, scanner.token.kind);
 }
 
 test "Scanner: mixed ASCII and unicode in identifier" {
     // test변수 = ASCII + CJK
     const source = "test\xEB\xB3\x80\xEC\x88\x98";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
     try std.testing.expectEqualStrings("test\xEB\xB3\x80\xEC\x88\x98", scanner.tokenText());
 }
@@ -2849,10 +2849,10 @@ test "Scanner: mixed ASCII and unicode in identifier" {
 
 test "Scanner: JSX element identifier with hyphen" {
     const source = "data-testid";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.nextInsideJSXElement();
+    try scanner.nextInsideJSXElement();
     try std.testing.expectEqual(Kind.jsx_identifier, scanner.token.kind);
     try std.testing.expectEqualStrings("data-testid", scanner.tokenText());
 }
@@ -2860,58 +2860,58 @@ test "Scanner: JSX element identifier with hyphen" {
 test "Scanner: JSX element tokens" {
     // <div className="hello">
     const source = "div className=\"hello\">";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.nextInsideJSXElement(); // div
+    try scanner.nextInsideJSXElement(); // div
     try std.testing.expectEqual(Kind.jsx_identifier, scanner.token.kind);
     try std.testing.expectEqualStrings("div", scanner.tokenText());
 
-    scanner.nextInsideJSXElement(); // className
+    try scanner.nextInsideJSXElement(); // className
     try std.testing.expectEqual(Kind.jsx_identifier, scanner.token.kind);
 
-    scanner.nextInsideJSXElement(); // =
+    try scanner.nextInsideJSXElement(); // =
     try std.testing.expectEqual(Kind.eq, scanner.token.kind);
 
-    scanner.nextInsideJSXElement(); // "hello"
+    try scanner.nextInsideJSXElement(); // "hello"
     try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
 
-    scanner.nextInsideJSXElement(); // >
+    try scanner.nextInsideJSXElement(); // >
     try std.testing.expectEqual(Kind.r_angle, scanner.token.kind);
 }
 
 test "Scanner: JSX text content" {
     const source = "Hello World<";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.nextJSXChild(); // "Hello World"
+    try scanner.nextJSXChild(); // "Hello World"
     try std.testing.expectEqual(Kind.jsx_text, scanner.token.kind);
     try std.testing.expectEqualStrings("Hello World", scanner.tokenText());
 
-    scanner.nextJSXChild(); // <
+    try scanner.nextJSXChild(); // <
     try std.testing.expectEqual(Kind.l_angle, scanner.token.kind);
 }
 
 test "Scanner: JSX text with expression" {
     const source = "text{expr}more";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.nextJSXChild(); // "text"
+    try scanner.nextJSXChild(); // "text"
     try std.testing.expectEqual(Kind.jsx_text, scanner.token.kind);
     try std.testing.expectEqualStrings("text", scanner.tokenText());
 
-    scanner.nextJSXChild(); // {
+    try scanner.nextJSXChild(); // {
     try std.testing.expectEqual(Kind.l_curly, scanner.token.kind);
 }
 
 test "Scanner: JSX self-closing tag" {
     const source = "/>";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.nextInsideJSXElement();
+    try scanner.nextInsideJSXElement();
     try std.testing.expectEqual(Kind.slash, scanner.token.kind);
     // 파서가 slash + r_angle을 자체 닫힘 태그로 조합
 }
@@ -2919,10 +2919,10 @@ test "Scanner: JSX self-closing tag" {
 test "Scanner: JSX string without escape" {
     // JSX 속성 문자열은 이스케이프를 처리하지 않음
     const source = "\"hello\\nworld\"";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.nextInsideJSXElement();
+    try scanner.nextInsideJSXElement();
     try std.testing.expectEqual(Kind.string_literal, scanner.token.kind);
     // 전체 텍스트가 토큰에 포함됨 (이스케이프 안 함)
     try std.testing.expectEqualStrings("\"hello\\nworld\"", scanner.tokenText());
@@ -2934,58 +2934,58 @@ test "Scanner: JSX string without escape" {
 
 test "Scanner: @jsx pragma in single-line comment" {
     const source = "// @jsx h\nconst x = 1;";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next(); // const (comment is skipped)
+    try scanner.next(); // const (comment is skipped)
     try std.testing.expectEqual(Kind.kw_const, scanner.token.kind);
     try std.testing.expectEqualStrings("h", scanner.jsx_pragma.?);
 }
 
 test "Scanner: @jsx pragma in multi-line comment" {
     const source = "/** @jsx h */\nconst x = 1;";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqualStrings("h", scanner.jsx_pragma.?);
 }
 
 test "Scanner: @jsxFrag pragma" {
     const source = "/** @jsxFrag Fragment */";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next(); // eof (comment only)
+    try scanner.next(); // eof (comment only)
     try std.testing.expectEqualStrings("Fragment", scanner.jsx_frag_pragma.?);
 }
 
 test "Scanner: @jsxRuntime pragma" {
     const source = "// @jsxRuntime automatic";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqualStrings("automatic", scanner.jsx_runtime_pragma.?);
 }
 
 test "Scanner: @jsxImportSource pragma" {
     const source = "/** @jsxImportSource preact */";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expectEqualStrings("preact", scanner.jsx_import_source_pragma.?);
 }
 
 test "Scanner: multiple pragmas in one file" {
     const source = "/** @jsx h */\n// @jsxFrag Fragment\nconst x = 1;";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
     // 전체 스캔
     while (true) {
-        scanner.next();
+        try scanner.next();
         if (scanner.token.kind == .eof) break;
     }
 
@@ -2995,10 +2995,10 @@ test "Scanner: multiple pragmas in one file" {
 
 test "Scanner: no pragma in normal comment" {
     const source = "/* just a comment */ x";
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    scanner.next();
+    try scanner.next();
     try std.testing.expect(scanner.jsx_pragma == null);
     try std.testing.expect(scanner.jsx_frag_pragma == null);
 }

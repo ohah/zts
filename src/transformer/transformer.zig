@@ -1209,7 +1209,7 @@ const TestResult = struct {
 /// 테스트 헬퍼: 소스 코드를 파싱 → transformer 실행.
 fn parseAndTransform(allocator: std.mem.Allocator, source: []const u8) !TestResult {
     const scanner_ptr = try allocator.create(Scanner);
-    scanner_ptr.* = Scanner.init(allocator, source);
+    scanner_ptr.* = try Scanner.init(allocator, source);
 
     const parser_ptr = try allocator.create(Parser);
     parser_ptr.* = Parser.init(allocator, scanner_ptr);
