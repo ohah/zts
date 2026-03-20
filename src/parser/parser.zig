@@ -3636,6 +3636,20 @@ pub const Parser = struct {
                 self.restoreContext(obj_saved);
                 return obj;
             },
+            .private_identifier => {
+                // ECMAScript Ergonomic Brand Checks: `#field in obj`
+                // private identifier가 `in` 연산자의 좌변으로 사용되는 경우.
+                // 예: `#foo in obj` — obj에 private field #foo가 존재하는지 확인.
+                // 멤버 표현식(this.#foo, obj.#foo)이 아닌 독립적인 #identifier를
+                // primary expression으로 파싱하면, 이후 parseBinaryExpression에서
+                // `in` 연산자와 자연스럽게 결합된다.
+                self.advance();
+                return try self.ast.addNode(.{
+                    .tag = .private_identifier,
+                    .span = span,
+                    .data = .{ .string_ref = span },
+                });
+            },
             .kw_async => {
                 // async function expression 또는 async arrow
                 const peek = self.peekNext();
