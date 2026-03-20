@@ -46,12 +46,13 @@ pub fn validate(pattern: []const u8, flag_text: []const u8) ?[]const u8 {
 
 /// 정규식 리터럴을 파싱하여 AST를 반환한다.
 /// allocator: AST 노드 저장용.
-/// 에러가 있으면 null, 에러 메시지는 getError()로 조회.
+/// 에러가 있으면 null, 성공 시 RegExpAst 반환.
+/// 반환된 RegExpAst의 소유권은 호출자에게 있으며,
+/// 사용 후 반드시 deinit()을 호출해야 한다.
 ///
 /// 사용 예:
-///   var p = parse("\\d{4}", "gi", allocator) orelse return error;
-///   defer p.deinit();
-///   const tree = p.getAst().?;
+///   var tree = parse("\\d{4}", "gi", allocator) orelse return error;
+///   defer tree.deinit();
 pub fn parse(
     pattern: []const u8,
     flag_text: []const u8,
@@ -63,6 +64,8 @@ pub fn parse(
     }
 
     // 2. 패턴 파싱 + AST 빌드
+    // parse()가 소유권을 toOwnedSlice()로 이전하므로 별도 deinit 불필요.
+    // 에러 시 parse() 내부에서 deinit 처리.
     const parsed_flags = flags.parse(flag_text);
     const Parser = parser.PatternParser(true);
     var p = Parser.initWithAllocator(pattern, parsed_flags, allocator);
