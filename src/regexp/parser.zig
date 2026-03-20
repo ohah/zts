@@ -896,8 +896,10 @@ pub fn PatternParser(comptime emit_ast: bool) type {
             var buf: if (emit_ast) [128]u32 else void = if (emit_ast) undefined else {};
             var buf_len: if (emit_ast) u32 else void = if (emit_ast) 0 else {};
 
+            // nested class에서 outer 상태를 보존하기 위해 save/restore
+            const saved_contents_kind = self.last_class_contents_kind;
+
             if (self.flags.v) {
-                // ── v-flag (unicodeSets): set operations + nested classes ──
                 self.last_class_contents_kind = .@"union";
                 self.parseClassSetExpression(&buf, &buf_len);
                 if (self.err_message != null) return false;
@@ -981,6 +983,8 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 }, .{ flags_val, list_start, buf_len });
             }
 
+            // outer class의 contents kind 복원 (nested class 호출 후)
+            self.last_class_contents_kind = saved_contents_kind;
             return true;
         }
 
@@ -1468,7 +1472,9 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 }
                 return;
             }
-            if (emit_ast) _ = self.bufAppend(buf, buf_len, @intFromEnum(self.last_node));
+            if (emit_ast) {
+                if (!self.bufAppend(buf, buf_len, @intFromEnum(self.last_node))) return;
+            }
 
             // 3. 연산자 확인: && → intersection, -- → subtraction, else → union
             if (self.peek2('&', '&')) {
@@ -1493,7 +1499,9 @@ pub fn PatternParser(comptime emit_ast: bool) type {
 
                 // operand 시도
                 if (self.parseClassSetOperand()) {
-                    if (emit_ast) _ = self.bufAppend(buf, buf_len, @intFromEnum(self.last_node));
+                    if (emit_ast) {
+                if (!self.bufAppend(buf, buf_len, @intFromEnum(self.last_node))) return;
+            }
                     continue;
                 }
 
@@ -1523,7 +1531,9 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         self.setError("expected operand after '&&'");
                     return;
                 }
-                if (emit_ast) _ = self.bufAppend(buf, buf_len, @intFromEnum(self.last_node));
+                if (emit_ast) {
+                if (!self.bufAppend(buf, buf_len, @intFromEnum(self.last_node))) return;
+            }
             }
         }
 
@@ -1540,7 +1550,9 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         self.setError("expected operand after '--'");
                     return;
                 }
-                if (emit_ast) _ = self.bufAppend(buf, buf_len, @intFromEnum(self.last_node));
+                if (emit_ast) {
+                if (!self.bufAppend(buf, buf_len, @intFromEnum(self.last_node))) return;
+            }
             }
         }
 
@@ -1548,6 +1560,9 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         fn tryClassSetRange(self: *Self, buf: anytype, buf_len: anytype) bool {
             const saved_pos = self.pos;
             const saved_err = self.err_message;
+            const saved_class_val = self.last_class_value;
+            const saved_class_esc = self.last_class_is_class_escape;
+            const saved_last_node = if (emit_ast) self.last_node else {};
             const saved_nodes = if (emit_ast) self.ast_nodes.items.len else 0;
             const saved_extra = if (emit_ast) self.ast_extra.items.len else 0;
 
@@ -1571,7 +1586,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                                     @intFromEnum(second_node),
                                     0,
                                 });
-                                _ = self.bufAppend(buf, buf_len, @intFromEnum(range_node));
+                                if (!self.bufAppend(buf, buf_len, @intFromEnum(range_node))) return false;
                             }
                             return true;
                         }
@@ -1579,10 +1594,13 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 }
             }
 
-            // rollback (위치 + 에러 + AST 상태 모두 복원)
+            // 완전한 rollback (위치, 에러, class 상태, AST 모두 복원)
             self.pos = saved_pos;
             self.err_message = saved_err;
+            self.last_class_value = saved_class_val;
+            self.last_class_is_class_escape = saved_class_esc;
             if (emit_ast) {
+                self.last_node = saved_last_node;
                 self.ast_nodes.items.len = saved_nodes;
                 self.ast_extra.items.len = saved_extra;
             }
@@ -1686,7 +1704,9 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         self.setError("invalid character in class string");
                     return;
                 }
-                if (emit_ast) _ = self.bufAppend(&char_buf, &char_len, @intFromEnum(self.last_node));
+                if (emit_ast) {
+                    if (!self.bufAppend(&char_buf, &char_len, @intFromEnum(self.last_node))) return;
+                }
             }
 
             if (emit_ast) {
@@ -1696,7 +1716,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     .start = start,
                     .end = self.pos,
                 }, .{ list_start, char_len, 0 });
-                _ = self.bufAppend(outer_buf, outer_len, @intFromEnum(string_node));
+                if (!self.bufAppend(outer_buf, outer_len, @intFromEnum(string_node))) return;
             }
         }
 
