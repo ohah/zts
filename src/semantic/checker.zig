@@ -442,8 +442,12 @@ fn collectArrowParamNames(
             recordSeenName(ast.source[node.span.start..node.span.end], node.span, seen, errors, allocator);
         },
         // destructuring 패턴 (cover grammar 변환 전후 모두 처리)
-        .array_pattern, .object_pattern, .array_expression, .object_expression,
-        .array_assignment_target, .object_assignment_target,
+        .array_pattern,
+        .object_pattern,
+        .array_expression,
+        .object_expression,
+        .array_assignment_target,
+        .object_assignment_target,
         => {
             if (node.data.list.len == 0) return;
             if (node.data.list.start + node.data.list.len > ast.extra_data.items.len) return;
@@ -456,8 +460,10 @@ fn collectArrowParamNames(
             // left = binding, right = default value
             collectArrowParamNames(ast, node.data.binary.left, seen, errors, allocator);
         },
-        .binding_property, .object_property,
-        .assignment_target_property_identifier, .assignment_target_property_property,
+        .binding_property,
+        .object_property,
+        .assignment_target_property_identifier,
+        .assignment_target_property_property,
         => {
             // binary: { left = key, right = value }
             collectArrowParamNames(ast, node.data.binary.right, seen, errors, allocator);
