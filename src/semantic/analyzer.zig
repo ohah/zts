@@ -275,6 +275,7 @@ pub const SemanticAnalyzer = struct {
 
         // escape가 포함된 경우: 디코딩하여 새 문자열 생성
         var buf = std.ArrayList(u8).init(self.allocator);
+        defer buf.deinit();
         var i: usize = 0;
 
         while (i < raw.len) {
@@ -310,8 +311,7 @@ pub const SemanticAnalyzer = struct {
             }
         }
 
-        // ArrayList의 소유권을 직접 이전 (추가 할당 없음)
-        return buf.toOwnedSlice() catch @panic("OOM: resolvePrivateName");
+        return self.allocator.dupe(u8, buf.items) catch @panic("OOM: resolvePrivateName");
     }
 
     /// private name 참조를 기록한다 (class body 퇴장 시 검증).
