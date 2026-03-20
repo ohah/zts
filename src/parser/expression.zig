@@ -1240,7 +1240,6 @@ fn parseArrayExpression(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
-
 const object = @import("object.zig");
 
 pub fn parseIdentifierName(self: *Parser) ParseError2!NodeIndex {
