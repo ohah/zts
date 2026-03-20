@@ -264,6 +264,56 @@ pub const SemanticAnalyzer = struct {
         current.put(name, .{ .span = span, .kind = kind }) catch @panic("OOM");
     }
 
+    /// identifier 텍스트에서 unicode escape sequence를 해석하여 StringValue를 반환한다.
+    /// ECMAScript 사양에 따르면 private name 비교는 StringValue 기준이므로
+    /// `#\u{6F}`와 `#o`는 같은 이름이다.
+    /// escape가 없으면 원본 슬라이스를 그대로 반환 (할당 없음).
+    /// escape가 있으면 allocator로 새 문자열을 할당하여 반환한다.
+    fn resolvePrivateName(self: *SemanticAnalyzer, raw: []const u8) []const u8 {
+        // escape가 없으면 그대로 반환
+        if (std.mem.indexOfScalar(u8, raw, '\\') == null) return raw;
+
+        // escape가 포함된 경우: 디코딩하여 새 문자열 생성
+        var buf = std.ArrayList(u8).init(self.allocator);
+        defer buf.deinit();
+        var i: usize = 0;
+
+        while (i < raw.len) {
+            if (raw[i] == '\\' and i + 1 < raw.len and raw[i + 1] == 'u') {
+                i += 2; // skip \u
+                var codepoint: u21 = 0;
+                if (i < raw.len and raw[i] == '{') {
+                    // \u{XXXX} 형식 (가변 길이)
+                    i += 1; // skip {
+                    while (i < raw.len and raw[i] != '}') {
+                        const digit = std.fmt.charToDigit(raw[i], 16) catch return raw;
+                        codepoint = @intCast(@as(u32, codepoint) * 16 + digit);
+                        i += 1;
+                    }
+                    if (i < raw.len) i += 1; // skip }
+                } else {
+                    // \uXXXX 형식 (4자리 고정)
+                    var j: usize = 0;
+                    while (j < 4 and i < raw.len) : (j += 1) {
+                        const digit = std.fmt.charToDigit(raw[i], 16) catch return raw;
+                        codepoint = @intCast(@as(u32, codepoint) * 16 + digit);
+                        i += 1;
+                    }
+                }
+                // UTF-8로 인코딩
+                var encode_buf: [4]u8 = undefined;
+                const len = std.unicode.utf8Encode(codepoint, &encode_buf) catch return raw;
+                buf.appendSlice(encode_buf[0..len]) catch return raw;
+            } else {
+                buf.append(raw[i]) catch return raw;
+                i += 1;
+            }
+        }
+
+        // allocator 소유의 복사본을 반환 (deinit 시 해제 불필요 — arena 방식)
+        return self.allocator.dupe(u8, buf.items) catch return raw;
+    }
+
     /// private name 참조를 기록한다 (class body 퇴장 시 검증).
     fn usePrivateName(self: *SemanticAnalyzer, name: []const u8, span: Span) void {
         if (self.class_private_refs.items.len == 0) {
@@ -553,7 +603,8 @@ pub const SemanticAnalyzer = struct {
                 if (!prop_idx.isNone() and @intFromEnum(prop_idx) < self.ast.nodes.items.len) {
                     const prop_node = self.ast.getNode(prop_idx);
                     if (prop_node.tag == .private_identifier) {
-                        const name = self.ast.source[prop_node.span.start..prop_node.span.end];
+                        const raw = self.ast.source[prop_node.span.start..prop_node.span.end];
+                        const name = self.resolvePrivateName(raw);
                         self.usePrivateName(name, prop_node.span);
                     }
                 }
@@ -670,7 +721,8 @@ pub const SemanticAnalyzer = struct {
             // class body 안이면 collectPrivateNames가 선언을 등록했으므로 usePrivateName 통과,
             // class 밖이면 에러 보고
             .private_identifier => {
-                const name = self.ast.source[node.span.start..node.span.end];
+                const raw = self.ast.source[node.span.start..node.span.end];
+                const name = self.resolvePrivateName(raw);
                 self.usePrivateName(name, node.span);
             },
 
@@ -912,7 +964,8 @@ pub const SemanticAnalyzer = struct {
         if (key_idx.isNone() or @intFromEnum(key_idx) >= self.ast.nodes.items.len) return;
         const key_node = self.ast.getNode(key_idx);
         if (key_node.tag == .private_identifier) {
-            const name = self.ast.source[key_node.span.start..key_node.span.end];
+            const raw = self.ast.source[key_node.span.start..key_node.span.end];
+            const name = self.resolvePrivateName(raw);
             self.declarePrivateName(name, key_node.span, kind);
         }
     }
