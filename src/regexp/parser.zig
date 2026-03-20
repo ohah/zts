@@ -1,14 +1,14 @@
 //! ECMAScript 정규식 패턴 파서.
 //!
 //! `/pattern/flags` 의 pattern 부분을 검증한다.
-//! comptime emit_ast=false이면 검증만, true이면 AST 빌드 (Phase 6).
+//! comptime emit_ast=false이면 검증만, true이면 AST 빌드.
 //!
 //! ECMAScript 정규식 문법 (간략):
-//!   Pattern     → Disjunction
-//!   Disjunction → Alternative ('|' Alternative)*
-//!   Alternative → Term*
-//!   Term        → Assertion | Atom Quantifier?
-//!   Atom        → '.' | CharacterClass | Group | Escape | Character
+//!   Pattern     -> Disjunction
+//!   Disjunction -> Alternative ('|' Alternative)*
+//!   Alternative -> Term*
+//!   Term        -> Assertion | Atom Quantifier?
+//!   Atom        -> '.' | CharacterClass | Group | Escape | Character
 //!
 //! 참고: references/oxc/crates/oxc_regular_expression/src/parser
 
@@ -16,10 +16,16 @@ const std = @import("std");
 const flags_mod = @import("flags.zig");
 const Flags = flags_mod.Flags;
 
-/// 패턴 파서. comptime emit_ast로 검증/AST 모드 분리.
-pub fn PatternParser(comptime emit_ast: bool) type {
-    _ = emit_ast; // Phase 6에서 활성화
+/// AST 타입. emit_ast=true일 때 노드 생성에 사용.
+/// emit_ast=false일 때도 import하지만, 메서드 본문이 comptime dead branch여서
+/// 실제로 컴파일되지 않는다.
+pub const ast = @import("ast.zig");
 
+/// 패턴 파서. comptime emit_ast로 검증/AST 모드 분리.
+///
+/// - emit_ast=false: 검증만 수행, 할당 없음 (현재 렉서에서 사용)
+/// - emit_ast=true: AST를 빌드하여 반환, allocator 필요
+pub fn PatternParser(comptime emit_ast: bool) type {
     return struct {
         const Self = @This();
 
@@ -44,15 +50,58 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         named_refs: [32][]const u8 = undefined,
         named_ref_count: u8 = 0,
 
+        // ── AST 모드 전용 필드 ──
+        // emit_ast=false일 때는 void 타입 (0바이트, 메모리 사용 없음)
+
+        /// AST 노드 flat 배열.
+        ast_nodes: if (emit_ast) std.ArrayList(ast.Node) else void =
+            if (emit_ast) undefined else {},
+        /// 가변 길이 자식 리스트 데이터.
+        ast_extra: if (emit_ast) std.ArrayList(u32) else void =
+            if (emit_ast) undefined else {},
+        /// 마지막으로 빌드한 AST 노드. parse 함수들이 결과를 전달하는 데 사용.
+        last_node: if (emit_ast) ast.NodeIndex else void =
+            if (emit_ast) .none else {},
+
+        // ================================================================
+        // 초기화 / 공개 API
+        // ================================================================
+
+        /// 검증 전용 초기화 (emit_ast=false).
+        /// emit_ast=true에서는 initWithAllocator()를 사용해야 한다.
         pub fn init(source: []const u8, parsed_flags: Flags) Self {
+            if (emit_ast) @compileError("use initWithAllocator() for emit_ast=true");
             return .{
                 .source = source,
                 .flags = parsed_flags,
             };
         }
 
-        /// 패턴을 검증한다. 에러가 있으면 에러 메시지, 없으면 null.
+        /// AST 빌드 초기화 (emit_ast=true).
+        /// allocator는 AST 노드와 extra_data 저장에 사용.
+        pub fn initWithAllocator(source: []const u8, parsed_flags: Flags, alloc: std.mem.Allocator) Self {
+            if (!emit_ast) @compileError("initWithAllocator() requires emit_ast=true");
+            return .{
+                .source = source,
+                .flags = parsed_flags,
+                .ast_nodes = std.ArrayList(ast.Node).init(alloc),
+                .ast_extra = std.ArrayList(u32).init(alloc),
+            };
+        }
+
+        /// AST 모드 리소스 해제.
+        pub fn deinit(self: *Self) void {
+            if (emit_ast) {
+                self.ast_nodes.deinit();
+                self.ast_extra.deinit();
+            }
+        }
+
+        /// 패턴을 검증한다 (emit_ast=false 전용).
+        /// 에러가 있으면 에러 메시지, 없으면 null.
         pub fn validate(self: *Self) ?[]const u8 {
+            if (emit_ast) @compileError("use parse() for emit_ast=true");
+
             self.parseDisjunction();
             if (self.err_message != null) return self.err_message;
 
@@ -83,27 +132,176 @@ pub fn PatternParser(comptime emit_ast: bool) type {
             return self.err_message;
         }
 
+        /// 패턴을 파싱하여 AST를 반환한다 (emit_ast=true 전용).
+        /// 에러가 있으면 null, 에러 메시지는 getError()로 조회.
+        pub fn parse(self: *Self) ?ast.RegExpAst {
+            if (!emit_ast) @compileError("use validate() for emit_ast=false");
+
+            self.parseDisjunction();
+            if (self.err_message != null) return null;
+
+            if (self.pos < self.source.len) {
+                self.err_message = "unexpected character in regular expression";
+                return null;
+            }
+
+            if (self.flags.hasUnicodeMode() and self.max_back_ref > self.group_count) {
+                self.err_message = "invalid back reference in regular expression";
+                return null;
+            }
+
+            for (self.named_refs[0..self.named_ref_count]) |ref_name| {
+                var found = false;
+                for (self.named_groups[0..self.named_group_count]) |group_name| {
+                    if (std.mem.eql(u8, ref_name, group_name)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    self.err_message = "invalid named back reference: group not defined";
+                    return null;
+                }
+            }
+
+            return .{
+                .nodes = self.ast_nodes.items,
+                .extra_data = self.ast_extra.items,
+                .root = self.last_node,
+                .source = self.source,
+            };
+        }
+
+        /// 에러 메시지를 반환한다.
+        pub fn getError(self: *const Self) ?[]const u8 {
+            return self.err_message;
+        }
+
+        // ================================================================
+        // AST 빌드 헬퍼 (emit_ast=true에서만 호출됨)
+        // ================================================================
+
+        /// 노드를 추가하고 인덱스를 반환한다.
+        fn addNode(self: *Self, tag: ast.Tag, span: ast.Span, data: [3]u32) ast.NodeIndex {
+            if (emit_ast) {
+                self.ast_nodes.append(.{
+                    .tag = tag,
+                    .span = span,
+                    .data = data,
+                }) catch {
+                    self.setError("out of memory building regexp AST");
+                    return .none;
+                };
+                return @enumFromInt(@as(u32, @intCast(self.ast_nodes.items.len - 1)));
+            }
+            unreachable;
+        }
+
+        /// extra_data에 값을 추가한다.
+        fn appendExtra(self: *Self, value: u32) void {
+            if (emit_ast) {
+                self.ast_extra.append(value) catch {
+                    self.setError("out of memory building regexp AST");
+                };
+            }
+        }
+
+        /// 현재 extra_data 길이를 반환한다 (리스트 시작 위치 추적용).
+        fn extraLen(self: *const Self) u32 {
+            if (emit_ast) {
+                return @intCast(self.ast_extra.items.len);
+            }
+            return 0;
+        }
+
         // ================================================================
         // 핵심 파싱 함수
         // ================================================================
 
-        /// Disjunction → Alternative ('|' Alternative)*
+        /// Disjunction -> Alternative ('|' Alternative)*
+        ///
+        /// 자식 alternative의 NodeIndex를 스택 버퍼에 모은 뒤
+        /// 한꺼번에 extra_data에 flush한다.
+        /// (중첩 호출이 extra_data를 공유하므로, 직접 push하면 인터리빙됨)
         fn parseDisjunction(self: *Self) void {
+            const span_start = self.pos;
+
             self.parseAlternative();
-            while (self.eat('|')) {
-                self.parseAlternative();
+
+            if (emit_ast) {
+                // 스택 버퍼에 alternative 인덱스를 모은다
+                var buf: [64]u32 = undefined;
+                var buf_len: u32 = 0;
+                buf[0] = @intFromEnum(self.last_node);
+                buf_len = 1;
+
+                while (self.eat('|')) {
+                    self.parseAlternative();
+                    if (buf_len < 64) {
+                        buf[buf_len] = @intFromEnum(self.last_node);
+                        buf_len += 1;
+                    }
+                }
+
+                // extra_data에 연속으로 flush
+                const list_start = self.extraLen();
+                for (buf[0..buf_len]) |idx| {
+                    self.appendExtra(idx);
+                }
+                self.last_node = self.addNode(.disjunction, .{
+                    .start = span_start,
+                    .end = self.pos,
+                }, .{ list_start, buf_len, 0 });
+            } else {
+                while (self.eat('|')) {
+                    self.parseAlternative();
+                }
             }
         }
 
-        /// Alternative → Term*
+        /// Alternative -> Term*
+        ///
+        /// 자식 term의 NodeIndex를 스택 버퍼에 모은 뒤 flush.
         fn parseAlternative(self: *Self) void {
-            while (!self.isEnd() and self.peek() != '|' and self.peek() != ')') {
-                self.parseTerm();
-                if (self.err_message != null) return;
+            const span_start = self.pos;
+
+            if (emit_ast) {
+                var buf: [256]u32 = undefined;
+                var buf_len: u32 = 0;
+
+                while (!self.isEnd() and self.peek() != '|' and self.peek() != ')') {
+                    self.parseTerm();
+                    if (self.err_message != null) {
+                        // 에러 시 부분 노드 생성
+                        const list_start = self.extraLen();
+                        for (buf[0..buf_len]) |idx| self.appendExtra(idx);
+                        self.last_node = self.addNode(.alternative, .{
+                            .start = span_start,
+                            .end = self.pos,
+                        }, .{ list_start, buf_len, 0 });
+                        return;
+                    }
+                    if (buf_len < 256) {
+                        buf[buf_len] = @intFromEnum(self.last_node);
+                        buf_len += 1;
+                    }
+                }
+
+                const list_start = self.extraLen();
+                for (buf[0..buf_len]) |idx| self.appendExtra(idx);
+                self.last_node = self.addNode(.alternative, .{
+                    .start = span_start,
+                    .end = self.pos,
+                }, .{ list_start, buf_len, 0 });
+            } else {
+                while (!self.isEnd() and self.peek() != '|' and self.peek() != ')') {
+                    self.parseTerm();
+                    if (self.err_message != null) return;
+                }
             }
         }
 
-        /// Term → Assertion | Atom Quantifier?
+        /// Term -> Assertion | Atom Quantifier?
         fn parseTerm(self: *Self) void {
             // Assertion: ^, $, \b, \B, lookahead/lookbehind
             if (self.parseAssertion()) return;
@@ -118,6 +316,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
             }
 
             // Quantifier: *, +, ?, {n,m}
+            // last_node는 parseAtom이 설정. parseQuantifier가 감쌀 수 있음.
             self.parseQuantifier(atom_start);
         }
 
@@ -131,6 +330,13 @@ pub fn PatternParser(comptime emit_ast: bool) type {
 
             if (c == '^' or c == '$') {
                 self.advance();
+                if (emit_ast) {
+                    const kind: ast.BoundaryAssertionKind = if (c == '^') .start else .end;
+                    self.last_node = self.addNode(.boundary_assertion, .{
+                        .start = self.pos - 1,
+                        .end = self.pos,
+                    }, .{ @intFromEnum(kind), 0, 0 });
+                }
                 return true;
             }
 
@@ -139,6 +345,14 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 const next = self.source[self.pos + 1];
                 if (next == 'b' or next == 'B') {
                     self.pos += 2;
+                    if (emit_ast) {
+                        const kind: ast.BoundaryAssertionKind =
+                            if (next == 'b') .boundary else .negative_boundary;
+                        self.last_node = self.addNode(.boundary_assertion, .{
+                            .start = self.pos - 2,
+                            .end = self.pos,
+                        }, .{ @intFromEnum(kind), 0, 0 });
+                    }
                     return true;
                 }
             }
@@ -148,17 +362,37 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 if (self.pos + 2 < self.source.len) {
                     const third = self.source[self.pos + 2];
                     if (third == '=' or third == '!') {
+                        const assert_start = self.pos;
                         self.pos += 3;
                         self.parseDisjunction();
+                        const body = if (emit_ast) self.last_node else {};
                         if (!self.eat(')')) self.setError("unterminated lookahead assertion");
+                        if (emit_ast) {
+                            const kind: ast.LookAroundAssertionKind =
+                                if (third == '=') .lookahead else .negative_lookahead;
+                            self.last_node = self.addNode(.lookaround_assertion, .{
+                                .start = assert_start,
+                                .end = self.pos,
+                            }, .{ @intFromEnum(kind), @intFromEnum(body), 0 });
+                        }
                         return true;
                     }
                     if (third == '<' and self.pos + 3 < self.source.len) {
                         const fourth = self.source[self.pos + 3];
                         if (fourth == '=' or fourth == '!') {
+                            const assert_start = self.pos;
                             self.pos += 4;
                             self.parseDisjunction();
+                            const body = if (emit_ast) self.last_node else {};
                             if (!self.eat(')')) self.setError("unterminated lookbehind assertion");
+                            if (emit_ast) {
+                                const kind: ast.LookAroundAssertionKind =
+                                    if (fourth == '=') .lookbehind else .negative_lookbehind;
+                                self.last_node = self.addNode(.lookaround_assertion, .{
+                                    .start = assert_start,
+                                    .end = self.pos,
+                                }, .{ @intFromEnum(kind), @intFromEnum(body), 0 });
+                            }
                             return true;
                         }
                     }
@@ -179,6 +413,12 @@ pub fn PatternParser(comptime emit_ast: bool) type {
             switch (c) {
                 '.' => {
                     self.advance();
+                    if (emit_ast) {
+                        self.last_node = self.addNode(.dot, .{
+                            .start = self.pos - 1,
+                            .end = self.pos,
+                        }, .{ 0, 0, 0 });
+                    }
                     return true;
                 },
                 '\\' => return self.parseEscape(),
@@ -197,6 +437,12 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     }
                     // non-unicode mode에서는 literal
                     self.advance();
+                    if (emit_ast) {
+                        self.last_node = self.addNode(.character, .{
+                            .start = self.pos - 1,
+                            .end = self.pos,
+                        }, .{ '{', @intFromEnum(ast.CharacterKind.symbol), 0 });
+                    }
                     return true;
                 },
                 '}' => {
@@ -205,6 +451,12 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         return false;
                     }
                     self.advance();
+                    if (emit_ast) {
+                        self.last_node = self.addNode(.character, .{
+                            .start = self.pos - 1,
+                            .end = self.pos,
+                        }, .{ '}', @intFromEnum(ast.CharacterKind.symbol), 0 });
+                    }
                     return true;
                 },
                 ']' => {
@@ -213,11 +465,23 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         return false;
                     }
                     self.advance();
+                    if (emit_ast) {
+                        self.last_node = self.addNode(.character, .{
+                            .start = self.pos - 1,
+                            .end = self.pos,
+                        }, .{ ']', @intFromEnum(ast.CharacterKind.symbol), 0 });
+                    }
                     return true;
                 },
                 ')' => return false, // alternative 종료
                 else => {
                     self.advance();
+                    if (emit_ast) {
+                        self.last_node = self.addNode(.character, .{
+                            .start = self.pos - 1,
+                            .end = self.pos,
+                        }, .{ c, @intFromEnum(ast.CharacterKind.symbol), 0 });
+                    }
                     return true;
                 },
             }
@@ -232,6 +496,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 self.setError("unterminated escape sequence in regular expression");
                 return false;
             }
+            const bs_pos = self.pos; // backslash 위치
             self.advance(); // skip '\'
             const c = self.peek();
 
@@ -239,11 +504,40 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 // Character class escapes
                 'd', 'D', 'w', 'W', 's', 'S' => {
                     self.advance();
+                    if (emit_ast) {
+                        const kind: ast.CharacterClassEscapeKind = switch (c) {
+                            'd' => .d,
+                            'D' => .negative_d,
+                            'w' => .w,
+                            'W' => .negative_w,
+                            's' => .s,
+                            'S' => .negative_s,
+                            else => unreachable,
+                        };
+                        self.last_node = self.addNode(.character_class_escape, .{
+                            .start = bs_pos,
+                            .end = self.pos,
+                        }, .{ @intFromEnum(kind), 0, 0 });
+                    }
                     return true;
                 },
                 // Control escape
                 'f', 'n', 'r', 't', 'v' => {
                     self.advance();
+                    if (emit_ast) {
+                        const value: u32 = switch (c) {
+                            'f' => 0x0C,
+                            'n' => 0x0A,
+                            'r' => 0x0D,
+                            't' => 0x09,
+                            'v' => 0x0B,
+                            else => unreachable,
+                        };
+                        self.last_node = self.addNode(.character, .{
+                            .start = bs_pos,
+                            .end = self.pos,
+                        }, .{ value, @intFromEnum(ast.CharacterKind.single_escape), 0 });
+                    }
                     return true;
                 },
                 // \cX control character
@@ -253,12 +547,24 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         const ctrl = self.peek();
                         if ((ctrl >= 'a' and ctrl <= 'z') or (ctrl >= 'A' and ctrl <= 'Z')) {
                             self.advance();
+                            if (emit_ast) {
+                                self.last_node = self.addNode(.character, .{
+                                    .start = bs_pos,
+                                    .end = self.pos,
+                                }, .{ ctrl & 0x1F, @intFromEnum(ast.CharacterKind.control_letter), 0 });
+                            }
                             return true;
                         }
                     }
                     if (self.flags.hasUnicodeMode()) {
                         self.setError("invalid control character escape");
                         return false;
+                    }
+                    if (emit_ast) {
+                        self.last_node = self.addNode(.character, .{
+                            .start = bs_pos,
+                            .end = self.pos,
+                        }, .{ 'c', @intFromEnum(ast.CharacterKind.identifier), 0 });
                     }
                     return true;
                 },
@@ -272,8 +578,23 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             return false;
                         }
                         // non-unicode: legacy octal 허용
+                        const octal_start = self.pos - 1; // '0' 위치
                         while (!self.isEnd() and self.peek() >= '0' and self.peek() <= '7') {
                             self.advance();
+                        }
+                        if (emit_ast) {
+                            const val = computeOctalValue(self.source, octal_start, self.pos);
+                            self.last_node = self.addNode(.character, .{
+                                .start = bs_pos,
+                                .end = self.pos,
+                            }, .{ val, @intFromEnum(ast.CharacterKind.octal), 0 });
+                        }
+                    } else {
+                        if (emit_ast) {
+                            self.last_node = self.addNode(.character, .{
+                                .start = bs_pos,
+                                .end = self.pos,
+                            }, .{ 0, @intFromEnum(ast.CharacterKind.null_char), 0 });
                         }
                     }
                     return true;
@@ -281,10 +602,26 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 // \xHH hex escape
                 'x' => {
                     self.advance();
+                    const hex_start = self.pos;
                     if (!self.eatHexDigits(2)) {
                         if (self.flags.hasUnicodeMode()) {
                             self.setError("invalid hex escape in regular expression");
                             return false;
+                        }
+                        // non-unicode: \x는 identity escape
+                        if (emit_ast) {
+                            self.last_node = self.addNode(.character, .{
+                                .start = bs_pos,
+                                .end = self.pos,
+                            }, .{ 'x', @intFromEnum(ast.CharacterKind.identifier), 0 });
+                        }
+                    } else {
+                        if (emit_ast) {
+                            const val = computeHexValue(self.source, hex_start, self.pos);
+                            self.last_node = self.addNode(.character, .{
+                                .start = bs_pos,
+                                .end = self.pos,
+                            }, .{ val, @intFromEnum(ast.CharacterKind.hexadecimal_escape), 0 });
                         }
                     }
                     return true;
@@ -293,15 +630,40 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 'u' => {
                     self.advance();
                     if (self.eat('{')) {
+                        const hex_start = self.pos;
                         if (!self.eatHexDigitsUntil('}')) {
                             self.setError("invalid unicode escape in regular expression");
                             return false;
                         }
+                        if (emit_ast) {
+                            // hex_start ~ self.pos - 1 ('}' 직전)
+                            const val = computeHexValue(self.source, hex_start, self.pos - 1);
+                            self.last_node = self.addNode(.character, .{
+                                .start = bs_pos,
+                                .end = self.pos,
+                            }, .{ val, @intFromEnum(ast.CharacterKind.unicode_escape), 0 });
+                        }
                     } else {
+                        const hex_start = self.pos;
                         if (!self.eatHexDigits(4)) {
                             if (self.flags.hasUnicodeMode()) {
                                 self.setError("invalid unicode escape in regular expression");
                                 return false;
+                            }
+                            // non-unicode: \u는 identity escape
+                            if (emit_ast) {
+                                self.last_node = self.addNode(.character, .{
+                                    .start = bs_pos,
+                                    .end = self.pos,
+                                }, .{ 'u', @intFromEnum(ast.CharacterKind.identifier), 0 });
+                            }
+                        } else {
+                            if (emit_ast) {
+                                const val = computeHexValue(self.source, hex_start, self.pos);
+                                self.last_node = self.addNode(.character, .{
+                                    .start = bs_pos,
+                                    .end = self.pos,
+                                }, .{ val, @intFromEnum(ast.CharacterKind.unicode_escape), 0 });
                             }
                         }
                     }
@@ -315,18 +677,36 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             self.setError("invalid unicode property escape");
                             return false;
                         }
+                        const prop_start = self.pos;
                         // property name: skip until }
                         while (!self.isEnd() and self.peek() != '}') {
                             self.advance();
                         }
+                        const prop_end = self.pos;
                         if (!self.eat('}')) {
                             self.setError("unterminated unicode property escape");
                             return false;
+                        }
+                        if (emit_ast) {
+                            self.last_node = self.addNode(.unicode_property_escape, .{
+                                .start = bs_pos,
+                                .end = self.pos,
+                            }, .{
+                                prop_start,
+                                prop_end,
+                                @as(u32, @intFromBool(c == 'P')), // negative flag
+                            });
                         }
                         return true;
                     }
                     // non-unicode: literal
                     self.advance();
+                    if (emit_ast) {
+                        self.last_node = self.addNode(.character, .{
+                            .start = bs_pos,
+                            .end = self.pos,
+                        }, .{ c, @intFromEnum(ast.CharacterKind.identifier), 0 });
+                    }
                     return true;
                 },
                 // \k<name> named back reference
@@ -341,12 +721,24 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             self.named_refs[self.named_ref_count] = ref_name;
                             self.named_ref_count += 1;
                         }
+                        if (emit_ast) {
+                            self.last_node = self.addNode(.named_reference, .{
+                                .start = bs_pos,
+                                .end = self.pos,
+                            }, .{ ref_name_start, self.pos - 1, 0 });
+                        }
                         return true;
                     }
                     // \k 뒤에 <가 없으면: unicode에서 에러, non-unicode에서 identity escape
                     if (self.flags.hasUnicodeMode()) {
                         self.setError("invalid named back reference");
                         return false;
+                    }
+                    if (emit_ast) {
+                        self.last_node = self.addNode(.character, .{
+                            .start = bs_pos,
+                            .end = self.pos,
+                        }, .{ 'k', @intFromEnum(ast.CharacterKind.identifier), 0 });
                     }
                     return true;
                 },
@@ -358,6 +750,12 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         self.advance();
                     }
                     if (ref_num > self.max_back_ref) self.max_back_ref = ref_num;
+                    if (emit_ast) {
+                        self.last_node = self.addNode(.indexed_reference, .{
+                            .start = bs_pos,
+                            .end = self.pos,
+                        }, .{ ref_num, 0, 0 });
+                    }
                     return true;
                 },
                 // Identity escape — unicode mode에서는 제한
@@ -366,6 +764,12 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         // unicode mode: syntax characters만 identity escape 가능
                         if (isSyntaxChar(c)) {
                             self.advance();
+                            if (emit_ast) {
+                                self.last_node = self.addNode(.character, .{
+                                    .start = bs_pos,
+                                    .end = self.pos,
+                                }, .{ c, @intFromEnum(ast.CharacterKind.identifier), 0 });
+                            }
                             return true;
                         }
                         self.setError("invalid escape sequence in unicode mode");
@@ -373,6 +777,12 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     }
                     // non-unicode: 모든 문자 identity escape 가능
                     self.advance();
+                    if (emit_ast) {
+                        self.last_node = self.addNode(.character, .{
+                            .start = bs_pos,
+                            .end = self.pos,
+                        }, .{ c, @intFromEnum(ast.CharacterKind.identifier), 0 });
+                    }
                     return true;
                 },
             }
@@ -383,19 +793,64 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         // ================================================================
 
         fn parseCharacterClass(self: *Self) bool {
+            const class_start = self.pos;
             self.advance(); // skip '['
-            _ = self.eat('^'); // negated class
+            const negated = self.eat('^');
+
+            // 스택 버퍼에 class content 인덱스를 모은다 (최대 128개)
+            var buf: [128]u32 = undefined;
+            var buf_len: u32 = 0;
 
             while (!self.isEnd() and self.peek() != ']') {
+                const atom_pos = self.pos;
                 if (!self.parseClassAtom()) {
                     if (self.err_message != null) return false;
                 }
+                const first_node = if (emit_ast) self.last_node else {};
+
                 // range: a-z
                 if (!self.isEnd() and self.peek() == '-') {
                     self.advance();
                     if (!self.isEnd() and self.peek() != ']') {
                         if (!self.parseClassAtom()) {
                             if (self.err_message != null) return false;
+                        }
+                        // range: first - second
+                        if (emit_ast) {
+                            const second_node = self.last_node;
+                            const range_node = self.addNode(.character_class_range, .{
+                                .start = atom_pos,
+                                .end = self.pos,
+                            }, .{
+                                @intFromEnum(first_node),
+                                @intFromEnum(second_node),
+                                0,
+                            });
+                            if (buf_len < 128) {
+                                buf[buf_len] = @intFromEnum(range_node);
+                                buf_len += 1;
+                            }
+                        }
+                    } else {
+                        // trailing dash: first + '-'
+                        if (emit_ast) {
+                            if (buf_len < 127) {
+                                buf[buf_len] = @intFromEnum(first_node);
+                                buf_len += 1;
+                                const dash_node = self.addNode(.character, .{
+                                    .start = self.pos - 1,
+                                    .end = self.pos,
+                                }, .{ '-', @intFromEnum(ast.CharacterKind.symbol), 0 });
+                                buf[buf_len] = @intFromEnum(dash_node);
+                                buf_len += 1;
+                            }
+                        }
+                    }
+                } else {
+                    if (emit_ast) {
+                        if (buf_len < 128) {
+                            buf[buf_len] = @intFromEnum(first_node);
+                            buf_len += 1;
                         }
                     }
                 }
@@ -405,6 +860,19 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 self.setError("unterminated character class");
                 return false;
             }
+
+            if (emit_ast) {
+                // extra_data에 flush
+                const list_start = self.extraLen();
+                for (buf[0..buf_len]) |idx| self.appendExtra(idx);
+                // flags: bit 0 = negative, bits 1-2 = contents kind (union=0)
+                const flags_val: u32 = @intFromBool(negated);
+                self.last_node = self.addNode(.character_class, .{
+                    .start = class_start,
+                    .end = self.pos,
+                }, .{ flags_val, list_start, buf_len });
+            }
+
             return true;
         }
 
@@ -413,7 +881,14 @@ pub fn PatternParser(comptime emit_ast: bool) type {
             if (self.peek() == '\\') {
                 return self.parseEscape();
             }
+            const ch = self.peek();
             self.advance();
+            if (emit_ast) {
+                self.last_node = self.addNode(.character, .{
+                    .start = self.pos - 1,
+                    .end = self.pos,
+                }, .{ ch, @intFromEnum(ast.CharacterKind.symbol), 0 });
+            }
             return true;
         }
 
@@ -422,6 +897,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         // ================================================================
 
         fn parseGroup(self: *Self) bool {
+            const group_start = self.pos;
             self.advance(); // skip '('
 
             if (!self.isEnd() and self.peek() == '?') {
@@ -430,19 +906,33 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     self.setError("unterminated group");
                     return false;
                 }
-                const c = self.peek();
-                switch (c) {
+                const gc = self.peek();
+                switch (gc) {
                     ':' => {
                         // non-capturing group (?:...)
                         self.advance();
+                        self.parseDisjunction();
+                        if (!self.eat(')')) {
+                            self.setError("unterminated group");
+                            return false;
+                        }
+                        if (emit_ast) {
+                            const body = self.last_node;
+                            self.last_node = self.addNode(.ignore_group, .{
+                                .start = group_start,
+                                .end = self.pos,
+                            }, .{ 0, 0, @intFromEnum(body) });
+                        }
+                        return true;
                     },
                     '<' => {
                         // named group (?<name>...)
                         self.advance();
-                        const name_start = self.pos;
+                        const name_s = self.pos;
                         // 그룹 이름 유효성: IdentifierName (ID_Start + ID_Continue*)
                         if (!self.parseGroupName()) return false;
-                        const name = self.source[name_start .. self.pos - 1]; // -1 for '>'
+                        const name_e = self.pos - 1; // -1 for '>'
+                        const name = self.source[name_s..name_e];
                         // 중복 이름 체크
                         for (self.named_groups[0..self.named_group_count]) |existing| {
                             if (std.mem.eql(u8, existing, name)) {
@@ -458,13 +948,53 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             return false;
                         }
                         self.group_count += 1;
+
+                        self.parseDisjunction();
+                        if (!self.eat(')')) {
+                            self.setError("unterminated group");
+                            return false;
+                        }
+                        if (emit_ast) {
+                            const body = self.last_node;
+                            self.last_node = self.addNode(.capturing_group, .{
+                                .start = group_start,
+                                .end = self.pos,
+                            }, .{ name_s, name_e, @intFromEnum(body) });
+                        }
+                        return true;
                     },
                     // inline modifiers (?ims:...) or (?ims-ims:...)
                     'i', 'm', 's' => {
                         if (!self.parseModifiers()) return false;
+                        self.parseDisjunction();
+                        if (!self.eat(')')) {
+                            self.setError("unterminated group");
+                            return false;
+                        }
+                        if (emit_ast) {
+                            const body = self.last_node;
+                            self.last_node = self.addNode(.ignore_group, .{
+                                .start = group_start,
+                                .end = self.pos,
+                            }, .{ 0, 0, @intFromEnum(body) });
+                        }
+                        return true;
                     },
                     '-' => {
                         if (!self.parseModifiers()) return false;
+                        self.parseDisjunction();
+                        if (!self.eat(')')) {
+                            self.setError("unterminated group");
+                            return false;
+                        }
+                        if (emit_ast) {
+                            const body = self.last_node;
+                            self.last_node = self.addNode(.ignore_group, .{
+                                .start = group_start,
+                                .end = self.pos,
+                            }, .{ 0, 0, @intFromEnum(body) });
+                        }
+                        return true;
                     },
                     else => {
                         self.setError("invalid group specifier");
@@ -474,14 +1004,21 @@ pub fn PatternParser(comptime emit_ast: bool) type {
             } else {
                 // capturing group (...)
                 self.group_count += 1;
-            }
 
-            self.parseDisjunction();
-            if (!self.eat(')')) {
-                self.setError("unterminated group");
-                return false;
+                self.parseDisjunction();
+                if (!self.eat(')')) {
+                    self.setError("unterminated group");
+                    return false;
+                }
+                if (emit_ast) {
+                    const body = self.last_node;
+                    self.last_node = self.addNode(.capturing_group, .{
+                        .start = group_start,
+                        .end = self.pos,
+                    }, .{ std.math.maxInt(u32), 0, @intFromEnum(body) });
+                }
+                return true;
             }
-            return true;
         }
 
         // ================================================================
@@ -593,10 +1130,10 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         /// is_start=true이면 ID_Start, false이면 ID_Continue 체크.
         fn parseGroupNameChar(self: *Self, is_start: bool) bool {
             if (self.isEnd()) return false;
-            const c = self.peek();
+            const gc = self.peek();
 
             // \u escape in group name
-            if (c == '\\') {
+            if (gc == '\\') {
                 if (self.pos + 1 < self.source.len and self.source[self.pos + 1] == 'u') {
                     self.pos += 2; // skip \u
                     // \u{HHHH} or \uHHHH
@@ -617,24 +1154,24 @@ pub fn PatternParser(comptime emit_ast: bool) type {
             }
 
             // ASCII 식별자 문자 체크
-            if (c == '_' or c == '$') {
+            if (gc == '_' or gc == '$') {
                 self.advance();
                 return true;
             }
             if (is_start) {
-                if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z')) {
+                if ((gc >= 'a' and gc <= 'z') or (gc >= 'A' and gc <= 'Z')) {
                     self.advance();
                     return true;
                 }
             } else {
-                if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9')) {
+                if ((gc >= 'a' and gc <= 'z') or (gc >= 'A' and gc <= 'Z') or (gc >= '0' and gc <= '9')) {
                     self.advance();
                     return true;
                 }
             }
 
             // Non-ASCII: UTF-8 multi-byte 문자 (Unicode ID_Start/ID_Continue)
-            if (c >= 0x80) {
+            if (gc >= 0x80) {
                 // unicode mode에서 non-ASCII는 에러 (유효한 Unicode escape를 사용해야 함)
                 if (self.flags.hasUnicodeMode()) {
                     return false;
@@ -656,32 +1193,79 @@ pub fn PatternParser(comptime emit_ast: bool) type {
 
         fn parseQuantifier(self: *Self, _: u32) void {
             if (self.isEnd()) return;
-            const c = self.peek();
+            const qc = self.peek();
 
-            switch (c) {
+            switch (qc) {
                 '*', '+', '?' => {
-                    self.advance();
-                    _ = self.eat('?'); // lazy modifier
+                    if (emit_ast) {
+                        const span_start = self.pos;
+                        self.advance();
+                        const greedy = !self.eat('?');
+                        const qmin: u32 = if (qc == '+') 1 else 0;
+                        const qmax: u32 = if (qc == '?') 1 else std.math.maxInt(u32);
+                        const atom_node = self.last_node;
+                        self.last_node = self.addNode(.quantifier, .{
+                            .start = span_start,
+                            .end = self.pos,
+                        }, .{
+                            qmin,
+                            qmax,
+                            (@intFromEnum(atom_node) & 0x7FFFFFFF) | (@as(u32, @intFromBool(greedy)) << 31),
+                        });
+                    } else {
+                        self.advance();
+                        _ = self.eat('?'); // lazy modifier
+                    }
                 },
                 '{' => {
-                    const saved = self.pos;
-                    self.advance(); // skip '{'
-                    if (self.eatDigits()) {
-                        if (self.eat(',')) {
-                            _ = self.eatDigits(); // optional max
+                    if (emit_ast) {
+                        const saved = self.pos;
+                        self.advance(); // skip '{'
+                        if (self.eatDigitValue()) |min_val| {
+                            var max_val: u32 = min_val;
+                            if (self.eat(',')) {
+                                max_val = self.eatDigitValue() orelse std.math.maxInt(u32);
+                            }
+                            if (self.eat('}')) {
+                                const greedy = !self.eat('?');
+                                const atom_node = self.last_node;
+                                self.last_node = self.addNode(.quantifier, .{
+                                    .start = saved,
+                                    .end = self.pos,
+                                }, .{
+                                    min_val,
+                                    max_val,
+                                    (@intFromEnum(atom_node) & 0x7FFFFFFF) | (@as(u32, @intFromBool(greedy)) << 31),
+                                });
+                                return;
+                            }
                         }
-                        if (self.eat('}')) {
-                            _ = self.eat('?'); // lazy
+                        if (self.flags.hasUnicodeMode()) {
+                            self.setError("invalid braced quantifier");
                             return;
                         }
+                        // non-unicode: rollback, treat '{' as literal
+                        self.pos = saved;
+                    } else {
+                        const saved = self.pos;
+                        self.advance(); // skip '{'
+                        if (self.eatDigits()) {
+                            if (self.eat(',')) {
+                                _ = self.eatDigits(); // optional max
+                            }
+                            if (self.eat('}')) {
+                                _ = self.eat('?'); // lazy
+                                return;
+                            }
+                        }
+                        // invalid braced quantifier
+                        if (self.flags.hasUnicodeMode()) {
+                            self.setError("invalid braced quantifier");
+                            return;
+                        }
+                        // non-unicode: rollback, treat '{' as literal
+                        self.pos = saved;
                     }
-                    // invalid braced quantifier
-                    if (self.flags.hasUnicodeMode()) {
-                        self.setError("invalid braced quantifier");
-                        return;
-                    }
-                    // non-unicode: rollback, treat '{' as literal
-                    self.pos = saved;
                 },
                 else => {},
             }
@@ -719,12 +1303,23 @@ pub fn PatternParser(comptime emit_ast: bool) type {
             return true;
         }
 
+        /// 숫자를 파싱하여 값을 반환한다. 숫자가 없으면 null.
+        fn eatDigitValue(self: *Self) ?u32 {
+            if (self.isEnd() or self.peek() < '0' or self.peek() > '9') return null;
+            var val: u32 = 0;
+            while (!self.isEnd() and self.peek() >= '0' and self.peek() <= '9') {
+                val = val *| 10 +| (self.peek() - '0'); // saturating arithmetic
+                self.advance();
+            }
+            return val;
+        }
+
         fn eatHexDigits(self: *Self, count: u32) bool {
             var i: u32 = 0;
             while (i < count) : (i += 1) {
                 if (self.isEnd()) return false;
-                const c = self.peek();
-                if (!isHexDigit(c)) return false;
+                const hc = self.peek();
+                if (!isHexDigit(hc)) return false;
                 self.advance();
             }
             return true;
@@ -750,6 +1345,10 @@ pub fn PatternParser(comptime emit_ast: bool) type {
     };
 }
 
+// ================================================================
+// 모듈 스코프 헬퍼 함수
+// ================================================================
+
 fn isHexDigit(c: u8) bool {
     return (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F');
 }
@@ -765,8 +1364,36 @@ fn isModifierChar(c: u8) bool {
     return c == 'i' or c == 'm' or c == 's';
 }
 
+/// 16진수 문자를 값으로 변환한다.
+fn hexDigitValue(c: u8) u32 {
+    return switch (c) {
+        '0'...'9' => c - '0',
+        'a'...'f' => c - 'a' + 10,
+        'A'...'F' => c - 'A' + 10,
+        else => 0,
+    };
+}
+
+/// 소스의 [start, end) 범위를 16진수로 해석하여 값을 반환한다.
+fn computeHexValue(source: []const u8, start: u32, end: u32) u32 {
+    var val: u32 = 0;
+    for (source[start..end]) |c| {
+        val = val *| 16 +| hexDigitValue(c);
+    }
+    return val;
+}
+
+/// 소스의 [start, end) 범위를 8진수로 해석하여 값을 반환한다.
+fn computeOctalValue(source: []const u8, start: u32, end: u32) u32 {
+    var val: u32 = 0;
+    for (source[start..end]) |c| {
+        val = val *| 8 +| (c - '0');
+    }
+    return val;
+}
+
 // ============================================================
-// Tests
+// Tests — 검증 모드 (emit_ast=false)
 // ============================================================
 
 test "basic patterns" {
@@ -859,4 +1486,419 @@ test "braced quantifier without atom in unicode mode" {
     const P = PatternParser(false);
     var p = P.init("{2,3}", .{ .u = true });
     try std.testing.expect(p.validate() != null);
+}
+
+// ============================================================
+// Tests — AST 모드 (emit_ast=true)
+// ============================================================
+
+test "AST: basic literal pattern" {
+    // "abc" → Disjunction > Alternative > [Character('a'), Character('b'), Character('c')]
+    const P = PatternParser(true);
+    var p = P.initWithAllocator("abc", .{}, std.testing.allocator);
+    defer p.deinit();
+
+    const result = p.parse();
+    try std.testing.expect(result != null);
+
+    const tree = result.?;
+    try std.testing.expect(tree.nodeCount() > 0);
+
+    // 루트는 disjunction
+    const root = tree.getNode(tree.root);
+    try std.testing.expectEqual(ast.Tag.disjunction, root.tag);
+
+    // 1개 alternative
+    const alts = root.getNodeList();
+    try std.testing.expectEqual(@as(u32, 1), alts.len);
+
+    // alternative 안에 3개 character
+    const alt_idx: ast.NodeIndex = @enumFromInt(tree.extra_data[alts.start]);
+    const alt = tree.getNode(alt_idx);
+    try std.testing.expectEqual(ast.Tag.alternative, alt.tag);
+    const terms = alt.getNodeList();
+    try std.testing.expectEqual(@as(u32, 3), terms.len);
+
+    // 각 character 검증
+    const ch0 = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    try std.testing.expectEqual(ast.Tag.character, ch0.tag);
+    try std.testing.expectEqual(@as(u32, 'a'), ch0.data[0]);
+
+    const ch1 = tree.getNode(@enumFromInt(tree.extra_data[terms.start + 1]));
+    try std.testing.expectEqual(@as(u32, 'b'), ch1.data[0]);
+
+    const ch2 = tree.getNode(@enumFromInt(tree.extra_data[terms.start + 2]));
+    try std.testing.expectEqual(@as(u32, 'c'), ch2.data[0]);
+}
+
+test "AST: alternation" {
+    // "a|b" → Disjunction > [Alternative('a'), Alternative('b')]
+    const P = PatternParser(true);
+    var p = P.initWithAllocator("a|b", .{}, std.testing.allocator);
+    defer p.deinit();
+
+    const result = p.parse();
+    try std.testing.expect(result != null);
+
+    const tree = result.?;
+    const root = tree.getNode(tree.root);
+    try std.testing.expectEqual(ast.Tag.disjunction, root.tag);
+
+    const alts = root.getNodeList();
+    try std.testing.expectEqual(@as(u32, 2), alts.len);
+}
+
+test "AST: capturing group" {
+    // "(a)" → Disjunction > Alternative > CapturingGroup > Disjunction > Alternative > Character('a')
+    const P = PatternParser(true);
+    var p = P.initWithAllocator("(a)", .{}, std.testing.allocator);
+    defer p.deinit();
+
+    const result = p.parse();
+    try std.testing.expect(result != null);
+
+    const tree = result.?;
+    const root = tree.getNode(tree.root);
+    const alts = root.getNodeList();
+    const alt_idx: ast.NodeIndex = @enumFromInt(tree.extra_data[alts.start]);
+    const alt = tree.getNode(alt_idx);
+    const terms = alt.getNodeList();
+    try std.testing.expectEqual(@as(u32, 1), terms.len);
+
+    // capturing group
+    const group = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    try std.testing.expectEqual(ast.Tag.capturing_group, group.tag);
+    // unnamed: name_start == 0xFFFFFFFF
+    try std.testing.expectEqual(std.math.maxInt(u32), group.data[0]);
+}
+
+test "AST: named group" {
+    // "(?<foo>a)" → CapturingGroup with name
+    const P = PatternParser(true);
+    var p = P.initWithAllocator("(?<foo>a)", .{}, std.testing.allocator);
+    defer p.deinit();
+
+    const result = p.parse();
+    try std.testing.expect(result != null);
+
+    const tree = result.?;
+    const root = tree.getNode(tree.root);
+    const alts = root.getNodeList();
+    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const terms = alt.getNodeList();
+    const group = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    try std.testing.expectEqual(ast.Tag.capturing_group, group.tag);
+    // name_start != 0xFFFFFFFF (has name)
+    try std.testing.expect(group.data[0] != std.math.maxInt(u32));
+    // name은 "foo"
+    const name = tree.source[group.data[0]..group.data[1]];
+    try std.testing.expectEqualStrings("foo", name);
+}
+
+test "AST: quantifier" {
+    // "a*" → Disjunction > Alternative > Quantifier(min=0, max=unbounded, greedy) > Character('a')
+    const P = PatternParser(true);
+    var p = P.initWithAllocator("a*", .{}, std.testing.allocator);
+    defer p.deinit();
+
+    const result = p.parse();
+    try std.testing.expect(result != null);
+
+    const tree = result.?;
+    const root = tree.getNode(tree.root);
+    const alts = root.getNodeList();
+    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const terms = alt.getNodeList();
+    try std.testing.expectEqual(@as(u32, 1), terms.len);
+
+    const quant = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    try std.testing.expectEqual(ast.Tag.quantifier, quant.tag);
+    try std.testing.expectEqual(@as(u32, 0), quant.data[0]); // min = 0
+    try std.testing.expectEqual(std.math.maxInt(u32), quant.data[1]); // max = unbounded
+    try std.testing.expect(quant.isGreedy()); // greedy
+
+    // body는 character
+    const body = tree.getNode(quant.getQuantifierBody());
+    try std.testing.expectEqual(ast.Tag.character, body.tag);
+}
+
+test "AST: lazy quantifier" {
+    // "a+?" → Quantifier(min=1, max=unbounded, lazy)
+    const P = PatternParser(true);
+    var p = P.initWithAllocator("a+?", .{}, std.testing.allocator);
+    defer p.deinit();
+
+    const result = p.parse();
+    try std.testing.expect(result != null);
+
+    const tree = result.?;
+    const root = tree.getNode(tree.root);
+    const alts = root.getNodeList();
+    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const terms = alt.getNodeList();
+    const quant = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+
+    try std.testing.expectEqual(ast.Tag.quantifier, quant.tag);
+    try std.testing.expectEqual(@as(u32, 1), quant.data[0]); // min = 1
+    try std.testing.expectEqual(std.math.maxInt(u32), quant.data[1]); // max = unbounded
+    try std.testing.expect(!quant.isGreedy()); // lazy
+}
+
+test "AST: dot" {
+    const P = PatternParser(true);
+    var p = P.initWithAllocator(".", .{}, std.testing.allocator);
+    defer p.deinit();
+
+    const result = p.parse();
+    try std.testing.expect(result != null);
+
+    const tree = result.?;
+    const root = tree.getNode(tree.root);
+    const alts = root.getNodeList();
+    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const terms = alt.getNodeList();
+    const dot = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    try std.testing.expectEqual(ast.Tag.dot, dot.tag);
+}
+
+test "AST: character class escape" {
+    // "\\d" → CharacterClassEscape(d)
+    const P = PatternParser(true);
+    var p = P.initWithAllocator("\\d", .{}, std.testing.allocator);
+    defer p.deinit();
+
+    const result = p.parse();
+    try std.testing.expect(result != null);
+
+    const tree = result.?;
+    const root = tree.getNode(tree.root);
+    const alts = root.getNodeList();
+    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const terms = alt.getNodeList();
+    const node = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    try std.testing.expectEqual(ast.Tag.character_class_escape, node.tag);
+    try std.testing.expectEqual(@as(u32, @intFromEnum(ast.CharacterClassEscapeKind.d)), node.data[0]);
+}
+
+test "AST: character class" {
+    // "[abc]" → CharacterClass(negative=false) > [Character('a'), Character('b'), Character('c')]
+    const P = PatternParser(true);
+    var p = P.initWithAllocator("[abc]", .{}, std.testing.allocator);
+    defer p.deinit();
+
+    const result = p.parse();
+    try std.testing.expect(result != null);
+
+    const tree = result.?;
+    const root = tree.getNode(tree.root);
+    const alts = root.getNodeList();
+    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const terms = alt.getNodeList();
+    const cc = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    try std.testing.expectEqual(ast.Tag.character_class, cc.tag);
+    // not negated
+    try std.testing.expectEqual(@as(u32, 0), cc.data[0] & 1);
+    // 3 members
+    const body = cc.getClassBody();
+    try std.testing.expectEqual(@as(u32, 3), body.len);
+}
+
+test "AST: character class range" {
+    // "[a-z]" → CharacterClass > [CharacterClassRange(a, z)]
+    const P = PatternParser(true);
+    var p = P.initWithAllocator("[a-z]", .{}, std.testing.allocator);
+    defer p.deinit();
+
+    const result = p.parse();
+    try std.testing.expect(result != null);
+
+    const tree = result.?;
+    const root = tree.getNode(tree.root);
+    const alts = root.getNodeList();
+    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const terms = alt.getNodeList();
+    const cc = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    const body = cc.getClassBody();
+    try std.testing.expectEqual(@as(u32, 1), body.len);
+
+    const range = tree.getNode(@enumFromInt(tree.extra_data[body.start]));
+    try std.testing.expectEqual(ast.Tag.character_class_range, range.tag);
+    // min = 'a', max = 'z'
+    const min_ch = tree.getNode(@enumFromInt(range.data[0]));
+    const max_ch = tree.getNode(@enumFromInt(range.data[1]));
+    try std.testing.expectEqual(@as(u32, 'a'), min_ch.data[0]);
+    try std.testing.expectEqual(@as(u32, 'z'), max_ch.data[0]);
+}
+
+test "AST: negated character class" {
+    // "[^x]" → CharacterClass(negative=true)
+    const P = PatternParser(true);
+    var p = P.initWithAllocator("[^x]", .{}, std.testing.allocator);
+    defer p.deinit();
+
+    const result = p.parse();
+    try std.testing.expect(result != null);
+
+    const tree = result.?;
+    const root = tree.getNode(tree.root);
+    const alts = root.getNodeList();
+    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const terms = alt.getNodeList();
+    const cc = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    try std.testing.expectEqual(ast.Tag.character_class, cc.tag);
+    // negated
+    try std.testing.expectEqual(@as(u32, 1), cc.data[0] & 1);
+}
+
+test "AST: boundary assertion" {
+    // "^a$" → [BoundaryAssertion(start), Character('a'), BoundaryAssertion(end)]
+    const P = PatternParser(true);
+    var p = P.initWithAllocator("^a$", .{}, std.testing.allocator);
+    defer p.deinit();
+
+    const result = p.parse();
+    try std.testing.expect(result != null);
+
+    const tree = result.?;
+    const root = tree.getNode(tree.root);
+    const alts = root.getNodeList();
+    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const terms = alt.getNodeList();
+    try std.testing.expectEqual(@as(u32, 3), terms.len);
+
+    const caret = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    try std.testing.expectEqual(ast.Tag.boundary_assertion, caret.tag);
+    try std.testing.expectEqual(@as(u32, @intFromEnum(ast.BoundaryAssertionKind.start)), caret.data[0]);
+
+    const dollar = tree.getNode(@enumFromInt(tree.extra_data[terms.start + 2]));
+    try std.testing.expectEqual(ast.Tag.boundary_assertion, dollar.tag);
+    try std.testing.expectEqual(@as(u32, @intFromEnum(ast.BoundaryAssertionKind.end)), dollar.data[0]);
+}
+
+test "AST: non-capturing group" {
+    // "(?:a)" → IgnoreGroup
+    const P = PatternParser(true);
+    var p = P.initWithAllocator("(?:a)", .{}, std.testing.allocator);
+    defer p.deinit();
+
+    const result = p.parse();
+    try std.testing.expect(result != null);
+
+    const tree = result.?;
+    const root = tree.getNode(tree.root);
+    const alts = root.getNodeList();
+    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const terms = alt.getNodeList();
+    const group = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    try std.testing.expectEqual(ast.Tag.ignore_group, group.tag);
+}
+
+test "AST: indexed reference" {
+    // "\\1" → IndexedReference(1)
+    const P = PatternParser(true);
+    var p = P.initWithAllocator("(a)\\1", .{}, std.testing.allocator);
+    defer p.deinit();
+
+    const result = p.parse();
+    try std.testing.expect(result != null);
+
+    const tree = result.?;
+    const root = tree.getNode(tree.root);
+    const alts = root.getNodeList();
+    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const terms = alt.getNodeList();
+    try std.testing.expectEqual(@as(u32, 2), terms.len);
+
+    const ref = tree.getNode(@enumFromInt(tree.extra_data[terms.start + 1]));
+    try std.testing.expectEqual(ast.Tag.indexed_reference, ref.tag);
+    try std.testing.expectEqual(@as(u32, 1), ref.data[0]);
+}
+
+test "AST: lookahead assertion" {
+    // "(?=a)" → LookAroundAssertion(lookahead)
+    const P = PatternParser(true);
+    var p = P.initWithAllocator("(?=a)", .{}, std.testing.allocator);
+    defer p.deinit();
+
+    const result = p.parse();
+    try std.testing.expect(result != null);
+
+    const tree = result.?;
+    const root = tree.getNode(tree.root);
+    const alts = root.getNodeList();
+    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const terms = alt.getNodeList();
+    const la = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    try std.testing.expectEqual(ast.Tag.lookaround_assertion, la.tag);
+    try std.testing.expectEqual(@as(u32, @intFromEnum(ast.LookAroundAssertionKind.lookahead)), la.data[0]);
+}
+
+test "AST: escape characters" {
+    // "\\n" → Character(0x0A, single_escape)
+    const P = PatternParser(true);
+    var p = P.initWithAllocator("\\n", .{}, std.testing.allocator);
+    defer p.deinit();
+
+    const result = p.parse();
+    try std.testing.expect(result != null);
+
+    const tree = result.?;
+    const root = tree.getNode(tree.root);
+    const alts = root.getNodeList();
+    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const terms = alt.getNodeList();
+    const ch = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    try std.testing.expectEqual(ast.Tag.character, ch.tag);
+    try std.testing.expectEqual(@as(u32, 0x0A), ch.data[0]);
+    try std.testing.expectEqual(@as(u32, @intFromEnum(ast.CharacterKind.single_escape)), ch.data[1]);
+}
+
+test "AST: hex escape" {
+    // "\\x41" → Character(0x41, hexadecimal_escape)
+    const P = PatternParser(true);
+    var p = P.initWithAllocator("\\x41", .{}, std.testing.allocator);
+    defer p.deinit();
+
+    const result = p.parse();
+    try std.testing.expect(result != null);
+
+    const tree = result.?;
+    const root = tree.getNode(tree.root);
+    const alts = root.getNodeList();
+    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const terms = alt.getNodeList();
+    const ch = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    try std.testing.expectEqual(ast.Tag.character, ch.tag);
+    try std.testing.expectEqual(@as(u32, 0x41), ch.data[0]);
+}
+
+test "AST: braced quantifier" {
+    // "a{2,5}" → Quantifier(min=2, max=5, greedy) wrapping Character('a')
+    const P = PatternParser(true);
+    var p = P.initWithAllocator("a{2,5}", .{}, std.testing.allocator);
+    defer p.deinit();
+
+    const result = p.parse();
+    try std.testing.expect(result != null);
+
+    const tree = result.?;
+    const root = tree.getNode(tree.root);
+    const alts = root.getNodeList();
+    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const terms = alt.getNodeList();
+    const quant = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    try std.testing.expectEqual(ast.Tag.quantifier, quant.tag);
+    try std.testing.expectEqual(@as(u32, 2), quant.data[0]); // min
+    try std.testing.expectEqual(@as(u32, 5), quant.data[1]); // max
+    try std.testing.expect(quant.isGreedy());
+}
+
+test "AST: error returns null" {
+    const P = PatternParser(true);
+    var p = P.initWithAllocator("(abc", .{}, std.testing.allocator);
+    defer p.deinit();
+
+    const result = p.parse();
+    try std.testing.expect(result == null);
+    try std.testing.expect(p.getError() != null);
 }

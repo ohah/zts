@@ -5,18 +5,20 @@
 //!
 //! 설계:
 //!   - comptime emit_ast 파라미터로 검증/AST 모드 분리
-//!   - 현재: emit_ast=false (검증만, Test262 대응)
-//!   - Phase 6: emit_ast=true (ES 다운레벨링, 미니파이어, WASM AST API)
-//!   - 파싱 로직은 하나, 모드만 다름 → 리팩터링 불필요
+//!   - emit_ast=false: 검증만, 할당 없음 (렉서에서 사용)
+//!   - emit_ast=true: AST 빌드, allocator 필요 (트랜스포머에서 사용)
+//!   - 파싱 로직은 하나, 모드만 다름
 //!
 //! 모듈 구조:
-//!   - mod.zig: 공개 API
+//!   - mod.zig: 공개 API (validate, parse)
+//!   - ast.zig: AST 노드 타입 (Node, Tag, RegExpAst 등)
 //!   - flags.zig: 플래그 검증 (d/g/i/m/s/u/v/y)
 //!   - parser.zig: 패턴 파서 (comptime emit_ast 지원)
 //!   - diagnostics.zig: 에러 메시지
 //!
 //! 참고: references/oxc/crates/oxc_regular_expression
 
+pub const ast = @import("ast.zig");
 pub const flags = @import("flags.zig");
 pub const diagnostics = @import("diagnostics.zig");
 pub const parser = @import("parser.zig");
@@ -42,7 +44,35 @@ pub fn validate(pattern: []const u8, flag_text: []const u8) ?[]const u8 {
     return null;
 }
 
+/// 정규식 리터럴을 파싱하여 AST를 반환한다.
+/// allocator: AST 노드 저장용.
+/// 에러가 있으면 null, 에러 메시지는 getError()로 조회.
+///
+/// 사용 예:
+///   var p = parse("\\d{4}", "gi", allocator) orelse return error;
+///   defer p.deinit();
+///   const tree = p.getAst().?;
+pub fn parse(
+    pattern: []const u8,
+    flag_text: []const u8,
+    allocator: std.mem.Allocator,
+) ?ast.RegExpAst {
+    // 1. 플래그 검증
+    if (flags.validate(flag_text) != null) {
+        return null;
+    }
+
+    // 2. 패턴 파싱 + AST 빌드
+    const parsed_flags = flags.parse(flag_text);
+    const Parser = parser.PatternParser(true);
+    var p = Parser.initWithAllocator(pattern, parsed_flags, allocator);
+    return p.parse();
+}
+
+const std = @import("std");
+
 test {
+    _ = ast;
     _ = flags;
     _ = diagnostics;
     _ = parser;
