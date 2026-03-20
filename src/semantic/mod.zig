@@ -16,6 +16,7 @@
 //!   // analyzer.errors 확인
 
 pub const analyzer = @import("analyzer.zig");
+pub const checker = @import("checker.zig");
 pub const scope = @import("scope.zig");
 pub const symbol = @import("symbol.zig");
 
@@ -31,6 +32,7 @@ pub const SymbolFlags = symbol.SymbolFlags;
 
 test {
     _ = analyzer;
+    _ = checker;
     _ = scope;
     _ = symbol;
 }

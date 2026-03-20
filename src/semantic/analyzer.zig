@@ -25,6 +25,7 @@ const symbol_mod = @import("symbol.zig");
 const SymbolId = symbol_mod.SymbolId;
 const SymbolKind = symbol_mod.SymbolKind;
 const Symbol = symbol_mod.Symbol;
+const checker = @import("checker.zig");
 
 /// Semantic 분석 에러.
 pub const SemanticError = struct {
@@ -577,6 +578,9 @@ pub const SemanticAnalyzer = struct {
                     const key_idx: NodeIndex = @enumFromInt(extras[extra_start]);
                     self.visitNode(key_idx);
 
+                    // getter/setter 파라미터 개수 검증
+                    checker.checkGetterSetterParams(self.ast, node, &self.errors, self.allocator);
+
                     const body_idx: NodeIndex = @enumFromInt(extras[extra_start + 3]);
                     // 함수 본문을 function scope로 감싸서 순회
                     const scope_saved = self.enterScope(.function, self.is_strict_mode);
@@ -643,6 +647,8 @@ pub const SemanticAnalyzer = struct {
                 self.visitNodeList(node.data.list);
             },
             .object_expression => {
+                // __proto__ 중복 검사 (ECMAScript 12.2.6.1)
+                checker.checkObjectDuplicateProto(self.ast, node.data.list, &self.errors, self.allocator);
                 self.visitNodeList(node.data.list);
             },
             .object_property => {
@@ -823,7 +829,7 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// class body를 스코프로 감싸서 순회한다.
-    /// private name 수집/검증도 여기서 처리 (oxc 방식).
+    /// private name 수집/검증 + early error 검증도 여기서 처리 (oxc 방식).
     fn visitClassBodyNode(self: *SemanticAnalyzer, body_idx: NodeIndex) void {
         // class body는 항상 strict mode (ECMAScript 10.2.1)
         const saved = self.enterScope(.class_body, true);
@@ -834,6 +840,9 @@ pub const SemanticAnalyzer = struct {
             if (body_node.tag == .class_body) {
                 // 1차: private name 선언 수집 (멤버 순회)
                 self.collectPrivateNames(body_node.data.list);
+                // early error 검증: 중복 생성자, static/instance private name 충돌
+                checker.checkDuplicateConstructors(self.ast, body_node.data.list, &self.errors, self.allocator);
+                checker.checkPrivateNameStaticConflict(self.ast, body_node.data.list, &self.errors, self.allocator);
                 // 2차: 전체 순회 (참조 검증 포함)
                 self.visitNodeList(body_node.data.list);
             }
