@@ -3428,10 +3428,25 @@ pub const Parser = struct {
                         });
                     }
 
+                    // import.source / import.defer — source phase imports (Stage 3)
+                    // 그 외 import.UNKNOWN은 SyntaxError (ECMAScript ImportCall 문법)
+                    const is_source = std.mem.eql(u8, prop_text, "source");
+                    const is_defer = std.mem.eql(u8, prop_text, "defer");
+                    if (!is_source and !is_defer) {
+                        self.addError(.{ .start = span.start, .end = prop_span.end }, "import.meta/source/defer expected, got unknown property");
+                        return try self.ast.addNode(.{
+                            .tag = .meta_property,
+                            .span = .{ .start = span.start, .end = prop_span.end },
+                            .data = .{ .none = 0 },
+                        });
+                    }
+
                     // import.source(...) / import.defer(...) — dynamic import 변형
                     // 인자가 있으면 call expression처럼 처리
                     if (self.current() == .l_paren) {
                         self.advance(); // skip (
+                        // import() 내부에서는 `in` 연산자 허용 (+In context)
+                        const saved_ctx = self.enterAllowInContext(true);
                         const arg = try self.parseAssignmentExpression();
                         if (self.eat(.comma)) {
                             if (self.current() != .r_paren) {
@@ -3439,6 +3454,7 @@ pub const Parser = struct {
                                 _ = self.eat(.comma);
                             }
                         }
+                        self.restoreContext(saved_ctx);
                         self.expect(.r_paren);
                         return try self.ast.addNode(.{
                             .tag = .import_expression,
@@ -3448,9 +3464,7 @@ pub const Parser = struct {
                     }
 
                     // import.source/defer without () → 에러
-                    if (std.mem.eql(u8, prop_text, "source") or std.mem.eql(u8, prop_text, "defer")) {
-                        self.addError(.{ .start = span.start, .end = prop_span.end }, "import.source/defer requires arguments");
-                    }
+                    self.addError(.{ .start = span.start, .end = prop_span.end }, "import.source/defer requires arguments");
                     return try self.ast.addNode(.{
                         .tag = .meta_property,
                         .span = .{ .start = span.start, .end = prop_span.end },
@@ -3458,7 +3472,10 @@ pub const Parser = struct {
                     });
                 }
                 // dynamic import: import("module") or import("module", options)
+                // import() 내부에서는 `in` 연산자 허용 (+In context)
+                // 예: for(x = import('m', 'k' in {} || undefined); ...) 에서 in이 for-in이 아닌 연산자
                 self.expect(.l_paren);
+                const saved_ctx = self.enterAllowInContext(true);
                 const arg = try self.parseAssignmentExpression();
                 // 두 번째 인자 (import assertions/options) — 있으면 파싱하고 무시
                 if (self.eat(.comma)) {
@@ -3467,6 +3484,7 @@ pub const Parser = struct {
                         _ = self.eat(.comma); // trailing comma
                     }
                 }
+                self.restoreContext(saved_ctx);
                 self.expect(.r_paren);
                 return try self.ast.addNode(.{
                     .tag = .import_expression,
