@@ -386,6 +386,14 @@ pub const Parser = struct {
             .object_assignment_target,
             => true,
 
+            // 7) meta_property (import.meta, new.target) — 절대로 assignment target이 될 수 없음.
+            //    is_top 여부와 무관하게 항상 에러. else 분기는 is_top=false일 때 에러를 내지 않으므로
+            //    destructuring 내부([import.meta] = arr)에서 잘못 통과하는 것을 방지.
+            .meta_property => {
+                self.addError(node.span, "invalid assignment target");
+                return false;
+            },
+
             else => {
                 if (is_top) self.addError(node.span, "invalid assignment target");
                 return false;
