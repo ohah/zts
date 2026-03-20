@@ -62,18 +62,25 @@ pub const Transformer = struct {
     /// 임시 버퍼 (리스트 변환 시 재사용)
     scratch: std.ArrayList(NodeIndex),
 
+    /// 보류 노드 버퍼 (1→N 노드 확장용).
+    /// enum/namespace 변환 시 원래 노드 앞에 삽입할 문장(예: `var Color;`)을 저장.
+    /// visitExtraList가 각 자식 방문 후 이 버퍼를 드레인하여 리스트에 삽입한다.
+    pending_nodes: std.ArrayList(NodeIndex),
+
     pub fn init(allocator: std.mem.Allocator, old_ast: *const Ast, options: TransformOptions) Transformer {
         return .{
             .old_ast = old_ast,
             .new_ast = Ast.init(allocator, old_ast.source),
             .options = options,
             .scratch = std.ArrayList(NodeIndex).init(allocator),
+            .pending_nodes = std.ArrayList(NodeIndex).init(allocator),
         };
     }
 
     pub fn deinit(self: *Transformer) void {
         self.new_ast.deinit();
         self.scratch.deinit();
+        self.pending_nodes.deinit();
     }
 
     // ================================================================
@@ -372,6 +379,11 @@ pub const Transformer = struct {
     /// extra_data의 노드 리스트를 방문하여 새 AST에 복사.
     /// .none이 된 자식은 자동으로 제거된다.
     /// scratch 버퍼를 사용하며, 중첩 호출에 안전 (save/restore 패턴).
+    ///
+    /// pending_nodes 지원: 각 자식 방문 후 pending_nodes에 쌓인 노드를
+    /// 해당 자식 앞에 삽입한다. 이를 통해 1→N 노드 확장이 가능하다.
+    /// 예: enum 변환 시 visitNode가 IIFE를 반환하면서 `var Color;`을
+    ///     pending_nodes에 push → 리스트에 `var Color;` + IIFE 순서로 삽입.
     fn visitExtraList(self: *Transformer, start: u32, len: u32) Error!NodeList {
         const old_indices = self.old_ast.extra_data.items[start .. start + len];
 
@@ -380,6 +392,13 @@ pub const Transformer = struct {
 
         for (old_indices) |raw_idx| {
             const new_child = try self.visitNode(@enumFromInt(raw_idx));
+
+            // pending_nodes 드레인: visitNode가 추가한 보류 노드를 먼저 삽입
+            if (self.pending_nodes.items.len > 0) {
+                try self.scratch.appendSlice(self.pending_nodes.items);
+                self.pending_nodes.clearRetainingCapacity();
+            }
+
             if (!new_child.isNone()) {
                 try self.scratch.append(new_child);
             }

@@ -206,9 +206,10 @@ pub const Codegen = struct {
         if (!self.options.minify) try self.writeByte(' ');
     }
 
-    /// 소스 코드의 span 범위를 그대로 출력 (zero-copy).
+    /// span 범위의 텍스트를 출력한다.
+    /// source 또는 string_table에서 투명하게 읽는다 (getText 사용).
     fn writeSpan(self: *Codegen, span: Span) !void {
-        const text = self.ast.source[span.start..span.end];
+        const text = self.ast.getText(span);
         if (self.options.ascii_only) {
             try self.writeAsciiOnly(text);
         } else {
