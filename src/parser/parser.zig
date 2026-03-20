@@ -22,23 +22,7 @@ const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
 const jsx = @import("jsx.zig");
 const ts = @import("ts.zig");
-
-/// 파서 에러 하나.
-/// oxc/swc 수준의 친절한 진단 정보를 제공한다.
-pub const ParseError = struct {
-    /// 에러 발생 위치
-    span: Span,
-    /// 에러 메시지 (예: "Expected ';'")
-    message: []const u8,
-    /// 실제로 발견된 토큰 (예: "'}'"). null이면 표시하지 않음.
-    found: ?[]const u8 = null,
-    /// 관련 위치 (예: 여는 괄호 위치). null이면 표시하지 않음.
-    related_span: ?Span = null,
-    /// 관련 위치 설명 (예: "opening bracket is here"). null이면 표시하지 않음.
-    related_label: ?[]const u8 = null,
-    /// 힌트 메시지 (예: "Try inserting a semicolon here"). null이면 표시하지 않음.
-    hint: ?[]const u8 = null,
-};
+pub const Diagnostic = @import("../diagnostic.zig").Diagnostic;
 
 /// 재귀 함수용 명시적 에러 타입.
 /// Zig는 재귀 함수에서 `!T` (inferred error set)를 사용할 수 없다.
@@ -62,7 +46,8 @@ pub const Parser = struct {
     ast: Ast,
 
     /// 수집된 에러 목록 (D039: 다중 에러)
-    errors: std.ArrayList(ParseError),
+    /// 수집된 에러 목록 (D039: 다중 에러)
+    errors: std.ArrayList(Diagnostic),
 
     /// 재사용 가능한 임시 버퍼 (리스트 수집용). 매 사용 시 clearRetainingCapacity.
     scratch: std.ArrayList(NodeIndex),
@@ -201,7 +186,7 @@ pub const Parser = struct {
         return .{
             .scanner = scanner,
             .ast = Ast.init(allocator, scanner.source),
-            .errors = std.ArrayList(ParseError).init(allocator),
+            .errors = std.ArrayList(Diagnostic).init(allocator),
             .scratch = std.ArrayList(NodeIndex).init(allocator),
             .param_name_spans = std.ArrayList(Span).init(allocator),
             .bracket_stack = blk: {
@@ -357,9 +342,10 @@ pub const Parser = struct {
     }
 
     /// strict mode에서 eval/arguments를 바인딩 이름으로 사용하면 에러.
+    /// escaped 형태 (\u0065val → "eval")도 검증한다.
     pub fn checkStrictBinding(self: *Parser, span: Span) void {
         if (!self.is_strict_mode) return;
-        const text = self.ast.source[span.start..span.end];
+        const text = self.resolveIdentifierText(span);
         if (std.mem.eql(u8, text, "eval") or std.mem.eql(u8, text, "arguments")) {
             self.addError(span, "assignment to 'eval' or 'arguments' is not allowed in strict mode");
         }
@@ -386,14 +372,20 @@ pub const Parser = struct {
 
     /// identifier의 소스 텍스트가 escaped reserved keyword인지 확인.
     /// 소스에 `\`가 있고, 디코딩하면 reserved keyword이면 에러.
+    /// strict mode에서는 escaped strict mode reserved도 에러.
     /// cover grammar 함수 내부 + parseObjectProperty에서 사용.
     pub fn checkIdentifierEscapedKeyword(self: *Parser, span: Span) void {
-        const text = self.resolveIdentifierText(span);
+        // escape가 없으면 검사 불필요
+        const raw = self.ast.source[span.start..span.end];
+        if (std.mem.indexOfScalar(u8, raw, '\\') == null) return;
+
+        const text = self.scanner.decodeIdentifierEscapes(raw) orelse return;
         if (token_mod.keywords.get(text)) |kw| {
             // yield/await는 context-dependent keywords — checkYieldAwaitUse에서 별도 검증.
-            // 여기서 에러를 내면 generator/async 밖에서도 잘못 에러가 발생한다.
             if (kw == .kw_yield or kw == .kw_await) return;
             if (kw.isReservedKeyword() or kw.isLiteralKeyword()) {
+                self.addError(span, "keywords cannot contain escape characters");
+            } else if (self.is_strict_mode and kw.isStrictModeReserved()) {
                 self.addError(span, "keywords cannot contain escape characters");
             }
         }
@@ -859,6 +851,7 @@ pub const Parser = struct {
 
     /// 키워드를 바인딩 위치에서 사용할 때의 검증.
     /// ECMAScript 12.1.1: reserved keyword, strict mode reserved, contextual keywords.
+    /// escaped 형태 (\u0061wait 등)도 동일하게 검증한다.
     pub fn checkKeywordBinding(self: *Parser) void {
         // await는 조건부 예약어 — async/module에서만 금지, script에서는 식별자로 사용 가능
         // yield도 조건부 — generator/strict에서만 금지
@@ -869,6 +862,23 @@ pub const Parser = struct {
             self.addError(self.currentSpan(), "reserved word cannot be used as identifier");
         } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
             self.addError(self.currentSpan(), "reserved word in strict mode cannot be used as identifier");
+        } else if (self.current() == .escaped_keyword) {
+            // escaped reserved keyword는 식별자로 사용 불가 (예: \u0061wait in script)
+            // 단, escaped await는 script mode의 non-async에서는 허용
+            const is_escaped_await = self.isEscapedKeyword("await");
+            if (is_escaped_await) {
+                if (self.is_module or self.ctx.in_async) {
+                    self.addError(self.currentSpan(), "'await' cannot be used as identifier in this context");
+                }
+            } else {
+                self.addError(self.currentSpan(), "keywords cannot contain escape characters");
+            }
+        } else if (self.current() == .escaped_strict_reserved) {
+            // escaped strict reserved는 strict mode에서 금지
+            self.checkYieldAwaitUse(self.currentSpan(), "identifier");
+            if (self.is_strict_mode) {
+                self.addError(self.currentSpan(), "keywords cannot contain escape characters");
+            }
         }
     }
 
@@ -3366,4 +3376,54 @@ test "ErrorMsg: valid code has no errors (regression)" {
     for (cases) |src| {
         try expectNoParseError(src);
     }
+}
+
+// ================================================================
+// Diagnostic 통합 + 예약어 검증 테스트
+// ================================================================
+
+test "Diagnostic: parser errors have kind=parse" {
+    var scanner = Scanner.init(std.testing.allocator, "var 123bad;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+    try std.testing.expectEqual(Diagnostic.Kind.parse, parser.errors.items[0].kind);
+}
+
+test "ReservedWord: escaped keyword in variable binding is error" {
+    // \u0066or → "for" (reserved keyword)
+    try expectParseError("var \\u0066or = 1;", .{
+        .message_contains = "escape",
+    });
+}
+
+test "ReservedWord: escaped strict reserved in strict mode binding is error" {
+    // \u006Cet → "let" (strict mode reserved)
+    try expectParseError("'use strict'; var \\u006Cet = 1;", .{
+        .message_contains = "escape",
+    });
+}
+
+test "ReservedWord: escaped strict reserved in sloppy mode is OK" {
+    // escaped strict reserved in sloppy mode → allowed
+    try expectNoParseError("var \\u006Cet = 1;");
+}
+
+test "ReservedWord: escaped eval in strict mode assignment is error" {
+    // \u0065val → "eval" — strict mode에서 assignment target 불가
+    try expectParseError("'use strict'; \\u0065val = 1;", .{
+        .message_contains = "eval",
+    });
+}
+
+test "ReservedWord: property name can use escaped keyword" {
+    // property name에서는 escaped keyword 허용 (ECMAScript IdentifierName)
+    try expectNoParseError("var obj = { \\u0066or: 1 };");
+}
+
+test "ReservedWord: escaped keyword as property access is OK" {
+    // member expression에서 escaped keyword는 허용
+    try expectNoParseError("obj.\\u0066or;");
 }

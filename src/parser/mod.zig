@@ -12,6 +12,7 @@ pub const Tag = ast.Node.Tag;
 pub const NodeIndex = ast.NodeIndex;
 pub const NodeList = ast.NodeList;
 pub const Parser = parser.Parser;
+pub const Diagnostic = @import("../diagnostic.zig").Diagnostic;
 
 test {
     _ = ast;

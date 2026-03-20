@@ -478,7 +478,7 @@ main ← feature/lexer-token-enum
 16. ✅ JSX 파싱 (element, fragment, attributes, expression, text) — PR #33
 17. 🔄 에러 복구 강화 + Test262 파서 통과율 — Phase 2 후반
     - ✅ 에러 메시지 개선: "Expected X but found Y", 괄호 매칭 "opened here", 세미콜론 hint
-    - ⬜ ParseError/SemanticError → 공통 Diagnostic 타입 통합 (semantic 에러 CLI 표시 시 같이)
+    - ✅ ParseError/SemanticError → 공통 Diagnostic 타입 통합 (semantic 에러 CLI 표시 포함)
 18. 🔄 semantic analysis (D038, D051-D055) — Phase 2 후반
     - ✅ 파서 컨텍스트 추적 (strict/function/async/generator/loop/switch)
     - ✅ strict mode 에러 (with문), break/continue/return 검증
@@ -490,7 +490,7 @@ main ← feature/lexer-token-enum
     - ✅ 중복 파라미터 검증 (arrow/method/async/generator/strict) — PR #166
     - ✅ ?? + &&/|| 혼용 금지 — PR #167
     - ✅ Context u8 분리 + cover grammar 변환 — PR #168~#174
-    - ⬜ 예약어/contextual keyword 검증 (escaped keyword 등)
+    - ✅ 예약어/contextual keyword 검증 (escaped keyword, strict mode, eval/arguments)
 
 ### 트랜스포머 구현 순서 (PR 단위) — Phase 3 진행 중
 1. ✅ Phase 3 의사결정 (D041-D043) — PR #36

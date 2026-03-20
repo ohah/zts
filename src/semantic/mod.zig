@@ -21,7 +21,7 @@ pub const scope = @import("scope.zig");
 pub const symbol = @import("symbol.zig");
 
 pub const SemanticAnalyzer = analyzer.SemanticAnalyzer;
-pub const SemanticError = analyzer.SemanticError;
+pub const Diagnostic = @import("../diagnostic.zig").Diagnostic;
 pub const Scope = scope.Scope;
 pub const ScopeId = scope.ScopeId;
 pub const ScopeKind = scope.ScopeKind;

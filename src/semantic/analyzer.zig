@@ -26,12 +26,7 @@ const SymbolId = symbol_mod.SymbolId;
 const SymbolKind = symbol_mod.SymbolKind;
 const Symbol = symbol_mod.Symbol;
 const checker = @import("checker.zig");
-
-/// Semantic 분석 에러.
-pub const SemanticError = struct {
-    span: Span,
-    message: []const u8,
-};
+pub const Diagnostic = @import("../diagnostic.zig").Diagnostic;
 
 /// Semantic Analyzer.
 ///
@@ -53,7 +48,7 @@ pub const SemanticAnalyzer = struct {
     symbols: std.ArrayList(Symbol),
 
     /// 수집된 에러 목록
-    errors: std.ArrayList(SemanticError),
+    errors: std.ArrayList(Diagnostic),
 
     /// 현재 스코프 (스코프 스택 대신 인덱스 하나로 추적)
     current_scope: ScopeId = .none,
@@ -129,7 +124,7 @@ pub const SemanticAnalyzer = struct {
             .labels = std.ArrayList(LabelEntry).init(allocator),
             .resolved_names = std.ArrayList([]const u8).init(allocator),
             .scope_maps = std.ArrayList(std.StringHashMap(usize)).init(allocator),
-            .errors = std.ArrayList(SemanticError).init(allocator),
+            .errors = std.ArrayList(Diagnostic).init(allocator),
             .allocator = allocator,
         };
     }
@@ -566,6 +561,7 @@ pub const SemanticAnalyzer = struct {
         self.errors.append(.{
             .span = span,
             .message = msg,
+            .kind = .semantic,
         }) catch @panic("OOM: semantic error list");
     }
 

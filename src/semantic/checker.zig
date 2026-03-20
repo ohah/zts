@@ -20,8 +20,7 @@ const NodeList = ast_mod.NodeList;
 const Ast = ast_mod.Ast;
 const Span = @import("../lexer/token.zig").Span;
 
-/// Semantic 에러를 수집하기 위한 에러 구조체 (analyzer.zig의 SemanticError와 동일)
-const SemanticError = @import("analyzer.zig").SemanticError;
+const Diagnostic = @import("../diagnostic.zig").Diagnostic;
 
 // ====================================================================
 // method_definition flags 상수 (parser.zig와 동일)
@@ -52,7 +51,7 @@ const METHOD_FLAG_GENERATOR = 0x10;
 pub fn checkDuplicateConstructors(
     ast: *const Ast,
     class_body_list: NodeList,
-    errors: *std.ArrayList(SemanticError),
+    errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
 ) void {
     if (class_body_list.len == 0) return;
@@ -117,8 +116,8 @@ fn matchKeyName(ast: *const Ast, key_idx: NodeIndex, target: []const u8) bool {
 }
 
 /// 에러를 errors 목록에 추가한다.
-fn addError(errors: *std.ArrayList(SemanticError), span: Span, msg: []const u8) void {
-    errors.append(.{ .span = span, .message = msg }) catch @panic("OOM: semantic error list");
+fn addError(errors: *std.ArrayList(Diagnostic), span: Span, msg: []const u8) void {
+    errors.append(.{ .span = span, .message = msg, .kind = .semantic }) catch @panic("OOM: semantic error list");
 }
 
 // ====================================================================
@@ -135,7 +134,7 @@ fn addError(errors: *std.ArrayList(SemanticError), span: Span, msg: []const u8) 
 pub fn checkPrivateNameStaticConflict(
     ast: *const Ast,
     class_body_list: NodeList,
-    errors: *std.ArrayList(SemanticError),
+    errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
 ) void {
     if (class_body_list.len == 0) return;
@@ -189,7 +188,7 @@ fn checkPrivateKeyStaticConflict(
     key_idx: NodeIndex,
     is_static: bool,
     declared: *std.StringHashMap(PrivateStaticEntry),
-    errors: *std.ArrayList(SemanticError),
+    errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
 ) void {
     if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return;
@@ -228,7 +227,7 @@ fn checkPrivateKeyStaticConflict(
 pub fn checkObjectDuplicateProto(
     ast: *const Ast,
     object_list: NodeList,
-    errors: *std.ArrayList(SemanticError),
+    errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
 ) void {
     if (object_list.len == 0) return;
@@ -280,7 +279,7 @@ pub fn checkObjectDuplicateProto(
 pub fn checkGetterSetterParams(
     ast: *const Ast,
     node: Node,
-    errors: *std.ArrayList(SemanticError),
+    errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
 ) void {
     if (node.tag != .method_definition) return;
@@ -319,7 +318,7 @@ pub fn checkDuplicateParams(
     ast: *const Ast,
     params_start: u32,
     params_len: u32,
-    errors: *std.ArrayList(SemanticError),
+    errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
 ) void {
     if (params_len == 0) return;
@@ -340,7 +339,7 @@ fn recordSeenName(
     name: []const u8,
     span: Span,
     seen: *std.StringHashMap(Span),
-    errors: *std.ArrayList(SemanticError),
+    errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
 ) void {
     if (seen.get(name)) |_| {
@@ -359,7 +358,7 @@ fn collectBindingNames(
     ast: *const Ast,
     idx: NodeIndex,
     seen: *std.StringHashMap(Span),
-    errors: *std.ArrayList(SemanticError),
+    errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
 ) void {
     if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return;
@@ -400,7 +399,7 @@ fn collectBindingNames(
 pub fn checkDuplicateArrowParams(
     ast: *const Ast,
     param_idx: NodeIndex,
-    errors: *std.ArrayList(SemanticError),
+    errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
 ) void {
     if (param_idx.isNone() or @intFromEnum(param_idx) >= ast.nodes.items.len) return;
@@ -420,7 +419,7 @@ fn collectArrowParamNames(
     ast: *const Ast,
     idx: NodeIndex,
     seen: *std.StringHashMap(Span),
-    errors: *std.ArrayList(SemanticError),
+    errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
 ) void {
     if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return;
@@ -496,7 +495,7 @@ test "checker: duplicate constructor is error" {
     defer parser.deinit();
     _ = try parser.parse();
 
-    var errs = std.ArrayList(SemanticError).init(std.testing.allocator);
+    var errs = std.ArrayList(Diagnostic).init(std.testing.allocator);
     defer {
         for (errs.items) |e| std.testing.allocator.free(e.message);
         errs.deinit();
@@ -522,7 +521,7 @@ test "checker: single constructor is valid" {
     defer parser.deinit();
     _ = try parser.parse();
 
-    var errs = std.ArrayList(SemanticError).init(std.testing.allocator);
+    var errs = std.ArrayList(Diagnostic).init(std.testing.allocator);
     defer errs.deinit();
 
     const ast = &parser.ast;
@@ -543,7 +542,7 @@ test "checker: static/instance private name conflict is error" {
     defer parser.deinit();
     _ = try parser.parse();
 
-    var errs = std.ArrayList(SemanticError).init(std.testing.allocator);
+    var errs = std.ArrayList(Diagnostic).init(std.testing.allocator);
     defer {
         for (errs.items) |e| std.testing.allocator.free(e.message);
         errs.deinit();
@@ -567,7 +566,7 @@ test "checker: same static private getter+setter is valid" {
     defer parser.deinit();
     _ = try parser.parse();
 
-    var errs = std.ArrayList(SemanticError).init(std.testing.allocator);
+    var errs = std.ArrayList(Diagnostic).init(std.testing.allocator);
     defer errs.deinit();
 
     const ast = &parser.ast;
@@ -588,7 +587,7 @@ test "checker: duplicate __proto__ is error" {
     defer parser.deinit();
     _ = try parser.parse();
 
-    var errs = std.ArrayList(SemanticError).init(std.testing.allocator);
+    var errs = std.ArrayList(Diagnostic).init(std.testing.allocator);
     defer {
         for (errs.items) |e| std.testing.allocator.free(e.message);
         errs.deinit();
@@ -612,7 +611,7 @@ test "checker: single __proto__ is valid" {
     defer parser.deinit();
     _ = try parser.parse();
 
-    var errs = std.ArrayList(SemanticError).init(std.testing.allocator);
+    var errs = std.ArrayList(Diagnostic).init(std.testing.allocator);
     defer errs.deinit();
 
     const ast = &parser.ast;

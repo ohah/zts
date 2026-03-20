@@ -2,6 +2,8 @@ const std = @import("std");
 const lib = @import("zts_lib");
 const Scanner = lib.lexer.Scanner;
 const Parser = lib.parser.Parser;
+const Diagnostic = lib.diagnostic.Diagnostic;
+const SemanticAnalyzer = lib.semantic.SemanticAnalyzer;
 const Transformer = lib.transformer.Transformer;
 const Codegen = lib.codegen.Codegen;
 const TsConfig = lib.config.TsConfig;
@@ -52,10 +54,22 @@ fn transpileFile(
         return;
     };
 
-    // 에러 출력 (코드 프레임, D012)
+    // 파서 에러 출력 (코드 프레임, D012)
     if (parser.errors.items.len > 0) {
-        for (parser.errors.items) |parse_err| {
-            try printErrorCodeFrame(stderr, source, file_path, &scanner, parse_err);
+        for (parser.errors.items) |diag| {
+            try printErrorCodeFrame(stderr, source, file_path, &scanner, diag);
+        }
+    }
+
+    // Semantic analysis (D038): 파서 에러가 없을 때만 실행
+    if (parser.errors.items.len == 0) {
+        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+        defer analyzer.deinit();
+        analyzer.analyze();
+        if (analyzer.errors.items.len > 0) {
+            for (analyzer.errors.items) |diag| {
+                try printErrorCodeFrame(stderr, source, file_path, &scanner, diag);
+            }
         }
     }
 
@@ -604,16 +618,20 @@ fn collectMtimes(
 ///   file.ts:3:5: error: expected ';'
 ///     3 | const x =
 ///       |           ^
-fn printErrorCodeFrame(writer: anytype, source: []const u8, file_path: []const u8, scanner: *const Scanner, err: lib.parser.parser.ParseError) !void {
+fn printErrorCodeFrame(writer: anytype, source: []const u8, file_path: []const u8, scanner: *const Scanner, err: Diagnostic) !void {
     const lc = scanner.getLineColumn(err.span.start);
     const line_num = lc.line + 1;
     const col_num = lc.column + 1;
 
-    // 에러 헤더: "Expected X but found Y" 또는 "Expected X" (found가 없으면)
+    // 에러 헤더
+    const kind_label: []const u8 = switch (err.kind) {
+        .parse => "error",
+        .semantic => "error[semantic]",
+    };
     if (err.found) |found| {
-        try writer.print("{s}:{d}:{d}: error: Expected '{s}' but found '{s}'\n", .{ file_path, line_num, col_num, err.message, found });
+        try writer.print("{s}:{d}:{d}: {s}: Expected '{s}' but found '{s}'\n", .{ file_path, line_num, col_num, kind_label, err.message, found });
     } else {
-        try writer.print("{s}:{d}:{d}: error: {s}\n", .{ file_path, line_num, col_num, err.message });
+        try writer.print("{s}:{d}:{d}: {s}: {s}\n", .{ file_path, line_num, col_num, kind_label, err.message });
     }
 
     // 해당 줄 텍스트 추출

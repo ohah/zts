@@ -4,6 +4,7 @@
 
 const std = @import("std");
 
+pub const diagnostic = @import("diagnostic.zig");
 pub const lexer = @import("lexer/mod.zig");
 pub const parser = @import("parser/mod.zig");
 pub const semantic = @import("semantic/mod.zig");
