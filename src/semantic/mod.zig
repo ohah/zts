@@ -28,7 +28,9 @@ pub const ScopeKind = scope.ScopeKind;
 pub const Symbol = symbol.Symbol;
 pub const SymbolId = symbol.SymbolId;
 pub const SymbolKind = symbol.SymbolKind;
-pub const SymbolFlags = symbol.SymbolFlags;
+pub const SymbolFlags = symbol.DeclFlags;
+pub const Reference = symbol.Reference;
+pub const ReferenceKind = symbol.ReferenceKind;
 
 test {
     _ = analyzer;

@@ -5,11 +5,14 @@
 //! SymbolFlags는 packed struct로 선언 속성을 비트플래그로 표현한다.
 //! 재선언 규칙은 excludes 비트마스크로 O(1) 판단.
 //!
-//! references(참조 추적)는 Phase 6(minifier/bundler)에서 추가 예정.
+//! Reference(참조 추적)는 tree-shaking/번들러에서 활용:
+//!   - reference_count == 0 → 미사용 심볼 (tree-shaking 대상)
+//!   - ReferenceKind로 read/write 구분 (dead store 분석용)
 
 const std = @import("std");
 const ScopeId = @import("scope.zig").ScopeId;
 const Span = @import("../lexer/token.zig").Span;
+const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 
 /// 심볼 인덱스. symbols 배열의 위치를 가리킨다.
 pub const SymbolId = enum(u32) {
@@ -208,10 +211,39 @@ pub const Symbol = struct {
     /// 선언 위치 (에러 메시지에서 "여기서 먼저 선언됨" 출력용)
     declaration_span: Span,
 
+    /// 이 심볼이 참조된 횟수 (tree-shaking: 0이면 미사용 심볼).
+    /// read/write/read_write 모두 카운트에 포함.
+    reference_count: u32 = 0,
+
     /// 이 심볼의 이름을 소스에서 읽는다.
     pub fn nameText(self: *const Symbol, source: []const u8) []const u8 {
         return source[self.name.start..self.name.end];
     }
+};
+
+/// 참조 하나의 데이터.
+/// 식별자가 어떤 심볼을 참조하는지, read/write인지 기록한다.
+/// 번들러의 tree-shaking과 미니파이어의 dead store 분석에 사용.
+pub const Reference = struct {
+    /// 참조하는 AST 노드의 인덱스
+    node_index: NodeIndex,
+    /// 참조가 발생한 스코프
+    scope_id: ScopeId,
+    /// 참조 대상 심볼의 인덱스
+    symbol_id: SymbolId,
+    /// 참조 종류 (read/write/read_write)
+    kind: ReferenceKind,
+};
+
+/// 참조 종류. 식별자가 읽기/쓰기/둘 다인지 구분.
+///
+/// - read:       `f(x)`, `y = x`에서의 x
+/// - write:      `x = 1`에서의 x
+/// - read_write: `x += 1`, `x++`에서의 x
+pub const ReferenceKind = enum(u2) {
+    read,
+    write,
+    read_write,
 };
 
 // ============================================================
