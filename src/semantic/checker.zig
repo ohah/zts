@@ -303,12 +303,11 @@ pub fn checkGetterSetterParams(
 ///   UniqueFormalParameters: FormalParameters
 ///     It is a Syntax Error if BoundNames of FormalParameters contains any duplicate elements.
 ///
-/// 적용 대상:
+/// 적용 대상 (호출자가 조건 판단):
 ///   - arrow function 파라미터 (항상 UniqueFormalParameters)
 ///   - class 메서드 파라미터 (class body는 항상 strict)
 ///   - strict mode 함수 파라미터
 ///   - generator/async function 파라미터
-///   - default/rest 파라미터가 있는 함수 (non-simple)
 pub fn checkDuplicateParams(
     ast: *const Ast,
     params_start: u32,
@@ -329,6 +328,25 @@ pub fn checkDuplicateParams(
     }
 }
 
+/// 파라미터 이름을 seen 맵에 기록하고, 이미 있으면 중복 에러를 추가한다.
+fn recordSeenName(
+    name: []const u8,
+    span: Span,
+    seen: *std.StringHashMap(Span),
+    errors: *std.ArrayList(SemanticError),
+    allocator: std.mem.Allocator,
+) void {
+    if (seen.get(name)) |_| {
+        addError(errors, span, std.fmt.allocPrint(
+            allocator,
+            "Duplicate parameter name '{s}'",
+            .{name},
+        ) catch @panic("OOM"));
+    } else {
+        seen.put(name, span) catch @panic("OOM");
+    }
+}
+
 /// 바인딩 패턴에서 이름을 재귀적으로 추출하여 중복 체크한다.
 fn collectBindingNames(
     ast: *const Ast,
@@ -342,16 +360,7 @@ fn collectBindingNames(
 
     switch (node.tag) {
         .binding_identifier => {
-            const name = ast.source[node.span.start..node.span.end];
-            if (seen.get(name)) |_| {
-                addError(errors, node.span, std.fmt.allocPrint(
-                    allocator,
-                    "Duplicate parameter name '{s}'",
-                    .{name},
-                ) catch @panic("OOM"));
-            } else {
-                seen.put(name, node.span) catch @panic("OOM");
-            }
+            recordSeenName(ast.source[node.span.start..node.span.end], node.span, seen, errors, allocator);
         },
         .array_pattern, .object_pattern => {
             // list of elements/properties
@@ -389,6 +398,10 @@ pub fn checkDuplicateArrowParams(
 ) void {
     if (param_idx.isNone() or @intFromEnum(param_idx) >= ast.nodes.items.len) return;
 
+    // fast path: 단일 파라미터는 중복 불가능
+    const node = ast.getNode(param_idx);
+    if (node.tag == .binding_identifier or node.tag == .identifier_reference) return;
+
     var seen = std.StringHashMap(Span).init(allocator);
     defer seen.deinit();
 
@@ -407,26 +420,15 @@ fn collectArrowParamNames(
     const node = ast.getNode(idx);
 
     switch (node.tag) {
-        // 단일 파라미터
+        // 단일 파라미터 (post-cover-grammar)
         .binding_identifier => {
-            const name = ast.source[node.span.start..node.span.end];
-            if (seen.get(name)) |_| {
-                addError(errors, node.span, std.fmt.allocPrint(
-                    allocator,
-                    "Duplicate parameter name '{s}'",
-                    .{name},
-                ) catch @panic("OOM"));
-            } else {
-                seen.put(name, node.span) catch @panic("OOM");
-            }
+            recordSeenName(ast.source[node.span.start..node.span.end], node.span, seen, errors, allocator);
         },
         // cover grammar에서 변환된 파라미터 리스트
         .parenthesized_expression, .sequence_expression => {
-            // parenthesized: unary.operand → 내부 노드
             if (node.tag == .parenthesized_expression) {
                 collectArrowParamNames(ast, node.data.unary.operand, seen, errors, allocator);
             } else {
-                // sequence_expression: list of comma-separated expressions
                 if (node.data.list.len == 0) return;
                 if (node.data.list.start + node.data.list.len > ast.extra_data.items.len) return;
                 const indices = ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
@@ -435,18 +437,9 @@ fn collectArrowParamNames(
                 }
             }
         },
-        // identifier를 파라미터로 사용
+        // identifier를 파라미터로 사용 (pre-cover-grammar, 방어적 처리)
         .identifier_reference => {
-            const name = ast.source[node.span.start..node.span.end];
-            if (seen.get(name)) |_| {
-                addError(errors, node.span, std.fmt.allocPrint(
-                    allocator,
-                    "Duplicate parameter name '{s}'",
-                    .{name},
-                ) catch @panic("OOM"));
-            } else {
-                seen.put(name, node.span) catch @panic("OOM");
-            }
+            recordSeenName(ast.source[node.span.start..node.span.end], node.span, seen, errors, allocator);
         },
         // destructuring 패턴
         .array_pattern, .object_pattern, .array_expression, .object_expression => {
