@@ -199,7 +199,7 @@ fn parseImportSpecifier(self: *Parser) ParseError2!NodeIndex {
         self.ast.getNode(imported).tag == .string_literal)
     {
         // string literal without `as` — binding 이름이 없으므로 에러
-        self.addError(self.ast.getNode(imported).span, "string literal in import specifier requires 'as' binding");
+        self.addError(self.ast.getNode(imported).span, "String literal in import specifier requires 'as' binding");
     }
 
     return try self.ast.addNode(.{
@@ -228,7 +228,7 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
                 // anonymous function declaration은 호출 불가 (IIFE가 아님)
                 // export default function() {}() → SyntaxError
                 if (self.current() == .l_paren) {
-                    self.addError(self.currentSpan(), "anonymous function declaration cannot be invoked");
+                    self.addError(self.currentSpan(), "Anonymous function declaration cannot be invoked");
                 }
                 break :blk fn_decl;
             },
@@ -240,7 +240,7 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
                     if (peek.kind == .kw_function and !peek.has_newline_before) {
                         const fn_decl = try self.parseAsyncFunctionDeclarationDefaultExport();
                         if (self.current() == .l_paren) {
-                            self.addError(self.currentSpan(), "anonymous function declaration cannot be invoked");
+                            self.addError(self.currentSpan(), "Anonymous function declaration cannot be invoked");
                         }
                         break :blk fn_decl;
                     }
@@ -307,7 +307,7 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
                     if (!local_idx.isNone() and @intFromEnum(local_idx) < self.ast.nodes.items.len) {
                         const local_node = self.ast.getNode(local_idx);
                         if (local_node.tag == .string_literal) {
-                            self.addError(local_node.span, "string literal cannot be used as local binding in export");
+                            self.addError(local_node.span, "String literal cannot be used as local binding in export");
                         }
                     }
                 }
@@ -377,7 +377,7 @@ fn parseModuleSource(self: *Parser) ParseError2!NodeIndex {
             .data = .{ .string_ref = span },
         });
     }
-    self.addError(span, "module source string expected");
+    self.addError(span, "Module source string expected");
     return NodeIndex.none;
 }
 
@@ -417,7 +417,7 @@ fn skipImportAttributes(self: *Parser) void {
 
                 for (0..key_count) |i| {
                     if (std.mem.eql(u8, keys[i], effective_key)) {
-                        self.addError(key_span, "duplicate import attribute key");
+                        self.addError(key_span, "Duplicate import attribute key");
                         break;
                     }
                 }

@@ -2342,3 +2342,77 @@ test "SemanticAnalyzer: static and instance private field with same name is erro
 
     try std.testing.expect(ana.errors.items.len > 0);
 }
+
+// ============================================================
+// Diagnostic kind + 에러 메시지 검증
+// ============================================================
+
+test "SemanticAnalyzer: errors have kind=semantic" {
+    var scanner = Scanner.init(std.testing.allocator, "let x = 1; let x = 2;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len > 0);
+    try std.testing.expectEqual(Diagnostic.Kind.semantic, ana.errors.items[0].kind);
+}
+
+test "SemanticAnalyzer: redeclaration error message contains identifier name" {
+    var scanner = Scanner.init(std.testing.allocator, "let foo = 1; let foo = 2;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, ana.errors.items[0].message, "foo") != null);
+}
+
+test "SemanticAnalyzer: duplicate export name is semantic error" {
+    var scanner = Scanner.init(std.testing.allocator, "export const a = 1; export const a = 2;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    parser.is_module = true;
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.is_module = true;
+    ana.analyze();
+
+    // 재선언 에러 또는 중복 export 에러가 있어야 함
+    try std.testing.expect(ana.errors.items.len > 0);
+    try std.testing.expectEqual(Diagnostic.Kind.semantic, ana.errors.items[0].kind);
+}
+
+test "SemanticAnalyzer: valid code has no semantic errors" {
+    const cases = [_][]const u8{
+        "let x = 1; let y = 2;",
+        "function f() { let x = 1; } function g() { let x = 2; }",
+        "{ let x = 1; } { let x = 2; }",
+        "var x = 1; var x = 2;", // var은 재선언 허용
+    };
+    for (cases) |src| {
+        var scanner = Scanner.init(std.testing.allocator, src);
+        defer scanner.deinit();
+        var parser = Parser.init(std.testing.allocator, &scanner);
+        defer parser.deinit();
+        _ = try parser.parse();
+
+        var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+        defer ana.deinit();
+        ana.analyze();
+
+        try std.testing.expectEqual(@as(usize, 0), ana.errors.items.len);
+    }
+}

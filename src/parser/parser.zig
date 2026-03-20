@@ -346,7 +346,7 @@ pub const Parser = struct {
         if (!self.is_strict_mode) return;
         const text = self.resolveIdentifierText(span);
         if (std.mem.eql(u8, text, "eval") or std.mem.eql(u8, text, "arguments")) {
-            self.addError(span, "assignment to 'eval' or 'arguments' is not allowed in strict mode");
+            self.addError(span, "Assignment to 'eval' or 'arguments' is not allowed in strict mode");
         }
     }
 
@@ -385,7 +385,7 @@ pub const Parser = struct {
             if (kw.isReservedKeyword() or kw.isLiteralKeyword() or
                 (self.is_strict_mode and kw.isStrictModeReserved()))
             {
-                self.addError(span, "keywords cannot contain escape characters");
+                self.addError(span, "Keywords cannot contain escape characters");
             }
         }
     }
@@ -427,7 +427,7 @@ pub const Parser = struct {
     /// cover grammar: expression → assignment target으로 변환.
     /// 태그를 변환하고 (setTag) 검증도 수행한다.
     /// 반환값: true면 valid assignment target, false면 에러를 이미 추가했거나 invalid.
-    /// is_top이 true면 최상위 호출 (invalid일 때 "invalid assignment target" 에러 추가).
+    /// is_top이 true면 최상위 호출 (invalid일 때 "Invalid assignment target" 에러 추가).
     pub fn coverExpressionToAssignmentTarget(self: *Parser, idx: NodeIndex, is_top: bool) bool {
         if (idx.isNone()) return false;
         const node = self.ast.getNode(idx);
@@ -447,7 +447,7 @@ pub const Parser = struct {
             .static_member_expression, .computed_member_expression => {
                 if (node.data.binary.flags == 0) return true; // normal
                 // optional chaining (a?.b, a?.[b])은 assignment target이 아님
-                if (is_top) self.addError(node.span, "invalid assignment target");
+                if (is_top) self.addError(node.span, "Invalid assignment target");
                 return false;
             },
 
@@ -471,13 +471,13 @@ pub const Parser = struct {
             .parenthesized_expression => {
                 const inner = node.data.unary.operand;
                 if (inner.isNone()) {
-                    if (is_top) self.addError(node.span, "invalid assignment target");
+                    if (is_top) self.addError(node.span, "Invalid assignment target");
                     return false;
                 }
                 const inner_tag = self.ast.getNode(inner).tag;
                 // ({x}) = 1, ([x]) = 1 → parenthesized destructuring 금지
                 if (inner_tag == .array_expression or inner_tag == .object_expression) {
-                    self.addError(node.span, "invalid assignment target");
+                    self.addError(node.span, "Invalid assignment target");
                     return false;
                 }
                 // (x) = 1 → 내부가 simple target이면 OK
@@ -494,12 +494,12 @@ pub const Parser = struct {
             //    is_top 여부와 무관하게 항상 에러. else 분기는 is_top=false일 때 에러를 내지 않으므로
             //    destructuring 내부([import.meta] = arr)에서 잘못 통과하는 것을 방지.
             .meta_property => {
-                self.addError(node.span, "invalid assignment target");
+                self.addError(node.span, "Invalid assignment target");
                 return false;
             },
 
             else => {
-                if (is_top) self.addError(node.span, "invalid assignment target");
+                if (is_top) self.addError(node.span, "Invalid assignment target");
                 return false;
             },
         };
@@ -532,12 +532,12 @@ pub const Parser = struct {
                 .spread_element => {
                     // rest는 마지막 요소여야 함: [...x, y] → SyntaxError
                     if (i + 1 < list.len) {
-                        self.addError(elem.span, "rest element must be last element");
+                        self.addError(elem.span, "Rest element must be last element");
                     }
                     // rest 뒤 trailing comma 금지: [...x,] → SyntaxError
                     // parseArrayExpression에서 spread_trailing_comma로 마킹됨
                     if ((elem.data.unary.flags & spread_trailing_comma) != 0) {
-                        self.addError(elem.span, "rest element may not have a trailing comma");
+                        self.addError(elem.span, "Rest element may not have a trailing comma");
                     }
                     self.coverSpreadElementToTarget(elem_idx, elem.data.unary.operand);
                 },
@@ -607,13 +607,13 @@ pub const Parser = struct {
             } else if (elem.tag == .spread_element) {
                 // rest는 마지막 요소여야 함: {...x, y} → SyntaxError
                 if (i + 1 < list.len) {
-                    self.addError(elem.span, "rest element must be last element");
+                    self.addError(elem.span, "Rest element must be last element");
                 }
                 // object rest: {...x} = obj
                 self.coverSpreadElementToTarget(elem_idx, elem.data.unary.operand);
             } else if (elem.tag == .method_definition) {
                 // method/getter/setter/async/generator는 destructuring target이 아님
-                self.addError(elem.span, "invalid assignment target");
+                self.addError(elem.span, "Invalid assignment target");
             }
         }
     }
@@ -631,7 +631,7 @@ pub const Parser = struct {
                 for (self.param_name_spans.items) |prev_span| {
                     const prev_name = self.ast.source[prev_span.start..prev_span.end];
                     if (std.mem.eql(u8, name, prev_name)) {
-                        self.addError(node.span, "duplicate parameter name");
+                        self.addError(node.span, "Duplicate parameter name");
                         return;
                     }
                 }
@@ -819,10 +819,10 @@ pub const Parser = struct {
                 if (elem.tag == .spread_element) {
                     // rest 파라미터: 마지막 요소여야 하고 initializer 금지, trailing comma 금지
                     if (i + 1 < list.len) {
-                        self.addError(elem.span, "rest element must be last element");
+                        self.addError(elem.span, "Rest element must be last element");
                     }
                     if ((elem.data.unary.flags & spread_trailing_comma) != 0) {
-                        self.addError(elem.span, "rest element may not have a trailing comma");
+                        self.addError(elem.span, "Rest element may not have a trailing comma");
                     }
                     self.checkBindingRestInit(elem.data.unary.operand);
                     // rest의 operand도 valid assignment target이어야 함
@@ -834,7 +834,7 @@ pub const Parser = struct {
         } else if (node.tag == .spread_element) {
             // 단일 rest 파라미터: (...x) → initializer 금지 + trailing comma 금지
             if ((node.data.unary.flags & spread_trailing_comma) != 0) {
-                self.addError(node.span, "rest element may not have a trailing comma");
+                self.addError(node.span, "Rest element may not have a trailing comma");
             }
             self.checkBindingRestInit(node.data.unary.operand);
             _ = self.coverExpressionToAssignmentTarget(node.data.unary.operand, false);
@@ -858,9 +858,9 @@ pub const Parser = struct {
         if (self.current() == .kw_await or self.current() == .kw_yield) {
             self.checkYieldAwaitUse(self.currentSpan(), "identifier");
         } else if (self.current().isReservedKeyword() or self.current().isLiteralKeyword()) {
-            self.addError(self.currentSpan(), "reserved word cannot be used as identifier");
+            self.addError(self.currentSpan(), "Reserved word cannot be used as identifier");
         } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
-            self.addError(self.currentSpan(), "reserved word in strict mode cannot be used as identifier");
+            self.addError(self.currentSpan(), "Reserved word in strict mode cannot be used as identifier");
         } else if (self.current() == .escaped_keyword) {
             // escaped reserved keyword는 식별자로 사용 불가 (예: \u0061wait in script)
             // 단, escaped await는 script mode의 non-async에서는 허용
@@ -870,7 +870,7 @@ pub const Parser = struct {
                     self.addError(self.currentSpan(), "'await' cannot be used as identifier in this context");
                 }
             } else {
-                self.addError(self.currentSpan(), "keywords cannot contain escape characters");
+                self.addError(self.currentSpan(), "Keywords cannot contain escape characters");
             }
         } else if (self.current() == .escaped_strict_reserved) {
             // escaped strict reserved는 strict mode에서 금지
@@ -878,7 +878,7 @@ pub const Parser = struct {
             const err_count = self.errors.items.len;
             self.checkYieldAwaitUse(self.currentSpan(), "identifier");
             if (self.errors.items.len == err_count and self.is_strict_mode) {
-                self.addError(self.currentSpan(), "keywords cannot contain escape characters");
+                self.addError(self.currentSpan(), "Keywords cannot contain escape characters");
             }
         }
     }
@@ -1021,7 +1021,7 @@ pub const Parser = struct {
             const inner = node.data.binary.right;
             const inner_node = self.ast.getNode(inner);
             if (inner_node.tag == .function_declaration) {
-                self.addError(inner_node.span, "labelled function declaration is not allowed in loop body");
+                self.addError(inner_node.span, "Labelled function declaration is not allowed in loop body");
             } else if (inner_node.tag == .labeled_statement) {
                 // 중첩 label: label1: label2: function f() {}
                 self.checkLabelledFunction(inner);
@@ -1106,7 +1106,7 @@ pub const Parser = struct {
                 for (self.param_name_spans.items[0..j]) |prev_span| {
                     const prev_name = self.ast.source[prev_span.start..prev_span.end];
                     if (std.mem.eql(u8, name, prev_name)) {
-                        self.addError(name_span, "duplicate parameter name");
+                        self.addError(name_span, "Duplicate parameter name");
                         break;
                     }
                 }
@@ -3396,14 +3396,14 @@ test "Diagnostic: parser errors have kind=parse" {
 test "ReservedWord: escaped keyword in variable binding is error" {
     // \u0066or → "for" (reserved keyword)
     try expectParseError("var \\u0066or = 1;", .{
-        .message_contains = "escape",
+        .message_contains = "Escape",
     });
 }
 
 test "ReservedWord: escaped strict reserved in strict mode binding is error" {
     // \u006Cet → "let" (strict mode reserved)
     try expectParseError("'use strict'; var \\u006Cet = 1;", .{
-        .message_contains = "escape",
+        .message_contains = "Escape",
     });
 }
 

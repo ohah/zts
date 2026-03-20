@@ -148,7 +148,7 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
 
 ##### ZTS 번들러 포지셔닝
 - **전략: 품질 먼저 → 속도 추가 (방법 B)** — Rollup→Rolldown 전략을 Zig로
-  - 1단계: 정확한 파서/트랜스포머 (✅ 완료, Test262 99.3%)
+  - 1단계: 정확한 파서/트랜스포머 (✅ 완료, Test262 100%)
   - 2단계: 정확한 tree-shaking/스코프 호이스팅 (Rollup 알고리즘 참고)
   - 3단계: Arena + SIMD + 멀티스레드로 속도 확보 (알고리즘 타협 없이)
 - **핵심 목표**: React Native 지원 (Metro 대체), ESM 순서 보장, WASM 임베디드 번들러
@@ -476,10 +476,10 @@ main ← feature/lexer-token-enum
 14. ✅ TS 선언 (interface, type alias, enum, namespace, declare, abstract) — PR #31
 15. ✅ TS 변환 대상 (parameter property, decorator, implements, class generics) — PR #32
 16. ✅ JSX 파싱 (element, fragment, attributes, expression, text) — PR #33
-17. 🔄 에러 복구 강화 + Test262 파서 통과율 — Phase 2 후반
+17. ✅ 에러 복구 강화 + Test262 파서 통과율 — Phase 2 후반
     - ✅ 에러 메시지 개선: "Expected X but found Y", 괄호 매칭 "opened here", 세미콜론 hint
     - ✅ ParseError/SemanticError → 공통 Diagnostic 타입 통합 (semantic 에러 CLI 표시 포함)
-18. 🔄 semantic analysis (D038, D051-D055) — Phase 2 후반
+18. ✅ semantic analysis (D038, D051-D055) — Phase 2 후반
     - ✅ 파서 컨텍스트 추적 (strict/function/async/generator/loop/switch)
     - ✅ strict mode 에러 (with문), break/continue/return 검증
     - ✅ Test262 early phase 통합

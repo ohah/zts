@@ -51,7 +51,7 @@ fn parseFunctionDeclarationWithFlags(self: *Parser, extra_flags: u32) ParseError
         const param = try self.parseBindingIdentifier();
         try self.scratch.append(param);
         if (!param.isNone() and self.ast.getNode(param).tag == .spread_element and self.current() == .comma) {
-            self.addError(self.currentSpan(), "rest parameter must be last formal parameter");
+            self.addError(self.currentSpan(), "Rest parameter must be last formal parameter");
         }
         if (!self.eat(.comma)) break;
     }
@@ -147,7 +147,7 @@ fn parseFunctionDeclarationWithFlagsOptionalName(self: *Parser, extra_flags: u32
         const param = try self.parseBindingIdentifier();
         try self.scratch.append(param);
         if (!param.isNone() and self.ast.getNode(param).tag == .spread_element and self.current() == .comma) {
-            self.addError(self.currentSpan(), "rest parameter must be last formal parameter");
+            self.addError(self.currentSpan(), "Rest parameter must be last formal parameter");
         }
         if (!self.eat(.comma)) break;
     }
@@ -216,7 +216,7 @@ pub fn parseFunctionExpressionWithFlags(self: *Parser, extra_flags: u32) ParseEr
         const param = try self.parseBindingIdentifier();
         try self.scratch.append(param);
         if (!param.isNone() and self.ast.getNode(param).tag == .spread_element and self.current() == .comma) {
-            self.addError(self.currentSpan(), "rest parameter must be last formal parameter");
+            self.addError(self.currentSpan(), "Rest parameter must be last formal parameter");
         }
         if (!self.eat(.comma)) break;
     }
@@ -522,7 +522,7 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
             const param = try self.parseBindingIdentifier();
             try self.scratch.append(param);
             if (!param.isNone() and self.ast.getNode(param).tag == .spread_element and self.current() == .comma) {
-                self.addError(self.currentSpan(), "rest parameter must be last formal parameter");
+                self.addError(self.currentSpan(), "Rest parameter must be last formal parameter");
             }
             if (!self.eat(.comma)) break;
         }
@@ -543,20 +543,20 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
             else
                 @as([]const u8, "");
             if ((flags & 0x01) != 0 and std.mem.eql(u8, method_name, "prototype")) {
-                self.addError(mk.span, "static class method cannot be named 'prototype'");
+                self.addError(mk.span, "Static class method cannot be named 'prototype'");
             }
             // constructor는 일반 method만 가능 — getter/setter/generator/async 금지
             if ((flags & 0x01) == 0 and std.mem.eql(u8, method_name, "constructor")) {
                 // flags: 0x02=getter, 0x04=setter, 0x08=async, 0x10=generator
                 if ((flags & 0x1E) != 0) {
-                    self.addError(mk.span, "class constructor cannot be a getter, setter, generator, or async");
+                    self.addError(mk.span, "Class constructor cannot be a getter, setter, generator, or async");
                 }
             }
             // private name '#constructor' 금지
             if (mk.tag == .private_identifier) {
                 const pn = self.ast.source[mk.span.start..mk.span.end];
                 if (std.mem.eql(u8, pn, "#constructor")) {
-                    self.addError(mk.span, "class member cannot be named '#constructor'");
+                    self.addError(mk.span, "Class member cannot be named '#constructor'");
                 }
             }
         }
@@ -635,17 +635,17 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         if (key_text.len > 0) {
             // class field 이름 'constructor' 금지 — static/non-static 모두 (ECMAScript 15.7.1)
             if (std.mem.eql(u8, key_text, "constructor")) {
-                self.addError(key_node.span, "class field cannot be named 'constructor'");
+                self.addError(key_node.span, "Class field cannot be named 'constructor'");
             }
             if ((flags & 0x01) != 0 and std.mem.eql(u8, key_text, "prototype")) {
-                self.addError(key_node.span, "static class field cannot be named 'prototype'");
+                self.addError(key_node.span, "Static class field cannot be named 'prototype'");
             }
         }
         // private field '#constructor' 금지
         if (key_node.tag == .private_identifier) {
             const pn = self.ast.source[key_node.span.start..key_node.span.end];
             if (std.mem.eql(u8, pn, "#constructor")) {
-                self.addError(key_node.span, "class member cannot be named '#constructor'");
+                self.addError(key_node.span, "Class member cannot be named '#constructor'");
             }
         }
     }

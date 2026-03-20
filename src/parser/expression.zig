@@ -352,7 +352,7 @@ fn parseBinaryExpression(self: *Parser, min_prec: u8) ParseError2!NodeIndex {
     // bare #field가 `in` 연산자 없이 사용되면 SyntaxError.
     if (!left.isNone() and self.ast.getNode(left).tag == .private_identifier) {
         if (self.current() != .kw_in or !self.ctx.allow_in) {
-            self.addError(self.ast.getNode(left).span, "private name '#' is not valid outside of `in` expression");
+            self.addError(self.ast.getNode(left).span, "Private name '#' is not valid outside of `in` expression");
         }
     }
 
@@ -373,7 +373,7 @@ fn parseBinaryExpression(self: *Parser, min_prec: u8) ParseError2!NodeIndex {
         if (self.current() == .star2 and !left.isNone()) {
             const left_tag = self.ast.getNode(left).tag;
             if (left_tag == .unary_expression) {
-                self.addError(self.currentSpan(), "unary expression cannot be the left operand of '**'");
+                self.addError(self.currentSpan(), "Unary expression cannot be the left operand of '**'");
             }
         }
 
@@ -384,12 +384,12 @@ fn parseBinaryExpression(self: *Parser, min_prec: u8) ParseError2!NodeIndex {
         // ?? 와 &&/|| 혼합 감지 (ECMAScript: 괄호 없이 혼합 금지)
         if (op_kind == .question2) {
             if (has_logical_or_and) {
-                self.addError(self.currentSpan(), "cannot mix '??' with '&&' or '||' without parentheses");
+                self.addError(self.currentSpan(), "Cannot mix '??' with '&&' or '||' without parentheses");
             }
             has_coalesce = true;
         } else if (op_kind == .amp2 or op_kind == .pipe2) {
             if (has_coalesce) {
-                self.addError(self.currentSpan(), "cannot mix '??' with '&&' or '||' without parentheses");
+                self.addError(self.currentSpan(), "Cannot mix '??' with '&&' or '||' without parentheses");
             }
             has_logical_or_and = true;
         }
@@ -405,7 +405,7 @@ fn parseBinaryExpression(self: *Parser, min_prec: u8) ParseError2!NodeIndex {
         // 예: `#field in #field in this` → 내부 `#field in #field`의 RHS `#field`이 bare → 에러
         if (op_kind == .kw_in and !right.isNone()) {
             if (self.ast.getNode(right).tag == .private_identifier) {
-                self.addError(self.ast.getNode(right).span, "private name '#' is not valid as right-hand side of `in` expression");
+                self.addError(self.ast.getNode(right).span, "Private name '#' is not valid as right-hand side of `in` expression");
             }
         }
 
@@ -416,7 +416,7 @@ fn parseBinaryExpression(self: *Parser, min_prec: u8) ParseError2!NodeIndex {
             if (right_node.tag == .logical_expression) {
                 const right_op: Kind = @enumFromInt(right_node.data.binary.flags);
                 if (right_op == .amp2 or right_op == .pipe2) {
-                    self.addError(right_node.span, "cannot mix '??' with '&&' or '||' without parentheses");
+                    self.addError(right_node.span, "Cannot mix '??' with '&&' or '||' without parentheses");
                 }
             }
         }
@@ -462,7 +462,7 @@ fn parseUnaryExpression(self: *Parser) ParseError2!NodeIndex {
                         const right_idx = del_node.data.binary.right;
                         if (!right_idx.isNone() and @intFromEnum(right_idx) < self.ast.nodes.items.len) {
                             if (self.ast.getNode(right_idx).tag == .private_identifier) {
-                                self.addError(del_node.span, "private fields cannot be deleted");
+                                self.addError(del_node.span, "Private fields cannot be deleted");
                             }
                         }
                     }
@@ -474,7 +474,7 @@ fn parseUnaryExpression(self: *Parser) ParseError2!NodeIndex {
                 while (!target.isNone()) {
                     const t = self.ast.getNode(target);
                     if (t.tag == .identifier_reference) {
-                        self.addError(t.span, "delete of an identifier is not allowed in strict mode");
+                        self.addError(t.span, "Delete of an identifier is not allowed in strict mode");
                         break;
                     } else if (t.tag == .parenthesized_expression) {
                         target = t.data.unary.operand;
@@ -612,7 +612,7 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                 if (!prop.isNone() and self.ast.getNode(prop).tag == .private_identifier) {
                     const obj_node = self.ast.getNode(expr);
                     if (obj_node.tag == .super_expression) {
-                        self.addError(self.ast.getNode(prop).span, "private field access on super is not allowed");
+                        self.addError(self.ast.getNode(prop).span, "Private field access on super is not allowed");
                     }
                 }
                 expr = try self.ast.addNode(.{
@@ -676,7 +676,7 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
             .no_substitution_template, .template_head => {
                 // tagged template 금지: a?.b`template` (ECMAScript 12.3.1.1)
                 if (after_optional_chain) {
-                    self.addError(self.currentSpan(), "tagged template cannot be used in optional chain");
+                    self.addError(self.currentSpan(), "Tagged template cannot be used in optional chain");
                 }
                 // tagged template: expr`text` 또는 expr`text${...}...`
                 // tagged template에서는 잘못된 이스케이프 허용 (cooked가 undefined)
@@ -965,7 +965,7 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
             const decorators = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
             self.restoreScratch(scratch_top);
             if (self.current() != .kw_class) {
-                self.addError(self.currentSpan(), "class expected after decorator");
+                self.addError(self.currentSpan(), "Class expected after decorator");
             }
             return self.parseClassWithDecorators(.class_expression, decorators);
         },
@@ -998,7 +998,7 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
                 const is_source = std.mem.eql(u8, prop_text, "source");
                 const is_defer = std.mem.eql(u8, prop_text, "defer");
                 if (!is_source and !is_defer) {
-                    self.addError(.{ .start = span.start, .end = prop_span.end }, "import.meta/source/defer expected, got unknown property");
+                    self.addError(.{ .start = span.start, .end = prop_span.end }, "Import.meta/source/defer expected, got unknown property");
                     return try self.ast.addNode(.{
                         .tag = .meta_property,
                         .span = .{ .start = span.start, .end = prop_span.end },
@@ -1012,7 +1012,7 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
                 }
 
                 // import.source/defer without () → 에러
-                self.addError(.{ .start = span.start, .end = prop_span.end }, "import.source/defer requires arguments");
+                self.addError(.{ .start = span.start, .end = prop_span.end }, "Import.source/defer requires arguments");
                 return try self.ast.addNode(.{
                     .tag = .meta_property,
                     .span = .{ .start = span.start, .end = prop_span.end },
@@ -1026,7 +1026,7 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
             // 보간 없는 템플릿 리터럴: `text`
             // untagged template에서 잘못된 이스케이프는 SyntaxError (ECMAScript 13.2.8.1)
             if (self.scanner.token.has_invalid_escape) {
-                self.addError(span, "invalid escape sequence in template literal");
+                self.addError(span, "Invalid escape sequence in template literal");
             }
             self.advance();
             return try self.ast.addNode(.{
@@ -1039,7 +1039,7 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
             // 보간 있는 템플릿 리터럴: `text${expr}...`
             // untagged template에서 잘못된 이스케이프는 SyntaxError
             if (self.scanner.token.has_invalid_escape) {
-                self.addError(span, "invalid escape sequence in template literal");
+                self.addError(span, "Invalid escape sequence in template literal");
             }
             return parseTemplateLiteral(self, false);
         },
@@ -1099,7 +1099,7 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
             // escaped strict reserved → strict mode에서 에러, non-strict에서 identifier
             if (self.current() == .escaped_strict_reserved) {
                 if (self.is_strict_mode) {
-                    self.addError(span, "escaped reserved word cannot be used as identifier in strict mode");
+                    self.addError(span, "Escaped reserved word cannot be used as identifier in strict mode");
                 }
                 self.checkYieldAwaitUse(span, "identifier");
                 self.advance();
@@ -1115,7 +1115,7 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
                 (!self.current().isReservedKeyword() or self.current() == .kw_await or self.current() == .kw_yield))
             {
                 if (self.is_strict_mode and self.current().isStrictModeReserved()) {
-                    self.addError(span, "reserved word in strict mode cannot be used as identifier");
+                    self.addError(span, "Reserved word in strict mode cannot be used as identifier");
                 } else {
                     self.checkYieldAwaitUse(span, "identifier");
                 }
@@ -1127,7 +1127,7 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
                 });
             }
             // 에러 복구: 알 수 없는 토큰 → 에러 노드 생성 후 건너뜀
-            self.addError(span, "expression expected");
+            self.addError(span, "Expression expected");
             self.advance();
             return try self.ast.addNode(.{
                 .tag = .invalid,
@@ -1163,7 +1163,7 @@ fn parseTemplateLiteral(self: *Parser, is_tagged: bool) ParseError2!NodeIndex {
         if (self.current() == .template_middle) {
             // untagged template에서 잘못된 이스케이프는 SyntaxError
             if (!is_tagged and self.scanner.token.has_invalid_escape) {
-                self.addError(self.currentSpan(), "invalid escape sequence in template literal");
+                self.addError(self.currentSpan(), "Invalid escape sequence in template literal");
             }
             try self.scratch.append(try self.ast.addNode(.{
                 .tag = .template_element,
@@ -1174,7 +1174,7 @@ fn parseTemplateLiteral(self: *Parser, is_tagged: bool) ParseError2!NodeIndex {
         } else if (self.current() == .template_tail) {
             // untagged template에서 잘못된 이스케이프는 SyntaxError
             if (!is_tagged and self.scanner.token.has_invalid_escape) {
-                self.addError(self.currentSpan(), "invalid escape sequence in template literal");
+                self.addError(self.currentSpan(), "Invalid escape sequence in template literal");
             }
             try self.scratch.append(try self.ast.addNode(.{
                 .tag = .template_element,
@@ -1185,7 +1185,7 @@ fn parseTemplateLiteral(self: *Parser, is_tagged: bool) ParseError2!NodeIndex {
             break;
         } else {
             // 에러 복구: 닫히지 않은 템플릿
-            self.addError(self.currentSpan(), "expected template continuation");
+            self.addError(self.currentSpan(), "Expected template continuation");
             break;
         }
     }
@@ -1263,7 +1263,7 @@ pub fn parseIdentifierName(self: *Parser) ParseError2!NodeIndex {
             .data = .{ .string_ref = span },
         });
     }
-    self.addError(span, "identifier expected");
+    self.addError(span, "Identifier expected");
     self.advance();
     return try self.ast.addNode(.{ .tag = .invalid, .span = span, .data = .{ .none = 0 } });
 }
@@ -1278,7 +1278,7 @@ pub fn parseModuleExportName(self: *Parser) ParseError2!NodeIndex {
         // lone surrogate 검사: \uD800-\uDFFF가 쌍을 이루지 않으면 에러
         const str_content = self.ast.source[span.start + 1 .. if (span.end > 0) span.end - 1 else span.end];
         if (containsLoneSurrogate(str_content)) {
-            self.addError(span, "string literal contains lone surrogate");
+            self.addError(span, "String literal contains lone surrogate");
         }
         self.advance();
         return try self.ast.addNode(.{
@@ -1461,7 +1461,7 @@ pub fn parsePropertyKey(self: *Parser) ParseError2!NodeIndex {
                     .data = .{ .string_ref = span },
                 });
             }
-            self.addError(span, "property key expected");
+            self.addError(span, "Property key expected");
             self.advance();
             return try self.ast.addNode(.{ .tag = .invalid, .span = span, .data = .{ .none = 0 } });
         },
