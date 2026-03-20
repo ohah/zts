@@ -157,6 +157,7 @@ pub const Parser = struct {
         for_loop_init: bool,
         in_class_field: bool,
         in_static_initializer: bool,
+        allow_new_target: bool,
         allow_super_call: bool,
         allow_super_property: bool,
     };
@@ -609,6 +610,7 @@ pub const Parser = struct {
             .for_loop_init = self.for_loop_init,
             .in_class_field = self.in_class_field,
             .in_static_initializer = self.in_static_initializer,
+            .allow_new_target = self.allow_new_target,
             .allow_super_call = self.allow_super_call,
             .allow_super_property = self.allow_super_property,
         };
@@ -622,6 +624,7 @@ pub const Parser = struct {
         self.allow_super_property = false;
         self.in_class_field = false;
         self.in_static_initializer = false;
+        self.allow_new_target = true; // 일반 함수에서는 new.target 허용
         return saved;
     }
 
@@ -635,6 +638,7 @@ pub const Parser = struct {
         self.for_loop_init = saved.for_loop_init;
         self.in_class_field = saved.in_class_field;
         self.in_static_initializer = saved.in_static_initializer;
+        self.allow_new_target = saved.allow_new_target;
         self.allow_super_call = saved.allow_super_call;
         self.allow_super_property = saved.allow_super_property;
     }
@@ -2759,10 +2763,12 @@ pub const Parser = struct {
     fn parseArrowBody(self: *Parser, is_async: bool) ParseError2!NodeIndex {
         // arrow function은 generator가 될 수 없으므로 is_generator=false
         const saved_ctx = self.enterFunctionContext(is_async, false);
-        // arrow function은 자체 arguments 바인딩이 없으므로 in_class_field/in_static_initializer를 유지.
-        // class field 또는 static initializer 안의 arrow function에서 arguments 사용은 SyntaxError.
+        // arrow function은 자체 바인딩이 없으므로 외부 컨텍스트를 상속:
+        // - in_class_field/in_static_initializer: arguments 사용 제한
+        // - allow_new_target: new.target 허용 여부 (global arrow에서는 false)
         self.in_class_field = saved_ctx.in_class_field;
         self.in_static_initializer = saved_ctx.in_static_initializer;
+        self.allow_new_target = saved_ctx.allow_new_target;
         const body = if (self.current() == .l_curly)
             try self.parseFunctionBody()
         else
@@ -3128,6 +3134,10 @@ pub const Parser = struct {
                 if (self.is_module and self.ctx.in_function and !self.ctx.in_async) {
                     self.addError(self.currentSpan(), "'await' is not allowed in non-async function in module code");
                 }
+                // static initializer에서 await 사용 금지 (ECMAScript 15.7.14)
+                if (self.in_static_initializer) {
+                    self.addError(self.currentSpan(), "'await' is not allowed in class static initializer");
+                }
                 // async 밖 + script mode에서는 식별자로 파싱
                 return self.parsePostfixExpression();
             },
@@ -3448,7 +3458,8 @@ pub const Parser = struct {
                         const target_span = self.currentSpan();
                         self.advance(); // skip 'target'
                         // ECMAScript 15.1.1: new.target은 함수 본문 안에서만 허용
-                        if (!self.ctx.in_function) {
+                        // arrow function은 외부의 allow_new_target을 상속
+                        if (!self.allow_new_target) {
                             self.addError(.{ .start = span.start, .end = target_span.end }, "'new.target' is not allowed outside of functions");
                         }
                         return try self.ast.addNode(.{
