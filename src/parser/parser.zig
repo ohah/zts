@@ -3275,9 +3275,10 @@ pub const Parser = struct {
         // - in_class_field: arguments 사용 제한 (arrow에는 자체 arguments 없음)
         // - allow_new_target: new.target 허용 여부 (global arrow에서는 false)
         // - allow_super_call/allow_super_property: super 접근 허용 여부 (메서드 내 arrow에서 super 사용)
-        // 주의: in_static_initializer는 상속하지 않음 — arrow 내에서 await은 식별자로 사용 가능
-        // (ECMAScript ContainsAwait이 ArrowFunction을 면제)
+        // in_static_initializer: arguments 사용 제한을 위해 상속 (arrow에는 자체 arguments 없음)
+        // await은 ctx.in_async=true (static block에서 설정)로 별도 처리
         self.in_class_field = saved_ctx.in_class_field;
+        self.in_static_initializer = saved_ctx.in_static_initializer;
         self.allow_new_target = saved_ctx.allow_new_target;
         self.allow_super_call = saved_ctx.allow_super_call;
         self.allow_super_property = saved_ctx.allow_super_property;
