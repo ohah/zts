@@ -98,7 +98,9 @@ fn transpileFile(
     });
     cg.comments = scanner.comments.items;
     if (options.sourcemap) {
-        cg.addSourceFile(file_path) catch {};
+        cg.addSourceFile(file_path) catch |err| {
+            try stderr.print("zts: sourcemap init error in '{s}': {}\n", .{ file_path, err });
+        };
         cg.line_offsets = scanner.line_offsets.items;
     }
     defer cg.deinit();

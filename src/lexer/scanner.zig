@@ -847,11 +847,16 @@ pub const Scanner = struct {
         const comment_text = self.source[comment_start..self.current];
         self.checkPureComment(comment_text);
 
+        // legal comment 감지 (D022): // @license 또는 // @preserve
+        const is_legal = std.mem.indexOf(u8, comment_text, "@license") != null or
+            std.mem.indexOf(u8, comment_text, "@preserve") != null;
+
         // 주석을 기록한다 (start = 첫 번째 '/' 위치, end = 줄바꿈 직전)
         self.comments.append(.{
             .start = self.start,
             .end = self.current,
             .is_multiline = false,
+            .is_legal = is_legal,
         }) catch @panic("OOM: comments");
     }
 
@@ -2270,6 +2275,51 @@ test "Scanner: slash after comment is not confused" {
     try std.testing.expectEqual(Kind.slash, scanner.token.kind);
     scanner.next(); // b
     try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+}
+
+test "Scanner: multi-line legal comment @license" {
+    const source = "/* @license MIT */ var x;";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    scanner.next();
+    try std.testing.expect(scanner.comments.items.len > 0);
+    try std.testing.expect(scanner.comments.items[0].is_legal);
+}
+
+test "Scanner: multi-line legal comment /*!" {
+    const source = "/*! Copyright 2024 */ var x;";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    scanner.next();
+    try std.testing.expect(scanner.comments.items.len > 0);
+    try std.testing.expect(scanner.comments.items[0].is_legal);
+}
+
+test "Scanner: single-line legal comment @license" {
+    const source = "// @license MIT\nvar x;";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    scanner.next();
+    try std.testing.expect(scanner.comments.items.len > 0);
+    try std.testing.expect(scanner.comments.items[0].is_legal);
+}
+
+test "Scanner: single-line legal comment @preserve" {
+    const source = "// @preserve\nvar x;";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    scanner.next();
+    try std.testing.expect(scanner.comments.items.len > 0);
+    try std.testing.expect(scanner.comments.items[0].is_legal);
+}
+
+test "Scanner: normal comment is not legal" {
+    const source = "// just a comment\nvar x;";
+    var scanner = Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    scanner.next();
+    try std.testing.expect(scanner.comments.items.len > 0);
+    try std.testing.expect(!scanner.comments.items[0].is_legal);
 }
 
 // ============================================================

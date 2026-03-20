@@ -122,6 +122,7 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
    - 4단계: 번들러 파일별 Arena (번들러 구현 시 같이)
    - Arena = 소유권 경계. 각 모듈은 할당만, 해제는 호출자가 Arena 단위로
    - `std.heap.ArenaAllocator` 사용, `std.mem.Allocator` 인터페이스 동일하므로 기존 코드 변경 최소
+   - **@panic("OOM") 정리**: 현재 44개의 `@panic("OOM")` (parser 6, lexer 5, analyzer 24, checker 9). Arena 도입 시 ArrayList append가 사라지면서 자연스럽게 해결. 번들러에서 파일별 에러 복구하려면 panic 대신 에러 전파 필요
 3. **ES 다운레벨링** (ES2024→ES2016 점진적, ES2015 이후, ES5) — 트랜스포머 visitor 추가. 독립적이라 언제든 가능하지만 AST 안정화 후가 이상적
    - 1차 ES2024→ES2020 (~200줄, 1~2일): `??`, `?.`, `??=`/`||=`/`&&=`, class public field
    - 2차 ES2019→ES2016 (~500줄, 3~5일): async/await→generator+Promise, rest/spread properties
@@ -515,7 +516,7 @@ main ← feature/lexer-token-enum
 3. ✅ CLI 기본 (파일 → 파싱 → 변환 → 출력) — PR #52
 4. ✅ 소스맵 V3 생성 (VLQ + JSON) — PR #53
 5. ✅ --ascii-only (D031) — PR #54
-6. ⬜ legal comments (@license, @preserve) — 렉서 수정 필요, 후순위
+6. ✅ legal comments (@license, @preserve) — 렉서 single-line 감지 + codegen minify 보존
 
 ### CLI 고급 기능 (PR 단위) — Phase 5 완료
 1. ✅ Phase 5 의사결정 (D047-D050) — PR #60
