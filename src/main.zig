@@ -23,6 +23,16 @@ const TranspileOptions = struct {
 /// 단일 파일을 트랜스파일한다.
 /// file_path: 입력 파일 경로, output_path: 출력 파일 경로 (null이면 stdout)
 /// source가 null이면 file_path에서 읽고, non-null이면 해당 소스를 사용한다 (stdin 등).
+///
+/// Arena allocator 패턴:
+/// 함수 내부에서 ArenaAllocator를 생성하여 모든 모듈(Scanner, Parser, Analyzer,
+/// Transformer, Codegen)이 같은 Arena를 사용한다. 함수가 끝나면 arena.deinit()으로
+/// 모든 메모리를 일괄 해제한다.
+/// - Scanner의 comments/line_offsets를 Codegen이 마지막에 참조하므로
+///   Phase별 Arena 분리는 불가능 → 파일당 Arena 1개가 최적.
+/// - source_override(stdin)는 호출자가 관리하는 메모리이므로 Arena와 무관.
+/// - cg.generate() 반환값(buf.items)은 Arena 메모리의 slice이므로
+///   파일 쓰기/stdout 출력 후에야 arena.deinit()이 실행되어야 한다.
 fn transpileFile(
     allocator: std.mem.Allocator,
     file_path: []const u8,
@@ -33,22 +43,23 @@ fn transpileFile(
     const stderr = std.io.getStdErr().writer();
     const stdout = std.io.getStdOut().writer();
 
-    // 소스 읽기
+    // 파일당 Arena allocator: 모든 내부 할당을 Arena에서 수행하고,
+    // 함수 끝에서 일괄 해제한다. backing allocator(GPA)는 debug leak detection용.
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit(); // 함수 끝에서 모든 메모리 일괄 해제
+    const arena_alloc = arena.allocator();
+
+    // 소스 읽기 — Arena에서 할당하므로 별도 free 불필요
     const source = source_override orelse blk: {
-        break :blk std.fs.cwd().readFileAlloc(allocator, file_path, 100 * 1024 * 1024) catch |err| {
+        break :blk std.fs.cwd().readFileAlloc(arena_alloc, file_path, 100 * 1024 * 1024) catch |err| {
             try stderr.print("zts: cannot read '{s}': {}\n", .{ file_path, err });
             return;
         };
     };
-    // source_override가 제공된 경우 호출자가 메모리를 관리하므로 여기서 free하지 않음
-    const should_free_source = source_override == null;
-    defer if (should_free_source) allocator.free(source);
 
-    // 파싱
-    var scanner = Scanner.init(allocator, source);
-    defer scanner.deinit();
-    var parser = Parser.init(allocator, &scanner);
-    defer parser.deinit();
+    // 파싱 — 모든 모듈이 arena_alloc을 사용하므로 개별 deinit 불필요
+    var scanner = Scanner.init(arena_alloc, source);
+    var parser = Parser.init(arena_alloc, &scanner);
     _ = parser.parse() catch |err| {
         try stderr.print("zts: parse error in '{s}': {}\n", .{ file_path, err });
         return;
@@ -64,8 +75,7 @@ fn transpileFile(
 
     // Semantic analysis (D038): 파서 에러가 없을 때만 실행
     {
-        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
-        defer analyzer.deinit();
+        var analyzer = SemanticAnalyzer.init(arena_alloc, &parser.ast);
         analyzer.is_strict_mode = parser.is_strict_mode;
         analyzer.is_module = parser.is_module;
         analyzer.analyze();
@@ -78,7 +88,7 @@ fn transpileFile(
     }
 
     // 변환
-    var transformer = Transformer.init(allocator, &parser.ast, .{
+    var transformer = Transformer.init(arena_alloc, &parser.ast, .{
         .drop_console = options.drop_console,
         .drop_debugger = options.drop_debugger,
     });
@@ -86,11 +96,9 @@ fn transpileFile(
         try stderr.print("zts: transform error in '{s}': {}\n", .{ file_path, err });
         return;
     };
-    transformer.scratch.deinit();
-    defer transformer.new_ast.deinit();
 
     // 코드 생성
-    var cg = Codegen.initWithOptions(allocator, &transformer.new_ast, .{
+    var cg = Codegen.initWithOptions(arena_alloc, &transformer.new_ast, .{
         .module_format = options.module_format,
         .minify = options.minify,
         .sourcemap = options.sourcemap,
@@ -103,13 +111,12 @@ fn transpileFile(
         };
         cg.line_offsets = scanner.line_offsets.items;
     }
-    defer cg.deinit();
     const output = cg.generate(root) catch |err| {
         try stderr.print("zts: codegen error in '{s}': {}\n", .{ file_path, err });
         return;
     };
 
-    // 출력
+    // 출력 — output은 Arena 메모리의 slice이므로 arena.deinit() 전에 완료해야 함
     if (output_path) |out_path| {
         // 출력 디렉토리가 없으면 생성
         if (std.fs.path.dirname(out_path)) |dir| {
@@ -130,8 +137,7 @@ fn transpileFile(
         // 소스맵 파일 출력 (.js.map)
         if (options.sourcemap) {
             if (cg.generateSourceMap(out_path) catch null) |sm_json| {
-                const map_path = try std.fmt.allocPrint(allocator, "{s}.map", .{out_path});
-                defer allocator.free(map_path);
+                const map_path = try std.fmt.allocPrint(arena_alloc, "{s}.map", .{out_path});
                 std.fs.cwd().writeFile(.{
                     .sub_path = map_path,
                     .data = sm_json,
