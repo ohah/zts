@@ -69,6 +69,19 @@ pub const Parser = struct {
     is_module: bool = false,
 
     // ================================================================
+    // Context에서 분리된 개별 플래그 (향후 사용 예정)
+    // ================================================================
+
+    /// TS 타입 어노테이션 안인지 (렉서 동작 변경: `<`/`>`를 타입 구분자로)
+    in_type: bool = false,
+    /// 함수 파라미터 안인지
+    in_parameters: bool = false,
+    /// new.target 허용 여부
+    allow_new_target: bool = false,
+    /// constructor 안인지
+    is_constructor: bool = false,
+
+    // ================================================================
     // Context packed struct 정의
     // ================================================================
 
@@ -109,8 +122,6 @@ pub const Parser = struct {
         in_decorator: bool = false,
         /// for 초기화절 안인지 (for-in/for-of 구분)
         for_loop_init: bool = false,
-        /// 함수 파라미터 안인지
-        in_parameters: bool = false,
 
         // --- class 관련 컨텍스트 (비트 12~17) ---
 
@@ -127,24 +138,15 @@ pub const Parser = struct {
         /// super.x / super[x] 허용 여부
         allow_super_property: bool = false,
 
-        // --- TypeScript 컨텍스트 (비트 18~20) ---
+        // --- TypeScript 컨텍스트 (비트 17~19) ---
 
-        /// TS 타입 어노테이션 안인지 (렉서 동작 변경: `<`/`>`를 타입 구분자로)
-        in_type: bool = false,
         /// TS declare 블록 또는 .d.ts 파일 안인지
         in_ambient: bool = false,
         /// TS 조건부 타입 금지 (infer 절에서 extends를 제약으로 파싱)
         disallow_conditional_types: bool = false,
 
-        // --- 기타 (비트 21~22) ---
-
-        /// new.target 허용 여부
-        allow_new_target: bool = false,
-        /// constructor 안인지
-        is_constructor: bool = false,
-
         // 남은 비트는 padding (향후 확장용)
-        _padding: u9 = 0,
+        _padding: u13 = 0,
 
         /// 기본값: has_simple_params=true, allow_in=true, is_top_level=true, 나머지 false.
         pub const default: Context = .{};
