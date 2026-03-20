@@ -523,7 +523,7 @@ fn parseTypeReference(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
-pub fn parseTypeArguments(self: *Parser) ParseError2!NodeIndex {
+fn parseTypeArguments(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     self.advance(); // skip <
 
@@ -590,7 +590,7 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
-pub fn parseObjectType(self: *Parser) ParseError2!NodeIndex {
+fn parseObjectType(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     self.advance(); // skip {
 

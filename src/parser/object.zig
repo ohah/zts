@@ -9,7 +9,6 @@ const ast_mod = @import("ast.zig");
 const Node = ast_mod.Node;
 const Tag = Node.Tag;
 const NodeIndex = ast_mod.NodeIndex;
-const NodeList = ast_mod.NodeList;
 const token_mod = @import("../lexer/token.zig");
 const Kind = token_mod.Kind;
 const Span = token_mod.Span;
