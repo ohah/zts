@@ -1198,21 +1198,34 @@ pub const Scanner = struct {
                 self.current += 1;
             }
             if (self.scanDecimalDigits()) return .syntax_error;
-            // 지수 뒤에 숫자가 없으면 에러 (1e → error)
+            // 지수 뒤에 BigInt suffix 'n'이 오면 에러 (0e0n, 1e1n 등)
+            // ECMAScript 스펙: BigInt는 지수 표기를 허용하지 않음
+            if (self.peek() == 'n') {
+                self.current += 1;
+                return .syntax_error;
+            }
             return if (is_negative) .negative_exponential else .positive_exponential;
         }
 
         // BigInt suffix 'n'
         if (c == 'n') {
+            // float에 BigInt suffix는 에러 (.0001n, 2017.8n 등)
+            // ECMAScript 스펙: BigInt의 MV는 정수여야 함
+            if (base_kind == .float) {
+                self.current += 1;
+                return .syntax_error;
+            }
+            // legacy octal / non-octal decimal에 BigInt suffix는 에러 (00n, 01n, 08n 등)
+            // ECMAScript 스펙: DecimalBigIntegerLiteral은 0n 또는 NonZeroDigit... 만 허용
+            if (self.token.has_legacy_octal) {
+                self.current += 1;
+                return .syntax_error;
+            }
             self.current += 1;
-            return switch (base_kind) {
-                .decimal => .decimal_bigint,
-                // float에 n은 JS에서 invalid이지만 렉서는 파싱하고 파서에서 에러
-                else => .decimal_bigint,
-            };
+            return .decimal_bigint;
         }
 
-        return base_kind;
+        return self.checkNumericEnd(base_kind);
     }
 
     /// 숫자 리터럴 직후에 IdentifierStart 문자가 오는지 확인한다.
@@ -1265,9 +1278,9 @@ pub const Scanner = struct {
         if (self.scanHexDigits()) return .syntax_error;
         if (self.peek() == 'n') {
             self.current += 1;
-            return .hex_bigint;
+            return self.checkNumericEnd(.hex_bigint);
         }
-        return .hex;
+        return self.checkNumericEnd(.hex);
     }
 
     /// 8진수 리터럴을 스캔한다 (0o 이후).
@@ -1275,9 +1288,9 @@ pub const Scanner = struct {
         if (self.scanOctalDigits()) return .syntax_error;
         if (self.peek() == 'n') {
             self.current += 1;
-            return .octal_bigint;
+            return self.checkNumericEnd(.octal_bigint);
         }
-        return .octal;
+        return self.checkNumericEnd(.octal);
     }
 
     /// 2진수 리터럴을 스캔한다 (0b 이후).
@@ -1285,9 +1298,9 @@ pub const Scanner = struct {
         if (self.scanBinaryDigits()) return .syntax_error;
         if (self.peek() == 'n') {
             self.current += 1;
-            return .binary_bigint;
+            return self.checkNumericEnd(.binary_bigint);
         }
-        return .binary;
+        return self.checkNumericEnd(.binary);
     }
 
     /// 16진수 숫자를 스캔. 숫자가 없거나 separator 오류면 true 반환.
