@@ -2149,6 +2149,29 @@ pub const Parser = struct {
     // Import / Export 파싱
     // ================================================================
 
+    /// import() / import.source() / import.defer() 호출의 인자를 파싱한다.
+    /// `(` 를 소비하고, 1~2개 인자를 파싱하고, `)` 를 기대한다.
+    /// import() 내부에서는 `in` 연산자를 허용 (+In context).
+    fn parseImportCallArgs(self: *Parser, start: u32) ParseError2!NodeIndex {
+        self.expect(.l_paren);
+        const saved_ctx = self.enterAllowInContext(true);
+        defer self.restoreContext(saved_ctx);
+        const arg = try self.parseAssignmentExpression();
+        // 두 번째 인자 (import attributes/options) — 있으면 파싱하고 무시
+        if (self.eat(.comma)) {
+            if (self.current() != .r_paren) {
+                _ = try self.parseAssignmentExpression();
+                _ = self.eat(.comma); // trailing comma
+            }
+        }
+        self.expect(.r_paren);
+        return try self.ast.addNode(.{
+            .tag = .import_expression,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .unary = .{ .operand = arg, .flags = 0 } },
+        });
+    }
+
     fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         // ECMAScript 15.2: import 선언은 module의 top-level에서만 허용
@@ -3442,25 +3465,8 @@ pub const Parser = struct {
                     }
 
                     // import.source(...) / import.defer(...) — dynamic import 변형
-                    // 인자가 있으면 call expression처럼 처리
                     if (self.current() == .l_paren) {
-                        self.advance(); // skip (
-                        // import() 내부에서는 `in` 연산자 허용 (+In context)
-                        const saved_ctx = self.enterAllowInContext(true);
-                        const arg = try self.parseAssignmentExpression();
-                        if (self.eat(.comma)) {
-                            if (self.current() != .r_paren) {
-                                _ = try self.parseAssignmentExpression();
-                                _ = self.eat(.comma);
-                            }
-                        }
-                        self.restoreContext(saved_ctx);
-                        self.expect(.r_paren);
-                        return try self.ast.addNode(.{
-                            .tag = .import_expression,
-                            .span = .{ .start = span.start, .end = self.currentSpan().start },
-                            .data = .{ .unary = .{ .operand = arg, .flags = 0 } },
-                        });
+                        return self.parseImportCallArgs(span.start);
                     }
 
                     // import.source/defer without () → 에러
@@ -3472,25 +3478,7 @@ pub const Parser = struct {
                     });
                 }
                 // dynamic import: import("module") or import("module", options)
-                // import() 내부에서는 `in` 연산자 허용 (+In context)
-                // 예: for(x = import('m', 'k' in {} || undefined); ...) 에서 in이 for-in이 아닌 연산자
-                self.expect(.l_paren);
-                const saved_ctx = self.enterAllowInContext(true);
-                const arg = try self.parseAssignmentExpression();
-                // 두 번째 인자 (import assertions/options) — 있으면 파싱하고 무시
-                if (self.eat(.comma)) {
-                    if (self.current() != .r_paren) {
-                        _ = try self.parseAssignmentExpression();
-                        _ = self.eat(.comma); // trailing comma
-                    }
-                }
-                self.restoreContext(saved_ctx);
-                self.expect(.r_paren);
-                return try self.ast.addNode(.{
-                    .tag = .import_expression,
-                    .span = .{ .start = span.start, .end = self.currentSpan().start },
-                    .data = .{ .unary = .{ .operand = arg, .flags = 0 } },
-                });
+                return self.parseImportCallArgs(span.start);
             },
             .no_substitution_template => {
                 // 보간 없는 템플릿 리터럴: `text`
