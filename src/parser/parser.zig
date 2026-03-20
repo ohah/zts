@@ -101,8 +101,6 @@ pub const Parser = struct {
     allow_super_property: bool = false,
     /// static initializer (static { }) 안인지 — arguments 사용 금지
     in_static_initializer: bool = false,
-    /// class extends 절 파싱 중인지
-    in_class_heritage: bool = false,
 
     // ================================================================
     // Context packed struct 정의
@@ -1718,13 +1716,9 @@ pub const Parser = struct {
         }
 
         // extends 절 (선택)
-        // class heritage에서는 await/yield 검증이 달라질 수 있음
         var super_class = NodeIndex.none;
         if (self.eat(.kw_extends)) {
-            const saved_heritage = self.in_class_heritage;
-            self.in_class_heritage = true;
             super_class = try self.parseAssignmentExpression();
-            self.in_class_heritage = saved_heritage;
         }
 
         // TS implements 절 (선택): class Foo implements Bar, Baz
@@ -1958,11 +1952,13 @@ pub const Parser = struct {
                 body = try self.parseFunctionBody();
                 self.restoreFunctionContext(saved_ctx);
             } else {
-                // 바디 없는 메서드 (abstract 등) — 파라미터 전에 변경한 플래그 복원
-                self.in_static_initializer = saved_in_static_init;
-                self.in_class_field = saved_in_class_field_for_params;
                 _ = self.eat(.semicolon);
             }
+            // 파라미터 전에 변경한 플래그 복원 (if/else 양쪽 공통)
+            // restoreFunctionContext는 enterFunctionContext 시점의 (이미 false인) 값을
+            // 복원하므로, 여기서 원래 값으로 다시 복원해야 한다.
+            self.in_static_initializer = saved_in_static_init;
+            self.in_class_field = saved_in_class_field_for_params;
             const param_list = try self.ast.addNodeList(self.scratch.items[param_top..]);
             self.restoreScratch(param_top);
 
@@ -3207,7 +3203,11 @@ pub const Parser = struct {
                 if (self.in_class_field or self.in_static_initializer) {
                     const text = self.ast.source[span.start..span.end];
                     if (std.mem.eql(u8, text, "arguments")) {
-                        self.addError(span, "'arguments' is not allowed in class field initializer");
+                        const msg = if (self.in_static_initializer)
+                            "'arguments' is not allowed in class static initializer"
+                        else
+                            "'arguments' is not allowed in class field initializer";
+                        self.addError(span, msg);
                     }
                 }
                 self.advance();
