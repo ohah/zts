@@ -93,8 +93,6 @@ pub const Parser = struct {
     in_class: bool = false,
     /// class field 초기값 안인지
     in_class_field: bool = false,
-    /// static block 안인지
-    in_static_block: bool = false,
     /// extends 있는 class인지 (super() 허용 판단)
     has_super_class: bool = false,
     /// super() 호출 허용 여부 (constructor + extends)
@@ -154,6 +152,7 @@ pub const Parser = struct {
         in_loop: bool,
         in_switch: bool,
         has_simple_params: bool,
+        for_loop_init: bool,
         in_class_field: bool,
         allow_super_call: bool,
         allow_super_property: bool,
@@ -533,14 +532,17 @@ pub const Parser = struct {
             .in_loop = self.in_loop,
             .in_switch = self.in_switch,
             .has_simple_params = self.has_simple_params,
+            .for_loop_init = self.for_loop_init,
             .in_class_field = self.in_class_field,
             .allow_super_call = self.allow_super_call,
             .allow_super_property = self.allow_super_property,
         };
         self.ctx = self.ctx.enterFunction(is_async, is_generator);
-        // Parser 필드 리셋
+        // Parser 필드 리셋 — 함수 경계에서 초기 상태로
         self.in_loop = false;
         self.in_switch = false;
+        self.has_simple_params = true; // 기본값은 true (checkSimpleParams에서 갱신)
+        self.for_loop_init = false;
         self.allow_super_call = false;
         self.allow_super_property = false;
         self.in_class_field = false;
@@ -554,6 +556,7 @@ pub const Parser = struct {
         self.in_loop = saved.in_loop;
         self.in_switch = saved.in_switch;
         self.has_simple_params = saved.has_simple_params;
+        self.for_loop_init = saved.for_loop_init;
         self.in_class_field = saved.in_class_field;
         self.allow_super_call = saved.allow_super_call;
         self.allow_super_property = saved.allow_super_property;
@@ -1349,7 +1352,7 @@ pub const Parser = struct {
             try self.scratch.append(case_node);
         }
 
-        self.ctx = saved_ctx;
+        self.restoreContext(saved_ctx);
         self.in_switch = saved_in_switch;
 
         const end = self.currentSpan().end;
