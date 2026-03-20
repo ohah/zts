@@ -1646,8 +1646,13 @@ pub const Parser = struct {
         self.advance(); // skip 'class'
 
         // 클래스 이름 (선언은 필수, 표현식은 선택)
+        // kw_yield/kw_await는 컨텍스트에 따라 식별자로 사용 가능
         var name = NodeIndex.none;
-        if (self.current() == .identifier) {
+        if (self.current() == .identifier or
+            (self.current() == .kw_yield and !self.ctx.in_generator) or
+            (self.current() == .kw_await and !self.ctx.in_async and !self.is_module) or
+            self.current() == .escaped_keyword or self.current() == .escaped_strict_reserved)
+        {
             name = try self.parseBindingIdentifier();
         }
 
@@ -2872,9 +2877,11 @@ pub const Parser = struct {
                 });
             },
             .kw_await => {
-                // async 함수 안 또는 module mode(top-level await)에서 await_expression으로 파싱.
-                // 그 외에는 식별자로 fallthrough.
-                if (self.ctx.in_async or self.is_module) {
+                // async 함수 안에서는 항상 await_expression.
+                // module top-level(함수 밖)에서는 top-level await.
+                // module 안 일반 함수 body에서는 await을 식별자로 취급 → strict mode 에러.
+                // ECMAScript: FunctionBody[~Yield, ~Await] → await은 keyword가 아님.
+                if (self.ctx.in_async or (self.is_module and !self.ctx.in_function)) {
                     const start = self.currentSpan().start;
                     self.advance();
                     const operand = try self.parseUnaryExpression();
@@ -2883,6 +2890,10 @@ pub const Parser = struct {
                         .span = .{ .start = start, .end = self.currentSpan().start },
                         .data = .{ .unary = .{ .operand = operand, .flags = 0 } },
                     });
+                }
+                // module 안 일반 함수에서 await 사용 → strict mode 위반 에러
+                if (self.is_module and self.ctx.in_function and !self.ctx.in_async) {
+                    self.addError(self.currentSpan(), "'await' is not allowed in non-async function in module code");
                 }
                 // async 밖 + script mode에서는 식별자로 파싱
                 return self.parsePostfixExpression();
