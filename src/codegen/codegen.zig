@@ -350,6 +350,7 @@ pub const Codegen = struct {
             .identifier_reference,
             .private_identifier,
             .binding_identifier,
+            .assignment_target_identifier,
             => try self.writeSpan(node.data.string_ref),
 
             .this_expression => try self.write("this"),
@@ -398,8 +399,11 @@ pub const Codegen = struct {
             .object_pattern, .object_assignment_target => try self.emitObject(node),
             .assignment_pattern => try self.emitAssignmentPattern(node),
             .binding_property => try self.emitBindingProperty(node),
-            .rest_element, .binding_rest_element => try self.emitRest(node),
+            .rest_element, .binding_rest_element, .assignment_target_rest => try self.emitRest(node),
             .assignment_target_with_default => try self.emitAssignmentPattern(node),
+            .assignment_target_property_identifier,
+            .assignment_target_property_property,
+            => try self.emitBindingProperty(node),
             .elision => {},
 
             // Import/Export

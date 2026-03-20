@@ -268,6 +268,7 @@ pub const Transformer = struct {
             .jsx_closing_element,
             .jsx_opening_fragment,
             .jsx_closing_fragment,
+            .assignment_target_identifier,
             => self.copyNodeDirect(node),
 
             // === import/export specifiers ===
@@ -286,8 +287,14 @@ pub const Transformer = struct {
             .object_assignment_target,
             => self.visitListNode(node),
 
-            .binding_rest_element => self.visitUnaryNode(node),
-            .assignment_target_with_default => self.visitBinaryNode(node),
+            .binding_rest_element,
+            .assignment_target_rest,
+            => self.visitUnaryNode(node),
+            .assignment_target_with_default,
+            .assignment_target_property_identifier,
+            .assignment_target_property_property,
+            => self.visitBinaryNode(node),
+            // assignment_target_identifier: string_ref → 변환 불필요 (identifier와 동일)
 
             // === TS enum/namespace: 런타임 코드 생성 (codegen에서 IIFE 출력) ===
             .ts_enum_declaration => self.visitEnumDeclaration(node),
