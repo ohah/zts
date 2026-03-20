@@ -20,7 +20,7 @@ const ParseError2 = @import("parser.zig").ParseError2;
 
 /// 소스 전체를 파싱하여 AST를 반환한다.
 pub fn parse(self: *Parser) !NodeIndex {
-    self.advance(); // 첫 토큰 로드
+    try self.advance(); // 첫 토큰 로드
 
     // module 모드면 항상 strict (D054)
     if (self.is_module) {
@@ -29,7 +29,7 @@ pub fn parse(self: *Parser) !NodeIndex {
 
     // hashbang (#! ...) 건너뛰기
     if (self.current() == .hashbang_comment) {
-        self.advance();
+        try self.advance();
     }
 
     var stmts = std.ArrayList(NodeIndex).init(self.allocator);
@@ -68,48 +68,48 @@ pub fn parse(self: *Parser) !NodeIndex {
 pub fn parseStatementChecked(self: *Parser, comptime is_loop_body: bool) ParseError2!NodeIndex {
     switch (self.current()) {
         .kw_const => {
-            self.addError(self.currentSpan(), "Lexical declaration is not allowed in statement position");
+            try self.addError(self.currentSpan(), "Lexical declaration is not allowed in statement position");
         },
         .kw_let => {
             if (self.is_strict_mode) {
-                self.addError(self.currentSpan(), "Lexical declaration is not allowed in statement position");
-            } else if (isLetDeclarationStart(self)) {
+                try self.addError(self.currentSpan(), "Lexical declaration is not allowed in statement position");
+            } else if (try isLetDeclarationStart(self)) {
                 // sloppy mode에서도 `let`이 LexicalDeclaration으로 해석되면 에러
                 // isLetDeclarationStart: 줄바꿈 없이 identifier/[/{, 또는 줄바꿈 있어도 [
-                self.addError(self.currentSpan(), "Lexical declaration is not allowed in statement position");
+                try self.addError(self.currentSpan(), "Lexical declaration is not allowed in statement position");
             }
         },
         .kw_class => {
             // class declaration은 statement position에서 항상 금지 (Annex B에 class 예외 없음)
-            self.addError(self.currentSpan(), "Class declaration is not allowed in statement position");
+            try self.addError(self.currentSpan(), "Class declaration is not allowed in statement position");
         },
         .kw_function => {
-            if (self.peekNextKind() == .star) {
+            if (try self.peekNextKind() == .star) {
                 // generator는 항상 금지
-                self.addError(self.currentSpan(), "Generator declaration is not allowed in statement position");
+                try self.addError(self.currentSpan(), "Generator declaration is not allowed in statement position");
             } else if (is_loop_body or self.in_labelled_fn_check) {
                 // loop/with body에서 function은 항상 금지 (ECMAScript 13.7.4, Annex B 미적용)
                 // labelled function이 if/with body를 통해 전파된 경우도 금지
-                self.addError(self.currentSpan(), "Function declaration is not allowed in statement position");
+                try self.addError(self.currentSpan(), "Function declaration is not allowed in statement position");
             } else if (self.is_strict_mode) {
                 // if/else/labeled body에서는 strict mode에서만 금지
-                self.addError(self.currentSpan(), "Function declaration is not allowed in statement position in strict mode");
+                try self.addError(self.currentSpan(), "Function declaration is not allowed in statement position in strict mode");
             }
         },
         .kw_async => {
-            const peek = self.peekNext();
+            const peek = try self.peekNext();
             if (peek.kind == .kw_function and !peek.has_newline_before) {
-                self.addError(self.currentSpan(), "Async function declaration is not allowed in statement position");
+                try self.addError(self.currentSpan(), "Async function declaration is not allowed in statement position");
             }
         },
         .kw_export => {
-            self.addError(self.currentSpan(), "'export' is not allowed in statement position");
+            try self.addError(self.currentSpan(), "'export' is not allowed in statement position");
         },
         .kw_import => {
             // import()와 import.meta는 expression이므로 제외
-            const peek = self.peekNextKind();
+            const peek = try self.peekNextKind();
             if (peek != .l_paren and peek != .dot) {
-                self.addError(self.currentSpan(), "'import' is not allowed in statement position");
+                try self.addError(self.currentSpan(), "'import' is not allowed in statement position");
             }
         },
         else => {},
@@ -125,22 +125,22 @@ pub fn parseStatement(self: *Parser) ParseError2!NodeIndex {
         // ECMAScript: sloppy mode에서 `let`은 LexicalDeclaration으로 취급되려면
         // 뒤에 줄바꿈 없이 BindingIdentifier, `[`, `{`가 와야 한다.
         // 그렇지 않으면 식별자로 취급하여 expression statement로 파싱한다.
-        .kw_let => if (self.is_strict_mode or isLetDeclarationStart(self))
+        .kw_let => if (self.is_strict_mode or try isLetDeclarationStart(self))
             parseVariableDeclaration(self)
         else
             parseExpressionStatement(self),
-        .kw_const => if (self.peekNextKind() == .kw_enum)
+        .kw_const => if (try self.peekNextKind() == .kw_enum)
             self.parseConstEnum()
         else
             parseVariableDeclaration(self),
         // using declaration (TC39 Stage 3: Explicit Resource Management)
         // `using x = getResource()` — parsed like const
-        .kw_using => if (isUsingDeclarationStart(self))
+        .kw_using => if (try isUsingDeclarationStart(self))
             parseVariableDeclaration(self)
         else
             parseExpressionOrLabeledStatement(self),
         // await using declaration: `await using x = getResource()`
-        .kw_await => if (isAwaitUsingDeclarationStart(self))
+        .kw_await => if (try isAwaitUsingDeclarationStart(self))
             parseAwaitUsingDeclaration(self)
         else
             parseExpressionOrLabeledStatement(self),
@@ -159,7 +159,7 @@ pub fn parseStatement(self: *Parser) ParseError2!NodeIndex {
         .kw_function => self.parseFunctionDeclaration(),
         .kw_class => self.parseClassDeclaration(),
         .kw_import => blk: {
-            const next = self.peekNextKind();
+            const next = try self.peekNextKind();
             break :blk if (next == .l_paren or next == .dot)
                 parseExpressionStatement(self)
             else
@@ -182,7 +182,7 @@ pub fn parseStatement(self: *Parser) ParseError2!NodeIndex {
 
 pub fn parseBlockStatement(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    self.expect(.l_curly);
+    try self.expect(.l_curly);
 
     // 블록 안에서는 top-level이 아님 (import/export 금지)
     const block_saved = self.ctx;
@@ -199,7 +199,7 @@ pub fn parseBlockStatement(self: *Parser) ParseError2!NodeIndex {
     self.ctx = block_saved;
 
     const end = self.currentSpan().end;
-    self.expect(.r_curly);
+    try self.expect(.r_curly);
 
     const list = try self.ast.addNodeList(stmts.items);
     return try self.ast.addNode(.{
@@ -211,7 +211,7 @@ pub fn parseBlockStatement(self: *Parser) ParseError2!NodeIndex {
 
 fn parseEmptyStatement(self: *Parser) ParseError2!NodeIndex {
     const span = self.currentSpan();
-    self.advance(); // skip ;
+    try self.advance(); // skip ;
     return try self.ast.addNode(.{
         .tag = .empty_statement,
         .span = span,
@@ -225,11 +225,11 @@ pub fn parseExpressionStatement(self: *Parser) ParseError2!NodeIndex {
     const expr = try self.parseExpression();
     // CoverInitializedName ({ x = 1 }) 이 destructuring으로 소비되지 않았으면 에러
     if (self.has_cover_init_name) {
-        self.addError(.{ .start = start, .end = self.currentSpan().start }, "Invalid shorthand property initializer");
+        try self.addError(.{ .start = start, .end = self.currentSpan().start }, "Invalid shorthand property initializer");
         self.has_cover_init_name = false;
     }
     const end = self.currentSpan().end;
-    self.expectSemicolon(); // ASI 규칙 적용: 개행/}/EOF 있으면 삽입, 아니면 에러
+    try self.expectSemicolon(); // ASI 규칙 적용: 개행/}/EOF 있으면 삽입, 아니면 에러
     return try self.ast.addNode(.{
         .tag = .expression_statement,
         .span = .{ .start = start, .end = end },
@@ -241,8 +241,8 @@ pub fn parseExpressionStatement(self: *Parser) ParseError2!NodeIndex {
 /// ECMAScript: sloppy mode에서 `let`이 LexicalDeclaration의 시작인지 판별한다.
 /// `let` 뒤에 줄바꿈 없이 BindingIdentifier, `[`, `{`가 오면 LexicalDeclaration이다.
 /// 그 외에는 `let`을 식별자로 취급한다 (expression statement).
-fn isLetDeclarationStart(self: *Parser) bool {
-    const next = self.peekNext();
+fn isLetDeclarationStart(self: *Parser) ParseError2!bool {
+    const next = try self.peekNext();
     if (next.has_newline_before) {
         // `let` 뒤에 줄바꿈이 있으면, 일반적으로 ASI가 적용되어 `let`은 식별자.
         // 예외 1: `let [` → ExpressionStatement lookahead 제한으로 항상 LexicalDeclaration.
@@ -262,17 +262,17 @@ fn isLetDeclarationStart(self: *Parser) bool {
 }
 
 /// `using` 뒤에 줄바꿈 없이 identifier가 오면 UsingDeclaration으로 해석한다.
-fn isUsingDeclarationStart(self: *Parser) bool {
-    const next = self.peekNext();
+fn isUsingDeclarationStart(self: *Parser) ParseError2!bool {
+    const next = try self.peekNext();
     if (next.has_newline_before) return false;
     return next.kind == .identifier or
         (next.kind.isKeyword() and !next.kind.isReservedKeyword() and !next.kind.isLiteralKeyword());
 }
 
 /// `await` + `using` + identifier (줄바꿈 없이) → AwaitUsingDeclaration
-fn isAwaitUsingDeclarationStart(self: *Parser) bool {
+fn isAwaitUsingDeclarationStart(self: *Parser) ParseError2!bool {
     if (!self.ctx.in_async) return false;
-    const next = self.peekNext();
+    const next = try self.peekNext();
     if (next.has_newline_before or next.kind != .kw_using) return false;
     // await using 뒤에 identifier가 와야 함 — 더 앞은 볼 수 없으므로 true 반환
     return true;
@@ -280,7 +280,7 @@ fn isAwaitUsingDeclarationStart(self: *Parser) bool {
 
 /// `await using x = expr;` 선언을 파싱한다.
 fn parseAwaitUsingDeclaration(self: *Parser) ParseError2!NodeIndex {
-    self.advance(); // skip 'await'
+    try self.advance(); // skip 'await'
     return parseVariableDeclaration(self); // 'using'부터 parseVariableDeclaration 진행
 }
 
@@ -293,25 +293,25 @@ fn parseExpressionOrLabeledStatement(self: *Parser) ParseError2!NodeIndex {
         self.current() == .kw_await or self.current() == .kw_yield or
         (self.current().isKeyword() and !self.current().isReservedKeyword() and !self.current().isLiteralKeyword()))
     {
-        const peek = self.peekNext();
+        const peek = try self.peekNext();
         if (peek.kind == .colon) {
             // yield/await를 label로 사용하면 generator/async에서 에러
-            _ = self.checkYieldAwaitUse(self.currentSpan(), "label");
+            _ = try self.checkYieldAwaitUse(self.currentSpan(), "label");
             if (self.current() == .escaped_keyword) {
                 // escaped `await` is only reserved in module/async context
                 const esc_text = self.resolveIdentifierText(self.currentSpan());
                 const is_escaped_await = std.mem.eql(u8, esc_text, "await");
                 if (is_escaped_await) {
                     if (self.is_module or self.ctx.in_async) {
-                        self.addError(self.currentSpan(), "Escaped reserved word cannot be used as label");
+                        try self.addError(self.currentSpan(), "Escaped reserved word cannot be used as label");
                     }
                 } else {
-                    self.addError(self.currentSpan(), "Escaped reserved word cannot be used as label");
+                    try self.addError(self.currentSpan(), "Escaped reserved word cannot be used as label");
                 }
             } else if (self.current() == .escaped_strict_reserved and self.is_strict_mode) {
-                self.addError(self.currentSpan(), "Escaped reserved word cannot be used as label in strict mode");
+                try self.addError(self.currentSpan(), "Escaped reserved word cannot be used as label in strict mode");
             } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
-                self.addError(self.currentSpan(), "Reserved word in strict mode cannot be used as label");
+                try self.addError(self.currentSpan(), "Reserved word in strict mode cannot be used as label");
             }
             return parseLabeledStatement(self);
         }
@@ -328,8 +328,8 @@ fn parseLabeledStatement(self: *Parser) ParseError2!NodeIndex {
         .span = self.currentSpan(),
         .data = .{ .string_ref = self.currentSpan() },
     });
-    self.advance(); // skip label
-    self.advance(); // skip ':'
+    try self.advance(); // skip label
+    try self.advance(); // skip ':'
     const body = try parseStatementChecked(self, false);
     return try self.ast.addNode(.{
         .tag = .labeled_statement,
@@ -342,13 +342,13 @@ fn parseLabeledStatement(self: *Parser) ParseError2!NodeIndex {
 /// strict mode에서는 SyntaxError (D054)
 fn parseWithStatement(self: *Parser) ParseError2!NodeIndex {
     if (self.is_strict_mode) {
-        self.addError(self.currentSpan(), "'with' is not allowed in strict mode");
+        try self.addError(self.currentSpan(), "'with' is not allowed in strict mode");
     }
     const start = self.currentSpan().start;
-    self.advance(); // skip 'with'
-    self.expect(.l_paren);
+    try self.advance(); // skip 'with'
+    try self.expect(.l_paren);
     const obj = try self.parseExpression();
-    self.expect(.r_paren);
+    try self.expect(.r_paren);
     // with body에서 function declaration은 항상 금지 (Annex B에 with 예외 없음)
     // IsLabelledFunction(Statement) 체크도 필요
     const saved_labelled = self.in_labelled_fn_check;
@@ -371,12 +371,12 @@ fn parseVariableDeclaration(self: *Parser) ParseError2!NodeIndex {
         .kw_using => 2, // using은 const처럼 동작 (block-scoped, immutable)
         else => 0,
     };
-    self.advance(); // skip var/let/const/using
+    try self.advance(); // skip var/let/const/using
 
     // let/const 선언에서 바인딩 이름 'let'은 금지 (ECMAScript 14.3.1.1)
     // 'let let = 1' → SyntaxError (non-strict에서도)
     if (kind_flags != 0 and self.current() == .kw_let) {
-        self.addError(self.currentSpan(), "'let' is not allowed as variable name in lexical declaration");
+        try self.addError(self.currentSpan(), "'let' is not allowed as variable name in lexical declaration");
     }
 
     const scratch_top = self.saveScratch();
@@ -390,12 +390,12 @@ fn parseVariableDeclaration(self: *Parser) ParseError2!NodeIndex {
             if (decl_node.tag == .variable_declarator) {
                 const init_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[decl_node.data.extra + 2]);
                 if (init_idx.isNone()) {
-                    self.addError(decl_node.span, "Const declarations must be initialized");
+                    try self.addError(decl_node.span, "Const declarations must be initialized");
                 }
             }
         }
         try self.scratch.append(decl);
-        if (!self.eat(.comma)) break;
+        if (!try self.eat(.comma)) break;
     }
 
     const end = self.currentSpan().end;
@@ -404,7 +404,7 @@ fn parseVariableDeclaration(self: *Parser) ParseError2!NodeIndex {
     if (self.for_loop_init) {
         // for(var x = 0; ...) — 세미콜론은 parseForStatement에서 expect
     } else {
-        self.expectSemicolon();
+        try self.expectSemicolon();
     }
 
     const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
@@ -436,7 +436,7 @@ fn parseVariableDeclarator(self: *Parser) ParseError2!NodeIndex {
     // 이니셜라이저 — `in` 연산자를 복원한다 (ECMAScript: Initializer[+In]).
     // for 초기화절에서 allow_in=false여도, 이니셜라이저 안에서는 `in`이 연산자로 동작해야 한다.
     var init_expr = NodeIndex.none;
-    if (self.eat(.eq)) {
+    if (try self.eat(.eq)) {
         const init_saved = self.enterAllowInContext(true);
         init_expr = try self.parseAssignmentExpression();
         self.restoreContext(init_saved);
@@ -457,10 +457,10 @@ fn parseVariableDeclarator(self: *Parser) ParseError2!NodeIndex {
 fn parseReturnStatement(self: *Parser) ParseError2!NodeIndex {
     // return은 함수 안에서만 허용
     if (!self.ctx.in_function) {
-        self.addError(self.currentSpan(), "'return' outside of function");
+        try self.addError(self.currentSpan(), "'return' outside of function");
     }
     const start = self.currentSpan().start;
-    self.advance(); // skip 'return'
+    try self.advance(); // skip 'return'
 
     var arg = NodeIndex.none;
     if (self.current() != .semicolon and self.current() != .eof and
@@ -470,7 +470,7 @@ fn parseReturnStatement(self: *Parser) ParseError2!NodeIndex {
     }
 
     const end = self.currentSpan().end;
-    _ = self.eat(.semicolon);
+    _ = try self.eat(.semicolon);
 
     return try self.ast.addNode(.{
         .tag = .return_statement,
@@ -481,17 +481,17 @@ fn parseReturnStatement(self: *Parser) ParseError2!NodeIndex {
 
 fn parseIfStatement(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    self.advance(); // skip 'if'
-    self.expect(.l_paren);
+    try self.advance(); // skip 'if'
+    try self.expect(.l_paren);
     const test_expr = try self.parseExpression();
-    self.expect(.r_paren);
+    try self.expect(.r_paren);
     // ECMAScript 13.6.1: IsLabelledFunction(Statement) → SyntaxError
     const saved_labelled = self.in_labelled_fn_check;
     self.in_labelled_fn_check = true;
     const consequent = try parseStatementChecked(self, false);
 
     var alternate = NodeIndex.none;
-    if (self.eat(.kw_else)) {
+    if (try self.eat(.kw_else)) {
         alternate = try parseStatementChecked(self, false);
     }
     self.in_labelled_fn_check = saved_labelled;
@@ -505,10 +505,10 @@ fn parseIfStatement(self: *Parser) ParseError2!NodeIndex {
 
 fn parseWhileStatement(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    self.advance(); // skip 'while'
-    self.expect(.l_paren);
+    try self.advance(); // skip 'while'
+    try self.expect(.l_paren);
     const test_expr = try self.parseExpression();
-    self.expect(.r_paren);
+    try self.expect(.r_paren);
     const body = try self.parseLoopBody();
 
     return try self.ast.addNode(.{
@@ -520,13 +520,13 @@ fn parseWhileStatement(self: *Parser) ParseError2!NodeIndex {
 
 fn parseDoWhileStatement(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    self.advance(); // skip 'do'
+    try self.advance(); // skip 'do'
     const body = try self.parseLoopBody();
-    self.expect(.kw_while);
-    self.expect(.l_paren);
+    try self.expect(.kw_while);
+    try self.expect(.l_paren);
     const test_expr = try self.parseExpression();
-    self.expect(.r_paren);
-    _ = self.eat(.semicolon);
+    try self.expect(.r_paren);
+    _ = try self.eat(.semicolon);
 
     return try self.ast.addNode(.{
         .tag = .do_while_statement,
@@ -537,20 +537,20 @@ fn parseDoWhileStatement(self: *Parser) ParseError2!NodeIndex {
 
 fn parseForStatement(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    self.advance(); // skip 'for'
+    try self.advance(); // skip 'for'
 
     // for await (...) — async iteration
     // for-await-of: `for await (x of iterable)` — async iteration
     // await 플래그는 for-of에서 `async` 식별자 사용 허용 여부에 영향
-    const is_await = self.eat(.kw_await);
+    const is_await = try self.eat(.kw_await);
 
-    self.expect(.l_paren);
+    try self.expect(.l_paren);
 
     // for문의 init 부분 파싱
     // for(init; ...) or for(left in/of right)
     if (self.current() == .semicolon) {
         // for(; ...) — 빈 init
-        self.advance();
+        try self.advance();
         return parseForRest(self, start, NodeIndex.none);
     }
 
@@ -570,7 +570,7 @@ fn parseForStatement(self: *Parser) ParseError2!NodeIndex {
     //   단, `for (let of = 1;;)` 같은 경우는 isLetDeclarationStart가 true → 선언 경로.
     //   `kw_of` 뒤에 `=`이 오면 isLetDeclarationStart가 true (keyword + not reserved).
     const is_let_as_identifier = self.current() == .kw_let and !self.is_strict_mode and
-        (!isLetDeclarationStart(self) or self.peekNextKind() == .kw_of);
+        (!try isLetDeclarationStart(self) or try self.peekNextKind() == .kw_of);
 
     if ((self.current() == .kw_var or self.current() == .kw_let or self.current() == .kw_const) and !is_let_as_identifier) {
         const init_expr = try parseVariableDeclaration(self);
@@ -579,13 +579,13 @@ fn parseForStatement(self: *Parser) ParseError2!NodeIndex {
         // parseVariableDeclaration이 세미콜론을 소비했으면 for(;;)
         // 'in' 또는 'of'가 보이면 for-in/for-of
         if (self.current() == .kw_in or self.current() == .kw_of) {
-            validateForInOfDeclaration(self, init_expr);
+            try validateForInOfDeclaration(self, init_expr);
             if (self.current() == .kw_in) {
                 return parseForIn(self, start, init_expr);
             }
             return parseForOf(self, start, init_expr);
         }
-        self.expect(.semicolon); // for 헤더의 첫 번째 세미콜론 (ASI 금지, 7.9.2)
+        try self.expect(.semicolon); // for 헤더의 첫 번째 세미콜론 (ASI 금지, 7.9.2)
         return parseForRest(self, start, init_expr);
     }
 
@@ -598,7 +598,7 @@ fn parseForStatement(self: *Parser) ParseError2!NodeIndex {
     self.restoreContext(for_saved);
     self.for_loop_init = saved_for_loop_init;
     if (self.current() == .kw_in) {
-        _ = self.coverExpressionToAssignmentTarget(init_expr, true);
+        _ = try self.coverExpressionToAssignmentTarget(init_expr, true);
         return parseForIn(self, start, init_expr);
     }
     if (self.current() == .kw_of) {
@@ -610,18 +610,18 @@ fn parseForStatement(self: *Parser) ParseError2!NodeIndex {
         if (init_node.tag == .identifier_reference) {
             const text = self.ast.source[init_node.span.start..init_node.span.end];
             if (std.mem.eql(u8, text, "async") and !is_await) {
-                self.addError(init_node.span, "'async' is not allowed as identifier in for-of left-hand side");
+                try self.addError(init_node.span, "'async' is not allowed as identifier in for-of left-hand side");
             }
             // for (let of []) — 'let' 키워드가 for-of의 LHS로 사용되면 에러
             // ECMAScript 14.7.5: [lookahead ≠ let] LeftHandSideExpression of
             if (std.mem.eql(u8, text, "let")) {
-                self.addError(init_node.span, "'let' is not allowed as identifier in for-of left-hand side");
+                try self.addError(init_node.span, "'let' is not allowed as identifier in for-of left-hand side");
             }
         }
-        _ = self.coverExpressionToAssignmentTarget(init_expr, true);
+        _ = try self.coverExpressionToAssignmentTarget(init_expr, true);
         return parseForOf(self, start, init_expr);
     }
-    self.expect(.semicolon); // for 헤더의 첫 번째 세미콜론 (ASI 금지, 7.9.2)
+    try self.expect(.semicolon); // for 헤더의 첫 번째 세미콜론 (ASI 금지, 7.9.2)
     return parseForRest(self, start, init_expr);
 }
 
@@ -629,7 +629,7 @@ fn parseForStatement(self: *Parser) ParseError2!NodeIndex {
 /// - 단일 바인딩만 허용 (ECMAScript 14.7.5.1)
 /// - initializer 금지 (for-of는 항상, for-in은 strict + let/const)
 /// - Annex B.3.5: sloppy mode의 var + for-in은 initializer 허용
-fn validateForInOfDeclaration(self: *Parser, init_expr: NodeIndex) void {
+fn validateForInOfDeclaration(self: *Parser, init_expr: NodeIndex) ParseError2!void {
     if (init_expr.isNone()) return;
     const init_node = self.ast.getNode(init_expr);
     if (init_node.tag != .variable_declaration) return;
@@ -640,7 +640,7 @@ fn validateForInOfDeclaration(self: *Parser, init_expr: NodeIndex) void {
     const decl_len = extras[init_node.data.extra + 2];
 
     if (decl_len > 1) {
-        self.addError(init_node.span, "Only a single variable declaration is allowed in a for-in/for-of statement");
+        try self.addError(init_node.span, "Only a single variable declaration is allowed in a for-in/for-of statement");
     }
     if (decl_len == 0) return;
 
@@ -657,7 +657,7 @@ fn validateForInOfDeclaration(self: *Parser, init_expr: NodeIndex) void {
     const is_var = kind_flags == 0;
     const is_for_in = self.current() == .kw_in;
     if (is_for_in and is_var and !self.is_strict_mode) return; // Annex B.3.5
-    self.addError(decl_node.span, "For-in/for-of loop variable declaration may not have an initializer");
+    try self.addError(decl_node.span, "For-in/for-of loop variable declaration may not have an initializer");
 }
 
 /// for(init; test; update) body — 나머지 파싱
@@ -666,13 +666,13 @@ fn parseForRest(self: *Parser, start: u32, init_expr: NodeIndex) ParseError2!Nod
     if (self.current() != .semicolon) {
         test_expr = try self.parseExpression();
     }
-    self.expect(.semicolon); // for 헤더의 두 번째 세미콜론 (ASI 금지, 7.9.2)
+    try self.expect(.semicolon); // for 헤더의 두 번째 세미콜론 (ASI 금지, 7.9.2)
 
     var update_expr = NodeIndex.none;
     if (self.current() != .r_paren) {
         update_expr = try self.parseExpression();
     }
-    self.expect(.r_paren);
+    try self.expect(.r_paren);
     const body = try self.parseLoopBody();
 
     const extra_start = try self.ast.addExtra(@intFromEnum(init_expr));
@@ -689,9 +689,9 @@ fn parseForRest(self: *Parser, start: u32, init_expr: NodeIndex) ParseError2!Nod
 
 /// for(left in right) body
 fn parseForIn(self: *Parser, start: u32, left: NodeIndex) ParseError2!NodeIndex {
-    self.advance(); // skip 'in'
+    try self.advance(); // skip 'in'
     const right = try self.parseExpression();
-    self.expect(.r_paren);
+    try self.expect(.r_paren);
     const body = try self.parseLoopBody();
 
     return try self.ast.addNode(.{
@@ -703,9 +703,9 @@ fn parseForIn(self: *Parser, start: u32, left: NodeIndex) ParseError2!NodeIndex 
 
 /// for(left of right) body
 fn parseForOf(self: *Parser, start: u32, left: NodeIndex) ParseError2!NodeIndex {
-    self.advance(); // skip 'of'
+    try self.advance(); // skip 'of'
     const right = try self.parseAssignmentExpression();
-    self.expect(.r_paren);
+    try self.expect(.r_paren);
     const body = try self.parseLoopBody();
 
     return try self.ast.addNode(.{
@@ -719,7 +719,7 @@ fn parseForOf(self: *Parser, start: u32, left: NodeIndex) ParseError2!NodeIndex 
 fn parseSimpleStatement(self: *Parser, tag: Tag) ParseError2!NodeIndex {
     const keyword_span = self.currentSpan();
     const start = keyword_span.start;
-    self.advance(); // skip break/continue/debugger
+    try self.advance(); // skip break/continue/debugger
 
     // break/continue 뒤에 줄바꿈 없이 identifier가 오면 label로 소비
     var label = NodeIndex.none;
@@ -731,21 +731,21 @@ fn parseSimpleStatement(self: *Parser, tag: Tag) ParseError2!NodeIndex {
             .span = self.currentSpan(),
             .data = .{ .string_ref = self.currentSpan() },
         });
-        self.advance();
+        try self.advance();
     }
 
     // continue → label 유무와 관계없이 loop 안에서만 허용
     if (tag == .continue_statement and !self.in_loop) {
-        self.addError(keyword_span, "'continue' outside of loop");
+        try self.addError(keyword_span, "'continue' outside of loop");
     }
     // break → label이 없을 때만 loop 또는 switch 필요
     // label이 있는 break는 labelled statement 안에서 유효 (loop/switch 불필요)
     if (tag == .break_statement and label.isNone() and !self.in_loop and !self.in_switch) {
-        self.addError(keyword_span, "'break' outside of loop or switch");
+        try self.addError(keyword_span, "'break' outside of loop or switch");
     }
 
     const end = self.currentSpan().end;
-    _ = self.eat(.semicolon);
+    _ = try self.eat(.semicolon);
     return try self.ast.addNode(.{
         .tag = tag,
         .span = .{ .start = start, .end = end },
@@ -755,11 +755,11 @@ fn parseSimpleStatement(self: *Parser, tag: Tag) ParseError2!NodeIndex {
 
 fn parseSwitchStatement(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    self.advance(); // skip 'switch'
-    self.expect(.l_paren);
+    try self.advance(); // skip 'switch'
+    try self.expect(.l_paren);
     const discriminant = try self.parseExpression();
-    self.expect(.r_paren);
-    self.expect(.l_curly);
+    try self.expect(.r_paren);
+    try self.expect(.l_curly);
 
     const saved_ctx = self.ctx;
     const saved_in_switch = self.in_switch;
@@ -776,7 +776,7 @@ fn parseSwitchStatement(self: *Parser) ParseError2!NodeIndex {
         const case_node = try parseSwitchCase(self);
         if (is_default) {
             if (has_default) {
-                self.addError(default_span, "Only one default clause is allowed in a switch statement");
+                try self.addError(default_span, "Only one default clause is allowed in a switch statement");
             }
             has_default = true;
         }
@@ -787,7 +787,7 @@ fn parseSwitchStatement(self: *Parser) ParseError2!NodeIndex {
     self.in_switch = saved_in_switch;
 
     const end = self.currentSpan().end;
-    self.expect(.r_curly);
+    try self.expect(.r_curly);
 
     const cases = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
@@ -806,15 +806,15 @@ fn parseSwitchCase(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
 
     var test_expr = NodeIndex.none;
-    if (self.eat(.kw_case)) {
+    if (try self.eat(.kw_case)) {
         test_expr = try self.parseExpression();
-        self.expect(.colon);
-    } else if (self.eat(.kw_default)) {
-        self.expect(.colon);
+        try self.expect(.colon);
+    } else if (try self.eat(.kw_default)) {
+        try self.expect(.colon);
     } else {
         const err_span = self.currentSpan();
-        self.addError(err_span, "Case or default expected");
-        self.advance();
+        try self.addError(err_span, "Case or default expected");
+        try self.advance();
         return try self.ast.addNode(.{ .tag = .invalid, .span = err_span, .data = .{ .none = 0 } });
     }
 
@@ -842,14 +842,14 @@ fn parseSwitchCase(self: *Parser) ParseError2!NodeIndex {
 
 fn parseThrowStatement(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    self.advance(); // skip 'throw'
+    try self.advance(); // skip 'throw'
     // ECMAScript 14.14: throw [no LineTerminator here] Expression
     if (self.scanner.token.has_newline_before) {
-        self.addError(.{ .start = start, .end = self.currentSpan().start }, "No line break is allowed after 'throw'");
+        try self.addError(.{ .start = start, .end = self.currentSpan().start }, "No line break is allowed after 'throw'");
     }
     const arg = try self.parseExpression();
     const end = self.currentSpan().end;
-    _ = self.eat(.semicolon);
+    _ = try self.eat(.semicolon);
     return try self.ast.addNode(.{
         .tag = .throw_statement,
         .span = .{ .start = start, .end = end },
@@ -859,7 +859,7 @@ fn parseThrowStatement(self: *Parser) ParseError2!NodeIndex {
 
 fn parseTryStatement(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    self.advance(); // skip 'try'
+    try self.advance(); // skip 'try'
 
     const block = try parseBlockStatement(self);
 
@@ -871,13 +871,13 @@ fn parseTryStatement(self: *Parser) ParseError2!NodeIndex {
 
     // finally 절 (선택적)
     var finalizer = NodeIndex.none;
-    if (self.eat(.kw_finally)) {
+    if (try self.eat(.kw_finally)) {
         finalizer = try parseBlockStatement(self);
     }
 
     // catch도 finally도 없으면 에러
     if (handler.isNone() and finalizer.isNone()) {
-        self.addError(.{ .start = start, .end = self.currentSpan().start }, "Catch or finally expected");
+        try self.addError(.{ .start = start, .end = self.currentSpan().start }, "Catch or finally expected");
     }
 
     return try self.ast.addNode(.{
@@ -889,13 +889,13 @@ fn parseTryStatement(self: *Parser) ParseError2!NodeIndex {
 
 fn parseCatchClause(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    self.advance(); // skip 'catch'
+    try self.advance(); // skip 'catch'
 
     // catch 파라미터 (선택적 — ES2019 optional catch binding)
     var param = NodeIndex.none;
-    if (self.eat(.l_paren)) {
+    if (try self.eat(.l_paren)) {
         param = try self.parseBindingIdentifier();
-        self.expect(.r_paren);
+        try self.expect(.r_paren);
     }
 
     const body = try parseBlockStatement(self);

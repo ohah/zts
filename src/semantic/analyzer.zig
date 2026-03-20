@@ -1765,7 +1765,7 @@ const Parser = @import("../parser/parser.zig").Parser;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 
 test "SemanticAnalyzer: var declaration creates symbol" {
-    var scanner = Scanner.init(std.testing.allocator, "var x = 1;");
+    var scanner = try Scanner.init(std.testing.allocator, "var x = 1;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1781,7 +1781,7 @@ test "SemanticAnalyzer: var declaration creates symbol" {
 }
 
 test "SemanticAnalyzer: let redeclaration is error" {
-    var scanner = Scanner.init(std.testing.allocator, "let x = 1; let x = 2;");
+    var scanner = try Scanner.init(std.testing.allocator, "let x = 1; let x = 2;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1795,7 +1795,7 @@ test "SemanticAnalyzer: let redeclaration is error" {
 }
 
 test "SemanticAnalyzer: var redeclaration is allowed" {
-    var scanner = Scanner.init(std.testing.allocator, "var x = 1; var x = 2;");
+    var scanner = try Scanner.init(std.testing.allocator, "var x = 1; var x = 2;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1809,7 +1809,7 @@ test "SemanticAnalyzer: var redeclaration is allowed" {
 }
 
 test "SemanticAnalyzer: function declaration creates symbol" {
-    var scanner = Scanner.init(std.testing.allocator, "function foo() {}");
+    var scanner = try Scanner.init(std.testing.allocator, "function foo() {}");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1824,7 +1824,7 @@ test "SemanticAnalyzer: function declaration creates symbol" {
 }
 
 test "SemanticAnalyzer: scopes are created" {
-    var scanner = Scanner.init(std.testing.allocator, "{ let x = 1; }");
+    var scanner = try Scanner.init(std.testing.allocator, "{ let x = 1; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1840,7 +1840,7 @@ test "SemanticAnalyzer: scopes are created" {
 }
 
 test "SemanticAnalyzer: let and var conflict is error" {
-    var scanner = Scanner.init(std.testing.allocator, "let x = 1; var x = 2;");
+    var scanner = try Scanner.init(std.testing.allocator, "let x = 1; var x = 2;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1854,7 +1854,7 @@ test "SemanticAnalyzer: let and var conflict is error" {
 }
 
 test "SemanticAnalyzer: const redeclaration is error" {
-    var scanner = Scanner.init(std.testing.allocator, "const x = 1; const x = 2;");
+    var scanner = try Scanner.init(std.testing.allocator, "const x = 1; const x = 2;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1872,7 +1872,7 @@ test "SemanticAnalyzer: const redeclaration is error" {
 // ============================================================
 
 test "SemanticAnalyzer: declared private name is valid" {
-    var scanner = Scanner.init(std.testing.allocator, "class C { #x = 1; foo() { this.#x; } }");
+    var scanner = try Scanner.init(std.testing.allocator, "class C { #x = 1; foo() { this.#x; } }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1886,7 +1886,7 @@ test "SemanticAnalyzer: declared private name is valid" {
 }
 
 test "SemanticAnalyzer: undeclared private name is error" {
-    var scanner = Scanner.init(std.testing.allocator, "class C { foo() { this.#x; } }");
+    var scanner = try Scanner.init(std.testing.allocator, "class C { foo() { this.#x; } }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1900,7 +1900,7 @@ test "SemanticAnalyzer: undeclared private name is error" {
 }
 
 test "SemanticAnalyzer: private name outside class is error" {
-    var scanner = Scanner.init(std.testing.allocator, "this.#x;");
+    var scanner = try Scanner.init(std.testing.allocator, "this.#x;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1914,7 +1914,7 @@ test "SemanticAnalyzer: private name outside class is error" {
 }
 
 test "SemanticAnalyzer: private method is valid" {
-    var scanner = Scanner.init(std.testing.allocator, "class C { #foo() {} bar() { this.#foo(); } }");
+    var scanner = try Scanner.init(std.testing.allocator, "class C { #foo() {} bar() { this.#foo(); } }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1929,7 +1929,7 @@ test "SemanticAnalyzer: private method is valid" {
 
 test "SemanticAnalyzer: nested class private name" {
     // 내부 class에서 외부 class의 private name 접근은 불가
-    var scanner = Scanner.init(std.testing.allocator, "class Outer { #x; foo() { class Inner { bar() { this.#y; } } } }");
+    var scanner = try Scanner.init(std.testing.allocator, "class Outer { #x; foo() { class Inner { bar() { this.#y; } } } }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1944,7 +1944,7 @@ test "SemanticAnalyzer: nested class private name" {
 }
 
 test "SemanticAnalyzer: inner class can access outer private name" {
-    var scanner = Scanner.init(std.testing.allocator, "class Outer { #x; foo() { class Inner { bar() { this.#x; } } } }");
+    var scanner = try Scanner.init(std.testing.allocator, "class Outer { #x; foo() { class Inner { bar() { this.#x; } } } }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1960,7 +1960,7 @@ test "SemanticAnalyzer: inner class can access outer private name" {
 
 test "SemanticAnalyzer: duplicate private method is error" {
     // 같은 이름의 private method 두 번 선언 → 에러
-    var scanner = Scanner.init(std.testing.allocator, "class C { #m() {} #m() {} }");
+    var scanner = try Scanner.init(std.testing.allocator, "class C { #m() {} #m() {} }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1975,7 +1975,7 @@ test "SemanticAnalyzer: duplicate private method is error" {
 
 test "SemanticAnalyzer: duplicate private field is error" {
     // 같은 이름의 private field 두 번 선언 → 에러
-    var scanner = Scanner.init(std.testing.allocator, "class C { #x; #x; }");
+    var scanner = try Scanner.init(std.testing.allocator, "class C { #x; #x; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -1990,7 +1990,7 @@ test "SemanticAnalyzer: duplicate private field is error" {
 
 test "SemanticAnalyzer: private getter+setter pair is valid" {
     // getter와 setter 쌍은 중복이 아님
-    var scanner = Scanner.init(std.testing.allocator, "class C { get #x() { return 1; } set #x(v) {} }");
+    var scanner = try Scanner.init(std.testing.allocator, "class C { get #x() { return 1; } set #x(v) {} }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2005,7 +2005,7 @@ test "SemanticAnalyzer: private getter+setter pair is valid" {
 
 test "SemanticAnalyzer: private method+getter duplicate is error" {
     // method와 getter는 쌍이 아님 → 에러
-    var scanner = Scanner.init(std.testing.allocator, "class C { #m() {} get #m() { return 1; } }");
+    var scanner = try Scanner.init(std.testing.allocator, "class C { #m() {} get #m() { return 1; } }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2021,7 +2021,7 @@ test "SemanticAnalyzer: private method+getter duplicate is error" {
 test "SemanticAnalyzer: private name in object literal method is error" {
     // 객체 리터럴에서 private name 메서드는 SyntaxError
     // 이 테스트는 method_definition key 순회 + private_identifier 검출이 동작하는지 확인
-    var scanner = Scanner.init(std.testing.allocator, "var o = { #m() {} };");
+    var scanner = try Scanner.init(std.testing.allocator, "var o = { #m() {} };");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2041,7 +2041,7 @@ test "SemanticAnalyzer: private name in object literal method is error" {
 
 test "SemanticAnalyzer: call expression args are visited" {
     // 함수 호출 인자 내부의 함수 표현식이 스코프를 생성하는지 확인
-    var scanner = Scanner.init(std.testing.allocator, "f(function() { let x = 1; });");
+    var scanner = try Scanner.init(std.testing.allocator, "f(function() { let x = 1; });");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2058,7 +2058,7 @@ test "SemanticAnalyzer: call expression args are visited" {
 
 test "SemanticAnalyzer: template literal expressions are visited" {
     // 템플릿 리터럴 내부 표현식이 순회되는지 확인
-    var scanner = Scanner.init(std.testing.allocator, "let x = `${function() { let y = 1; }()}`;");
+    var scanner = try Scanner.init(std.testing.allocator, "let x = `${function() { let y = 1; }()}`;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2079,7 +2079,7 @@ test "SemanticAnalyzer: template literal expressions are visited" {
 test "SemanticAnalyzer: var in nested block is same function scope" {
     // var x = 1; { var x = 2; }
     // var는 함수 스코프에서 호이스팅되므로 같은 스코프에 이미 있어도 재선언 허용
-    var scanner = Scanner.init(std.testing.allocator, "var x = 1; { var x = 2; }");
+    var scanner = try Scanner.init(std.testing.allocator, "var x = 1; { var x = 2; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2095,7 +2095,7 @@ test "SemanticAnalyzer: var in nested block is same function scope" {
 test "SemanticAnalyzer: let in nested block is separate scope" {
     // let x = 1; { let x = 2; }
     // 내부 블록의 let x는 별도 블록 스코프에 선언되므로 충돌 없음
-    var scanner = Scanner.init(std.testing.allocator, "let x = 1; { let x = 2; }");
+    var scanner = try Scanner.init(std.testing.allocator, "let x = 1; { let x = 2; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2111,7 +2111,7 @@ test "SemanticAnalyzer: let in nested block is separate scope" {
 test "SemanticAnalyzer: var hoisting in function" {
     // function f() { return x; var x = 1; }
     // var는 함수 최상단으로 호이스팅되므로 return x; 이후에 선언되어도 에러 없음
-    var scanner = Scanner.init(std.testing.allocator, "function f() { return x; var x = 1; }");
+    var scanner = try Scanner.init(std.testing.allocator, "function f() { return x; var x = 1; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2131,7 +2131,7 @@ test "SemanticAnalyzer: var hoisting in function" {
 test "SemanticAnalyzer: same let name in different functions is valid" {
     // function f() { let x = 1; } function g() { let x = 2; }
     // 서로 다른 함수 스코프이므로 충돌 없음
-    var scanner = Scanner.init(std.testing.allocator, "function f() { let x = 1; } function g() { let x = 2; }");
+    var scanner = try Scanner.init(std.testing.allocator, "function f() { let x = 1; } function g() { let x = 2; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2147,7 +2147,7 @@ test "SemanticAnalyzer: same let name in different functions is valid" {
 test "SemanticAnalyzer: parameter and let redeclaration is error" {
     // function f(x) { let x = 1; }
     // 파라미터 x와 let x는 같은 함수 스코프 — 충돌
-    var scanner = Scanner.init(std.testing.allocator, "function f(x) { let x = 1; }");
+    var scanner = try Scanner.init(std.testing.allocator, "function f(x) { let x = 1; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2163,7 +2163,7 @@ test "SemanticAnalyzer: parameter and let redeclaration is error" {
 test "SemanticAnalyzer: parameter and var redeclaration is valid" {
     // function f(x) { var x = 1; }
     // 파라미터 x와 var x는 공존 가능 (ECMAScript 허용)
-    var scanner = Scanner.init(std.testing.allocator, "function f(x) { var x = 1; }");
+    var scanner = try Scanner.init(std.testing.allocator, "function f(x) { var x = 1; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2183,7 +2183,7 @@ test "SemanticAnalyzer: parameter and var redeclaration is valid" {
 test "SemanticAnalyzer: for loop with let is valid" {
     // for(let i=0; i<10; i++) { let j = i; }
     // for 문이 블록 스코프를 생성하고 let i는 그 스코프에 선언됨
-    var scanner = Scanner.init(std.testing.allocator, "for(let i=0; i<10; i++) { let j = i; }");
+    var scanner = try Scanner.init(std.testing.allocator, "for(let i=0; i<10; i++) { let j = i; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2199,7 +2199,7 @@ test "SemanticAnalyzer: for loop with let is valid" {
 test "SemanticAnalyzer: same let name in separate for loops is valid" {
     // for(let i=0;;){} for(let i=0;;){}
     // 각 for 문이 별도 블록 스코프를 생성하므로 충돌 없음
-    var scanner = Scanner.init(std.testing.allocator, "for(let i=0; i<1; i++){} for(let i=0; i<2; i++){}");
+    var scanner = try Scanner.init(std.testing.allocator, "for(let i=0; i<1; i++){} for(let i=0; i<2; i++){}");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2219,7 +2219,7 @@ test "SemanticAnalyzer: same let name in separate for loops is valid" {
 test "SemanticAnalyzer: import binding redeclared with let is error" {
     // import { x } from 'a'; let x = 1;
     // import 바인딩은 모든 재선언과 충돌
-    var scanner = Scanner.init(std.testing.allocator, "import { x } from 'a'; let x = 1;");
+    var scanner = try Scanner.init(std.testing.allocator, "import { x } from 'a'; let x = 1;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2235,7 +2235,7 @@ test "SemanticAnalyzer: import binding redeclared with let is error" {
 test "SemanticAnalyzer: import binding redeclared with var is error" {
     // import { x } from 'a'; var x = 1;
     // import 바인딩은 var 재선언과도 충돌
-    var scanner = Scanner.init(std.testing.allocator, "import { x } from 'a'; var x = 1;");
+    var scanner = try Scanner.init(std.testing.allocator, "import { x } from 'a'; var x = 1;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2255,7 +2255,7 @@ test "SemanticAnalyzer: import binding redeclared with var is error" {
 test "SemanticAnalyzer: catch binding shadowed by let is error" {
     // try {} catch(e) { let e = 1; }
     // catch 파라미터 e와 같은 catch body 블록의 let e는 충돌
-    var scanner = Scanner.init(std.testing.allocator, "try {} catch(e) { let e = 1; }");
+    var scanner = try Scanner.init(std.testing.allocator, "try {} catch(e) { let e = 1; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2271,7 +2271,7 @@ test "SemanticAnalyzer: catch binding shadowed by let is error" {
 test "SemanticAnalyzer: catch binding shadowed by var is valid" {
     // try {} catch(e) { var e = 1; }
     // var는 catch 바깥으로 호이스팅되므로 catch 파라미터와 충돌하지 않음
-    var scanner = Scanner.init(std.testing.allocator, "try {} catch(e) { var e = 1; }");
+    var scanner = try Scanner.init(std.testing.allocator, "try {} catch(e) { var e = 1; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2291,7 +2291,7 @@ test "SemanticAnalyzer: catch binding shadowed by var is valid" {
 test "SemanticAnalyzer: duplicate let in switch block is error" {
     // switch (x) { case 1: let y = 1; break; case 2: let y = 2; break; }
     // switch body는 하나의 블록 스코프 — 같은 이름의 let은 충돌
-    var scanner = Scanner.init(std.testing.allocator, "switch (x) { case 1: let y = 1; break; case 2: let y = 2; break; }");
+    var scanner = try Scanner.init(std.testing.allocator, "switch (x) { case 1: let y = 1; break; case 2: let y = 2; break; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2307,7 +2307,7 @@ test "SemanticAnalyzer: duplicate let in switch block is error" {
 test "SemanticAnalyzer: duplicate var in switch block is valid" {
     // switch (x) { case 1: var y = 1; break; case 2: var y = 2; break; }
     // var는 함수 스코프로 호이스팅되므로 switch block 내 중복 선언 허용
-    var scanner = Scanner.init(std.testing.allocator, "switch (x) { case 1: var y = 1; break; case 2: var y = 2; break; }");
+    var scanner = try Scanner.init(std.testing.allocator, "switch (x) { case 1: var y = 1; break; case 2: var y = 2; break; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2327,7 +2327,7 @@ test "SemanticAnalyzer: duplicate var in switch block is valid" {
 test "SemanticAnalyzer: let inside generator is valid" {
     // function* g() { let x = 1; }
     // generator 내부는 별도 함수 스코프 — let 선언 에러 없음
-    var scanner = Scanner.init(std.testing.allocator, "function* g() { let x = 1; }");
+    var scanner = try Scanner.init(std.testing.allocator, "function* g() { let x = 1; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2343,7 +2343,7 @@ test "SemanticAnalyzer: let inside generator is valid" {
 test "SemanticAnalyzer: let inside async function is valid" {
     // async function f() { let x = 1; }
     // async 함수 내부는 별도 함수 스코프 — let 선언 에러 없음
-    var scanner = Scanner.init(std.testing.allocator, "async function f() { let x = 1; }");
+    var scanner = try Scanner.init(std.testing.allocator, "async function f() { let x = 1; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2359,7 +2359,7 @@ test "SemanticAnalyzer: let inside async function is valid" {
 test "SemanticAnalyzer: generator duplicate params is error" {
     // function* g(a, a) {}
     // generator는 UniqueFormalParameters 적용 — 중복 파라미터 에러
-    var scanner = Scanner.init(std.testing.allocator, "function* g(a, a) {}");
+    var scanner = try Scanner.init(std.testing.allocator, "function* g(a, a) {}");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2375,7 +2375,7 @@ test "SemanticAnalyzer: generator duplicate params is error" {
 test "SemanticAnalyzer: async function duplicate params is error" {
     // async function f(a, a) {}
     // async function은 UniqueFormalParameters 적용 — 중복 파라미터 에러
-    var scanner = Scanner.init(std.testing.allocator, "async function f(a, a) {}");
+    var scanner = try Scanner.init(std.testing.allocator, "async function f(a, a) {}");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2395,7 +2395,7 @@ test "SemanticAnalyzer: async function duplicate params is error" {
 test "SemanticAnalyzer: named class expression is valid" {
     // let C = class C { constructor() {} }
     // 클래스 표현식의 이름은 자체 스코프에만 등록 — 에러 없음
-    var scanner = Scanner.init(std.testing.allocator, "let C = class C { constructor() {} }");
+    var scanner = try Scanner.init(std.testing.allocator, "let C = class C { constructor() {} }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2411,7 +2411,7 @@ test "SemanticAnalyzer: named class expression is valid" {
 test "SemanticAnalyzer: static and instance private field with same name is error" {
     // class C { #x = 1; static #x = 2; }
     // ECMAScript: static/instance 동시 선언 불가 — checker에서 검증
-    var scanner = Scanner.init(std.testing.allocator, "class C { #x = 1; static #x = 2; }");
+    var scanner = try Scanner.init(std.testing.allocator, "class C { #x = 1; static #x = 2; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2429,7 +2429,7 @@ test "SemanticAnalyzer: static and instance private field with same name is erro
 // ============================================================
 
 test "SemanticAnalyzer: errors have kind=semantic" {
-    var scanner = Scanner.init(std.testing.allocator, "let x = 1; let x = 2;");
+    var scanner = try Scanner.init(std.testing.allocator, "let x = 1; let x = 2;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2444,7 +2444,7 @@ test "SemanticAnalyzer: errors have kind=semantic" {
 }
 
 test "SemanticAnalyzer: redeclaration error message contains identifier name" {
-    var scanner = Scanner.init(std.testing.allocator, "let foo = 1; let foo = 2;");
+    var scanner = try Scanner.init(std.testing.allocator, "let foo = 1; let foo = 2;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2459,7 +2459,7 @@ test "SemanticAnalyzer: redeclaration error message contains identifier name" {
 }
 
 test "SemanticAnalyzer: duplicate export name is semantic error" {
-    var scanner = Scanner.init(std.testing.allocator, "export const a = 1; export const a = 2;");
+    var scanner = try Scanner.init(std.testing.allocator, "export const a = 1; export const a = 2;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
@@ -2484,7 +2484,7 @@ test "SemanticAnalyzer: valid code has no semantic errors" {
         "var x = 1; var x = 2;", // var은 재선언 허용
     };
     for (cases) |src| {
-        var scanner = Scanner.init(std.testing.allocator, src);
+        var scanner = try Scanner.init(std.testing.allocator, src);
         defer scanner.deinit();
         var parser = Parser.init(std.testing.allocator, &scanner);
         defer parser.deinit();
@@ -2505,7 +2505,7 @@ test "SemanticAnalyzer: valid code has no semantic errors" {
 /// 테스트 헬퍼: 소스 코드를 파싱+분석하여 특정 이름의 심볼 reference_count를 반환.
 /// 같은 이름의 심볼이 여러 개이면 배열 순서대로(선언 순) 반환.
 fn getRefCounts(source: []const u8, target_name: []const u8, out: *[8]u32) usize {
-    var scanner = Scanner.init(std.testing.allocator, source);
+    var scanner = Scanner.init(std.testing.allocator, source) catch return 0;
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();

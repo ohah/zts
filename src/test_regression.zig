@@ -43,7 +43,7 @@ const TestResult = struct {
 // E2E 헬퍼: source → (파싱 + 변환 + 코드젠) → 출력 문자열
 fn e2e(allocator: std.mem.Allocator, source: []const u8) !TestResult {
     const scanner_ptr = try allocator.create(Scanner);
-    scanner_ptr.* = Scanner.init(allocator, source);
+    scanner_ptr.* = try Scanner.init(allocator, source);
 
     const parser_ptr = try allocator.create(Parser);
     parser_ptr.* = Parser.init(allocator, scanner_ptr);
@@ -89,7 +89,7 @@ const ParseResult = struct {
 
 fn parseOnly(allocator: std.mem.Allocator, source: []const u8) !ParseResult {
     var result = ParseResult{
-        .scanner = Scanner.init(allocator, source),
+        .scanner = try Scanner.init(allocator, source),
         .parser_inst = undefined,
         .allocator = allocator,
     };
@@ -263,7 +263,7 @@ test "regression: import.UNKNOWN is a syntax error (558be92)" {
 // fix(parser): import.meta is valid in module code (558be92)
 // 검증: import.meta는 module mode에서 정상 파싱되어야 함.
 test "regression: import.meta still parses OK in module mode (558be92)" {
-    var scanner = Scanner.init(std.testing.allocator, "var x = import.meta;");
+    var scanner = try Scanner.init(std.testing.allocator, "var x = import.meta;");
     defer scanner.deinit();
     var parser_inst = Parser.init(std.testing.allocator, &scanner);
     defer parser_inst.deinit();

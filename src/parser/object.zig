@@ -17,7 +17,7 @@ const ParseError2 = @import("parser.zig").ParseError2;
 
 pub fn parseObjectExpression(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    self.advance(); // skip {
+    try self.advance(); // skip {
 
     var props = std.ArrayList(NodeIndex).init(self.allocator);
     defer props.deinit();
@@ -25,7 +25,7 @@ pub fn parseObjectExpression(self: *Parser) ParseError2!NodeIndex {
     while (self.current() != .r_curly and self.current() != .eof) {
         const prop = try parseObjectProperty(self);
         try props.append(prop);
-        if (!self.eat(.comma)) break;
+        if (!try self.eat(.comma)) break;
     }
 
     const end = self.currentSpan().end;
@@ -34,7 +34,7 @@ pub fn parseObjectExpression(self: *Parser) ParseError2!NodeIndex {
     // prev_token_kind를 `.r_paren`으로 설정하면 scanSlash()가 division으로 판별한다.
     // 예: `{valueOf: fn} / 1` — object literal 뒤 division
     self.scanner.prev_token_kind = .r_paren;
-    self.expect(.r_curly);
+    try self.expect(.r_curly);
 
     const list = try self.ast.addNodeList(props.items);
     return try self.ast.addNode(.{
@@ -49,7 +49,7 @@ pub fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
 
     // spread: ...expr
     if (self.current() == .dot3) {
-        self.advance();
+        try self.advance();
         const expr = try self.parseAssignmentExpression();
         return try self.ast.addNode(.{
             .tag = .spread_element,
@@ -60,10 +60,10 @@ pub fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
 
     // get/set 메서드 shorthand: { get prop() {}, set prop(v) {} }
     if (self.current() == .kw_get or self.current() == .kw_set) {
-        const peek = self.peekNextKind();
+        const peek = try self.peekNextKind();
         if (peek != .colon and peek != .l_paren and peek != .comma and peek != .r_curly) {
             const method_flags: u16 = if (self.current() == .kw_get) 0x02 else 0x04;
-            self.advance(); // skip get/set
+            try self.advance(); // skip get/set
             const key = try self.parsePropertyKey();
             return parseObjectMethodBody(self, start, key, method_flags);
         }
@@ -71,14 +71,14 @@ pub fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
 
     // async 메서드 shorthand: { async foo() {} }
     if (self.current() == .kw_async) {
-        const peek = self.peekNext();
+        const peek = try self.peekNext();
         if (peek.kind != .colon and peek.kind != .comma and
             peek.kind != .r_curly and !peek.has_newline_before)
         {
             var method_flags: u16 = 0x08; // async
-            self.advance(); // skip 'async'
+            try self.advance(); // skip 'async'
             // async generator: { async *foo() {} }
-            if (self.eat(.star)) method_flags |= 0x10;
+            if (try self.eat(.star)) method_flags |= 0x10;
             const key = try self.parsePropertyKey();
             return parseObjectMethodBody(self, start, key, method_flags);
         }
@@ -86,7 +86,7 @@ pub fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
 
     // generator 메서드: { *foo() {} }
     if (self.current() == .star) {
-        self.advance(); // skip '*'
+        try self.advance(); // skip '*'
         const key = try self.parsePropertyKey();
         return parseObjectMethodBody(self, start, key, 0x10); // generator
     }
@@ -96,7 +96,7 @@ pub fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
 
     // object literal에서 private identifier는 키로 사용 불가
     if (!key.isNone() and self.ast.getNode(key).tag == .private_identifier) {
-        self.addError(self.ast.getNode(key).span, "Private identifier is not allowed as object property key");
+        try self.addError(self.ast.getNode(key).span, "Private identifier is not allowed as object property key");
     }
 
     // 메서드 shorthand: { foo() {} }
@@ -107,9 +107,9 @@ pub fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
     // key: value
     var value = NodeIndex.none;
     var prop_flags: u16 = 0;
-    if (self.eat(.colon)) {
+    if (try self.eat(.colon)) {
         value = try self.parseAssignmentExpression();
-    } else if (self.eat(.eq)) {
+    } else if (try self.eat(.eq)) {
         // shorthand with default: { x = 1 }  (destructuring default)
         // CoverInitializedName — destructuring 변환에서 소비되지 않으면 에러
         value = try self.parseAssignmentExpression();
@@ -130,19 +130,19 @@ pub fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
                         else
                             kw.isReservedKeyword() or kw.isLiteralKeyword();
                         if (is_context_reserved) {
-                            self.addError(key_node.span, "Reserved word cannot be used as shorthand property");
+                            try self.addError(key_node.span, "Reserved word cannot be used as shorthand property");
                         } else if (self.is_strict_mode and kw.isStrictModeReserved()) {
-                            self.addError(key_node.span, "Reserved word in strict mode cannot be used as shorthand property");
+                            try self.addError(key_node.span, "Reserved word in strict mode cannot be used as shorthand property");
                         } else if (kw == .kw_yield and self.ctx.in_generator) {
-                            self.addError(key_node.span, "'yield' cannot be used as shorthand property in generator");
+                            try self.addError(key_node.span, "'yield' cannot be used as shorthand property in generator");
                         } else if (kw == .kw_await and (self.ctx.in_async or self.is_module)) {
-                            self.addError(key_node.span, "'await' cannot be used as shorthand property in async/module");
+                            try self.addError(key_node.span, "'await' cannot be used as shorthand property in async/module");
                         }
                     }
                 },
                 // non-identifier keys (numeric, bigint, string, computed) 는 shorthand 불가
                 .numeric_literal, .bigint_literal, .string_literal, .computed_property_key => {
-                    self.addError(key_node.span, "Expected ':' after property key");
+                    try self.addError(key_node.span, "Expected ':' after property key");
                 },
                 else => {},
             }
@@ -165,27 +165,27 @@ pub fn parseObjectMethodBody(self: *Parser, start: u32, key: NodeIndex, flags: u
     // ECMAScript 12.3.7: 객체 리터럴 메서드에서도 super.prop 허용
     self.allow_super_property = true;
 
-    self.expect(.l_paren);
+    try self.expect(.l_paren);
     self.in_formal_parameters = true;
     const scratch_top = self.saveScratch();
     while (self.current() != .r_paren and self.current() != .eof) {
         const param = try self.parseBindingIdentifier();
         try self.scratch.append(param);
-        self.checkRestParameterLast(param);
-        if (!self.eat(.comma)) break;
+        try self.checkRestParameterLast(param);
+        if (!try self.eat(.comma)) break;
     }
-    self.expect(.r_paren);
+    try self.expect(.r_paren);
     self.in_formal_parameters = false;
 
     // TS 리턴 타입
     _ = try self.tryParseReturnType();
     self.has_simple_params = self.checkSimpleParams(scratch_top);
-    self.checkDuplicateParams(scratch_top);
+    try self.checkDuplicateParams(scratch_top);
     const body = try self.parseFunctionBodyExpr();
 
     // retroactive strict mode checks for object methods
     if (self.is_strict_mode and !saved_ctx.is_strict_mode) {
-        self.checkStrictParamNames(scratch_top);
+        try self.checkStrictParamNames(scratch_top);
     }
 
     self.restoreFunctionContext(saved_ctx);

@@ -58,7 +58,7 @@ fn transpileFile(
     };
 
     // 파싱 — 모든 모듈이 arena_alloc을 사용하므로 개별 deinit 불필요
-    var scanner = Scanner.init(arena_alloc, source);
+    var scanner = try Scanner.init(arena_alloc, source);
     var parser = Parser.init(arena_alloc, &scanner);
     _ = parser.parse() catch |err| {
         try stderr.print("zts: parse error in '{s}': {}\n", .{ file_path, err });
@@ -338,11 +338,11 @@ pub fn main() !void {
         const source = try std.fs.cwd().readFileAlloc(allocator, file_path, 10 * 1024 * 1024);
         defer allocator.free(source);
 
-        var scanner = Scanner.init(allocator, source);
+        var scanner = try Scanner.init(allocator, source);
         defer scanner.deinit();
 
         while (true) {
-            scanner.next();
+            try scanner.next();
             const lc = scanner.getLineColumn(scanner.token.span.start);
             try stdout.print("{d}:{d}\t{s}\t\"{s}\"\n", .{
                 lc.line + 1,
