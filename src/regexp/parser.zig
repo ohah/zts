@@ -22,6 +22,9 @@ pub const ast = @import("ast.zig");
 /// 유니코드 프로퍼티 검증 테이블.
 pub const unicode_property = @import("unicode_property.zig");
 
+/// 렉서의 유니코드 식별자 판별 + UTF-8 디코딩.
+const unicode = @import("../lexer/unicode.zig");
+
 /// 패턴 파서. comptime emit_ast로 검증/AST 모드 분리.
 ///
 /// - emit_ast=false: 검증만 수행, 할당 없음 (현재 렉서에서 사용)
@@ -539,25 +542,13 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     self.setError("unexpected quantifier without preceding atom");
                     return false;
                 },
-                '{' => {
-                    // unicode mode에서 standalone {는 에러
+                // non-unicode: literal로 취급. unicode: 에러.
+                '{', '}', ']' => {
                     if (self.flags.hasUnicodeMode()) {
-                        self.setError("unexpected quantifier without preceding atom");
-                        return false;
-                    }
-                    // non-unicode mode에서는 literal
-                    self.advance();
-                    if (emit_ast) {
-                        self.last_node = self.addNode(.character, .{
-                            .start = self.pos - 1,
-                            .end = self.pos,
-                        }, .{ '{', @intFromEnum(ast.CharacterKind.symbol), 0 });
-                    }
-                    return true;
-                },
-                '}' => {
-                    if (self.flags.hasUnicodeMode()) {
-                        self.setError("unexpected '}' in regular expression");
+                        self.setError(if (c == '{')
+                            "unexpected quantifier without preceding atom"
+                        else
+                            "unexpected character in regular expression");
                         return false;
                     }
                     self.advance();
@@ -565,21 +556,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         self.last_node = self.addNode(.character, .{
                             .start = self.pos - 1,
                             .end = self.pos,
-                        }, .{ '}', @intFromEnum(ast.CharacterKind.symbol), 0 });
-                    }
-                    return true;
-                },
-                ']' => {
-                    if (self.flags.hasUnicodeMode()) {
-                        self.setError("unexpected ']' in regular expression");
-                        return false;
-                    }
-                    self.advance();
-                    if (emit_ast) {
-                        self.last_node = self.addNode(.character, .{
-                            .start = self.pos - 1,
-                            .end = self.pos,
-                        }, .{ ']', @intFromEnum(ast.CharacterKind.symbol), 0 });
+                        }, .{ c, @intFromEnum(ast.CharacterKind.symbol), 0 });
                     }
                     return true;
                 },
@@ -1333,17 +1310,13 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 }
             }
 
-            // Non-ASCII: UTF-8 multi-byte 문자 (Unicode ID_Start/ID_Continue)
+            // Non-ASCII: UTF-8 디코딩 후 Unicode ID_Start/ID_Continue 확인
             if (gc >= 0x80) {
-                // unicode mode에서 non-ASCII는 에러 (유효한 Unicode escape를 사용해야 함)
-                if (self.flags.hasUnicodeMode()) {
-                    return false;
-                }
-                self.advance();
-                // multi-byte UTF-8: 후속 바이트 스킵
-                while (!self.isEnd() and (self.peek() & 0xC0) == 0x80) {
-                    self.advance();
-                }
+                const decoded = unicode.decodeUtf8(self.source[self.pos..]);
+                const cp = decoded.codepoint;
+                const valid = if (is_start) unicode.isIdentifierStart(cp) else unicode.isIdentifierContinue(cp);
+                if (!valid) return false;
+                self.pos += decoded.len;
                 return true;
             }
 

@@ -29,9 +29,9 @@ pub const unicode_property = @import("unicode_property.zig");
 /// flag_text: 닫는 `/` 뒤의 플래그 텍스트 (예: "gi")
 /// 에러가 있으면 에러 메시지를 반환, 없으면 null.
 pub fn validate(pattern: []const u8, flag_text: []const u8) ?[]const u8 {
-    // 1. 플래그 검증
-    if (flags.validate(flag_text) != null) {
-        return "invalid regular expression flags";
+    // 1. 플래그 검증 — 구체적인 에러 메시지를 보존
+    if (flags.validate(flag_text)) |err| {
+        return err.message;
     }
 
     // 2. 패턴 검증

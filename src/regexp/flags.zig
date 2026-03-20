@@ -7,7 +7,14 @@
 //!   - u와 v 동시 사용 금지 (/foo/uv → 에러, ES2024)
 
 const std = @import("std");
-const Error = @import("diagnostics.zig").Error;
+
+/// RegExp 검증 에러.
+pub const Error = struct {
+    /// 에러 메시지 (정적 문자열)
+    message: []const u8,
+    /// 에러 위치 (패턴/플래그 내의 byte offset, 0-based)
+    offset: u32 = 0,
+};
 
 /// 플래그 비트마스크.
 pub const Flags = packed struct(u8) {
