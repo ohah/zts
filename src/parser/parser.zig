@@ -418,6 +418,11 @@ pub const Parser = struct {
                     if (i + 1 < list.len) {
                         self.addError(elem.span, "rest element must be last element");
                     }
+                    // rest 뒤 trailing comma 금지: [...x,] → SyntaxError
+                    // parseArrayExpression에서 flags 0x01로 마킹됨
+                    if (elem.data.unary.flags & 0x01 != 0) {
+                        self.addError(elem.span, "rest element may not have a trailing comma");
+                    }
                     self.coverSpreadElementToTarget(elem_idx, elem.data.unary.operand);
                 },
                 .assignment_expression => {
@@ -462,8 +467,15 @@ pub const Parser = struct {
                     _ = self.coverExpressionToAssignmentTarget(elem.data.binary.right, false);
                 }
             } else if (elem.tag == .spread_element) {
+                // rest는 마지막 요소여야 함: {...x, y} → SyntaxError
+                if (i + 1 < list.len) {
+                    self.addError(elem.span, "rest element must be last element");
+                }
                 // object rest: {...x} = obj
                 self.coverSpreadElementToTarget(elem_idx, elem.data.unary.operand);
+            } else if (elem.tag == .method_definition) {
+                // method/getter/setter/async/generator는 destructuring target이 아님
+                self.addError(elem.span, "invalid assignment target");
             }
         }
     }
@@ -3637,6 +3649,11 @@ pub const Parser = struct {
             const elem = try self.parseSpreadOrAssignment();
             try elements.append(elem);
             if (!self.eat(.comma)) break;
+            // spread 뒤에 trailing comma가 있고 바로 ]가 오면 flags에 0x01을 설정.
+            // 이 정보는 coverArrayExpressionToTarget에서 rest trailing comma 에러에 사용된다.
+            if (!elem.isNone() and self.ast.getNode(elem).tag == .spread_element and self.current() == .r_bracket) {
+                self.ast.nodes.items[@intFromEnum(elem)].data.unary.flags = 0x01;
+            }
         }
 
         const end = self.currentSpan().end;
