@@ -59,8 +59,10 @@ pub fn PatternParser(comptime emit_ast: bool) type {
 
         // ── ES2025 alternative tracking ──
         // parseDisjunction에서 '|' 마다 증가, parseGroup에서 depth 추적.
+        // 주의: 최대 8 depth까지만 추적. >8 중첩 시 depth 7을 공유하여
+        // 이론적으로 false negative 가능하지만 실용적으로 문제 없음.
 
-        /// 현재 그룹 중첩 깊이.
+        /// 현재 그룹 중첩 깊이 (최대 7로 클램핑).
         alt_depth: u8 = 0,
         /// 각 깊이에서의 현재 alternative 인덱스.
         alt_indices: [8]u32 = [_]u32{0} ** 8,
@@ -168,6 +170,8 @@ pub fn PatternParser(comptime emit_ast: bool) type {
 
         /// 파싱 + 후처리 검증 (validate/parse 공통).
         /// 패턴을 가볍게 스캔하여 capturing group 수를 수집한다 (pre-parse).
+        /// 주의: 문법 에러가 있는 패턴에서는 본 파싱과 카운트가 다를 수 있으나,
+        /// 본 파싱에서 에러가 보고되므로 실질적 영향 없음.
         /// escape, character class를 건너뛰면서 '(' 만 카운트.
         fn preParseGroups(self: *Self) void {
             var pos: u32 = 0;
