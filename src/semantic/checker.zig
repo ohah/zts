@@ -84,7 +84,7 @@ pub fn checkDuplicateConstructors(
 
         if (first_constructor_span) |_| {
             // 두 번째 constructor → 에러
-            addError(errors, node.span, std.fmt.allocPrint(allocator, "A class may only have one constructor", .{}) catch @panic("OOM"));
+            addError(errors, node.span, std.fmt.allocPrint(allocator, "A class may only have one constructor", .{}) catch @panic("OOM: duplicate_constructor"));
             return; // 첫 중복만 보고
         } else {
             first_constructor_span = node.span;
@@ -204,10 +204,10 @@ fn checkPrivateKeyStaticConflict(
                 allocator,
                 "Private field '{s}' has already been declared",
                 .{name},
-            ) catch @panic("OOM"));
+            ) catch @panic("OOM: private_static_conflict"));
         }
     } else {
-        declared.put(name, .{ .is_static = is_static, .span = key_node.span }) catch @panic("OOM");
+        declared.put(name, .{ .is_static = is_static, .span = key_node.span }) catch @panic("OOM: declared");
     }
 }
 
@@ -255,7 +255,7 @@ pub fn checkObjectDuplicateProto(
         if (!matchKeyName(ast, key_idx, "__proto__")) continue;
 
         if (first_proto_span) |_| {
-            addError(errors, node.span, std.fmt.allocPrint(allocator, "Property name __proto__ appears more than once in object literal", .{}) catch @panic("OOM"));
+            addError(errors, node.span, std.fmt.allocPrint(allocator, "Property name __proto__ appears more than once in object literal", .{}) catch @panic("OOM: duplicate_proto"));
             return; // 첫 중복만 보고
         } else {
             first_proto_span = node.span;
@@ -291,11 +291,11 @@ pub fn checkGetterSetterParams(
     const params_len = ast.extra_data.items[extra_start + 2];
 
     if ((flags & METHOD_FLAG_GETTER) != 0 and params_len != 0) {
-        addError(errors, node.span, std.fmt.allocPrint(allocator, "Getter must not have any formal parameters", .{}) catch @panic("OOM"));
+        addError(errors, node.span, std.fmt.allocPrint(allocator, "Getter must not have any formal parameters", .{}) catch @panic("OOM: getter_params"));
     }
 
     if ((flags & METHOD_FLAG_SETTER) != 0 and params_len != 1) {
-        addError(errors, node.span, std.fmt.allocPrint(allocator, "Setter must have exactly one formal parameter", .{}) catch @panic("OOM"));
+        addError(errors, node.span, std.fmt.allocPrint(allocator, "Setter must have exactly one formal parameter", .{}) catch @panic("OOM: setter_params"));
     }
 }
 
@@ -347,9 +347,9 @@ fn recordSeenName(
             allocator,
             "Duplicate parameter name '{s}'",
             .{name},
-        ) catch @panic("OOM"));
+        ) catch @panic("OOM: duplicate_param"));
     } else {
-        seen.put(name, span) catch @panic("OOM");
+        seen.put(name, span) catch @panic("OOM: seen");
     }
 }
 

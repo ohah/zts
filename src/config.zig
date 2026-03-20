@@ -448,8 +448,8 @@ test "TsConfig.load - parse compilerOptions" {
 
     // 임시 디렉토리에 테스트용 tsconfig.json 생성
     const tmp_dir = "/tmp/zts_test_config_parse";
-    std.fs.cwd().makePath(tmp_dir) catch {};
-    defer std.fs.cwd().deleteTree(tmp_dir) catch {};
+    std.fs.cwd().makePath(tmp_dir) catch {}; // 이미 존재하면 무시
+    defer std.fs.cwd().deleteTree(tmp_dir) catch {}; // cleanup 실패 무시
 
     const tsconfig_content =
         \\{
@@ -495,8 +495,8 @@ test "TsConfig.load - JSONC with comments" {
     const allocator = std.testing.allocator;
 
     const tmp_dir = "/tmp/zts_test_config_jsonc";
-    std.fs.cwd().makePath(tmp_dir) catch {};
-    defer std.fs.cwd().deleteTree(tmp_dir) catch {};
+    std.fs.cwd().makePath(tmp_dir) catch {}; // 이미 존재하면 무시
+    defer std.fs.cwd().deleteTree(tmp_dir) catch {}; // cleanup 실패 무시
 
     const tsconfig_content =
         \\{
@@ -526,8 +526,8 @@ test "TsConfig.load - extends inheritance" {
     const allocator = std.testing.allocator;
 
     const tmp_dir = "/tmp/zts_test_config_extends";
-    std.fs.cwd().makePath(tmp_dir) catch {};
-    defer std.fs.cwd().deleteTree(tmp_dir) catch {};
+    std.fs.cwd().makePath(tmp_dir) catch {}; // 이미 존재하면 무시
+    defer std.fs.cwd().deleteTree(tmp_dir) catch {}; // cleanup 실패 무시
 
     // base.json: 기본 설정
     const base_content =
@@ -576,8 +576,8 @@ test "TsConfig.load - partial compilerOptions" {
     const allocator = std.testing.allocator;
 
     const tmp_dir = "/tmp/zts_test_config_partial";
-    std.fs.cwd().makePath(tmp_dir) catch {};
-    defer std.fs.cwd().deleteTree(tmp_dir) catch {};
+    std.fs.cwd().makePath(tmp_dir) catch {}; // 이미 존재하면 무시
+    defer std.fs.cwd().deleteTree(tmp_dir) catch {}; // cleanup 실패 무시
 
     // 일부 옵션만 있는 tsconfig
     const tsconfig_content =

@@ -190,7 +190,7 @@ pub const Parser = struct {
             .param_name_spans = std.ArrayList(Span).init(allocator),
             .bracket_stack = blk: {
                 var stack = std.ArrayList(BracketInfo).init(allocator);
-                stack.ensureTotalCapacity(8) catch {};
+                stack.ensureTotalCapacity(8) catch {}; // pre-alloc 실패해도 동작에 지장 없음
                 break :blk stack;
             },
             .allocator = allocator,
@@ -643,7 +643,7 @@ pub const Parser = struct {
                         return;
                     }
                 }
-                self.param_name_spans.append(node.span) catch @panic("OOM");
+                self.param_name_spans.append(node.span) catch @panic("OOM: param_name_spans");
             },
             .parenthesized_expression => self.collectCoverParamNames(node.data.unary.operand),
             .sequence_expression => {
@@ -1147,7 +1147,7 @@ pub const Parser = struct {
         switch (node.tag) {
             // 단말 노드: 이름 1개 추가
             .binding_identifier => {
-                self.param_name_spans.append(node.span) catch @panic("OOM");
+                self.param_name_spans.append(node.span) catch @panic("OOM: param_name_spans");
             },
             // x = default → 왼쪽이 실제 바인딩
             .assignment_pattern => {

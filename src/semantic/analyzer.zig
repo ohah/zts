@@ -234,8 +234,8 @@ pub const SemanticAnalyzer = struct {
 
     /// class body 진입 시 private name 스코프를 push한다.
     fn pushClassScope(self: *SemanticAnalyzer) void {
-        self.class_private_declared.append(std.StringHashMap(PrivateNameInfo).init(self.allocator)) catch @panic("OOM");
-        self.class_private_refs.append(std.ArrayList(PrivateRef).init(self.allocator)) catch @panic("OOM");
+        self.class_private_declared.append(std.StringHashMap(PrivateNameInfo).init(self.allocator)) catch @panic("OOM: class_private_declared");
+        self.class_private_refs.append(std.ArrayList(PrivateRef).init(self.allocator)) catch @panic("OOM: class_private_refs");
     }
 
     /// class body 퇴장 시 private name 참조를 검증하고 pop한다.
@@ -279,11 +279,11 @@ pub const SemanticAnalyzer = struct {
                     self.allocator,
                     "Private field '{s}' has already been declared",
                     .{name},
-                ) catch @panic("OOM"));
+                ) catch @panic("OOM: duplicate_private_field"));
                 return;
             }
         }
-        current.put(name, .{ .span = span, .kind = kind }) catch @panic("OOM");
+        current.put(name, .{ .span = span, .kind = kind }) catch @panic("OOM: class_private_declared");
     }
 
     /// identifier 텍스트에서 unicode escape sequence를 해석하여 StringValue를 반환한다.
@@ -347,7 +347,7 @@ pub const SemanticAnalyzer = struct {
             return;
         }
         var current = &self.class_private_refs.items[self.class_private_refs.items.len - 1];
-        current.append(.{ .name = name, .span = span }) catch @panic("OOM");
+        current.append(.{ .name = name, .span = span }) catch @panic("OOM: class_private_refs");
     }
 
     /// 현재 class scope 안에 있는지 (private name 참조 가능 여부).
@@ -550,11 +550,11 @@ pub const SemanticAnalyzer = struct {
     // ================================================================
 
     fn addError(self: *SemanticAnalyzer, span: Span, name: []const u8) void {
-        self.addErrorMsg(span, std.fmt.allocPrint(self.allocator, "Identifier '{s}' has already been declared", .{name}) catch @panic("OOM"));
+        self.addErrorMsg(span, std.fmt.allocPrint(self.allocator, "Identifier '{s}' has already been declared", .{name}) catch @panic("OOM: redeclaration"));
     }
 
     fn addPrivateNameError(self: *SemanticAnalyzer, span: Span, name: []const u8) void {
-        self.addErrorMsg(span, std.fmt.allocPrint(self.allocator, "Private field '{s}' must be declared in an enclosing class", .{name}) catch @panic("OOM"));
+        self.addErrorMsg(span, std.fmt.allocPrint(self.allocator, "Private field '{s}' must be declared in an enclosing class", .{name}) catch @panic("OOM: private_field_undeclared"));
     }
 
     fn addErrorMsg(self: *SemanticAnalyzer, span: Span, msg: []const u8) void {
@@ -1149,7 +1149,7 @@ pub const SemanticAnalyzer = struct {
 
             // 중복 label 체크 (같은 label 이름이 현재 스택에 있으면 에러)
             if (self.findLabel(name) != null) {
-                self.addErrorMsg(label_node.span, std.fmt.allocPrint(self.allocator, "Label '{s}' has already been declared", .{name}) catch @panic("OOM"));
+                self.addErrorMsg(label_node.span, std.fmt.allocPrint(self.allocator, "Label '{s}' has already been declared", .{name}) catch @panic("OOM: duplicate_label"));
             }
 
             // body가 loop인지 판별 (continue label에 필요)
@@ -1160,7 +1160,7 @@ pub const SemanticAnalyzer = struct {
                     body_tag == .do_while_statement;
             } else false;
 
-            self.labels.append(.{ .name = name, .span = label_node.span, .is_loop = is_loop }) catch @panic("OOM");
+            self.labels.append(.{ .name = name, .span = label_node.span, .is_loop = is_loop }) catch @panic("OOM: labels");
             self.visitNode(body_idx);
             _ = self.labels.pop();
         } else {
@@ -1180,11 +1180,11 @@ pub const SemanticAnalyzer = struct {
         if (self.findLabel(name)) |entry| {
             // continue는 loop label만 가능
             if (node.tag == .continue_statement and !entry.is_loop) {
-                self.addErrorMsg(label_node.span, std.fmt.allocPrint(self.allocator, "Cannot continue to non-loop label '{s}'", .{name}) catch @panic("OOM"));
+                self.addErrorMsg(label_node.span, std.fmt.allocPrint(self.allocator, "Cannot continue to non-loop label '{s}'", .{name}) catch @panic("OOM: continue_non_loop"));
             }
         } else {
             // label이 존재하지 않음
-            self.addErrorMsg(label_node.span, std.fmt.allocPrint(self.allocator, "Undefined label '{s}'", .{name}) catch @panic("OOM"));
+            self.addErrorMsg(label_node.span, std.fmt.allocPrint(self.allocator, "Undefined label '{s}'", .{name}) catch @panic("OOM: undefined_label"));
         }
     }
 
@@ -1437,7 +1437,7 @@ pub const SemanticAnalyzer = struct {
                 self.allocator,
                 "'{s}' cannot be used as a binding identifier in strict mode",
                 .{name},
-            ) catch @panic("OOM"));
+            ) catch @panic("OOM: strict_binding"));
         }
     }
 
@@ -1582,9 +1582,9 @@ pub const SemanticAnalyzer = struct {
                 self.allocator,
                 "Duplicate export name '{s}'",
                 .{name},
-            ) catch @panic("OOM"));
+            ) catch @panic("OOM: duplicate_export"));
         } else {
-            self.exported_names.put(name, span) catch @panic("OOM");
+            self.exported_names.put(name, span) catch @panic("OOM: exported_names");
         }
     }
 
@@ -1601,7 +1601,7 @@ pub const SemanticAnalyzer = struct {
             self.allocator,
             "Export '{s}' is not defined",
             .{name},
-        ) catch @panic("OOM"));
+        ) catch @panic("OOM: undefined_export"));
     }
 
     // ================================================================
