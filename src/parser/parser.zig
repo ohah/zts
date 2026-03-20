@@ -1956,12 +1956,16 @@ pub const Parser = struct {
             const next = self.peekNextKind();
             if (next == .l_curly) {
                 // static { } — static block
-                // static initializer는 자체 arguments 바인딩이 없고 new.target도 금지
+                // static initializer는 자체 arguments 바인딩이 없음.
+                // new.target은 허용 (undefined로 평가, ECMAScript 15.7.15)
                 self.advance(); // skip 'static'
                 const saved_in_static = self.in_static_initializer;
+                const saved_new_target = self.allow_new_target;
                 self.in_static_initializer = true;
+                self.allow_new_target = true;
                 const body = try self.parseBlockStatement();
                 self.in_static_initializer = saved_in_static;
+                self.allow_new_target = saved_new_target;
                 return try self.ast.addNode(.{
                     .tag = .static_block,
                     .span = .{ .start = start, .end = self.currentSpan().start },
@@ -2155,9 +2159,12 @@ pub const Parser = struct {
         var init_val = NodeIndex.none;
         if (self.eat(.eq)) {
             const saved_in_class_field = self.in_class_field;
+            const saved_new_target = self.allow_new_target;
             self.in_class_field = true;
+            self.allow_new_target = true; // class field에서 new.target 허용 (ECMAScript 15.7.15)
             init_val = try self.parseAssignmentExpression();
             self.in_class_field = saved_in_class_field;
+            self.allow_new_target = saved_new_target;
         }
         _ = self.eat(.semicolon);
 
@@ -3116,6 +3123,11 @@ pub const Parser = struct {
                 });
             },
             .kw_await => {
+                // static initializer에서 await 사용 금지 (ECMAScript 15.7.14)
+                // module mode에서 await expression으로 파싱되기 전에 체크해야 함
+                if (self.in_static_initializer) {
+                    self.addError(self.currentSpan(), "'await' is not allowed in class static initializer");
+                }
                 // async 함수 안에서는 항상 await_expression.
                 // module top-level(함수 밖)에서는 top-level await.
                 // module 안 일반 함수 body에서는 await을 식별자로 취급 → strict mode 에러.
@@ -3133,10 +3145,6 @@ pub const Parser = struct {
                 // module 안 일반 함수에서 await 사용 → strict mode 위반 에러
                 if (self.is_module and self.ctx.in_function and !self.ctx.in_async) {
                     self.addError(self.currentSpan(), "'await' is not allowed in non-async function in module code");
-                }
-                // static initializer에서 await 사용 금지 (ECMAScript 15.7.14)
-                if (self.in_static_initializer) {
-                    self.addError(self.currentSpan(), "'await' is not allowed in class static initializer");
                 }
                 // async 밖 + script mode에서는 식별자로 파싱
                 return self.parsePostfixExpression();
