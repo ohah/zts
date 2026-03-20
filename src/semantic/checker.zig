@@ -164,10 +164,12 @@ pub fn checkPrivateNameStaticConflict(
                 checkPrivateKeyStaticConflict(ast, key_idx, is_static, &declared, errors, allocator);
             },
             .property_definition => {
-                // binary: { left = key, right = value, flags }
+                // extra: [key, init_val, flags, deco_start, deco_len]
                 // static 비트는 parser.zig에서 flags 0x01로 인코딩 (확인 완료)
-                const key_idx = node.data.binary.left;
-                const is_static = (node.data.binary.flags & METHOD_FLAG_STATIC) != 0;
+                const extra_start = node.data.extra;
+                if (extra_start + 2 >= ast.extra_data.items.len) continue;
+                const key_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra_start]);
+                const is_static = (ast.extra_data.items[extra_start + 2] & METHOD_FLAG_STATIC) != 0;
 
                 checkPrivateKeyStaticConflict(ast, key_idx, is_static, &declared, errors, allocator);
             },

@@ -88,6 +88,11 @@ pub const SemanticAnalyzer = struct {
     /// resolvePrivateName에서 할당된 문자열 (deinit에서 해제)
     resolved_names: std.ArrayList([]const u8) = undefined,
 
+    /// per-scope 심볼 검색용 HashMap 배열 (O(1) 조회).
+    /// scopes 배열과 같은 인덱스를 공유: scope_maps.items[scope_id] = 해당 스코프의 이름→심볼인덱스 맵.
+    /// key는 소스 코드 슬라이스 (zero-copy), value는 symbols 배열의 인덱스.
+    scope_maps: std.ArrayList(std.StringHashMap(usize)),
+
     const PrivateRef = struct {
         name: []const u8,
         span: Span,
@@ -123,6 +128,7 @@ pub const SemanticAnalyzer = struct {
             .class_private_refs = std.ArrayList(std.ArrayList(PrivateRef)).init(allocator),
             .labels = std.ArrayList(LabelEntry).init(allocator),
             .resolved_names = std.ArrayList([]const u8).init(allocator),
+            .scope_maps = std.ArrayList(std.StringHashMap(usize)).init(allocator),
             .errors = std.ArrayList(SemanticError).init(allocator),
             .allocator = allocator,
         };
@@ -135,6 +141,8 @@ pub const SemanticAnalyzer = struct {
         }
         self.scopes.deinit();
         self.symbols.deinit();
+        for (self.scope_maps.items) |*m| m.deinit();
+        self.scope_maps.deinit();
         self.exported_names.deinit();
         self.labels.deinit();
         // resolvePrivateName에서 할당된 문자열 해제
@@ -173,6 +181,8 @@ pub const SemanticAnalyzer = struct {
             .kind = kind,
             .is_strict = is_strict,
         }) catch @panic("OOM: scope list");
+        // scope_maps는 scopes와 동일 인덱스를 공유 — 빈 HashMap 추가
+        self.scope_maps.append(std.StringHashMap(usize).init(self.allocator)) catch @panic("OOM: scope_maps");
         self.current_scope = new_id;
         return parent;
     }
@@ -401,6 +411,7 @@ pub const SemanticAnalyzer = struct {
             if (self.checkLexicalVarConflict(target_scope, name_text, decl_span)) return;
         }
 
+        const sym_index = self.symbols.items.len;
         self.symbols.append(.{
             .name = name_span,
             .scope_id = target_scope,
@@ -410,8 +421,10 @@ pub const SemanticAnalyzer = struct {
             .origin_scope = self.current_scope,
         }) catch @panic("OOM: symbol list");
 
+        // per-scope HashMap에도 등록 (O(1) 검색용)
         if (!target_scope.isNone()) {
             self.scopes.items[target_scope.toIndex()].symbol_count += 1;
+            self.scope_maps.items[target_scope.toIndex()].put(name_text, sym_index) catch @panic("OOM: scope_map put");
         }
     }
 
@@ -427,15 +440,13 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// 특정 스코프에서 이름으로 심볼을 찾는다.
-    /// TODO: O(N) 선형 스캔 → per-scope HashMap으로 개선 필요 (대규모 파일에서 O(N²))
+    /// per-scope HashMap으로 O(1) 조회 (이전: O(N) 선형 스캔).
     fn findSymbolInScope(self: *const SemanticAnalyzer, scope_id: ScopeId, name: []const u8) ?Symbol {
-        for (self.symbols.items) |sym| {
-            if (@intFromEnum(sym.scope_id) == @intFromEnum(scope_id)) {
-                const sym_name = self.ast.source[sym.name.start..sym.name.end];
-                if (std.mem.eql(u8, sym_name, name)) return sym;
-            }
-        }
-        return null;
+        if (scope_id.isNone()) return null;
+        const idx = scope_id.toIndex();
+        if (idx >= self.scope_maps.items.len) return null;
+        const sym_idx = self.scope_maps.items[idx].get(name) orelse return null;
+        return self.symbols.items[sym_idx];
     }
 
     /// var 호이스팅이 블록 스코프의 let/const와 충돌하는지 체크.
@@ -464,21 +475,17 @@ pub const SemanticAnalyzer = struct {
     /// ECMAScript: "LexicallyDeclaredNames ∩ VarDeclaredNames of StatementList"
     fn checkLexicalVarConflict(self: *SemanticAnalyzer, lexical_scope: ScopeId, name: []const u8, decl_span: Span) bool {
         const var_scope = self.findVarScope();
-        // var scope에서 같은 이름의 var를 찾는다
-        for (self.symbols.items) |sym| {
-            if (@intFromEnum(sym.scope_id) != @intFromEnum(var_scope)) continue;
-            if (sym.kind != .variable_var) continue;
-            const sym_name = self.ast.source[sym.name.start..sym.name.end];
-            if (!std.mem.eql(u8, sym_name, name)) continue;
+        // scope_maps O(1) 조회로 var scope에서 같은 이름의 심볼을 찾는다
+        const sym = self.findSymbolInScope(var_scope, name) orelse return false;
+        if (sym.kind != .variable_var) return false;
 
-            // var의 origin_scope가 현재 lexical_scope의 ancestor 경로에 있는지 확인
-            // { var f; let f; } → var의 origin=block, let의 scope=block → 같으므로 충돌
-            // { { var f; } let f; } → var의 origin=inner, let의 scope=outer → inner는 outer의 자식이므로 충돌
-            // { let f; } 밖의 var f → var의 origin=global, let의 scope=block → 충돌 아님
-            if (self.isScopeDescendantOf(sym.origin_scope, lexical_scope)) {
-                self.addError(decl_span, name);
-                return true;
-            }
+        // var의 origin_scope가 현재 lexical_scope의 ancestor 경로에 있는지 확인
+        // { var f; let f; } → var의 origin=block, let의 scope=block → 같으므로 충돌
+        // { { var f; } let f; } → var의 origin=inner, let의 scope=outer → inner는 outer의 자식이므로 충돌
+        // { let f; } 밖의 var f → var의 origin=global, let의 scope=block → 충돌 아님
+        if (self.isScopeDescendantOf(sym.origin_scope, lexical_scope)) {
+            self.addError(decl_span, name);
+            return true;
         }
         return false;
     }
@@ -665,10 +672,13 @@ pub const SemanticAnalyzer = struct {
                 }
             },
             .property_definition, .accessor_property => {
-                // binary: { left = key, right = value }
+                // extra: [key, init_val, flags, deco_start, deco_len]
                 // key도 순회 (computed property의 표현식, class 밖 private name 검출)
-                self.visitNode(node.data.binary.left);
-                self.visitNode(node.data.binary.right);
+                const e = node.data.extra;
+                if (e + 1 < self.ast.extra_data.items.len) {
+                    self.visitNode(@enumFromInt(self.ast.extra_data.items[e]));
+                    self.visitNode(@enumFromInt(self.ast.extra_data.items[e + 1]));
+                }
             },
             .static_block => {
                 // static block은 함수와 같은 경계 — label은 넘지 못함
@@ -1085,8 +1095,11 @@ pub const SemanticAnalyzer = struct {
                     self.tryRegisterPrivateKey(key_idx, kind);
                 },
                 .property_definition, .accessor_property => {
-                    // binary: { left = key, right = value, flags }
-                    self.tryRegisterPrivateKey(node.data.binary.left, .field);
+                    // extra: [key, init_val, flags, deco_start, deco_len]
+                    const e = node.data.extra;
+                    if (e < self.ast.extra_data.items.len) {
+                        self.tryRegisterPrivateKey(@enumFromInt(self.ast.extra_data.items[e]), .field);
+                    }
                 },
                 else => {},
             }
@@ -1980,4 +1993,356 @@ test "SemanticAnalyzer: template literal expressions are visited" {
 
     // 에러 없이 분석 완료
     try std.testing.expect(ana.errors.items.len == 0);
+}
+
+// ============================================================
+// Hoisting 테스트
+// ============================================================
+
+test "SemanticAnalyzer: var in nested block is same function scope" {
+    // var x = 1; { var x = 2; }
+    // var는 함수 스코프에서 호이스팅되므로 같은 스코프에 이미 있어도 재선언 허용
+    var scanner = Scanner.init(std.testing.allocator, "var x = 1; { var x = 2; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len == 0);
+}
+
+test "SemanticAnalyzer: let in nested block is separate scope" {
+    // let x = 1; { let x = 2; }
+    // 내부 블록의 let x는 별도 블록 스코프에 선언되므로 충돌 없음
+    var scanner = Scanner.init(std.testing.allocator, "let x = 1; { let x = 2; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len == 0);
+}
+
+test "SemanticAnalyzer: var hoisting in function" {
+    // function f() { return x; var x = 1; }
+    // var는 함수 최상단으로 호이스팅되므로 return x; 이후에 선언되어도 에러 없음
+    var scanner = Scanner.init(std.testing.allocator, "function f() { return x; var x = 1; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len == 0);
+}
+
+// ============================================================
+// Function 스코프 테스트
+// ============================================================
+
+test "SemanticAnalyzer: same let name in different functions is valid" {
+    // function f() { let x = 1; } function g() { let x = 2; }
+    // 서로 다른 함수 스코프이므로 충돌 없음
+    var scanner = Scanner.init(std.testing.allocator, "function f() { let x = 1; } function g() { let x = 2; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len == 0);
+}
+
+test "SemanticAnalyzer: parameter and let redeclaration is error" {
+    // function f(x) { let x = 1; }
+    // 파라미터 x와 let x는 같은 함수 스코프 — 충돌
+    var scanner = Scanner.init(std.testing.allocator, "function f(x) { let x = 1; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len > 0);
+}
+
+test "SemanticAnalyzer: parameter and var redeclaration is valid" {
+    // function f(x) { var x = 1; }
+    // 파라미터 x와 var x는 공존 가능 (ECMAScript 허용)
+    var scanner = Scanner.init(std.testing.allocator, "function f(x) { var x = 1; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len == 0);
+}
+
+// ============================================================
+// For loop 테스트
+// ============================================================
+
+test "SemanticAnalyzer: for loop with let is valid" {
+    // for(let i=0; i<10; i++) { let j = i; }
+    // for 문이 블록 스코프를 생성하고 let i는 그 스코프에 선언됨
+    var scanner = Scanner.init(std.testing.allocator, "for(let i=0; i<10; i++) { let j = i; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len == 0);
+}
+
+test "SemanticAnalyzer: same let name in separate for loops is valid" {
+    // for(let i=0;;){} for(let i=0;;){}
+    // 각 for 문이 별도 블록 스코프를 생성하므로 충돌 없음
+    var scanner = Scanner.init(std.testing.allocator, "for(let i=0; i<1; i++){} for(let i=0; i<2; i++){}");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len == 0);
+}
+
+// ============================================================
+// Import 재선언 테스트
+// ============================================================
+
+test "SemanticAnalyzer: import binding redeclared with let is error" {
+    // import { x } from 'a'; let x = 1;
+    // import 바인딩은 모든 재선언과 충돌
+    var scanner = Scanner.init(std.testing.allocator, "import { x } from 'a'; let x = 1;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len > 0);
+}
+
+test "SemanticAnalyzer: import binding redeclared with var is error" {
+    // import { x } from 'a'; var x = 1;
+    // import 바인딩은 var 재선언과도 충돌
+    var scanner = Scanner.init(std.testing.allocator, "import { x } from 'a'; var x = 1;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len > 0);
+}
+
+// ============================================================
+// Catch 바인딩 테스트
+// ============================================================
+
+test "SemanticAnalyzer: catch binding shadowed by let is error" {
+    // try {} catch(e) { let e = 1; }
+    // catch 파라미터 e와 같은 catch body 블록의 let e는 충돌
+    var scanner = Scanner.init(std.testing.allocator, "try {} catch(e) { let e = 1; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len > 0);
+}
+
+test "SemanticAnalyzer: catch binding shadowed by var is valid" {
+    // try {} catch(e) { var e = 1; }
+    // var는 catch 바깥으로 호이스팅되므로 catch 파라미터와 충돌하지 않음
+    var scanner = Scanner.init(std.testing.allocator, "try {} catch(e) { var e = 1; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len == 0);
+}
+
+// ============================================================
+// Switch case 테스트
+// ============================================================
+
+test "SemanticAnalyzer: duplicate let in switch block is error" {
+    // switch (x) { case 1: let y = 1; break; case 2: let y = 2; break; }
+    // switch body는 하나의 블록 스코프 — 같은 이름의 let은 충돌
+    var scanner = Scanner.init(std.testing.allocator, "switch (x) { case 1: let y = 1; break; case 2: let y = 2; break; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len > 0);
+}
+
+test "SemanticAnalyzer: duplicate var in switch block is valid" {
+    // switch (x) { case 1: var y = 1; break; case 2: var y = 2; break; }
+    // var는 함수 스코프로 호이스팅되므로 switch block 내 중복 선언 허용
+    var scanner = Scanner.init(std.testing.allocator, "switch (x) { case 1: var y = 1; break; case 2: var y = 2; break; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len == 0);
+}
+
+// ============================================================
+// Generator / Async 테스트
+// ============================================================
+
+test "SemanticAnalyzer: let inside generator is valid" {
+    // function* g() { let x = 1; }
+    // generator 내부는 별도 함수 스코프 — let 선언 에러 없음
+    var scanner = Scanner.init(std.testing.allocator, "function* g() { let x = 1; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len == 0);
+}
+
+test "SemanticAnalyzer: let inside async function is valid" {
+    // async function f() { let x = 1; }
+    // async 함수 내부는 별도 함수 스코프 — let 선언 에러 없음
+    var scanner = Scanner.init(std.testing.allocator, "async function f() { let x = 1; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len == 0);
+}
+
+test "SemanticAnalyzer: generator duplicate params is error" {
+    // function* g(a, a) {}
+    // generator는 UniqueFormalParameters 적용 — 중복 파라미터 에러
+    var scanner = Scanner.init(std.testing.allocator, "function* g(a, a) {}");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len > 0);
+}
+
+test "SemanticAnalyzer: async function duplicate params is error" {
+    // async function f(a, a) {}
+    // async function은 UniqueFormalParameters 적용 — 중복 파라미터 에러
+    var scanner = Scanner.init(std.testing.allocator, "async function f(a, a) {}");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len > 0);
+}
+
+// ============================================================
+// Class 표현식 테스트
+// ============================================================
+
+test "SemanticAnalyzer: named class expression is valid" {
+    // let C = class C { constructor() {} }
+    // 클래스 표현식의 이름은 자체 스코프에만 등록 — 에러 없음
+    var scanner = Scanner.init(std.testing.allocator, "let C = class C { constructor() {} }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len == 0);
+}
+
+test "SemanticAnalyzer: static and instance private field with same name is error" {
+    // class C { #x = 1; static #x = 2; }
+    // ECMAScript: static/instance 동시 선언 불가 — checker에서 검증
+    var scanner = Scanner.init(std.testing.allocator, "class C { #x = 1; static #x = 2; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.analyze();
+
+    try std.testing.expect(ana.errors.items.len > 0);
 }

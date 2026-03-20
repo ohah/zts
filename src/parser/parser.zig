@@ -1070,25 +1070,104 @@ pub const Parser = struct {
             self.ctx.in_generator or self.ctx.in_async;
         if (!must_check) return;
         const params = self.scratch.items[scratch_top..];
-        // O(N²)이지만 파라미터 수가 적으므로 (보통 <10) 충분
-        for (params, 0..) |param_idx, i| {
-            const name_span = self.extractParamName(param_idx) orelse continue;
-            const name = self.ast.source[name_span.start..name_span.end];
-            for (params[0..i]) |prev_idx| {
-                const prev_span = self.extractParamName(prev_idx) orelse continue;
-                const prev_name = self.ast.source[prev_span.start..prev_span.end];
-                if (std.mem.eql(u8, name, prev_name)) {
-                    self.addError(name_span, "duplicate parameter name");
-                    break;
+
+        // 지금까지 본 모든 바인딩 이름 Span을 누적하는 임시 버퍼.
+        // param_name_spans를 재사용 (cover grammar 검사와 겹치지 않는 시점에 호출됨).
+        self.param_name_spans.clearRetainingCapacity();
+
+        for (params) |param_idx| {
+            // 이 파라미터에서 나오는 모든 바인딩 이름을 수집한다.
+            // 단순 식별자(a)는 1개, destructuring([a,b])은 여러 개.
+            const names_before = self.param_name_spans.items.len;
+            self.collectBoundNames(param_idx);
+            // collectBoundNames 이후 재참조: append 시 재할당이 일어날 수 있으므로
+            // names_before 이후 범위를 수집 완료 후에 인덱스로 순회한다.
+            const names_after = self.param_name_spans.items.len;
+
+            var j: usize = names_before;
+            while (j < names_after) : (j += 1) {
+                const name_span = self.param_name_spans.items[j];
+                const name = self.ast.source[name_span.start..name_span.end];
+                // 이 이름 이전에 수집된 모든 이름과 비교
+                // (이전 파라미터 + 같은 패턴 내 앞선 이름 모두 포함)
+                for (self.param_name_spans.items[0..j]) |prev_span| {
+                    const prev_name = self.ast.source[prev_span.start..prev_span.end];
+                    if (std.mem.eql(u8, name, prev_name)) {
+                        self.addError(name_span, "duplicate parameter name");
+                        break;
+                    }
                 }
             }
         }
+
+        self.param_name_spans.clearRetainingCapacity();
     }
 
-    /// 파라미터 노드에서 바인딩 이름의 Span을 추출한다.
+    /// 바인딩 패턴 노드에서 모든 바인딩 이름의 Span을 재귀적으로 수집한다.
+    /// ECMAScript 8.6.3 BoundNames 알고리즘에 해당.
+    ///
+    /// 지원하는 패턴:
+    ///   - binding_identifier (a)              → Span 1개 추가
+    ///   - assignment_pattern (a = 1)           → left 재귀
+    ///   - formal_parameter (TS: public a)      → operand 재귀
+    ///   - spread_element / rest_element (...a) → operand 재귀
+    ///   - array_pattern ([a, b, [c]])           → 각 element 재귀
+    ///   - object_pattern ({a, b: c})            → 각 property 재귀
+    ///   - binding_property ({key: value})       → right(value) 재귀
+    ///   - elision / invalid                    → 무시
+    fn collectBoundNames(self: *Parser, idx: NodeIndex) void {
+        if (idx.isNone()) return;
+        const node = self.ast.getNode(idx);
+        switch (node.tag) {
+            // 단말 노드: 이름 1개 추가
+            .binding_identifier => {
+                self.param_name_spans.append(node.span) catch @panic("OOM");
+            },
+            // x = default → 왼쪽이 실제 바인딩
+            .assignment_pattern => {
+                self.collectBoundNames(node.data.binary.left);
+            },
+            // TS parameter property (public x) → operand가 실제 바인딩
+            .formal_parameter => {
+                self.collectBoundNames(node.data.unary.operand);
+            },
+            // ...rest → operand가 실제 바인딩 (배열/객체 패턴 포함)
+            .spread_element, .rest_element, .binding_rest_element => {
+                self.collectBoundNames(node.data.unary.operand);
+            },
+            // [a, b, [c, d]] → 각 element를 재귀적으로 처리
+            .array_pattern => {
+                const list = node.data.list;
+                var i: u32 = 0;
+                while (i < list.len) : (i += 1) {
+                    const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+                    self.collectBoundNames(elem_idx);
+                }
+            },
+            // {a, b: c, ...rest} → 각 property를 재귀적으로 처리
+            .object_pattern => {
+                const list = node.data.list;
+                var i: u32 = 0;
+                while (i < list.len) : (i += 1) {
+                    const prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+                    self.collectBoundNames(prop_idx);
+                }
+            },
+            // {key: value} → right(value)가 실제 바인딩 패턴
+            // shorthand {a} 도 binding_property: left=key(binding_identifier), right=value(binding_identifier)
+            .binding_property => {
+                self.collectBoundNames(node.data.binary.right);
+            },
+            // elision, invalid 등 — 바인딩 없음, 무시
+            else => {},
+        }
+    }
+
+    /// 파라미터 노드에서 단일 바인딩 이름의 Span을 추출한다.
     /// binding_identifier, assignment_pattern(= default), formal_parameter(TS modifier),
-    /// spread_element(...rest) 등 다양한 형태를 재귀적으로 처리.
-    /// destructuring([a,b], {a,b})은 단일 이름이 아니므로 null 반환.
+    /// spread_element(...rest) 등 단일 이름을 반환하는 형태만 처리.
+    /// destructuring([a,b], {a,b})처럼 이름이 여럿인 경우는 null 반환.
+    /// 중복 파라미터 검사에는 collectBoundNames를 사용할 것.
     fn extractParamName(self: *const Parser, idx: NodeIndex) ?Span {
         if (idx.isNone()) return null;
         const node = self.ast.getNode(idx);
@@ -1100,7 +1179,7 @@ pub const Parser = struct {
             .formal_parameter => self.extractParamName(node.data.unary.operand),
             // rest parameter (...x) → operand가 binding
             .spread_element => self.extractParamName(node.data.unary.operand),
-            // TODO: destructuring([a,b], {a})은 collectBoundNames로 여러 이름을 수집해야 함
+            // destructuring([a,b], {a,b})은 이름이 여럿 — collectBoundNames 사용
             else => null,
         };
     }
@@ -1116,12 +1195,18 @@ pub const Parser = struct {
 
     /// "use strict" directive가 발견된 후 파라미터 이름을 소급 검증.
     /// ECMAScript 14.1.2: strict mode에서 eval/arguments + 중복 파라미터 금지.
+    /// destructuring 패턴 안의 이름도 재귀적으로 검사한다.
     fn checkStrictParamNames(self: *Parser, scratch_top: usize) void {
         const params = self.scratch.items[scratch_top..];
         for (params) |param_idx| {
-            const name_span = self.extractParamName(param_idx) orelse continue;
-            self.checkStrictBinding(name_span);
+            // collectBoundNames로 destructuring 안의 이름도 포함하여 모두 검사
+            self.param_name_spans.clearRetainingCapacity();
+            self.collectBoundNames(param_idx);
+            for (self.param_name_spans.items) |name_span| {
+                self.checkStrictBinding(name_span);
+            }
         }
+        self.param_name_spans.clearRetainingCapacity();
         // 중복 파라미터도 소급 검사 (simple params + sloppy에서는 허용이지만 strict에서는 금지)
         self.checkDuplicateParams(scratch_top);
     }
@@ -2450,10 +2535,14 @@ pub const Parser = struct {
     fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
 
-        // 데코레이터 (class member 앞)
+        // 데코레이터 (class member 앞) — scratch에 수집 후 멤버 노드의 extra_data에 연결
+        const deco_scratch_top = self.saveScratch();
         while (self.current() == .at) {
-            _ = try self.parseDecorator(); // TODO: 멤버에 연결 (BACKLOG)
+            const dec = try self.parseDecorator();
+            try self.scratch.append(dec);
         }
+        const decorators = try self.ast.addNodeList(self.scratch.items[deco_scratch_top..]);
+        self.restoreScratch(deco_scratch_top);
 
         // TS 접근 제어자 (public/private/protected) + readonly + abstract + override
         while (self.current() == .kw_public or self.current() == .kw_private or
@@ -2675,12 +2764,16 @@ pub const Parser = struct {
             const param_list = try self.ast.addNodeList(self.scratch.items[param_top..]);
             self.restoreScratch(param_top);
 
-            const extra_start = try self.ast.addExtra(@intFromEnum(key));
-            _ = try self.ast.addExtra(param_list.start);
-            _ = try self.ast.addExtra(param_list.len);
-            _ = try self.ast.addExtra(@intFromEnum(body));
-
-            _ = try self.ast.addExtra(flags);
+            // method_definition: extra = [key, params_start, params_len, body, flags, deco_start, deco_len]
+            const extra_start = try self.ast.addExtras(&.{
+                @intFromEnum(key),
+                param_list.start,
+                param_list.len,
+                @intFromEnum(body),
+                flags,
+                decorators.start,
+                decorators.len,
+            });
 
             return try self.ast.addNode(.{
                 .tag = .method_definition,
@@ -2738,10 +2831,19 @@ pub const Parser = struct {
         // class field 끝에서 ASI 규칙 적용: 같은 줄에 다른 멤버가 오면 에러
         self.expectSemicolon();
 
+        // property_definition / accessor_property:
+        // extra = [key, init_val, flags, deco_start, deco_len]
+        const prop_extra_start = try self.ast.addExtras(&.{
+            @intFromEnum(key),
+            @intFromEnum(init_val),
+            flags,
+            decorators.start,
+            decorators.len,
+        });
         return try self.ast.addNode(.{
             .tag = if (is_accessor) .accessor_property else .property_definition,
             .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = key, .right = init_val, .flags = flags } },
+            .data = .{ .extra = prop_extra_start },
         });
     }
 
@@ -5600,6 +5702,8 @@ pub const Parser = struct {
     }
 
     /// interface Foo { ... }
+    /// interface Foo extends Bar, Baz { ... }
+    /// extra = [name, type_params, extends_start, extends_len, body]
     fn parseTsInterfaceDeclaration(self: *Parser) ParseError2!NodeIndex {
         const start = self.currentSpan().start;
         self.advance(); // skip 'interface'
@@ -5613,23 +5717,30 @@ pub const Parser = struct {
         }
 
         // extends (콤마 구분 리스트: interface Foo extends Bar, Baz)
-        var extends_node = NodeIndex.none;
+        // NodeList(start, len)로 저장하여 다중 extends를 지원한다.
+        // extends 없으면 extends_list.len = 0.
+        const scratch_top = self.saveScratch();
         if (self.eat(.kw_extends)) {
-            // 첫 번째 타입은 항상 파싱
-            extends_node = try self.parseType();
-            // 추가 extends 타입들은 무시 (BACKLOG: 리스트로 변환)
+            const first = try self.parseType();
+            try self.scratch.append(first);
             while (self.eat(.comma)) {
-                _ = try self.parseType();
+                const next = try self.parseType();
+                try self.scratch.append(next);
             }
         }
+        const extends_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        self.restoreScratch(scratch_top);
 
         // interface body
         const body = try self.parseObjectType();
 
-        const extra_start = try self.ast.addExtra(@intFromEnum(name));
-        _ = try self.ast.addExtra(@intFromEnum(type_params));
-        _ = try self.ast.addExtra(@intFromEnum(extends_node));
-        _ = try self.ast.addExtra(@intFromEnum(body));
+        const extra_start = try self.ast.addExtras(&.{
+            @intFromEnum(name),
+            @intFromEnum(type_params),
+            extends_list.start,
+            extends_list.len,
+            @intFromEnum(body),
+        });
 
         return try self.ast.addNode(.{
             .tag = .ts_interface_declaration,
@@ -6607,6 +6718,85 @@ test "Parser: function with destructuring params" {
     try std.testing.expect(parser.errors.items.len == 0);
 }
 
+test "Parser: duplicate param in array destructuring (strict)" {
+    // strict mode에서 function f(a, [a, b]) {} 는 에러: a가 두 번 바인딩됨.
+    // array_pattern 안의 이름을 collectBoundNames로 수집해야 잡을 수 있음.
+    var scanner = Scanner.init(std.testing.allocator, "\"use strict\"; function f(a, [a, b]) {}");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "Parser: duplicate param in object destructuring (strict)" {
+    // strict mode에서 function f(a, {a}) {} 는 에러: a가 두 번 바인딩됨.
+    var scanner = Scanner.init(std.testing.allocator, "\"use strict\"; function f(a, {a}) {}");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "Parser: no duplicate in different destructuring names (strict)" {
+    // 이름이 다르면 에러 없음
+    var scanner = Scanner.init(std.testing.allocator, "\"use strict\"; function f(a, [b, c]) {}");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+}
+
+test "Parser: duplicate param nested destructuring (strict)" {
+    // 중첩 destructuring: function f(a, [{a}]) {} → a가 중복
+    var scanner = Scanner.init(std.testing.allocator, "\"use strict\"; function f(a, [{a}]) {}");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "Parser: duplicate param with default value in array (strict)" {
+    // default value: function f(a, [a = 1]) {} → a가 중복
+    var scanner = Scanner.init(std.testing.allocator, "\"use strict\"; function f(a, [a = 1]) {}");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "Parser: duplicate param with rest in array (strict)" {
+    // rest element: function f(a, [...a]) {} → a가 중복
+    var scanner = Scanner.init(std.testing.allocator, "\"use strict\"; function f(a, [...a]) {}");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "Parser: duplicate param within same destructuring (generator)" {
+    // generator 함수에서도 destructuring 내 중복은 에러
+    // function* f([a, a]) {} → a가 중복 (generator는 항상 중복 검사)
+    var scanner = Scanner.init(std.testing.allocator, "function* f([a, a]) {}");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
 // ============================================================
 // Import / Export tests
 // ============================================================
@@ -6779,8 +6969,7 @@ test "Parser: async arrow function" {
     defer parser.deinit();
 
     _ = try parser.parse();
-    // async arrow는 현재 async가 expression statement로 파싱됨
-    // 완전한 async arrow는 추후 구현 (BACKLOG #35)
+    try std.testing.expect(parser.errors.items.len == 0);
 }
 
 test "Parser: class with private field and method" {
@@ -6996,13 +7185,75 @@ test "Parser: TS interface" {
 }
 
 test "Parser: TS interface extends" {
+    // interface Admin extends User — 단일 extends를 NodeList(len=1)로 저장
     var scanner = Scanner.init(std.testing.allocator, "interface Admin extends User { role: string; }");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
 
-    _ = try parser.parse();
+    const root = try parser.parse();
     try std.testing.expect(parser.errors.items.len == 0);
+
+    // program.data.list → interface 노드 접근
+    const program = parser.ast.getNode(root);
+    try std.testing.expectEqual(Tag.program, program.tag);
+    // program body의 첫 번째 stmt = ts_interface_declaration
+    const iface_raw = parser.ast.extra_data.items[program.data.list.start];
+    const iface = parser.ast.getNode(@enumFromInt(iface_raw));
+    try std.testing.expectEqual(Tag.ts_interface_declaration, iface.tag);
+    // extra = [name, type_params, extends_start, extends_len, body]
+    // extends User → extends_len = 1
+    const extends_len = parser.ast.extra_data.items[iface.data.extra + 3];
+    try std.testing.expectEqual(@as(u32, 1), extends_len);
+}
+
+test "Parser: TS interface multiple extends" {
+    // interface Foo extends Bar, Baz — 다중 extends를 NodeList로 정확히 저장
+    var scanner = Scanner.init(std.testing.allocator, "interface Foo extends Bar, Baz { }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    const root = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+
+    const program = parser.ast.getNode(root);
+    const iface_raw = parser.ast.extra_data.items[program.data.list.start];
+    const iface = parser.ast.getNode(@enumFromInt(iface_raw));
+    try std.testing.expectEqual(Tag.ts_interface_declaration, iface.tag);
+
+    // extra = [name, type_params, extends_start, extends_len, body]
+    const e = iface.data.extra;
+    const extends_start = parser.ast.extra_data.items[e + 2];
+    const extends_len = parser.ast.extra_data.items[e + 3];
+    // extends Bar, Baz → 2개
+    try std.testing.expectEqual(@as(u32, 2), extends_len);
+
+    // 두 extends 노드가 유효한 타입 노드인지 확인
+    const bar = parser.ast.getNode(@enumFromInt(parser.ast.extra_data.items[extends_start]));
+    const baz = parser.ast.getNode(@enumFromInt(parser.ast.extra_data.items[extends_start + 1]));
+    try std.testing.expect(bar.tag != .invalid);
+    try std.testing.expect(baz.tag != .invalid);
+}
+
+test "Parser: TS interface no extends" {
+    // extends 없는 경우 extends_len = 0
+    var scanner = Scanner.init(std.testing.allocator, "interface Empty { }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    const root = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+
+    const program = parser.ast.getNode(root);
+    const iface_raw = parser.ast.extra_data.items[program.data.list.start];
+    const iface = parser.ast.getNode(@enumFromInt(iface_raw));
+    try std.testing.expectEqual(Tag.ts_interface_declaration, iface.tag);
+
+    // extends 없으면 extends_len = 0
+    const extends_len = parser.ast.extra_data.items[iface.data.extra + 3];
+    try std.testing.expectEqual(@as(u32, 0), extends_len);
 }
 
 test "Parser: TS enum" {

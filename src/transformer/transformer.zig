@@ -239,8 +239,8 @@ pub const Transformer = struct {
             .catch_clause,
             .binding_property,
             .assignment_pattern,
-            .accessor_property,
             => self.visitBinaryNode(node),
+            .accessor_property => self.visitAccessorProperty(node),
 
             // === 리프 노드: 그대로 복사 (자식 없음) ===
             .boolean_literal,
@@ -766,31 +766,40 @@ pub const Transformer = struct {
         return self.addExtraNode(.new_expression, node.span, &.{ @intFromEnum(new_callee), new_args.start, new_args.len });
     }
 
-    /// method_definition: extra_data = [key, value, flags, decorators_start, decorators_len]
-    /// method_definition: extra = [key, params.start, params.len, body, flags]
+    // method_definition: extra = [key, params_start, params_len, body, flags, deco_start, deco_len]
     fn visitMethodDefinition(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
         const new_key = try self.visitNode(self.readNodeIdx(e, 0));
         const new_params = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
         const new_body = try self.visitNode(self.readNodeIdx(e, 3));
+        const new_decos = try self.visitExtraList(self.readU32(e, 5), self.readU32(e, 6));
         return self.addExtraNode(.method_definition, node.span, &.{
-            @intFromEnum(new_key), new_params.start, new_params.len, @intFromEnum(new_body), self.readU32(e, 4),
+            @intFromEnum(new_key), new_params.start, new_params.len, @intFromEnum(new_body),
+            self.readU32(e, 4), new_decos.start, new_decos.len,
         });
     }
 
-    /// property_definition: binary = { left=key, right=init_val, flags }
-    /// flags: bit0=static
+    // property_definition: extra = [key, init_val, flags, deco_start, deco_len]
     fn visitPropertyDefinition(self: *Transformer, node: Node) Error!NodeIndex {
-        const new_key = try self.visitNode(node.data.binary.left);
-        const new_value = try self.visitNode(node.data.binary.right);
-        return self.new_ast.addNode(.{
-            .tag = .property_definition,
-            .span = node.span,
-            .data = .{ .binary = .{
-                .left = new_key,
-                .right = new_value,
-                .flags = node.data.binary.flags,
-            } },
+        const e = node.data.extra;
+        const new_key = try self.visitNode(self.readNodeIdx(e, 0));
+        const new_value = try self.visitNode(self.readNodeIdx(e, 1));
+        const new_decos = try self.visitExtraList(self.readU32(e, 3), self.readU32(e, 4));
+        return self.addExtraNode(.property_definition, node.span, &.{
+            @intFromEnum(new_key), @intFromEnum(new_value), self.readU32(e, 2),
+            new_decos.start, new_decos.len,
+        });
+    }
+
+    // accessor_property: extra = [key, init_val, flags, deco_start, deco_len]
+    fn visitAccessorProperty(self: *Transformer, node: Node) Error!NodeIndex {
+        const e = node.data.extra;
+        const new_key = try self.visitNode(self.readNodeIdx(e, 0));
+        const new_value = try self.visitNode(self.readNodeIdx(e, 1));
+        const new_decos = try self.visitExtraList(self.readU32(e, 3), self.readU32(e, 4));
+        return self.addExtraNode(.accessor_property, node.span, &.{
+            @intFromEnum(new_key), @intFromEnum(new_value), self.readU32(e, 2),
+            new_decos.start, new_decos.len,
         });
     }
 

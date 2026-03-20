@@ -1,0 +1,1 @@
+async function fetchData(){await fetch('/api');}
