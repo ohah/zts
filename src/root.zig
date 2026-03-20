@@ -22,4 +22,5 @@ test {
     _ = codegen;
     _ = config;
     _ = test262;
+    _ = @import("test_arena.zig");
 }
