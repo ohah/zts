@@ -22,6 +22,7 @@ pub const ast = @import("ast.zig");
 pub const flags = @import("flags.zig");
 pub const diagnostics = @import("diagnostics.zig");
 pub const parser = @import("parser.zig");
+pub const unicode_property = @import("unicode_property.zig");
 
 /// 정규식 리터럴을 검증한다.
 /// pattern: `/` 사이의 패턴 텍스트 (예: "\\d{4}")
@@ -79,4 +80,5 @@ test {
     _ = flags;
     _ = diagnostics;
     _ = parser;
+    _ = unicode_property;
 }

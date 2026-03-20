@@ -1,0 +1,743 @@
+//! 유니코드 프로퍼티 검증 테이블.
+//!
+//! ECMAScript 정규식의 `\p{...}` / `\P{...}` 유니코드 프로퍼티 이스케이프를 검증한다.
+//! oxc의 oxc_regular_expression/src/parser/pattern_parser/unicode_property.rs를 참고.
+//!
+//! 지원하는 프로퍼티 형태:
+//!   - `\p{name=value}` — General_Category, Script, Script_Extensions
+//!   - `\p{name}` — General_Category 값 또는 Binary 프로퍼티 (lone form)
+//!   - `\p{name}` — v-flag 전용 property-of-strings
+//!
+//! 참조:
+//!   - https://tc39.es/ecma262/2024/multipage/text-processing.html#table-nonbinary-unicode-properties
+//!   - https://tc39.es/ecma262/2024/multipage/text-processing.html#table-binary-unicode-properties
+//!   - https://tc39.es/ecma262/2024/multipage/text-processing.html#table-binary-unicode-properties-of-strings
+//!   - https://unicode.org/Public/UCD/latest/ucd/PropertyValueAliases.txt
+
+const std = @import("std");
+
+// ── 공개 검증 함수 ──────────────────────────────────────
+
+/// `\p{name=value}` 형태의 유니코드 프로퍼티를 검증한다.
+///
+/// name이 General_Category/gc이면 gc_values에서,
+/// Script/sc이면 sc_values에서,
+/// Script_Extensions/scx이면 sc_values + scx_values에서 value를 찾는다.
+/// 그 외의 name은 유효하지 않다.
+pub fn isValidUnicodeProperty(name: []const u8, value: []const u8) bool {
+    if (isGeneralCategory(name)) {
+        return gc_values.has(value);
+    }
+    if (isScript(name)) {
+        return sc_values.has(value);
+    }
+    if (isScriptExtensions(name)) {
+        return sc_values.has(value) or scx_values.has(value);
+    }
+    return false;
+}
+
+/// `\p{name}` 형태의 lone 유니코드 프로퍼티를 검증한다.
+///
+/// name이 General_Category 값이거나 Binary 프로퍼티이면 유효하다.
+/// ECMAScript 스펙에서 lone form은 gc 값과 binary property를 모두 허용한다.
+pub fn isValidLoneUnicodeProperty(name: []const u8) bool {
+    return gc_values.has(name) or binary_properties.has(name);
+}
+
+/// v-flag (`unicodeSets`) 모드에서 property-of-strings를 검증한다.
+///
+/// `\p{Basic_Emoji}` 같은 문자열 프로퍼티는 v-flag가 켜져 있을 때만 유효하다.
+pub fn isValidPropertyOfStrings(name: []const u8) bool {
+    return property_of_strings.has(name);
+}
+
+// ── 프로퍼티 이름 판별 헬퍼 ─────────────────────────────
+
+/// name이 General_Category 또는 그 약어(gc)인지 확인한다.
+fn isGeneralCategory(name: []const u8) bool {
+    return std.mem.eql(u8, name, "General_Category") or std.mem.eql(u8, name, "gc");
+}
+
+/// name이 Script 또는 그 약어(sc)인지 확인한다.
+fn isScript(name: []const u8) bool {
+    return std.mem.eql(u8, name, "Script") or std.mem.eql(u8, name, "sc");
+}
+
+/// name이 Script_Extensions 또는 그 약어(scx)인지 확인한다.
+fn isScriptExtensions(name: []const u8) bool {
+    return std.mem.eql(u8, name, "Script_Extensions") or std.mem.eql(u8, name, "scx");
+}
+
+// ── StaticStringMap 래퍼 ────────────────────────────────
+
+/// StaticStringMap(void)의 래퍼. initComptime으로 컴파일 타임에 해시맵을 생성한다.
+/// 런타임에 O(1) lookup이 가능하다.
+fn StringSet(comptime entries: anytype) type {
+    return struct {
+        const map = std.StaticStringMap(void).initComptime(entries);
+
+        pub fn has(name: []const u8) bool {
+            return map.has(name);
+        }
+    };
+}
+
+// ── General_Category (gc) 값 테이블 ─────────────────────
+// https://unicode.org/Public/UCD/latest/ucd/PropertyValueAliases.txt
+
+const gc_values = StringSet(.{
+    // C — Other
+    .{ "C", {} },
+    .{ "Other", {} },
+    .{ "Cc", {} },
+    .{ "Control", {} },
+    .{ "cntrl", {} },
+    .{ "Cf", {} },
+    .{ "Format", {} },
+    .{ "Cn", {} },
+    .{ "Unassigned", {} },
+    .{ "Co", {} },
+    .{ "Private_Use", {} },
+    .{ "Cs", {} },
+    .{ "Surrogate", {} },
+    // L — Letter
+    .{ "L", {} },
+    .{ "Letter", {} },
+    .{ "LC", {} },
+    .{ "Cased_Letter", {} },
+    .{ "Ll", {} },
+    .{ "Lowercase_Letter", {} },
+    .{ "Lm", {} },
+    .{ "Modifier_Letter", {} },
+    .{ "Lo", {} },
+    .{ "Other_Letter", {} },
+    .{ "Lt", {} },
+    .{ "Titlecase_Letter", {} },
+    .{ "Lu", {} },
+    .{ "Uppercase_Letter", {} },
+    // M — Mark
+    .{ "M", {} },
+    .{ "Mark", {} },
+    .{ "Combining_Mark", {} },
+    .{ "Mc", {} },
+    .{ "Spacing_Mark", {} },
+    .{ "Me", {} },
+    .{ "Enclosing_Mark", {} },
+    .{ "Mn", {} },
+    .{ "Nonspacing_Mark", {} },
+    // N — Number
+    .{ "N", {} },
+    .{ "Number", {} },
+    .{ "Nd", {} },
+    .{ "Decimal_Number", {} },
+    .{ "digit", {} },
+    .{ "Nl", {} },
+    .{ "Letter_Number", {} },
+    .{ "No", {} },
+    .{ "Other_Number", {} },
+    // P — Punctuation
+    .{ "P", {} },
+    .{ "Punctuation", {} },
+    .{ "punct", {} },
+    .{ "Pc", {} },
+    .{ "Connector_Punctuation", {} },
+    .{ "Pd", {} },
+    .{ "Dash_Punctuation", {} },
+    .{ "Pe", {} },
+    .{ "Close_Punctuation", {} },
+    .{ "Pf", {} },
+    .{ "Final_Punctuation", {} },
+    .{ "Pi", {} },
+    .{ "Initial_Punctuation", {} },
+    .{ "Po", {} },
+    .{ "Other_Punctuation", {} },
+    .{ "Ps", {} },
+    .{ "Open_Punctuation", {} },
+    // S — Symbol
+    .{ "S", {} },
+    .{ "Symbol", {} },
+    .{ "Sc", {} },
+    .{ "Currency_Symbol", {} },
+    .{ "Sk", {} },
+    .{ "Modifier_Symbol", {} },
+    .{ "Sm", {} },
+    .{ "Math_Symbol", {} },
+    .{ "So", {} },
+    .{ "Other_Symbol", {} },
+    // Z — Separator
+    .{ "Z", {} },
+    .{ "Separator", {} },
+    .{ "Zl", {} },
+    .{ "Line_Separator", {} },
+    .{ "Zp", {} },
+    .{ "Paragraph_Separator", {} },
+    .{ "Zs", {} },
+    .{ "Space_Separator", {} },
+}).map;
+
+// ── Script (sc) / Script_Extensions (scx) 값 테이블 ────
+// https://unicode.org/Public/UCD/latest/ucd/PropertyValueAliases.txt
+
+const sc_values = StringSet(.{
+    .{ "Adlm", {} },
+    .{ "Adlam", {} },
+    .{ "Aghb", {} },
+    .{ "Caucasian_Albanian", {} },
+    .{ "Ahom", {} },
+    .{ "Arab", {} },
+    .{ "Arabic", {} },
+    .{ "Armi", {} },
+    .{ "Imperial_Aramaic", {} },
+    .{ "Armn", {} },
+    .{ "Armenian", {} },
+    .{ "Avst", {} },
+    .{ "Avestan", {} },
+    .{ "Bali", {} },
+    .{ "Balinese", {} },
+    .{ "Bamu", {} },
+    .{ "Bamum", {} },
+    .{ "Bass", {} },
+    .{ "Bassa_Vah", {} },
+    .{ "Batk", {} },
+    .{ "Batak", {} },
+    .{ "Beng", {} },
+    .{ "Bengali", {} },
+    .{ "Berf", {} },
+    .{ "Beria_Erfe", {} },
+    .{ "Bhks", {} },
+    .{ "Bhaiksuki", {} },
+    .{ "Bopo", {} },
+    .{ "Bopomofo", {} },
+    .{ "Brah", {} },
+    .{ "Brahmi", {} },
+    .{ "Brai", {} },
+    .{ "Braille", {} },
+    .{ "Bugi", {} },
+    .{ "Buginese", {} },
+    .{ "Buhd", {} },
+    .{ "Buhid", {} },
+    .{ "Cakm", {} },
+    .{ "Chakma", {} },
+    .{ "Cans", {} },
+    .{ "Canadian_Aboriginal", {} },
+    .{ "Cari", {} },
+    .{ "Carian", {} },
+    .{ "Cham", {} },
+    .{ "Cher", {} },
+    .{ "Cherokee", {} },
+    .{ "Chrs", {} },
+    .{ "Chorasmian", {} },
+    .{ "Copt", {} },
+    .{ "Coptic", {} },
+    .{ "Qaac", {} },
+    .{ "Cpmn", {} },
+    .{ "Cypro_Minoan", {} },
+    .{ "Cprt", {} },
+    .{ "Cypriot", {} },
+    .{ "Cyrl", {} },
+    .{ "Cyrillic", {} },
+    .{ "Deva", {} },
+    .{ "Devanagari", {} },
+    .{ "Diak", {} },
+    .{ "Dives_Akuru", {} },
+    .{ "Dogr", {} },
+    .{ "Dogra", {} },
+    .{ "Dsrt", {} },
+    .{ "Deseret", {} },
+    .{ "Dupl", {} },
+    .{ "Duployan", {} },
+    .{ "Egyp", {} },
+    .{ "Egyptian_Hieroglyphs", {} },
+    .{ "Elba", {} },
+    .{ "Elbasan", {} },
+    .{ "Elym", {} },
+    .{ "Elymaic", {} },
+    .{ "Ethi", {} },
+    .{ "Ethiopic", {} },
+    .{ "Gara", {} },
+    .{ "Garay", {} },
+    .{ "Geor", {} },
+    .{ "Georgian", {} },
+    .{ "Glag", {} },
+    .{ "Glagolitic", {} },
+    .{ "Gong", {} },
+    .{ "Gunjala_Gondi", {} },
+    .{ "Gonm", {} },
+    .{ "Masaram_Gondi", {} },
+    .{ "Goth", {} },
+    .{ "Gothic", {} },
+    .{ "Gran", {} },
+    .{ "Grantha", {} },
+    .{ "Grek", {} },
+    .{ "Greek", {} },
+    .{ "Gujr", {} },
+    .{ "Gujarati", {} },
+    .{ "Gukh", {} },
+    .{ "Gurung_Khema", {} },
+    .{ "Guru", {} },
+    .{ "Gurmukhi", {} },
+    .{ "Hang", {} },
+    .{ "Hangul", {} },
+    .{ "Hani", {} },
+    .{ "Han", {} },
+    .{ "Hano", {} },
+    .{ "Hanunoo", {} },
+    .{ "Hatr", {} },
+    .{ "Hatran", {} },
+    .{ "Hebr", {} },
+    .{ "Hebrew", {} },
+    .{ "Hira", {} },
+    .{ "Hiragana", {} },
+    .{ "Hluw", {} },
+    .{ "Anatolian_Hieroglyphs", {} },
+    .{ "Hmng", {} },
+    .{ "Pahawh_Hmong", {} },
+    .{ "Hmnp", {} },
+    .{ "Nyiakeng_Puachue_Hmong", {} },
+    .{ "Hrkt", {} },
+    .{ "Katakana_Or_Hiragana", {} },
+    .{ "Hung", {} },
+    .{ "Old_Hungarian", {} },
+    .{ "Ital", {} },
+    .{ "Old_Italic", {} },
+    .{ "Java", {} },
+    .{ "Javanese", {} },
+    .{ "Kali", {} },
+    .{ "Kayah_Li", {} },
+    .{ "Kana", {} },
+    .{ "Katakana", {} },
+    .{ "Kawi", {} },
+    .{ "Khar", {} },
+    .{ "Kharoshthi", {} },
+    .{ "Khmr", {} },
+    .{ "Khmer", {} },
+    .{ "Khoj", {} },
+    .{ "Khojki", {} },
+    .{ "Kits", {} },
+    .{ "Khitan_Small_Script", {} },
+    .{ "Knda", {} },
+    .{ "Kannada", {} },
+    .{ "Krai", {} },
+    .{ "Kirat_Rai", {} },
+    .{ "Kthi", {} },
+    .{ "Kaithi", {} },
+    .{ "Lana", {} },
+    .{ "Tai_Tham", {} },
+    .{ "Laoo", {} },
+    .{ "Lao", {} },
+    .{ "Latn", {} },
+    .{ "Latin", {} },
+    .{ "Lepc", {} },
+    .{ "Lepcha", {} },
+    .{ "Limb", {} },
+    .{ "Limbu", {} },
+    .{ "Lina", {} },
+    .{ "Linear_A", {} },
+    .{ "Linb", {} },
+    .{ "Linear_B", {} },
+    .{ "Lisu", {} },
+    .{ "Lyci", {} },
+    .{ "Lycian", {} },
+    .{ "Lydi", {} },
+    .{ "Lydian", {} },
+    .{ "Mahj", {} },
+    .{ "Mahajani", {} },
+    .{ "Maka", {} },
+    .{ "Makasar", {} },
+    .{ "Mand", {} },
+    .{ "Mandaic", {} },
+    .{ "Mani", {} },
+    .{ "Manichaean", {} },
+    .{ "Marc", {} },
+    .{ "Marchen", {} },
+    .{ "Medf", {} },
+    .{ "Medefaidrin", {} },
+    .{ "Mend", {} },
+    .{ "Mende_Kikakui", {} },
+    .{ "Merc", {} },
+    .{ "Meroitic_Cursive", {} },
+    .{ "Mero", {} },
+    .{ "Meroitic_Hieroglyphs", {} },
+    .{ "Mlym", {} },
+    .{ "Malayalam", {} },
+    .{ "Modi", {} },
+    .{ "Mong", {} },
+    .{ "Mongolian", {} },
+    .{ "Mroo", {} },
+    .{ "Mro", {} },
+    .{ "Mtei", {} },
+    .{ "Meetei_Mayek", {} },
+    .{ "Mult", {} },
+    .{ "Multani", {} },
+    .{ "Mymr", {} },
+    .{ "Myanmar", {} },
+    .{ "Nagm", {} },
+    .{ "Nag_Mundari", {} },
+    .{ "Nand", {} },
+    .{ "Nandinagari", {} },
+    .{ "Narb", {} },
+    .{ "Old_North_Arabian", {} },
+    .{ "Nbat", {} },
+    .{ "Nabataean", {} },
+    .{ "Newa", {} },
+    .{ "Nkoo", {} },
+    .{ "Nko", {} },
+    .{ "Nshu", {} },
+    .{ "Nushu", {} },
+    .{ "Ogam", {} },
+    .{ "Ogham", {} },
+    .{ "Olck", {} },
+    .{ "Ol_Chiki", {} },
+    .{ "Onao", {} },
+    .{ "Ol_Onal", {} },
+    .{ "Orkh", {} },
+    .{ "Old_Turkic", {} },
+    .{ "Orya", {} },
+    .{ "Oriya", {} },
+    .{ "Osge", {} },
+    .{ "Osage", {} },
+    .{ "Osma", {} },
+    .{ "Osmanya", {} },
+    .{ "Ougr", {} },
+    .{ "Old_Uyghur", {} },
+    .{ "Palm", {} },
+    .{ "Palmyrene", {} },
+    .{ "Pauc", {} },
+    .{ "Pau_Cin_Hau", {} },
+    .{ "Perm", {} },
+    .{ "Old_Permic", {} },
+    .{ "Phag", {} },
+    .{ "Phags_Pa", {} },
+    .{ "Phli", {} },
+    .{ "Inscriptional_Pahlavi", {} },
+    .{ "Phlp", {} },
+    .{ "Psalter_Pahlavi", {} },
+    .{ "Phnx", {} },
+    .{ "Phoenician", {} },
+    .{ "Plrd", {} },
+    .{ "Miao", {} },
+    .{ "Prti", {} },
+    .{ "Inscriptional_Parthian", {} },
+    .{ "Rjng", {} },
+    .{ "Rejang", {} },
+    .{ "Rohg", {} },
+    .{ "Hanifi_Rohingya", {} },
+    .{ "Runr", {} },
+    .{ "Runic", {} },
+    .{ "Samr", {} },
+    .{ "Samaritan", {} },
+    .{ "Sarb", {} },
+    .{ "Old_South_Arabian", {} },
+    .{ "Saur", {} },
+    .{ "Saurashtra", {} },
+    .{ "Sgnw", {} },
+    .{ "SignWriting", {} },
+    .{ "Shaw", {} },
+    .{ "Shavian", {} },
+    .{ "Shrd", {} },
+    .{ "Sharada", {} },
+    .{ "Sidd", {} },
+    .{ "Siddham", {} },
+    .{ "Sidt", {} },
+    .{ "Sidetic", {} },
+    .{ "Sind", {} },
+    .{ "Khudawadi", {} },
+    .{ "Sinh", {} },
+    .{ "Sinhala", {} },
+    .{ "Sogd", {} },
+    .{ "Sogdian", {} },
+    .{ "Sogo", {} },
+    .{ "Old_Sogdian", {} },
+    .{ "Sora", {} },
+    .{ "Sora_Sompeng", {} },
+    .{ "Soyo", {} },
+    .{ "Soyombo", {} },
+    .{ "Sund", {} },
+    .{ "Sundanese", {} },
+    .{ "Sunu", {} },
+    .{ "Sunuwar", {} },
+    .{ "Sylo", {} },
+    .{ "Syloti_Nagri", {} },
+    .{ "Syrc", {} },
+    .{ "Syriac", {} },
+    .{ "Tagb", {} },
+    .{ "Tagbanwa", {} },
+    .{ "Takr", {} },
+    .{ "Takri", {} },
+    .{ "Tale", {} },
+    .{ "Tai_Le", {} },
+    .{ "Talu", {} },
+    .{ "New_Tai_Lue", {} },
+    .{ "Taml", {} },
+    .{ "Tamil", {} },
+    .{ "Tang", {} },
+    .{ "Tangut", {} },
+    .{ "Tavt", {} },
+    .{ "Tai_Viet", {} },
+    .{ "Tayo", {} },
+    .{ "Tai_Yo", {} },
+    .{ "Telu", {} },
+    .{ "Telugu", {} },
+    .{ "Tfng", {} },
+    .{ "Tifinagh", {} },
+    .{ "Tglg", {} },
+    .{ "Tagalog", {} },
+    .{ "Thaa", {} },
+    .{ "Thaana", {} },
+    .{ "Thai", {} },
+    .{ "Tibt", {} },
+    .{ "Tibetan", {} },
+    .{ "Tirh", {} },
+    .{ "Tirhuta", {} },
+    .{ "Tnsa", {} },
+    .{ "Tangsa", {} },
+    .{ "Todr", {} },
+    .{ "Todhri", {} },
+    .{ "Tols", {} },
+    .{ "Tolong_Siki", {} },
+    .{ "Toto", {} },
+    .{ "Tutg", {} },
+    .{ "Tulu_Tigalari", {} },
+    .{ "Ugar", {} },
+    .{ "Ugaritic", {} },
+    .{ "Vaii", {} },
+    .{ "Vai", {} },
+    .{ "Vith", {} },
+    .{ "Vithkuqi", {} },
+    .{ "Wara", {} },
+    .{ "Warang_Citi", {} },
+    .{ "Wcho", {} },
+    .{ "Wancho", {} },
+    .{ "Xpeo", {} },
+    .{ "Old_Persian", {} },
+    .{ "Xsux", {} },
+    .{ "Cuneiform", {} },
+    .{ "Yezi", {} },
+    .{ "Yezidi", {} },
+    .{ "Yiii", {} },
+    .{ "Yi", {} },
+    .{ "Zanb", {} },
+    .{ "Zanabazar_Square", {} },
+    .{ "Zinh", {} },
+    .{ "Inherited", {} },
+    .{ "Qaai", {} },
+    .{ "Zyyy", {} },
+    .{ "Common", {} },
+    .{ "Zzzz", {} },
+    .{ "Unknown", {} },
+}).map;
+
+// ── Script_Extensions 전용 추가 값 ─────────────────────
+// oxc에서 SCX_PROPERTY_VALUES는 비어 있다.
+// Script_Extensions는 sc_values를 공유하고, 추가 값이 필요하면 여기에 넣는다.
+
+const scx_values = StringSet(.{}).map;
+
+// ── Binary Unicode property 테이블 ──────────────────────
+// Table 66: Binary Unicode property aliases
+// https://tc39.es/ecma262/2024/multipage/text-processing.html#table-binary-unicode-properties
+
+const binary_properties = StringSet(.{
+    .{ "ASCII", {} },
+    .{ "ASCII_Hex_Digit", {} },
+    .{ "AHex", {} },
+    .{ "Alphabetic", {} },
+    .{ "Alpha", {} },
+    .{ "Any", {} },
+    .{ "Assigned", {} },
+    .{ "Bidi_Control", {} },
+    .{ "Bidi_C", {} },
+    .{ "Bidi_Mirrored", {} },
+    .{ "Bidi_M", {} },
+    .{ "Case_Ignorable", {} },
+    .{ "CI", {} },
+    .{ "Cased", {} },
+    .{ "Changes_When_Casefolded", {} },
+    .{ "CWCF", {} },
+    .{ "Changes_When_Casemapped", {} },
+    .{ "CWCM", {} },
+    .{ "Changes_When_Lowercased", {} },
+    .{ "CWL", {} },
+    .{ "Changes_When_NFKC_Casefolded", {} },
+    .{ "CWKCF", {} },
+    .{ "Changes_When_Titlecased", {} },
+    .{ "CWT", {} },
+    .{ "Changes_When_Uppercased", {} },
+    .{ "CWU", {} },
+    .{ "Dash", {} },
+    .{ "Default_Ignorable_Code_Point", {} },
+    .{ "DI", {} },
+    .{ "Deprecated", {} },
+    .{ "Dep", {} },
+    .{ "Diacritic", {} },
+    .{ "Dia", {} },
+    .{ "Emoji", {} },
+    .{ "Emoji_Component", {} },
+    .{ "EComp", {} },
+    .{ "Emoji_Modifier", {} },
+    .{ "EMod", {} },
+    .{ "Emoji_Modifier_Base", {} },
+    .{ "EBase", {} },
+    .{ "Emoji_Presentation", {} },
+    .{ "EPres", {} },
+    .{ "Extended_Pictographic", {} },
+    .{ "ExtPict", {} },
+    .{ "Extender", {} },
+    .{ "Ext", {} },
+    .{ "Grapheme_Base", {} },
+    .{ "Gr_Base", {} },
+    .{ "Grapheme_Extend", {} },
+    .{ "Gr_Ext", {} },
+    .{ "Hex_Digit", {} },
+    .{ "Hex", {} },
+    .{ "IDS_Binary_Operator", {} },
+    .{ "IDSB", {} },
+    .{ "IDS_Trinary_Operator", {} },
+    .{ "IDST", {} },
+    .{ "ID_Continue", {} },
+    .{ "IDC", {} },
+    .{ "ID_Start", {} },
+    .{ "IDS", {} },
+    .{ "Ideographic", {} },
+    .{ "Ideo", {} },
+    .{ "Join_Control", {} },
+    .{ "Join_C", {} },
+    .{ "Logical_Order_Exception", {} },
+    .{ "LOE", {} },
+    .{ "Lowercase", {} },
+    .{ "Lower", {} },
+    .{ "Math", {} },
+    .{ "Noncharacter_Code_Point", {} },
+    .{ "NChar", {} },
+    .{ "Pattern_Syntax", {} },
+    .{ "Pat_Syn", {} },
+    .{ "Pattern_White_Space", {} },
+    .{ "Pat_WS", {} },
+    .{ "Quotation_Mark", {} },
+    .{ "QMark", {} },
+    .{ "Radical", {} },
+    .{ "Regional_Indicator", {} },
+    .{ "RI", {} },
+    .{ "Sentence_Terminal", {} },
+    .{ "STerm", {} },
+    .{ "Soft_Dotted", {} },
+    .{ "SD", {} },
+    .{ "Terminal_Punctuation", {} },
+    .{ "Term", {} },
+    .{ "Unified_Ideograph", {} },
+    .{ "UIdeo", {} },
+    .{ "Uppercase", {} },
+    .{ "Upper", {} },
+    .{ "Variation_Selector", {} },
+    .{ "VS", {} },
+    .{ "White_Space", {} },
+    .{ "space", {} },
+    .{ "XID_Continue", {} },
+    .{ "XIDC", {} },
+    .{ "XID_Start", {} },
+    .{ "XIDS", {} },
+}).map;
+
+// ── Property of Strings 테이블 (v-flag 전용) ────────────
+// Table 67: Binary Unicode properties of strings
+// https://tc39.es/ecma262/2024/multipage/text-processing.html#table-binary-unicode-properties-of-strings
+
+const property_of_strings = StringSet(.{
+    .{ "Basic_Emoji", {} },
+    .{ "Emoji_Keycap_Sequence", {} },
+    .{ "RGI_Emoji_Modifier_Sequence", {} },
+    .{ "RGI_Emoji_Flag_Sequence", {} },
+    .{ "RGI_Emoji_Tag_Sequence", {} },
+    .{ "RGI_Emoji_ZWJ_Sequence", {} },
+    .{ "RGI_Emoji", {} },
+}).map;
+
+// ============================================================
+// Tests
+// ============================================================
+
+test "isValidUnicodeProperty — General_Category (gc)" {
+    // gc 약어로 검색
+    try std.testing.expect(isValidUnicodeProperty("gc", "Lu"));
+    try std.testing.expect(isValidUnicodeProperty("gc", "Uppercase_Letter"));
+    try std.testing.expect(isValidUnicodeProperty("gc", "Ll"));
+    try std.testing.expect(isValidUnicodeProperty("gc", "Nd"));
+    try std.testing.expect(isValidUnicodeProperty("gc", "digit"));
+    // 전체 이름으로 검색
+    try std.testing.expect(isValidUnicodeProperty("General_Category", "Lu"));
+    try std.testing.expect(isValidUnicodeProperty("General_Category", "Letter"));
+    // 유효하지 않은 값
+    try std.testing.expect(!isValidUnicodeProperty("gc", "NotACategory"));
+    try std.testing.expect(!isValidUnicodeProperty("gc", ""));
+    try std.testing.expect(!isValidUnicodeProperty("gc", "Latin"));
+}
+
+test "isValidUnicodeProperty — Script (sc)" {
+    try std.testing.expect(isValidUnicodeProperty("Script", "Latin"));
+    try std.testing.expect(isValidUnicodeProperty("Script", "Latn"));
+    try std.testing.expect(isValidUnicodeProperty("sc", "Greek"));
+    try std.testing.expect(isValidUnicodeProperty("sc", "Grek"));
+    try std.testing.expect(isValidUnicodeProperty("sc", "Han"));
+    try std.testing.expect(isValidUnicodeProperty("sc", "Hangul"));
+    // 유효하지 않은 스크립트
+    try std.testing.expect(!isValidUnicodeProperty("Script", "NotAScript"));
+    try std.testing.expect(!isValidUnicodeProperty("sc", "Lu"));
+}
+
+test "isValidUnicodeProperty — Script_Extensions (scx)" {
+    // scx는 sc 값을 공유
+    try std.testing.expect(isValidUnicodeProperty("Script_Extensions", "Latin"));
+    try std.testing.expect(isValidUnicodeProperty("scx", "Latn"));
+    try std.testing.expect(isValidUnicodeProperty("scx", "Common"));
+    // 유효하지 않은 프로퍼티 이름
+    try std.testing.expect(!isValidUnicodeProperty("InvalidProp", "Latin"));
+}
+
+test "isValidUnicodeProperty — invalid property name" {
+    try std.testing.expect(!isValidUnicodeProperty("Foo", "Bar"));
+    try std.testing.expect(!isValidUnicodeProperty("", "Lu"));
+}
+
+test "isValidLoneUnicodeProperty — gc values" {
+    try std.testing.expect(isValidLoneUnicodeProperty("Lu"));
+    try std.testing.expect(isValidLoneUnicodeProperty("Uppercase_Letter"));
+    try std.testing.expect(isValidLoneUnicodeProperty("Ll"));
+    try std.testing.expect(isValidLoneUnicodeProperty("Letter"));
+    try std.testing.expect(isValidLoneUnicodeProperty("Number"));
+    try std.testing.expect(isValidLoneUnicodeProperty("Nd"));
+}
+
+test "isValidLoneUnicodeProperty — binary properties" {
+    try std.testing.expect(isValidLoneUnicodeProperty("ASCII"));
+    try std.testing.expect(isValidLoneUnicodeProperty("Alphabetic"));
+    try std.testing.expect(isValidLoneUnicodeProperty("Alpha"));
+    try std.testing.expect(isValidLoneUnicodeProperty("Emoji"));
+    try std.testing.expect(isValidLoneUnicodeProperty("White_Space"));
+    try std.testing.expect(isValidLoneUnicodeProperty("space"));
+    try std.testing.expect(isValidLoneUnicodeProperty("ID_Start"));
+    try std.testing.expect(isValidLoneUnicodeProperty("IDS"));
+}
+
+test "isValidLoneUnicodeProperty — invalid" {
+    try std.testing.expect(!isValidLoneUnicodeProperty("NotAProperty"));
+    try std.testing.expect(!isValidLoneUnicodeProperty("Latin"));
+    try std.testing.expect(!isValidLoneUnicodeProperty(""));
+}
+
+test "isValidPropertyOfStrings — valid" {
+    try std.testing.expect(isValidPropertyOfStrings("Basic_Emoji"));
+    try std.testing.expect(isValidPropertyOfStrings("Emoji_Keycap_Sequence"));
+    try std.testing.expect(isValidPropertyOfStrings("RGI_Emoji_Modifier_Sequence"));
+    try std.testing.expect(isValidPropertyOfStrings("RGI_Emoji_Flag_Sequence"));
+    try std.testing.expect(isValidPropertyOfStrings("RGI_Emoji_Tag_Sequence"));
+    try std.testing.expect(isValidPropertyOfStrings("RGI_Emoji_ZWJ_Sequence"));
+    try std.testing.expect(isValidPropertyOfStrings("RGI_Emoji"));
+}
+
+test "isValidPropertyOfStrings — invalid" {
+    try std.testing.expect(!isValidPropertyOfStrings("ASCII"));
+    try std.testing.expect(!isValidPropertyOfStrings("Emoji"));
+    try std.testing.expect(!isValidPropertyOfStrings("Lu"));
+    try std.testing.expect(!isValidPropertyOfStrings(""));
+}

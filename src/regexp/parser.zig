@@ -16,10 +16,11 @@ const std = @import("std");
 const flags_mod = @import("flags.zig");
 const Flags = flags_mod.Flags;
 
-/// AST 타입. emit_ast=true일 때 노드 생성에 사용.
-/// emit_ast=false일 때도 import하지만, 메서드 본문이 comptime dead branch여서
-/// 실제로 컴파일되지 않는다.
+/// AST 타입.
 pub const ast = @import("ast.zig");
+
+/// 유니코드 프로퍼티 검증 테이블.
+pub const unicode_property = @import("unicode_property.zig");
 
 /// 패턴 파서. comptime emit_ast로 검증/AST 모드 분리.
 ///
@@ -49,6 +50,14 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         /// named back reference 이름 목록 (파싱 끝에서 존재 검증)
         named_refs: [32][]const u8 = undefined,
         named_ref_count: u8 = 0,
+
+        // ── character class range 검증용 ──
+        // parseClassAtom/parseEscape가 설정, parseCharacterClass에서 사용.
+
+        /// 마지막 class atom의 codepoint 값 (range 순서 검증용).
+        last_class_value: u32 = 0,
+        /// 마지막 class atom이 \d, \D, \w, \W, \s, \S인지 (range endpoint 금지).
+        last_class_is_class_escape: bool = false,
 
         // ── AST 모드 전용 필드 ──
         // emit_ast=false일 때는 void 타입 (0바이트, 메모리 사용 없음)
@@ -525,6 +534,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 // Character class escapes
                 'd', 'D', 'w', 'W', 's', 'S' => {
                     self.advance();
+                    self.last_class_is_class_escape = true;
                     if (emit_ast) {
                         const kind: ast.CharacterClassEscapeKind = switch (c) {
                             'd' => .d,
@@ -545,15 +555,17 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 // Control escape
                 'f', 'n', 'r', 't', 'v' => {
                     self.advance();
+                    const value: u32 = switch (c) {
+                        'f' => 0x0C,
+                        'n' => 0x0A,
+                        'r' => 0x0D,
+                        't' => 0x09,
+                        'v' => 0x0B,
+                        else => unreachable,
+                    };
+                    self.last_class_value = value;
+                    self.last_class_is_class_escape = false;
                     if (emit_ast) {
-                        const value: u32 = switch (c) {
-                            'f' => 0x0C,
-                            'n' => 0x0A,
-                            'r' => 0x0D,
-                            't' => 0x09,
-                            'v' => 0x0B,
-                            else => unreachable,
-                        };
                         self.last_node = self.addNode(.character, .{
                             .start = bs_pos,
                             .end = self.pos,
@@ -568,6 +580,8 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         const ctrl = self.peek();
                         if ((ctrl >= 'a' and ctrl <= 'z') or (ctrl >= 'A' and ctrl <= 'Z')) {
                             self.advance();
+                            self.last_class_value = ctrl & 0x1F;
+                            self.last_class_is_class_escape = false;
                             if (emit_ast) {
                                 self.last_node = self.addNode(.character, .{
                                     .start = bs_pos,
@@ -581,6 +595,8 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         self.setError("invalid control character escape");
                         return false;
                     }
+                    self.last_class_value = 'c';
+                    self.last_class_is_class_escape = false;
                     if (emit_ast) {
                         self.last_node = self.addNode(.character, .{
                             .start = bs_pos,
@@ -592,25 +608,27 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 // \0 null
                 '0' => {
                     self.advance();
-                    // \0 뒤에 digit이 오면 legacy octal (unicode에서 금지)
                     if (!self.isEnd() and self.peek() >= '0' and self.peek() <= '9') {
                         if (self.flags.hasUnicodeMode()) {
                             self.setError("invalid octal escape in unicode mode");
                             return false;
                         }
-                        // non-unicode: legacy octal 허용
-                        const octal_start = self.pos - 1; // '0' 위치
+                        const octal_start = self.pos - 1;
                         while (!self.isEnd() and self.peek() >= '0' and self.peek() <= '7') {
                             self.advance();
                         }
+                        const val = computeOctalValue(self.source, octal_start, self.pos);
+                        self.last_class_value = val;
+                        self.last_class_is_class_escape = false;
                         if (emit_ast) {
-                            const val = computeOctalValue(self.source, octal_start, self.pos);
                             self.last_node = self.addNode(.character, .{
                                 .start = bs_pos,
                                 .end = self.pos,
                             }, .{ val, @intFromEnum(ast.CharacterKind.octal), 0 });
                         }
                     } else {
+                        self.last_class_value = 0;
+                        self.last_class_is_class_escape = false;
                         if (emit_ast) {
                             self.last_node = self.addNode(.character, .{
                                 .start = bs_pos,
@@ -629,7 +647,8 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             self.setError("invalid hex escape in regular expression");
                             return false;
                         }
-                        // non-unicode: \x는 identity escape
+                        self.last_class_value = 'x';
+                        self.last_class_is_class_escape = false;
                         if (emit_ast) {
                             self.last_node = self.addNode(.character, .{
                                 .start = bs_pos,
@@ -637,8 +656,10 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             }, .{ 'x', @intFromEnum(ast.CharacterKind.identifier), 0 });
                         }
                     } else {
+                        const val = computeHexValue(self.source, hex_start, self.pos);
+                        self.last_class_value = val;
+                        self.last_class_is_class_escape = false;
                         if (emit_ast) {
-                            const val = computeHexValue(self.source, hex_start, self.pos);
                             self.last_node = self.addNode(.character, .{
                                 .start = bs_pos,
                                 .end = self.pos,
@@ -656,9 +677,15 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             self.setError("invalid unicode escape in regular expression");
                             return false;
                         }
+                        const val = computeHexValue(self.source, hex_start, self.pos - 1);
+                        // \u{...} codepoint 범위 검증: U+0000 ~ U+10FFFF
+                        if (val > 0x10FFFF) {
+                            self.setError("unicode codepoint must not be greater than 0x10FFFF");
+                            return false;
+                        }
+                        self.last_class_value = val;
+                        self.last_class_is_class_escape = false;
                         if (emit_ast) {
-                            // hex_start ~ self.pos - 1 ('}' 직전)
-                            const val = computeHexValue(self.source, hex_start, self.pos - 1);
                             self.last_node = self.addNode(.character, .{
                                 .start = bs_pos,
                                 .end = self.pos,
@@ -671,7 +698,8 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                                 self.setError("invalid unicode escape in regular expression");
                                 return false;
                             }
-                            // non-unicode: \u는 identity escape
+                            self.last_class_value = 'u';
+                            self.last_class_is_class_escape = false;
                             if (emit_ast) {
                                 self.last_node = self.addNode(.character, .{
                                     .start = bs_pos,
@@ -679,8 +707,10 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                                 }, .{ 'u', @intFromEnum(ast.CharacterKind.identifier), 0 });
                             }
                         } else {
+                            const val = computeHexValue(self.source, hex_start, self.pos);
+                            self.last_class_value = val;
+                            self.last_class_is_class_escape = false;
                             if (emit_ast) {
-                                const val = computeHexValue(self.source, hex_start, self.pos);
                                 self.last_node = self.addNode(.character, .{
                                     .start = bs_pos,
                                     .end = self.pos,
@@ -693,35 +723,79 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 // \p{...} or \P{...} unicode property escape
                 'p', 'P' => {
                     if (self.flags.hasUnicodeMode()) {
+                        const negative = (c == 'P');
                         self.advance();
                         if (!self.eat('{')) {
                             self.setError("invalid unicode property escape");
                             return false;
                         }
-                        const prop_start = self.pos;
-                        // property name: skip until }
-                        while (!self.isEnd() and self.peek() != '}') {
+                        // name (= value)? 파싱
+                        const name_start = self.pos;
+                        while (!self.isEnd() and self.peek() != '=' and self.peek() != '}') {
                             self.advance();
                         }
-                        const prop_end = self.pos;
+                        const name_end = self.pos;
+                        const name = self.source[name_start..name_end];
+
+                        var value_start: u32 = 0;
+                        var value_end: u32 = 0;
+                        var has_value = false;
+                        if (self.eat('=')) {
+                            has_value = true;
+                            value_start = self.pos;
+                            while (!self.isEnd() and self.peek() != '}') {
+                                self.advance();
+                            }
+                            value_end = self.pos;
+                        }
+
                         if (!self.eat('}')) {
                             self.setError("unterminated unicode property escape");
                             return false;
                         }
+
+                        // 프로퍼티 검증
+                        if (has_value) {
+                            const value = self.source[value_start..value_end];
+                            if (!unicode_property.isValidUnicodeProperty(name, value)) {
+                                self.setError("invalid unicode property name or value");
+                                return false;
+                            }
+                        } else {
+                            var is_valid = unicode_property.isValidLoneUnicodeProperty(name);
+                            if (!is_valid) {
+                                // v-flag: property-of-strings 확인
+                                if (self.flags.v and unicode_property.isValidPropertyOfStrings(name)) {
+                                    if (negative) {
+                                        self.setError("negated unicode property of strings is not allowed");
+                                        return false;
+                                    }
+                                    is_valid = true;
+                                }
+                            }
+                            if (!is_valid) {
+                                self.setError("invalid unicode property name");
+                                return false;
+                            }
+                        }
+
+                        self.last_class_is_class_escape = true; // property escape도 range endpoint 불가
                         if (emit_ast) {
                             self.last_node = self.addNode(.unicode_property_escape, .{
                                 .start = bs_pos,
                                 .end = self.pos,
                             }, .{
-                                prop_start,
-                                prop_end,
-                                @as(u32, @intFromBool(c == 'P')), // negative flag
+                                name_start,
+                                name_end,
+                                @as(u32, @intFromBool(negative)),
                             });
                         }
                         return true;
                     }
                     // non-unicode: literal
                     self.advance();
+                    self.last_class_value = c;
+                    self.last_class_is_class_escape = false;
                     if (emit_ast) {
                         self.last_node = self.addNode(.character, .{
                             .start = bs_pos,
@@ -785,9 +859,10 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 // Identity escape — unicode mode에서는 제한
                 else => {
                     if (self.flags.hasUnicodeMode()) {
-                        // unicode mode: syntax characters만 identity escape 가능
                         if (isSyntaxChar(c)) {
                             self.advance();
+                            self.last_class_value = c;
+                            self.last_class_is_class_escape = false;
                             if (emit_ast) {
                                 self.last_node = self.addNode(.character, .{
                                     .start = bs_pos,
@@ -799,8 +874,9 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         self.setError("invalid escape sequence in unicode mode");
                         return false;
                     }
-                    // non-unicode: 모든 문자 identity escape 가능
                     self.advance();
+                    self.last_class_value = c;
+                    self.last_class_is_class_escape = false;
                     if (emit_ast) {
                         self.last_node = self.addNode(.character, .{
                             .start = bs_pos,
@@ -831,6 +907,8 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     if (self.err_message != null) return false;
                 }
                 const first_node = if (emit_ast) self.last_node else {};
+                const first_value = self.last_class_value;
+                const first_is_escape = self.last_class_is_class_escape;
 
                 // range: a-z
                 if (!self.isEnd() and self.peek() == '-') {
@@ -838,6 +916,17 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     if (!self.isEnd() and self.peek() != ']') {
                         if (!self.parseClassAtom()) {
                             if (self.err_message != null) return false;
+                        }
+                        // unicode mode: range 유효성 검증
+                        if (self.flags.hasUnicodeMode()) {
+                            if (first_is_escape or self.last_class_is_class_escape) {
+                                self.setError("character class escape cannot be used in range");
+                                return false;
+                            }
+                            if (first_value > self.last_class_value) {
+                                self.setError("character class range out of order");
+                                return false;
+                            }
                         }
                         if (emit_ast) {
                             const second_node = self.last_node;
@@ -893,6 +982,8 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 return self.parseEscape();
             }
             const ch = self.peek();
+            self.last_class_value = ch;
+            self.last_class_is_class_escape = false;
             self.advance();
             if (emit_ast) {
                 self.last_node = self.addNode(.character, .{
@@ -1914,4 +2005,120 @@ test "AST: error returns null" {
     const result = p.parse();
     try std.testing.expect(result == null);
     try std.testing.expect(p.getError() != null);
+}
+
+// ============================================================
+// Tests — unicode property 검증
+// ============================================================
+
+test "unicode property: valid \\p{Lu}" {
+    const P = PatternParser(false);
+    var p = P.init("\\p{Lu}", .{ .u = true });
+    try std.testing.expect(p.validate() == null);
+}
+
+test "unicode property: valid \\p{gc=Lu}" {
+    const P = PatternParser(false);
+    var p = P.init("\\p{gc=Lu}", .{ .u = true });
+    try std.testing.expect(p.validate() == null);
+}
+
+test "unicode property: valid \\p{Script=Latin}" {
+    const P = PatternParser(false);
+    var p = P.init("\\p{Script=Latin}", .{ .u = true });
+    try std.testing.expect(p.validate() == null);
+}
+
+test "unicode property: valid \\p{ASCII}" {
+    const P = PatternParser(false);
+    var p = P.init("\\p{ASCII}", .{ .u = true });
+    try std.testing.expect(p.validate() == null);
+}
+
+test "unicode property: invalid name" {
+    const P = PatternParser(false);
+    var p = P.init("\\p{NotAProperty}", .{ .u = true });
+    try std.testing.expect(p.validate() != null);
+}
+
+test "unicode property: invalid gc value" {
+    const P = PatternParser(false);
+    var p = P.init("\\p{gc=NotACategory}", .{ .u = true });
+    try std.testing.expect(p.validate() != null);
+}
+
+test "unicode property: \\P{Basic_Emoji} negated string property" {
+    const P = PatternParser(false);
+    // v-flag에서 \P{Basic_Emoji}는 금지
+    var p = P.init("\\P{Basic_Emoji}", .{ .v = true });
+    try std.testing.expect(p.validate() != null);
+}
+
+test "unicode property: \\p{Basic_Emoji} valid with v-flag" {
+    const P = PatternParser(false);
+    var p = P.init("\\p{Basic_Emoji}", .{ .v = true });
+    try std.testing.expect(p.validate() == null);
+}
+
+// ============================================================
+// Tests — codepoint 범위 검증
+// ============================================================
+
+test "codepoint: \\u{10FFFF} valid" {
+    const P = PatternParser(false);
+    var p = P.init("\\u{10FFFF}", .{ .u = true });
+    try std.testing.expect(p.validate() == null);
+}
+
+test "codepoint: \\u{110000} invalid" {
+    const P = PatternParser(false);
+    var p = P.init("\\u{110000}", .{ .u = true });
+    try std.testing.expect(p.validate() != null);
+}
+
+test "codepoint: \\u{FFFFFF} invalid" {
+    const P = PatternParser(false);
+    var p = P.init("\\u{FFFFFF}", .{ .u = true });
+    try std.testing.expect(p.validate() != null);
+}
+
+// ============================================================
+// Tests — character class range 검증
+// ============================================================
+
+test "range: [a-z] valid" {
+    const P = PatternParser(false);
+    var p = P.init("[a-z]", .{ .u = true });
+    try std.testing.expect(p.validate() == null);
+}
+
+test "range: [z-a] out of order in unicode mode" {
+    const P = PatternParser(false);
+    var p = P.init("[z-a]", .{ .u = true });
+    try std.testing.expect(p.validate() != null);
+}
+
+test "range: [z-a] allowed in non-unicode mode" {
+    const P = PatternParser(false);
+    // non-unicode mode에서는 [z-a]를 허용 (legacy behavior)
+    var p = P.init("[z-a]", .{});
+    try std.testing.expect(p.validate() == null);
+}
+
+test "range: [\\d-x] class escape in range (unicode mode)" {
+    const P = PatternParser(false);
+    var p = P.init("[\\d-x]", .{ .u = true });
+    try std.testing.expect(p.validate() != null);
+}
+
+test "range: [a-\\d] class escape in range (unicode mode)" {
+    const P = PatternParser(false);
+    var p = P.init("[a-\\d]", .{ .u = true });
+    try std.testing.expect(p.validate() != null);
+}
+
+test "range: [\\d-x] allowed in non-unicode mode" {
+    const P = PatternParser(false);
+    var p = P.init("[\\d-x]", .{});
+    try std.testing.expect(p.validate() == null);
 }
