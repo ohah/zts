@@ -73,14 +73,18 @@ pub fn parseJSXElement(self: *Parser) ParseError2!NodeIndex {
             // JSX expression: {expr}
             try self.advance(); // skip {
             const expr = try self.parseExpression();
-            try self.expect(.r_curly);
+            // expect(.r_curly) 대신 수동 체크: expect는 normal 모드로 다음 토큰을
+            // 스캔하지만, JSX children 컨텍스트에서는 nextJSXChild()로 스캔해야 함.
+            if (self.current() != .r_curly) {
+                try self.addError(self.currentSpan(), "Expected '}' in JSX expression");
+            }
             const container = try self.ast.addNode(.{
                 .tag = .jsx_expression_container,
                 .span = .{ .start = 0, .end = self.currentSpan().start },
                 .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
             });
             try self.scratch.append(self.allocator, container);
-            try self.scanner.nextJSXChild(); // '{expr}' 이후 다시 children 모드
+            try self.scanner.nextJSXChild(); // '}' 소비 + JSX children 모드로 스캔
         } else if (self.current() == .jsx_text) {
             const text_span = self.currentSpan();
             try self.scratch.append(self.allocator, try self.ast.addNode(.{
@@ -131,7 +135,9 @@ fn parseJSXFragment(self: *Parser, start: u32) ParseError2!NodeIndex {
         } else if (self.current() == .l_curly) {
             try self.advance();
             const expr = try self.parseExpression();
-            try self.expect(.r_curly);
+            if (self.current() != .r_curly) {
+                try self.addError(self.currentSpan(), "Expected '}' in JSX expression");
+            }
             const container = try self.ast.addNode(.{
                 .tag = .jsx_expression_container,
                 .span = .{ .start = 0, .end = self.currentSpan().start },
