@@ -679,24 +679,50 @@ pub const Transformer = struct {
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-        // parameter property 이름을 수집 (this.x = x 문 생성용)
-        var prop_names: [32]NodeIndex = undefined; // 최대 32개 parameter property
-        var prop_count: usize = 0;
+        const pp = try self.visitParamsCollectProperties(old_params);
+
+        // 바디 방문
+        var new_body = try self.visitNode(self.readNodeIdx(e, 3));
+
+        // parameter property가 있으면 바디 앞에 this.x = x 문 삽입
+        if (pp.prop_count > 0 and !new_body.isNone()) {
+            new_body = try self.insertParameterPropertyAssignments(new_body, pp.prop_names[0..pp.prop_count]);
+        }
+
+        const none = @intFromEnum(NodeIndex.none);
+        return self.addExtraNode(node.tag, node.span, &.{
+            @intFromEnum(new_name), pp.new_params.start, pp.new_params.len,
+            @intFromEnum(new_body), self.readU32(e, 4),  none,
+        });
+    }
+
+    /// 파라미터 목록을 방문하면서 parameter property (public x 등)를 감지.
+    /// modifier를 제거하고 this.x = x 삽입용 이름을 수집한다.
+    const ParamPropertyResult = struct {
+        new_params: NodeList,
+        prop_names: [32]NodeIndex,
+        prop_count: usize,
+    };
+
+    fn visitParamsCollectProperties(self: *Transformer, old_params: []const u32) Error!ParamPropertyResult {
+        const scratch_top = self.scratch.items.len;
+        defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+        var result = ParamPropertyResult{
+            .new_params = NodeList{ .start = 0, .len = 0 },
+            .prop_names = undefined,
+            .prop_count = 0,
+        };
 
         for (old_params) |raw_idx| {
             const param_node = self.old_ast.getNode(@enumFromInt(raw_idx));
-
-            // formal_parameter가 unary로 저장된 경우 = parameter property
-            // flags != 0 → modifier 있음 (public/private/protected/readonly)
+            // formal_parameter + unary flags!=0 → parameter property
             if (param_node.tag == .formal_parameter and param_node.data.unary.flags != 0) {
-                // parameter property: modifier를 제거하고 내부 패턴만 복사
                 const inner = try self.visitNode(param_node.data.unary.operand);
                 try self.scratch.append(self.allocator, inner);
-
-                // this.x = x 문 생성을 위해 이름 저장
-                if (prop_count < prop_names.len) {
-                    prop_names[prop_count] = inner;
-                    prop_count += 1;
+                if (result.prop_count < result.prop_names.len) {
+                    result.prop_names[result.prop_count] = inner;
+                    result.prop_count += 1;
                 }
             } else {
                 const new_param = try self.visitNode(@enumFromInt(raw_idx));
@@ -706,21 +732,8 @@ pub const Transformer = struct {
             }
         }
 
-        const new_params = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-
-        // 바디 방문
-        var new_body = try self.visitNode(self.readNodeIdx(e, 3));
-
-        // parameter property가 있으면 바디 앞에 this.x = x 문 삽입
-        if (prop_count > 0 and !new_body.isNone()) {
-            new_body = try self.insertParameterPropertyAssignments(new_body, prop_names[0..prop_count]);
-        }
-
-        const none = @intFromEnum(NodeIndex.none);
-        return self.addExtraNode(node.tag, node.span, &.{
-            @intFromEnum(new_name), new_params.start,   new_params.len,
-            @intFromEnum(new_body), self.readU32(e, 4), none,
-        });
+        result.new_params = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+        return result;
     }
 
     /// block_statement 바디 앞에 this.x = x; 문들을 삽입한다.
@@ -885,48 +898,23 @@ pub const Transformer = struct {
         const e = node.data.extra;
         const new_key = try self.visitNode(self.readNodeIdx(e, 0));
 
-        // 파라미터 방문 — parameter property 감지 (visitFunction과 동일 로직)
+        // 파라미터 방문 — parameter property 감지
         const params_start = self.readU32(e, 1);
         const params_len = self.readU32(e, 2);
         const old_params = self.old_ast.extra_data.items[params_start .. params_start + params_len];
-
-        const scratch_top = self.scratch.items.len;
-        defer self.scratch.shrinkRetainingCapacity(scratch_top);
-
-        var prop_names: [32]NodeIndex = undefined;
-        var prop_count: usize = 0;
-
-        for (old_params) |raw_idx| {
-            const param_node = self.old_ast.getNode(@enumFromInt(raw_idx));
-            // formal_parameter가 unary + flags!=0 → parameter property
-            if (param_node.tag == .formal_parameter and param_node.data.unary.flags != 0) {
-                const inner = try self.visitNode(param_node.data.unary.operand);
-                try self.scratch.append(self.allocator, inner);
-                if (prop_count < prop_names.len) {
-                    prop_names[prop_count] = inner;
-                    prop_count += 1;
-                }
-            } else {
-                const new_param = try self.visitNode(@enumFromInt(raw_idx));
-                if (!new_param.isNone()) {
-                    try self.scratch.append(self.allocator, new_param);
-                }
-            }
-        }
-
-        const new_params = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+        const pp = try self.visitParamsCollectProperties(old_params);
 
         var new_body = try self.visitNode(self.readNodeIdx(e, 3));
 
         // parameter property가 있으면 바디 앞에 this.x = x 문 삽입
-        if (prop_count > 0 and !new_body.isNone()) {
-            new_body = try self.insertParameterPropertyAssignments(new_body, prop_names[0..prop_count]);
+        if (pp.prop_count > 0 and !new_body.isNone()) {
+            new_body = try self.insertParameterPropertyAssignments(new_body, pp.prop_names[0..pp.prop_count]);
         }
 
         const new_decos = try self.visitExtraList(self.readU32(e, 5), self.readU32(e, 6));
         return self.addExtraNode(.method_definition, node.span, &.{
-            @intFromEnum(new_key), new_params.start, new_params.len, @intFromEnum(new_body),
-            self.readU32(e, 4),    new_decos.start,  new_decos.len,
+            @intFromEnum(new_key), pp.new_params.start, pp.new_params.len, @intFromEnum(new_body),
+            self.readU32(e, 4),    new_decos.start,     new_decos.len,
         });
     }
 

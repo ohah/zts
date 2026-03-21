@@ -1431,7 +1431,11 @@ pub const Codegen = struct {
                     },
                     else => {
                         // export default 42 → var _default = 42;
-                        try self.write("var _default=");
+                        if (self.options.minify) {
+                            try self.write("var _default=");
+                        } else {
+                            try self.write("var _default = ");
+                        }
                         try self.emitNode(inner);
                         try self.writeByte(';');
                     },
