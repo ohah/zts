@@ -559,5 +559,28 @@
   - 슬롯 예약 순서가 import 순서를 보장 → exec_index가 ESM 실행 순서 보장
 - **참고**: `references/rolldown/crates/rolldown/src/module_loader/`, `references/rollup/src/utils/executionOrder.ts`
 
+### D078: 모듈 그래프 저장 방식
+- **결정**: 인접 리스트 (Module.dependencies 배열) + 필요 시 역방향 맵 빌드
+- **비교**: 인접 리스트만(A, esbuild/Rolldown/Bun) vs 별도 엣지 배열(B) vs 양방향(C, 메모리 2배)
+- **이유**: 순방향 탐색(DFS, tree-shaking)이 주 사용 패턴. 역방향("이 파일 바뀌면 누가 영향?")은 HMR 시점에만 필요 → 그때 한번 빌드하면 됨. CLAUDE.md 기존 Module 설계와 일관.
+- **배제 이유**:
+  - 별도 엣지 배열: 특정 모듈의 의존성 찾으려면 배열 스캔 필요. 인접 리스트가 O(1) 접근
+  - 양방향: 메모리 2배 + 동기화 복잡. esbuild/Rolldown/Bun 어디도 처음부터 양방향 안 함
+
+### D079: import 추출 방식
+- **결정**: 파싱 후 AST 순회 (방법 B)
+- **비교**: 파서에서 바로 수집(A, esbuild/Bun — 파서가 수집) vs 파싱 후 AST 순회(B, Rollup/Rolldown)
+- **이유**: ZTS 파서가 이미 완성됨 (Phase 2, Test262 100%). 번들러 때문에 파서를 수정하면 안정성 리스크. AST 순회는 O(N)이라 속도 영향 무시 가능. `import_declaration`, `export_named_declaration`, `import_expression` 태그만 찾으면 됨.
+- **배제 이유**:
+  - 파서에서 수집: 파서와 번들러 관심사가 섞임. 파서 수정 시 번들러 의존성 추출도 영향받음. esbuild/Bun은 파서를 번들러와 함께 만들었기 때문에 가능한 것
+- **설계**:
+  ```
+  fn extractImports(ast: *const Ast) []ImportRecord {
+      // AST 순회: import_declaration, export_named_declaration,
+      // export_all_declaration, import_expression 태그 수집
+      // 각각 specifier + kind (static/dynamic/reexport) 반환
+  }
+  ```
+
 ### Phase 6 (Advanced) 미결정 사항
 - 개발 서버 고급 기능 (증분 재빌드, 프레임워크 통합)
