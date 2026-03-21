@@ -265,6 +265,7 @@ pub const Linker = struct {
                 .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, 0),
                 .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
                 .final_exports = null,
+                .symbol_ids = &.{},
                 .allocator = self.allocator,
             };
         }
@@ -275,6 +276,7 @@ pub const Linker = struct {
                 .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, 0),
                 .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
                 .final_exports = null,
+                .symbol_ids = &.{},
                 .allocator = self.allocator,
             };
         };
