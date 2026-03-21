@@ -39,6 +39,8 @@ pub fn parse(self: *Parser) !NodeIndex {
     var in_directive_prologue = true;
 
     while (self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
+
         if (in_directive_prologue) {
             if (self.isUseStrictDirective()) {
                 self.is_strict_mode = true;
@@ -52,6 +54,8 @@ pub fn parse(self: *Parser) !NodeIndex {
         if (!stmt.isNone()) {
             try stmts.append(self.allocator, stmt);
         }
+
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
 
     const list = try self.ast.addNodeList(stmts.items);
@@ -192,8 +196,12 @@ pub fn parseBlockStatement(self: *Parser) ParseError2!NodeIndex {
     defer stmts.deinit(self.allocator);
 
     while (self.current() != .r_curly and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
+
         const stmt = try parseStatement(self);
         if (!stmt.isNone()) try stmts.append(self.allocator, stmt);
+
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
 
     self.ctx = block_saved;
@@ -770,6 +778,8 @@ fn parseSwitchStatement(self: *Parser) ParseError2!NodeIndex {
     const scratch_top = self.saveScratch();
     var has_default = false;
     while (self.current() != .r_curly and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
+
         // duplicate default 검출 (ECMAScript 14.12.1)
         const is_default = self.current() == .kw_default;
         const default_span = self.currentSpan();
@@ -781,6 +791,8 @@ fn parseSwitchStatement(self: *Parser) ParseError2!NodeIndex {
             has_default = true;
         }
         try self.scratch.append(self.allocator, case_node);
+
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
 
     self.restoreContext(saved_ctx);
@@ -823,8 +835,12 @@ fn parseSwitchCase(self: *Parser) ParseError2!NodeIndex {
     while (self.current() != .kw_case and self.current() != .kw_default and
         self.current() != .r_curly and self.current() != .eof)
     {
+        const loop_guard_pos = self.scanner.token.span.start;
+
         const stmt = try parseStatement(self);
         if (!stmt.isNone()) try self.scratch.append(self.allocator, stmt);
+
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
 
     const body = try self.ast.addNodeList(self.scratch.items[body_top..]);

@@ -19,6 +19,7 @@ const Kind = @import("../lexer/token.zig").Kind;
 fn parseJSXChildren(self: *Parser) ParseError2!ast_mod.NodeList {
     const children_top = self.saveScratch();
     while (self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
         if (self.current() == .l_angle) {
             if (try self.peekNextKindJSX() == .slash) break;
             const child = try parseJSXElement(self);
@@ -53,6 +54,8 @@ fn parseJSXChildren(self: *Parser) ParseError2!ast_mod.NodeList {
         } else {
             break;
         }
+
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
     const children = try self.ast.addNodeList(self.scratch.items[children_top..]);
     self.restoreScratch(children_top);
@@ -76,8 +79,11 @@ pub fn parseJSXElement(self: *Parser) ParseError2!NodeIndex {
     // Attributes
     const scratch_top = self.saveScratch();
     while (self.current() != .r_angle and self.current() != .slash and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
         const attr = try parseJSXAttribute(self);
         try self.scratch.append(self.allocator, attr);
+
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
     const attrs = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);

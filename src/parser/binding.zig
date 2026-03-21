@@ -259,6 +259,7 @@ pub fn parseArrayPattern(self: *Parser) ParseError2!NodeIndex {
 
     const scratch_top = self.saveScratch();
     while (self.current() != .r_bracket and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
         if (self.current() == .comma) {
             // elision (빈 슬롯) — placeholder 노드 추가
             const hole_span = self.currentSpan();
@@ -292,6 +293,8 @@ pub fn parseArrayPattern(self: *Parser) ParseError2!NodeIndex {
         _ = try self.tryParseTypeAnnotation();
         if (!elem.isNone()) try self.scratch.append(self.allocator, elem);
         if (!try self.eat(.comma)) break;
+
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
 
     const end = self.currentSpan().end;
@@ -313,6 +316,7 @@ pub fn parseObjectPattern(self: *Parser) ParseError2!NodeIndex {
 
     const scratch_top = self.saveScratch();
     while (self.current() != .r_curly and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
         if (self.current() == .dot3) {
             // rest element: ...pattern
             const rest_start = self.currentSpan().start;
@@ -331,6 +335,8 @@ pub fn parseObjectPattern(self: *Parser) ParseError2!NodeIndex {
         const prop = try parseBindingProperty(self);
         if (!prop.isNone()) try self.scratch.append(self.allocator, prop);
         if (!try self.eat(.comma)) break;
+
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
 
     const end = self.currentSpan().end;

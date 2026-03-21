@@ -164,9 +164,12 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     if (self.current() == .l_curly) {
         try self.advance(); // skip {
         while (self.current() != .r_curly and self.current() != .eof) {
+            const loop_guard_pos = self.scanner.token.span.start;
             const spec = try parseImportSpecifier(self);
             try self.scratch.append(self.allocator, spec);
             if (!try self.eat(.comma)) break;
+
+            if (try self.ensureLoopProgress(loop_guard_pos)) break;
         }
         try self.expect(.r_curly);
     }
@@ -304,9 +307,12 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
 
         const scratch_top = self.saveScratch();
         while (self.current() != .r_curly and self.current() != .eof) {
+            const loop_guard_pos = self.scanner.token.span.start;
             const spec = try parseExportSpecifier(self);
             try self.scratch.append(self.allocator, spec);
             if (!try self.eat(.comma)) break;
+
+            if (try self.ensureLoopProgress(loop_guard_pos)) break;
         }
         try self.expect(.r_curly);
 
@@ -424,6 +430,7 @@ fn skipImportAttributes(self: *Parser) !void {
         var key_count: usize = 0;
 
         while (self.current() != .r_curly and self.current() != .eof) {
+            const loop_guard_pos = self.scanner.token.span.start;
             // key: identifier 또는 string literal
             const key_span = self.currentSpan();
             const key_text = self.ast.source[key_span.start..key_span.end];
@@ -454,6 +461,8 @@ fn skipImportAttributes(self: *Parser) !void {
                 try self.advance(); // value
             }
             _ = try self.eat(.comma);
+
+            if (try self.ensureLoopProgress(loop_guard_pos)) break;
         }
         _ = try self.eat(.r_curly);
     }
