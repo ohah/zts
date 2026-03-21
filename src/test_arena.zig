@@ -64,6 +64,13 @@ test "Arena 파이프라인: as/satisfies" {
     try std.testing.expectEqualStrings("const x='hello';const y=42;", output);
 }
 
+test "Arena 파이프라인: 제네릭 함수" {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const output = try runPipeline(arena.allocator(), "function identity<T>(value: T): T { return value; }");
+    try std.testing.expectEqualStrings("function identity(value){return value;}", output);
+}
+
 // ============================================================
 // 2. OOM 시뮬레이션 — Scanner.init 실패 테스트
 // ============================================================
