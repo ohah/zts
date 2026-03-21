@@ -94,25 +94,33 @@ pub fn parsePackageJson(allocator: std.mem.Allocator, dir: std.fs.Dir) !ParsedPa
 /// exports 필드에서 조건에 맞는 경로를 찾는다.
 /// subpath: "." (패키지 루트) 또는 "./utils" 등
 /// conditions: ["import", "default"] 등 (D064)
+/// exports 필드에서 조건에 맞는 경로를 찾는다.
+/// 와일드카드 치환이 필요한 경우 allocator로 새 문자열을 할당.
+/// 반환된 문자열이 allocated인지 여부는 caller가 판별해야 함 — allocated_result로 반환.
+pub const ExportsResult = struct {
+    path: []const u8,
+    allocated: bool,
+};
+
 pub fn resolveExports(
+    allocator: std.mem.Allocator,
     exports: std.json.Value,
     subpath: []const u8,
     conditions: []const []const u8,
-) ?[]const u8 {
+) ?ExportsResult {
     switch (exports) {
-        // "exports": "./index.js"
         .string => |s| {
-            if (std.mem.eql(u8, subpath, ".")) return s;
+            if (std.mem.eql(u8, subpath, ".")) return .{ .path = s, .allocated = false };
             return null;
         },
         .object => |obj| {
-            // 키가 "."으로 시작하는지로 서브패스 맵 vs 조건 객체 구분
             if (isSubpathMap(obj)) {
-                return resolveSubpathMap(obj, subpath, conditions);
+                return resolveSubpathMap(allocator, obj, subpath, conditions);
             }
-            // 조건 객체: { "import": ..., "require": ..., "default": ... }
             if (std.mem.eql(u8, subpath, ".")) {
-                return resolveConditions(exports, conditions);
+                if (resolveConditions(exports, conditions)) |path| {
+                    return .{ .path = path, .allocated = false };
+                }
             }
             return null;
         },
@@ -123,13 +131,16 @@ pub fn resolveExports(
 /// 서브패스 맵에서 매칭되는 엔트리를 찾는다.
 /// 정확한 매칭 먼저, 와일드카드 매칭 나중.
 fn resolveSubpathMap(
+    allocator: std.mem.Allocator,
     obj: std.json.ObjectMap,
     subpath: []const u8,
     conditions: []const []const u8,
-) ?[]const u8 {
+) ?ExportsResult {
     // 1. 정확한 매칭
     if (obj.get(subpath)) |value| {
-        return resolveConditions(value, conditions);
+        if (resolveConditions(value, conditions)) |path| {
+            return .{ .path = path, .allocated = false };
+        }
     }
 
     // 2. 와일드카드 매칭 (./* 패턴)
@@ -144,18 +155,17 @@ fn resolveSubpathMap(
                 std.mem.startsWith(u8, subpath, prefix) and
                 std.mem.endsWith(u8, subpath, suffix))
             {
-                // 와일드카드가 매칭한 부분 추출
                 const matched = subpath[prefix.len .. subpath.len - suffix.len];
                 const resolved = resolveConditions(entry.value_ptr.*, conditions) orelse continue;
 
                 // 결과에서 * 를 매칭된 부분으로 치환
-                if (std.mem.indexOf(u8, resolved, "*")) |_| {
-                    // 정적 분석에서는 * 치환 불가 (동적 문자열 생성 필요)
-                    // 하지만 대부분의 경우 패턴이 단순하므로 매칭만 확인
-                    _ = matched;
-                    return resolved;
+                if (std.mem.indexOf(u8, resolved, "*")) |res_star| {
+                    const before = resolved[0..res_star];
+                    const after = resolved[res_star + 1 ..];
+                    const substituted = std.mem.concat(allocator, u8, &.{ before, matched, after }) catch return null;
+                    return .{ .path = substituted, .allocated = true };
                 }
-                return resolved;
+                return .{ .path = resolved, .allocated = false };
             }
         }
     }
@@ -276,8 +286,8 @@ test "resolveExports: string shorthand" {
     defer parsed.deinit();
 
     const exports = parsed.value.object.get("exports").?;
-    const result = resolveExports(exports, ".", &.{"import"});
-    try std.testing.expectEqualStrings("./index.js", result.?);
+    const result = resolveExports(std.testing.allocator, exports, ".", &.{"import"});
+    try std.testing.expectEqualStrings("./index.js", result.?.path);
 }
 
 test "resolveExports: condition object" {
@@ -290,16 +300,14 @@ test "resolveExports: condition object" {
     const exports = parsed.value.object.get("exports").?;
 
     // import 조건 매칭
-    const esm = resolveExports(exports, ".", &.{"import"});
-    try std.testing.expectEqualStrings("./esm.js", esm.?);
+    const esm = resolveExports(std.testing.allocator, exports, ".", &.{"import"});
+    try std.testing.expectEqualStrings("./esm.js", esm.?.path);
 
-    // require 조건 매칭
-    const cjs = resolveExports(exports, ".", &.{"require"});
-    try std.testing.expectEqualStrings("./cjs.js", cjs.?);
+    const cjs = resolveExports(std.testing.allocator, exports, ".", &.{"require"});
+    try std.testing.expectEqualStrings("./cjs.js", cjs.?.path);
 
-    // 없는 조건 → default 폴백
-    const fallback = resolveExports(exports, ".", &.{"browser"});
-    try std.testing.expectEqualStrings("./index.js", fallback.?);
+    const fallback = resolveExports(std.testing.allocator, exports, ".", &.{"browser"});
+    try std.testing.expectEqualStrings("./index.js", fallback.?.path);
 }
 
 test "resolveExports: subpath map" {
@@ -311,13 +319,13 @@ test "resolveExports: subpath map" {
 
     const exports = parsed.value.object.get("exports").?;
 
-    const root = resolveExports(exports, ".", &.{"import"});
-    try std.testing.expectEqualStrings("./index.js", root.?);
+    const root = resolveExports(std.testing.allocator, exports, ".", &.{"import"});
+    try std.testing.expectEqualStrings("./index.js", root.?.path);
 
-    const utils = resolveExports(exports, "./utils", &.{"import"});
-    try std.testing.expectEqualStrings("./src/utils.js", utils.?);
+    const utils = resolveExports(std.testing.allocator, exports, "./utils", &.{"import"});
+    try std.testing.expectEqualStrings("./src/utils.js", utils.?.path);
 
-    const missing = resolveExports(exports, "./nonexistent", &.{"import"});
+    const missing = resolveExports(std.testing.allocator, exports, "./nonexistent", &.{"import"});
     try std.testing.expect(missing == null);
 }
 
@@ -330,11 +338,11 @@ test "resolveExports: nested conditions in subpath" {
 
     const exports = parsed.value.object.get("exports").?;
 
-    const esm = resolveExports(exports, ".", &.{"import"});
-    try std.testing.expectEqualStrings("./esm.js", esm.?);
+    const esm = resolveExports(std.testing.allocator, exports, ".", &.{"import"});
+    try std.testing.expectEqualStrings("./esm.js", esm.?.path);
 
-    const cjs = resolveExports(exports, ".", &.{"require"});
-    try std.testing.expectEqualStrings("./cjs.js", cjs.?);
+    const cjs = resolveExports(std.testing.allocator, exports, ".", &.{"require"});
+    try std.testing.expectEqualStrings("./cjs.js", cjs.?.path);
 }
 
 test "resolveExports: wildcard pattern" {
@@ -346,8 +354,11 @@ test "resolveExports: wildcard pattern" {
 
     const exports = parsed.value.object.get("exports").?;
 
-    const result = resolveExports(exports, "./utils", &.{"import"});
-    try std.testing.expectEqualStrings("./src/*.js", result.?);
+    const result = resolveExports(std.testing.allocator, exports, "./utils", &.{"import"});
+    try std.testing.expect(result != null);
+    defer if (result.?.allocated) std.testing.allocator.free(result.?.path);
+    // 와일드카드 치환: ./* → ./utils, ./src/*.js → ./src/utils.js
+    try std.testing.expectEqualStrings("./src/utils.js", result.?.path);
 }
 
 test "resolveExports: no match returns null" {
@@ -358,7 +369,7 @@ test "resolveExports: no match returns null" {
     defer parsed.deinit();
 
     const exports = parsed.value.object.get("exports").?;
-    const result = resolveExports(exports, ".", &.{"import"});
+    const result = resolveExports(std.testing.allocator, exports, ".", &.{"import"});
     try std.testing.expect(result == null);
 }
 
