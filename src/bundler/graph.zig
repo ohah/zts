@@ -26,6 +26,7 @@ const BundlerDiagnostic = types.BundlerDiagnostic;
 const Module = @import("module.zig").Module;
 const ResolveCache = @import("resolve_cache.zig").ResolveCache;
 const import_scanner = @import("import_scanner.zig");
+const binding_scanner_mod = @import("binding_scanner.zig");
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
@@ -55,8 +56,10 @@ pub const ModuleGraph = struct {
 
     pub fn deinit(self: *ModuleGraph) void {
         for (self.modules.items) |*m| {
-            // import_records는 graph allocator 소유. source/ast는 module.parse_arena 소유.
+            // import_records, import_bindings, export_bindings는 graph allocator 소유.
             if (m.import_records.len > 0) self.allocator.free(m.import_records);
+            if (m.import_bindings.len > 0) self.allocator.free(m.import_bindings);
+            if (m.export_bindings.len > 0) self.allocator.free(m.export_bindings);
             m.deinit(self.allocator); // parse_arena.deinit() + dependencies/importers 해제
         }
         self.modules.deinit(self.allocator);
@@ -194,6 +197,11 @@ pub const ModuleGraph = struct {
             return;
         };
         module.import_records = records;
+
+        // Import/Export 바인딩 상세 추출 — linker에서 사용
+        module.import_bindings = binding_scanner_mod.extractImportBindings(self.allocator, &parser.ast, records) catch &.{};
+        module.export_bindings = binding_scanner_mod.extractExportBindings(self.allocator, &parser.ast, records) catch &.{};
+
         module.ast = parser.ast;
         module.state = .ready;
     }
@@ -732,4 +740,38 @@ test "graph: semantic exported_names tracks default export" {
 
     const sem = graph.modules.items[0].semantic.?;
     try std.testing.expect(sem.exported_names.get("default") != null);
+}
+
+test "graph: import/export bindings preserved after build" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import { x } from './b';\nexport const y = x + 1;");
+    try writeFile(tmp.dir, "b.ts", "export const x = 42;");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+
+    try graph.build(&.{entry});
+
+    // a.ts: import_bindings에 x가 있어야 함
+    const a = graph.modules.items[0];
+    try std.testing.expect(a.import_bindings.len > 0);
+    try std.testing.expectEqualStrings("x", a.import_bindings[0].local_name);
+    try std.testing.expectEqualStrings("x", a.import_bindings[0].imported_name);
+
+    // a.ts: export_bindings에 y가 있어야 함
+    try std.testing.expect(a.export_bindings.len > 0);
+    try std.testing.expectEqualStrings("y", a.export_bindings[0].exported_name);
+
+    // b.ts: export_bindings에 x가 있어야 함
+    const b = graph.modules.items[1];
+    try std.testing.expect(b.export_bindings.len > 0);
+    try std.testing.expectEqualStrings("x", b.export_bindings[0].exported_name);
 }

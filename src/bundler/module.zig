@@ -17,6 +17,9 @@ const Ast = @import("../parser/ast.zig").Ast;
 const Span = @import("../lexer/token.zig").Span;
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 const Scope = @import("../semantic/scope.zig").Scope;
+const binding_scanner = @import("binding_scanner.zig");
+pub const ImportBinding = binding_scanner.ImportBinding;
+pub const ExportBinding = binding_scanner.ExportBinding;
 
 /// Semantic analyzer 결과. parse_arena가 소유하는 데이터의 참조.
 /// linker가 import→export 연결 + 이름 충돌 해결에 사용.
@@ -43,6 +46,10 @@ pub const Module = struct {
     parse_arena: ?std.heap.ArenaAllocator,
     /// semantic analyzer 결과. parse_arena가 소유. linker에서 사용.
     semantic: ?ModuleSemanticData,
+    /// import 바인딩 상세. graph allocator 소유 (소스 텍스트 참조).
+    import_bindings: []ImportBinding = &.{},
+    /// export 바인딩 상세. graph allocator 소유 (소스 텍스트 참조).
+    export_bindings: []ExportBinding = &.{},
 
     /// 내가 import하는 모듈들 (순방향)
     dependencies: std.ArrayList(ModuleIndex),
