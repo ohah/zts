@@ -44,6 +44,11 @@ fn parseFunctionDeclarationWithFlags(self: *Parser, extra_flags: u32) ParseError
 
     const saved_ctx = self.enterFunctionContext(is_async, is_generator);
 
+    // TS 제네릭 타입 파라미터: function foo<T>() {}
+    if (self.current() == .l_angle) {
+        _ = try self.parseTsTypeParameterDeclaration();
+    }
+
     try self.expect(.l_paren);
     self.in_formal_parameters = true;
     const scratch_top = self.saveScratch();
@@ -138,6 +143,11 @@ fn parseFunctionDeclarationWithFlagsOptionalName(self: *Parser, extra_flags: u32
 
     const saved_ctx = self.enterFunctionContext(is_async, is_generator);
 
+    // TS 제네릭 타입 파라미터: function foo<T>() {}
+    if (self.current() == .l_angle) {
+        _ = try self.parseTsTypeParameterDeclaration();
+    }
+
     try self.expect(.l_paren);
     self.in_formal_parameters = true;
     const scratch_top = self.saveScratch();
@@ -203,6 +213,11 @@ pub fn parseFunctionExpressionWithFlags(self: *Parser, extra_flags: u32) ParseEr
     var name = NodeIndex.none;
     if (self.current() == .identifier or self.current() == .kw_yield or self.current() == .kw_await) {
         name = try self.parseBindingIdentifier();
+    }
+
+    // TS 제네릭 타입 파라미터: (function<T>() {})
+    if (self.current() == .l_angle) {
+        _ = try self.parseTsTypeParameterDeclaration();
     }
 
     try self.expect(.l_paren);
