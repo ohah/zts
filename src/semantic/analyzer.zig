@@ -1465,10 +1465,8 @@ pub const SemanticAnalyzer = struct {
     }
 
     fn visitImportDeclaration(self: *SemanticAnalyzer, node: Node) AllocError!void {
-        // side-effect import: flags=1 (import "module") — 바인딩 없음
-        if (node.data.unary.flags == 1) return;
-
         // extra_data에서 specifiers 리스트 추출
+        // side-effect import는 specs_len=0이므로 아래에서 early return.
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (extra_start + 2 >= extras.len) return;
