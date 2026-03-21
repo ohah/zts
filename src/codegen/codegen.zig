@@ -1743,44 +1743,13 @@ const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const Transformer = @import("../transformer/transformer.zig").Transformer;
 
-/// end-to-end 헬퍼: 소스 → 파싱 → 변환 → codegen → JS 문자열
-fn generateJS(allocator: std.mem.Allocator, source: []const u8) !struct { output: []const u8, scanner: *Scanner, parser: *Parser, codegen_inst: *Codegen, transformed_ast: Ast } {
-    const scanner_ptr = try allocator.create(Scanner);
-    scanner_ptr.* = try Scanner.init(allocator, source);
-
-    const parser_ptr = try allocator.create(Parser);
-    parser_ptr.* = Parser.init(allocator, scanner_ptr);
-    _ = try parser_ptr.parse();
-
-    var t = Transformer.init(allocator, &parser_ptr.ast, .{});
-    const root = try t.transform();
-    t.scratch.deinit(allocator);
-
-    const cg = try allocator.create(Codegen);
-    cg.* = Codegen.init(allocator, &t.new_ast);
-    // new_ast는 cg가 참조하므로 여기서 해제하면 안 됨
-    // transformed_ast를 반환하여 caller가 관리
-
-    const output = try cg.generate(root);
-    return .{ .output = output, .scanner = scanner_ptr, .parser = parser_ptr, .codegen_inst = cg, .transformed_ast = t.new_ast };
-}
-
+/// Arena 기반 테스트 결과. deinit()으로 모든 메모리를 일괄 해제.
 const TestResult = struct {
     output: []const u8,
-    scanner: *Scanner,
-    parser: *Parser,
-    codegen_inst: *Codegen,
-    transformed_ast: Ast,
-    allocator: std.mem.Allocator,
+    arena: std.heap.ArenaAllocator,
 
     fn deinit(self: *TestResult) void {
-        self.codegen_inst.deinit();
-        self.allocator.destroy(self.codegen_inst);
-        self.transformed_ast.deinit();
-        self.parser.deinit();
-        self.allocator.destroy(self.parser);
-        self.scanner.deinit();
-        self.allocator.destroy(self.scanner);
+        self.arena.deinit();
     }
 };
 
@@ -1796,30 +1765,24 @@ fn e2eCJS(allocator: std.mem.Allocator, source: []const u8) !TestResult {
 const TransformOptions = @import("../transformer/transformer.zig").TransformOptions;
 
 /// 풀 옵션 e2e. transform + codegen 옵션 모두 전달.
-fn e2eFull(allocator: std.mem.Allocator, source: []const u8, t_options: TransformOptions, cg_options: CodegenOptions) !TestResult {
-    const scanner_ptr = try allocator.create(Scanner);
-    scanner_ptr.* = try Scanner.init(allocator, source);
+/// Arena로 전체 파이프라인을 실행. output은 arena 메모리를 가리키므로
+/// TestResult.deinit() 전에 사용해야 한다.
+fn e2eFull(backing_allocator: std.mem.Allocator, source: []const u8, t_options: TransformOptions, cg_options: CodegenOptions) !TestResult {
+    var arena = std.heap.ArenaAllocator.init(backing_allocator);
+    errdefer arena.deinit();
+    const allocator = arena.allocator();
 
-    const parser_ptr = try allocator.create(Parser);
-    parser_ptr.* = Parser.init(allocator, scanner_ptr);
-    _ = try parser_ptr.parse();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
 
-    var t = Transformer.init(allocator, &parser_ptr.ast, t_options);
+    var t = Transformer.init(allocator, &parser.ast, t_options);
     const root = try t.transform();
-    t.scratch.deinit(allocator);
 
-    const cg = try allocator.create(Codegen);
-    cg.* = Codegen.initWithOptions(allocator, &t.new_ast, cg_options);
-
+    var cg = Codegen.initWithOptions(allocator, &t.new_ast, cg_options);
     const output = try cg.generate(root);
-    return .{
-        .output = output,
-        .scanner = scanner_ptr,
-        .parser = parser_ptr,
-        .codegen_inst = cg,
-        .transformed_ast = t.new_ast,
-        .allocator = allocator,
-    };
+
+    return .{ .output = output, .arena = arena };
 }
 
 fn e2eWithOptions(allocator: std.mem.Allocator, source: []const u8, cg_options: CodegenOptions) !TestResult {
