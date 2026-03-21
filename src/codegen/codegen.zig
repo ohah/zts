@@ -843,7 +843,7 @@ pub const Codegen = struct {
         try self.emitNode(callee);
         if (is_optional) try self.write("?.");
         try self.writeByte('(');
-        try self.emitNodeList(args_start, args_len, ",");
+        try self.emitNodeList(args_start, args_len, if (self.options.minify) "," else ", ");
         try self.writeByte(')');
     }
 
@@ -857,7 +857,7 @@ pub const Codegen = struct {
         try self.write("new ");
         try self.emitNode(callee);
         try self.writeByte('(');
-        try self.emitNodeList(args_start, args_len, ",");
+        try self.emitNodeList(args_start, args_len, if (self.options.minify) "," else ", ");
         try self.writeByte(')');
     }
 
