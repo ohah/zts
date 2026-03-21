@@ -920,7 +920,7 @@ pub const SemanticAnalyzer = struct {
         // 함수 이름을 현재 스코프(외부)에 등록
         if (!name_idx.isNone()) {
             const name_node = self.ast.getNode(name_idx);
-            try self.declareSymbol(name_node.span, symbol_kind, node.span);
+            try self.declareSymbolWithNode(name_node.span, symbol_kind, node.span, @intFromEnum(name_idx));
         }
 
         // 함수 본문 — 새 function 스코프 (부모의 strict mode 상속)
@@ -1021,10 +1021,9 @@ pub const SemanticAnalyzer = struct {
         const node = self.ast.getNode(idx);
         switch (node.tag) {
             .binding_identifier, .identifier_reference, .assignment_target_identifier => {
-                try self.declareSymbol(node.span, .parameter, node.span);
+                try self.declareSymbolWithNode(node.span, .parameter, node.span, @intFromEnum(idx));
             },
             .parenthesized_expression => {
-                // 괄호 내부를 풀어서 재귀
                 try self.declareArrowParams(node.data.unary.operand);
             },
             .sequence_expression => {
@@ -1063,7 +1062,7 @@ pub const SemanticAnalyzer = struct {
         const node = self.ast.getNode(idx);
         switch (node.tag) {
             .binding_identifier, .identifier_reference, .assignment_target_identifier => {
-                try self.declareSymbol(node.span, .parameter, node.span);
+                try self.declareSymbolWithNode(node.span, .parameter, node.span, @intFromEnum(idx));
             },
             .object_pattern, .object_assignment_target => {
                 const list = node.data.list;
@@ -1112,7 +1111,7 @@ pub const SemanticAnalyzer = struct {
         // 클래스 이름을 현재 스코프(외부)에 등록
         if (!name_idx.isNone()) {
             const name_node = self.ast.getNode(name_idx);
-            try self.declareSymbol(name_node.span, .class_decl, node.span);
+            try self.declareSymbolWithNode(name_node.span, .class_decl, node.span, @intFromEnum(name_idx));
         }
 
         const heritage_idx: NodeIndex = @enumFromInt(extras[extra_start + 1]);
@@ -1320,7 +1319,7 @@ pub const SemanticAnalyzer = struct {
         if (!param_idx.isNone()) {
             const param_node = self.ast.getNode(param_idx);
             if (param_node.tag == .binding_identifier) {
-                try self.declareSymbol(param_node.span, .catch_binding, param_node.span);
+                try self.declareSymbolWithNode(param_node.span, .catch_binding, param_node.span, @intFromEnum(param_idx));
                 if (catch_name_count < 16) {
                     catch_names[catch_name_count] = param_node.span;
                     catch_name_count += 1;
@@ -1365,7 +1364,7 @@ pub const SemanticAnalyzer = struct {
                         return;
                     }
                 }
-                try self.declareSymbol(node.span, .catch_binding, node.span);
+                try self.declareSymbolWithNode(node.span, .catch_binding, node.span, @intFromEnum(idx));
                 if (count.* < 16) {
                     names.*[count.*] = node.span;
                     count.* += 1;
@@ -1506,22 +1505,19 @@ pub const SemanticAnalyzer = struct {
             const spec_node = self.ast.getNode(spec_idx);
             switch (spec_node.tag) {
                 .import_default_specifier => {
-                    // string_ref — span 자체가 식별자 이름
                     try self.checkStrictBindingName(spec_node.span);
-                    try self.declareSymbol(spec_node.span, .import_binding, spec_node.span);
+                    try self.declareSymbolWithNode(spec_node.span, .import_binding, spec_node.span, @intFromEnum(spec_idx));
                 },
                 .import_namespace_specifier => {
-                    // string_ref — span 자체가 식별자 이름
                     try self.checkStrictBindingName(spec_node.span);
-                    try self.declareSymbol(spec_node.span, .import_binding, spec_node.span);
+                    try self.declareSymbolWithNode(spec_node.span, .import_binding, spec_node.span, @intFromEnum(spec_idx));
                 },
                 .import_specifier => {
-                    // binary: { left = imported, right = local } — local이 바인딩
                     const local_idx = spec_node.data.binary.right;
                     if (!local_idx.isNone() and @intFromEnum(local_idx) < self.ast.nodes.items.len) {
                         const local_node = self.ast.getNode(local_idx);
                         try self.checkStrictBindingName(local_node.span);
-                        try self.declareSymbol(local_node.span, .import_binding, spec_node.span);
+                        try self.declareSymbolWithNode(local_node.span, .import_binding, spec_node.span, @intFromEnum(local_idx));
                     }
                 },
                 else => {},
@@ -1717,7 +1713,7 @@ pub const SemanticAnalyzer = struct {
         const node = self.ast.getNode(idx);
         switch (node.tag) {
             .binding_identifier, .assignment_target_identifier => {
-                try self.declareSymbol(node.span, kind, node.span);
+                try self.declareSymbolWithNode(node.span, kind, node.span, @intFromEnum(idx));
             },
             .array_pattern, .array_assignment_target => {
                 // list of elements
