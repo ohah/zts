@@ -858,12 +858,22 @@ pub const Transformer = struct {
         });
     }
 
-    /// new_expression: extra_data = [callee, args_start, args_len]
+    /// new_expression: binary = { left=callee, right=args_start, flags=args_len }
+    /// call_expression과 동일한 binary 레이아웃 (파서가 binary로 저장).
     fn visitNewExpression(self: *Transformer, node: Node) Error!NodeIndex {
-        const e = node.data.extra;
-        const new_callee = try self.visitNode(self.readNodeIdx(e, 0));
-        const new_args = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
-        return self.addExtraNode(.new_expression, node.span, &.{ @intFromEnum(new_callee), new_args.start, new_args.len });
+        const new_callee = try self.visitNode(node.data.binary.left);
+        const args_start: u32 = @intFromEnum(node.data.binary.right);
+        const args_len: u32 = node.data.binary.flags;
+        const new_args = try self.visitExtraList(args_start, args_len);
+        return self.new_ast.addNode(.{
+            .tag = .new_expression,
+            .span = node.span,
+            .data = .{ .binary = .{
+                .left = new_callee,
+                .right = @enumFromInt(new_args.start),
+                .flags = @intCast(new_args.len),
+            } },
+        });
     }
 
     // method_definition: extra = [key, params_start, params_len, body, flags, deco_start, deco_len]

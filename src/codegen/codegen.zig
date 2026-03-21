@@ -837,12 +837,12 @@ pub const Codegen = struct {
         try self.writeByte(')');
     }
 
+    /// new_expression: binary = { left=callee, right=args_start, flags=args_len }
+    /// call_expression과 동일한 binary 레이아웃.
     fn emitNew(self: *Codegen, node: Node) !void {
-        const e = node.data.extra;
-        const extras = self.ast.extra_data.items[e .. e + 3];
-        const callee: NodeIndex = @enumFromInt(extras[0]);
-        const args_start = extras[1];
-        const args_len = extras[2];
+        const callee = node.data.binary.left;
+        const args_start: u32 = @intFromEnum(node.data.binary.right);
+        const args_len: u32 = node.data.binary.flags;
 
         try self.write("new ");
         try self.emitNode(callee);
@@ -1407,6 +1407,26 @@ pub const Codegen = struct {
             try self.write("module.exports=");
             try self.emitNode(node.data.unary.operand);
             try self.writeByte(';');
+            return;
+        }
+        // 번들 모드: export default 키워드 생략, 내부 선언만 출력
+        if (self.options.linking_metadata != null) {
+            const inner = node.data.unary.operand;
+            if (!inner.isNone()) {
+                const inner_node = self.ast.getNode(inner);
+                switch (inner_node.tag) {
+                    .function_declaration, .class_declaration => {
+                        // export default function greet() {...} → function greet() {...}
+                        try self.emitNode(inner);
+                    },
+                    else => {
+                        // export default 42 → var _default = 42;
+                        try self.write("var _default=");
+                        try self.emitNode(inner);
+                        try self.writeByte(';');
+                    },
+                }
+            }
             return;
         }
         try self.write("export default ");
