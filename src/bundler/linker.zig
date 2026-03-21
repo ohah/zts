@@ -159,8 +159,8 @@ pub const Linker = struct {
                 // 후보 이름 생성
                 var candidate = try std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, suffix });
 
-                // 중첩 스코프 체크: 후보 이름이 해당 모듈의 nested scope에 있으면 다음 번호
-                while (self.hasNestedBinding(owner.module_index, candidate)) {
+                // 후보 이름이 예약어, 글로벌 객체, 또는 nested scope에 있으면 다음 번호
+                while (isReservedName(candidate) or self.hasNestedBinding(owner.module_index, candidate)) {
                     self.allocator.free(candidate);
                     suffix += 1;
                     candidate = try std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, suffix });
@@ -188,6 +188,43 @@ pub const Linker = struct {
         for (sem.scope_maps, 0..) |scope_map, scope_idx| {
             if (scope_idx == 0) continue; // 모듈 스코프는 스킵
             if (scope_map.get(name) != null) return true;
+        }
+        return false;
+    }
+
+    /// JS 예약어 + 글로벌 객체 이름인지 확인 (Rolldown renamer.rs 참고).
+    /// `name$1` 형태에서 예약어가 될 가능성은 거의 없지만, 안전을 위해 체크.
+    fn isReservedName(name: []const u8) bool {
+        // ECMAScript 예약어
+        const reserved = [_][]const u8{
+            "break",     "case",       "catch",    "class",     "const",
+            "continue",  "debugger",   "default",  "delete",    "do",
+            "else",      "enum",       "export",   "extends",   "false",
+            "finally",   "for",        "function", "if",        "import",
+            "in",        "instanceof", "new",      "null",      "return",
+            "super",     "switch",     "this",     "throw",     "true",
+            "try",       "typeof",     "var",      "void",      "while",
+            "with",      "yield",      "let",      "static",    "implements",
+            "interface", "package",    "private",  "protected", "public",
+            "await",
+        };
+        // 글로벌 객체
+        const globals = [_][]const u8{
+            "undefined", "NaN",        "Infinity", "arguments",
+            "eval",      "Array",      "Object",   "Function",
+            "String",    "Number",     "Boolean",  "Symbol",
+            "Date",      "Math",       "JSON",     "Promise",
+            "RegExp",    "Error",      "Map",      "Set",
+            "WeakMap",   "WeakSet",    "Proxy",    "Reflect",
+            "console",   "globalThis", "window",   "document",
+            "require",   "module",     "exports",  "__filename",
+            "__dirname",
+        };
+        for (reserved) |r| {
+            if (std.mem.eql(u8, name, r)) return true;
+        }
+        for (globals) |g| {
+            if (std.mem.eql(u8, name, g)) return true;
         }
         return false;
     }
@@ -731,4 +768,24 @@ test "linker: deep re-export chain (near depth limit)" {
     try std.testing.expect(binding != null);
     // canonical은 e.ts(마지막 모듈)
     try std.testing.expectEqualStrings("x", binding.?.canonical.export_name);
+}
+
+test "isReservedName: JS reserved words" {
+    try std.testing.expect(Linker.isReservedName("class"));
+    try std.testing.expect(Linker.isReservedName("return"));
+    try std.testing.expect(Linker.isReservedName("const"));
+    try std.testing.expect(Linker.isReservedName("await"));
+    try std.testing.expect(Linker.isReservedName("yield"));
+    try std.testing.expect(!Linker.isReservedName("foo"));
+    try std.testing.expect(!Linker.isReservedName("count$1"));
+}
+
+test "isReservedName: global objects" {
+    try std.testing.expect(Linker.isReservedName("Array"));
+    try std.testing.expect(Linker.isReservedName("Object"));
+    try std.testing.expect(Linker.isReservedName("console"));
+    try std.testing.expect(Linker.isReservedName("undefined"));
+    try std.testing.expect(Linker.isReservedName("require"));
+    try std.testing.expect(Linker.isReservedName("module"));
+    try std.testing.expect(!Linker.isReservedName("myVar"));
 }
