@@ -127,14 +127,12 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
 
 #### 추천 구현 순서
 1. ✅ **Test262 마무리 + regexp validator** — 23,384건 100% 통과 (실패 0건)
-2. **Arena allocator 설계 + 도입** — 번들러 전 필수 (1~3단계). 나중에 넣을수록 변경 범위 커짐
-   - 1단계: Parser에 Arena 적용 (allocator 교체, 하루 소요)
-   - 2단계: Semantic Analyzer에 적용 (스코프/심볼)
-   - 3단계: Transformer/Codegen에 적용 (Phase별 Arena 분리)
+2. ✅ **Arena allocator 설계 + 도입** — 1~3단계 완료
+   - ✅ 1단계: transpileFile에서 파일당 Arena 1개 생성, 모든 모듈(Scanner/Parser/Semantic/Transformer/Codegen)에 전달
+   - ✅ 2~3단계: Phase별 Arena 분리 불필요 — Scanner의 comments/line_offsets를 Codegen이 참조하므로 파일당 Arena 1개가 최적
+   - ✅ @panic("OOM") 전량 제거, 에러 전파로 교체
+   - ✅ test262 runner에 arena + reset 패턴 적용 (번들러 파일별 Arena 패턴 검증)
    - 4단계: 번들러 파일별 Arena (번들러 구현 시 같이)
-   - Arena = 소유권 경계. 각 모듈은 할당만, 해제는 호출자가 Arena 단위로
-   - `std.heap.ArenaAllocator` 사용, `std.mem.Allocator` 인터페이스 동일하므로 기존 코드 변경 최소
-   - **@panic("OOM") 정리**: 현재 44개의 `@panic("OOM")` (parser 6, lexer 5, analyzer 24, checker 9). Arena 도입 시 ArrayList append가 사라지면서 자연스럽게 해결. 번들러에서 파일별 에러 복구하려면 panic 대신 에러 전파 필요
 3. **ES 다운레벨링** (ES2024→ES2016 점진적, ES2015 이후, ES5) — 트랜스포머 visitor 추가. 독립적이라 언제든 가능하지만 AST 안정화 후가 이상적
    - 1차 ES2024→ES2020 (~200줄, 1~2일): `??`, `?.`, `??=`/`||=`/`&&=`, class public field
    - 2차 ES2019→ES2016 (~500줄, 3~5일): async/await→generator+Promise, rest/spread properties

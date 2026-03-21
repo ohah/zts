@@ -15,56 +15,38 @@ const Transformer = @import("transformer/transformer.zig").Transformer;
 const TransformOptions = @import("transformer/transformer.zig").TransformOptions;
 const Codegen = @import("codegen/codegen.zig").Codegen;
 const CodegenOptions = @import("codegen/codegen.zig").CodegenOptions;
-const Ast = @import("parser/ast.zig").Ast;
 
 // ============================================================
 // E2E 헬퍼: 파싱 → 변환 → 코드젠 전체 파이프라인
 // ============================================================
 
+/// Arena 기반 테스트 결과. deinit()으로 모든 메모리를 일괄 해제.
 const TestResult = struct {
     output: []const u8,
-    scanner: *Scanner,
-    parser_inst: *Parser,
-    codegen_inst: *Codegen,
-    transformed_ast: Ast,
-    allocator: std.mem.Allocator,
+    arena: std.heap.ArenaAllocator,
 
     fn deinit(self: *TestResult) void {
-        self.codegen_inst.deinit();
-        self.allocator.destroy(self.codegen_inst);
-        self.transformed_ast.deinit();
-        self.parser_inst.deinit();
-        self.allocator.destroy(self.parser_inst);
-        self.scanner.deinit();
-        self.allocator.destroy(self.scanner);
+        self.arena.deinit();
     }
 };
 
 // E2E 헬퍼: source → (파싱 + 변환 + 코드젠) → 출력 문자열
-fn e2e(allocator: std.mem.Allocator, source: []const u8) !TestResult {
-    const scanner_ptr = try allocator.create(Scanner);
-    scanner_ptr.* = try Scanner.init(allocator, source);
+fn e2e(backing_allocator: std.mem.Allocator, source: []const u8) !TestResult {
+    var arena = std.heap.ArenaAllocator.init(backing_allocator);
+    errdefer arena.deinit();
+    const allocator = arena.allocator();
 
-    const parser_ptr = try allocator.create(Parser);
-    parser_ptr.* = Parser.init(allocator, scanner_ptr);
-    _ = try parser_ptr.parse();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
 
-    var t = Transformer.init(allocator, &parser_ptr.ast, .{});
+    var t = Transformer.init(allocator, &parser.ast, .{});
     const root = try t.transform();
-    t.scratch.deinit(allocator);
 
-    const cg = try allocator.create(Codegen);
-    cg.* = Codegen.initWithOptions(allocator, &t.new_ast, .{ .minify = true });
+    var cg = Codegen.initWithOptions(allocator, &t.new_ast, .{ .minify = true });
     const output = try cg.generate(root);
 
-    return .{
-        .output = output,
-        .scanner = scanner_ptr,
-        .parser_inst = parser_ptr,
-        .codegen_inst = cg,
-        .transformed_ast = t.new_ast,
-        .allocator = allocator,
-    };
+    return .{ .output = output, .arena = arena };
 }
 
 // 파서만 실행하는 헬퍼 (에러 개수만 확인할 때 사용)

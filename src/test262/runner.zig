@@ -149,14 +149,18 @@ pub fn parseMetadata(source: []const u8) TestMetadata {
 /// - is_negative_parse == true → 파서/렉서가 에러를 발생시키면 pass
 /// - is_negative_parse == false → 에러 없이 파싱 완료되면 pass
 pub fn runTest(allocator: mem.Allocator, source: []const u8, meta: TestMetadata, verbose: bool) TestResult {
+    // 파일당 Arena: Scanner/Parser/Analyzer 모두 arena에서 할당.
+    // 함수 종료 시 arena.deinit()으로 일괄 해제.
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
     // Scanner → Parser로 파싱
-    var scanner = Scanner.init(allocator, source) catch {
+    var scanner = Scanner.init(arena_alloc, source) catch {
         return .skip; // OOM은 인프라 문제 → skip
     };
-    defer scanner.deinit();
 
-    var parser = Parser.init(allocator, &scanner);
-    defer parser.deinit();
+    var parser = Parser.init(arena_alloc, &scanner);
 
     // module 모드 설정 — module은 항상 strict mode (D054)
     if (meta.is_module) {
@@ -177,8 +181,7 @@ pub fn runTest(allocator: mem.Allocator, source: []const u8, meta: TestMetadata,
     // Semantic analysis (D038): 파서 에러가 없을 때만 실행
     var semantic_error_count: usize = 0;
     if (scanner.token.kind != .syntax_error and parser.errors.items.len == 0) {
-        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
-        defer analyzer.deinit(); // deinit이 에러 메시지 메모리도 해제
+        var analyzer = SemanticAnalyzer.init(arena_alloc, &parser.ast);
         analyzer.is_strict_mode = parser.is_strict_mode;
         analyzer.is_module = parser.is_module;
         analyzer.analyze() catch {

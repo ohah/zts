@@ -19,63 +19,38 @@ const Transformer = @import("transformer/transformer.zig").Transformer;
 const Codegen = @import("codegen/codegen.zig").Codegen;
 const CodegenOptions = @import("codegen/codegen.zig").CodegenOptions;
 const ModuleFormat = @import("codegen/codegen.zig").ModuleFormat;
-const Ast = @import("parser/ast.zig").Ast;
 
 // ============================================================
 // E2E 헬퍼
 // ============================================================
 
-/// 테스트 결과를 들고 있는 구조체.
-/// deinit()을 호출하여 모든 메모리를 해제한다.
+/// Arena 기반 테스트 결과. deinit()으로 모든 메모리를 일괄 해제.
 const TestResult = struct {
     output: []const u8,
-    scanner: *Scanner,
-    parser_inst: *Parser,
-    codegen_inst: *Codegen,
-    transformed_ast: Ast,
-    allocator: std.mem.Allocator,
+    arena: std.heap.ArenaAllocator,
 
     fn deinit(self: *TestResult) void {
-        self.codegen_inst.deinit();
-        self.allocator.destroy(self.codegen_inst);
-        self.transformed_ast.deinit();
-        self.parser_inst.deinit();
-        self.allocator.destroy(self.parser_inst);
-        self.scanner.deinit();
-        self.allocator.destroy(self.scanner);
+        self.arena.deinit();
     }
 };
 
 /// source를 파싱 → 변환 → 코드젠하여 minify된 JS 문자열을 반환한다.
-/// cg_options: CodegenOptions를 통해 ESM/CJS 등 옵션을 전달할 수 있다.
-fn runFixture(allocator: std.mem.Allocator, source: []const u8, cg_options: CodegenOptions) !TestResult {
-    // Scanner: 렉서. source를 받아 토큰으로 변환한다.
-    const scanner_ptr = try allocator.create(Scanner);
-    scanner_ptr.* = try Scanner.init(allocator, source);
+fn runFixture(backing_allocator: std.mem.Allocator, source: []const u8, cg_options: CodegenOptions) !TestResult {
+    var arena = std.heap.ArenaAllocator.init(backing_allocator);
+    errdefer arena.deinit();
+    const allocator = arena.allocator();
 
-    // Parser: 토큰 스트림을 AST로 변환한다.
-    const parser_ptr = try allocator.create(Parser);
-    parser_ptr.* = Parser.init(allocator, scanner_ptr);
-    _ = try parser_ptr.parse();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
 
-    // Transformer: TS-전용 노드(타입, interface 등)를 제거하고 새 AST를 만든다.
-    var t = Transformer.init(allocator, &parser_ptr.ast, .{});
+    var t = Transformer.init(allocator, &parser.ast, .{});
     const root = try t.transform();
-    t.scratch.deinit(allocator);
 
-    // Codegen: 변환된 AST를 JS 문자열로 출력한다.
-    const cg = try allocator.create(Codegen);
-    cg.* = Codegen.initWithOptions(allocator, &t.new_ast, cg_options);
+    var cg = Codegen.initWithOptions(allocator, &t.new_ast, cg_options);
     const output = try cg.generate(root);
 
-    return .{
-        .output = output,
-        .scanner = scanner_ptr,
-        .parser_inst = parser_ptr,
-        .codegen_inst = cg,
-        .transformed_ast = t.new_ast,
-        .allocator = allocator,
-    };
+    return .{ .output = output, .arena = arena };
 }
 
 /// ESM 모드로 변환 (기본값)
