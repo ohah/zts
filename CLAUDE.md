@@ -133,7 +133,14 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
    - ✅ @panic("OOM") 전량 제거, 에러 전파로 교체
    - ✅ test262 runner에 arena + reset 패턴 적용 (번들러 파일별 Arena 패턴 검증)
    - 4단계: 번들러 파일별 Arena (번들러 구현 시 같이)
-3. **ES 다운레벨링** (ES2024→ES2016 점진적, ES2015 이후, ES5) — 트랜스포머 visitor 추가. 독립적이라 언제든 가능하지만 AST 안정화 후가 이상적
+3. ✅ **번들러 Phase B1 (MVP)** — resolver + 모듈 그래프 + 단일 번들 출력 완료
+   - ✅ resolver: 상대/절대 경로, node_modules walk-up, package.json exports (와일드카드 포함)
+   - ✅ resolve_cache: import kind별 캐싱 + external 글롭 매칭
+   - ✅ 모듈 그래프: 반복 DFS, exec_index 후위 순서, 순환 감지
+   - ✅ emitter: exec_index 순 변환+코드젠, ESM/CJS/IIFE 포맷
+   - ✅ CLI: `zts --bundle entry.ts -o bundle.js --external react --platform=node`
+   - 다음: linker (import→변수 참조 교체 + 스코프 호이스팅)
+4. **ES 다운레벨링** (ES2024→ES2016 점진적, ES2015 이후, ES5) — 트랜스포머 visitor 추가. 독립적이라 언제든 가능하지만 AST 안정화 후가 이상적
    - 1차 ES2024→ES2020 (~200줄, 1~2일): `??`, `?.`, `??=`/`||=`/`&&=`, class public field
    - 2차 ES2019→ES2016 (~500줄, 3~5일): async/await→generator+Promise, rest/spread properties
    - 3차 ES2015 (~6000줄, 4~6주): class→function/prototype, arrow→bind, let/const→var+IIFE, generator→상태 머신, destructuring, for-of, template literal
