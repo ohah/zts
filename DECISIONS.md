@@ -407,6 +407,28 @@
   - Yarn PnP: 번들러 MVP 이후, resolver에 분기 추가
 - **참고**: `references/bun/src/resolver/resolver.zig`, `references/esbuild/internal/resolver/resolver.go`
 
+### D068: CJS ↔ ESM 상호운용 런타임 헬퍼
+- **결정**: `__` 프리픽스 + esbuild/Rolldown 호환 헬퍼 함수 주입
+- **비교**: esbuild/Rolldown(`__toESM` 등 헬퍼 주입) vs Rollup(`_interopDefault` 등) vs webpack/rspack(`__webpack_require__.*` 축약 프로퍼티) vs SWC(헬퍼 없이 AST 직접 변환, 인라인)
+- **이유**: esbuild/Rolldown과 동일한 `__` 프리픽스로 사용자 친숙도 확보. 디버깅 시 `__toESM` 검색하면 esbuild 문서도 참고 가능. SWC처럼 인라인하면 파일마다 같은 코드 반복으로 번들 크기 증가. webpack의 `.n`/`.t` 축약은 가독성 희생.
+- **배제 이유**:
+  - `__zts_` 고유 프리픽스: 이름이 길고 생태계에서 낯섦. 실무에서 번들러 출력 간 충돌은 발생하지 않음
+  - SWC 인라인: 헬퍼 코드가 파일마다 중복. tree-shaking 불가
+  - webpack `__webpack_require__.*`: 프로퍼티 기반 축약은 스코프 호이스팅과 맞지 않음 (Rollup 방식 추구)
+- **핵심 헬퍼 목록**:
+  - `__commonJS(cb, mod)` — CJS 모듈을 클로저로 래핑, require() 함수 반환
+  - `__esm(fn, res)` — ESM 코드 lazy 초기화
+  - `__toESM(mod, isNodeMode, target)` — CJS→ESM 변환 (__esModule 플래그 체크, default 처리)
+  - `__toCommonJS(mod)` — ESM→CJS 변환 (__esModule 프로퍼티 추가)
+  - `__export(target, all)` — ESM exports를 Object.defineProperty getter로 구현
+  - `__reExport(target, mod, secondTarget)` — export * from 처리
+- **구현**: Rolldown처럼 runtime-base.js에 헬퍼 정의, 사용된 헬퍼만 번들에 포함 (비트플래그로 추적)
+- **참고**: `references/esbuild/internal/runtime/runtime.go`, `references/rolldown/crates/rolldown/src/runtime/runtime-base.js`
+
 ### Phase 6 (Advanced) 미결정 사항
+- D069: 외부 모듈(external) 판별 전략
+- D070: 소스맵 체이닝 알고리즘
+- D071: 청크 네이밍/해싱 전략
+- D072: JSON/asset 모듈 처리
 - CSS 번들링 (자체 파서 vs Lightning CSS 연동 vs 플러그인 위임)
 - 개발 서버 (자체 HTTP vs Vite 위임 1단계)
