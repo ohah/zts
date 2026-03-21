@@ -12,6 +12,7 @@ const Tag = Node.Tag;
 const NodeIndex = ast_mod.NodeIndex;
 const Parser = @import("parser.zig").Parser;
 const ParseError2 = @import("parser.zig").ParseError2;
+const Kind = @import("../lexer/token.zig").Kind;
 
 /// <Tag ...>children</Tag> 또는 <Tag ... /> 또는 <>...</>
 pub fn parseJSXElement(self: *Parser) ParseError2!NodeIndex {
@@ -76,7 +77,11 @@ pub fn parseJSXElement(self: *Parser) ParseError2!NodeIndex {
             // expect(.r_curly) 대신 수동 체크: expect는 normal 모드로 다음 토큰을
             // 스캔하지만, JSX children 컨텍스트에서는 nextJSXChild()로 스캔해야 함.
             if (self.current() != .r_curly) {
-                try self.addError(self.currentSpan(), "Expected '}' in JSX expression");
+                try self.errors.append(self.allocator, .{
+                    .span = self.currentSpan(),
+                    .message = Kind.r_curly.symbol(),
+                    .found = self.current().symbol(),
+                });
             }
             const container = try self.ast.addNode(.{
                 .tag = .jsx_expression_container,
@@ -136,7 +141,11 @@ fn parseJSXFragment(self: *Parser, start: u32) ParseError2!NodeIndex {
             try self.advance();
             const expr = try self.parseExpression();
             if (self.current() != .r_curly) {
-                try self.addError(self.currentSpan(), "Expected '}' in JSX expression");
+                try self.errors.append(self.allocator, .{
+                    .span = self.currentSpan(),
+                    .message = Kind.r_curly.symbol(),
+                    .found = self.current().symbol(),
+                });
             }
             const container = try self.ast.addNode(.{
                 .tag = .jsx_expression_container,
