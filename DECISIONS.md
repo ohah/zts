@@ -425,8 +425,19 @@
 - **구현**: Rolldown처럼 runtime-base.js에 헬퍼 정의, 사용된 헬퍼만 번들에 포함 (비트플래그로 추적)
 - **참고**: `references/esbuild/internal/runtime/runtime.go`, `references/rolldown/crates/rolldown/src/runtime/runtime-base.js`
 
+### D069: 외부 모듈(external) 옵션 스펙
+- **결정**: esbuild 방식 — 문자열 배열 + `*` 글롭. N-API 단계에서 Rollup 호환 (정규식/함수) 추가
+- **비교**: esbuild(문자열+글롭만, 가장 단순) vs Rollup/Rolldown(문자열+정규식+함수) vs webpack(문자열+정규식+함수+오브젝트 매핑+externalsPresets, 가장 복잡)
+- **이유**: CLI/JSON 설정에서는 문자열+글롭이면 충분. `react`, `@mui/*`, `node:*` 전부 커버. Zig에 정규식 엔진 불필요 — N-API 단계에서 JS 쪽이 정규식/함수를 평가하고 bool만 전달하면 됨.
+- **설계**:
+  - CLI: `--external react --external '@mui/*' --external 'node:*'`
+  - 글롭 매칭: `*`는 `/` 제외 모든 문자. `@mui/*`는 `@mui/material` 매칭, `@mui/icons/foo`는 불매칭
+  - `node:*` 빌트인: 플랫폼이 node이면 자동 external (옵션 없이도)
+  - resolve 실패 시: 경로형(`./`, `../`)이면 에러, bare specifier면 경고+external (D066과 일관)
+  - N-API 단계: `external: (string | RegExp | Function)[]` Rollup 호환 시그니처 지원
+- **참고**: `references/esbuild/pkg/api/api.go` (External []string)
+
 ### Phase 6 (Advanced) 미결정 사항
-- D069: 외부 모듈(external) 판별 전략
 - D070: 소스맵 체이닝 알고리즘
 - D071: 청크 네이밍/해싱 전략
 - D072: JSON/asset 모듈 처리
