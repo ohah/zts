@@ -13,6 +13,7 @@ pub const codegen = @import("codegen/mod.zig");
 pub const config = @import("config.zig");
 pub const regexp = @import("regexp/mod.zig");
 pub const test262 = @import("test262/mod.zig");
+pub const bundler = @import("bundler/mod.zig");
 
 test {
     _ = lexer;
@@ -22,5 +23,6 @@ test {
     _ = codegen;
     _ = config;
     _ = test262;
+    _ = bundler;
     _ = @import("test_arena.zig");
 }
