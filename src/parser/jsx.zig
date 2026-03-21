@@ -14,6 +14,51 @@ const Parser = @import("parser.zig").Parser;
 const ParseError2 = @import("parser.zig").ParseError2;
 const Kind = @import("../lexer/token.zig").Kind;
 
+/// JSX children 루프: <tag>...</tag> 또는 <>...</> 내부의 자식 노드들을 파싱.
+/// element와 fragment에서 공유.
+fn parseJSXChildren(self: *Parser) ParseError2!ast_mod.NodeList {
+    const children_top = self.saveScratch();
+    while (self.current() != .eof) {
+        if (self.current() == .l_angle) {
+            if (try self.peekNextKindJSX() == .slash) break;
+            const child = try parseJSXElement(self);
+            try self.scratch.append(self.allocator, child);
+        } else if (self.current() == .l_curly) {
+            const expr_start = self.currentSpan().start;
+            try self.advance(); // skip {
+            const expr = try self.parseExpression();
+            // expect(.r_curly) 대신 수동 체크: JSX children에서는 nextJSXChild()로 스캔해야 함
+            if (self.current() != .r_curly) {
+                try self.errors.append(self.allocator, .{
+                    .span = self.currentSpan(),
+                    .message = Kind.r_curly.symbol(),
+                    .found = self.current().symbol(),
+                });
+            }
+            const container = try self.ast.addNode(.{
+                .tag = .jsx_expression_container,
+                .span = .{ .start = expr_start, .end = self.currentSpan().start },
+                .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
+            });
+            try self.scratch.append(self.allocator, container);
+            try self.scanner.nextJSXChild();
+        } else if (self.current() == .jsx_text) {
+            const text_span = self.currentSpan();
+            try self.scratch.append(self.allocator, try self.ast.addNode(.{
+                .tag = .jsx_text,
+                .span = text_span,
+                .data = .{ .string_ref = text_span },
+            }));
+            try self.scanner.nextJSXChild();
+        } else {
+            break;
+        }
+    }
+    const children = try self.ast.addNodeList(self.scratch.items[children_top..]);
+    self.restoreScratch(children_top);
+    return children;
+}
+
 /// <Tag ...>children</Tag> 또는 <Tag ... /> 또는 <>...</>
 pub fn parseJSXElement(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
@@ -61,49 +106,7 @@ pub fn parseJSXElement(self: *Parser) ParseError2!NodeIndex {
     // > children </tag>
     try self.scanner.nextJSXChild(); // '>' 이후 children 모드
 
-    // Children
-    const children_top = self.saveScratch();
-    while (self.current() != .eof) {
-        if (self.current() == .l_angle) {
-            // 다음 토큰이 / 이면 닫는 태그 (JSX 모드로 peek)
-            if (try self.peekNextKindJSX() == .slash) break;
-            // 중첩 JSX element
-            const child = try parseJSXElement(self);
-            try self.scratch.append(self.allocator, child);
-        } else if (self.current() == .l_curly) {
-            // JSX expression: {expr}
-            try self.advance(); // skip {
-            const expr = try self.parseExpression();
-            // expect(.r_curly) 대신 수동 체크: expect는 normal 모드로 다음 토큰을
-            // 스캔하지만, JSX children 컨텍스트에서는 nextJSXChild()로 스캔해야 함.
-            if (self.current() != .r_curly) {
-                try self.errors.append(self.allocator, .{
-                    .span = self.currentSpan(),
-                    .message = Kind.r_curly.symbol(),
-                    .found = self.current().symbol(),
-                });
-            }
-            const container = try self.ast.addNode(.{
-                .tag = .jsx_expression_container,
-                .span = .{ .start = 0, .end = self.currentSpan().start },
-                .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
-            });
-            try self.scratch.append(self.allocator, container);
-            try self.scanner.nextJSXChild(); // '}' 소비 + JSX children 모드로 스캔
-        } else if (self.current() == .jsx_text) {
-            const text_span = self.currentSpan();
-            try self.scratch.append(self.allocator, try self.ast.addNode(.{
-                .tag = .jsx_text,
-                .span = text_span,
-                .data = .{ .string_ref = text_span },
-            }));
-            try self.scanner.nextJSXChild();
-        } else {
-            break;
-        }
-    }
-    const children = try self.ast.addNodeList(self.scratch.items[children_top..]);
-    self.restoreScratch(children_top);
+    const children = try parseJSXChildren(self);
 
     // Closing tag: </TagName>
     try self.scanner.nextInsideJSXElement(); // skip <
@@ -129,45 +132,7 @@ pub fn parseJSXElement(self: *Parser) ParseError2!NodeIndex {
 }
 
 fn parseJSXFragment(self: *Parser, start: u32) ParseError2!NodeIndex {
-    // Children
-    const children_top = self.saveScratch();
-    while (self.current() != .eof) {
-        if (self.current() == .l_angle) {
-            // JSX 모드로 peek (normal 모드에서는 /가 regex로 해석될 수 있음)
-            if (try self.peekNextKindJSX() == .slash) break;
-            const child = try parseJSXElement(self);
-            try self.scratch.append(self.allocator, child);
-        } else if (self.current() == .l_curly) {
-            try self.advance();
-            const expr = try self.parseExpression();
-            if (self.current() != .r_curly) {
-                try self.errors.append(self.allocator, .{
-                    .span = self.currentSpan(),
-                    .message = Kind.r_curly.symbol(),
-                    .found = self.current().symbol(),
-                });
-            }
-            const container = try self.ast.addNode(.{
-                .tag = .jsx_expression_container,
-                .span = .{ .start = 0, .end = self.currentSpan().start },
-                .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
-            });
-            try self.scratch.append(self.allocator, container);
-            try self.scanner.nextJSXChild();
-        } else if (self.current() == .jsx_text) {
-            const text_span = self.currentSpan();
-            try self.scratch.append(self.allocator, try self.ast.addNode(.{
-                .tag = .jsx_text,
-                .span = text_span,
-                .data = .{ .string_ref = text_span },
-            }));
-            try self.scanner.nextJSXChild();
-        } else {
-            break;
-        }
-    }
-    const children = try self.ast.addNodeList(self.scratch.items[children_top..]);
-    self.restoreScratch(children_top);
+    const children = try parseJSXChildren(self);
 
     // </>
     try self.scanner.nextInsideJSXElement(); // <
