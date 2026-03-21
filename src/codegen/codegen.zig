@@ -773,14 +773,20 @@ pub const Codegen = struct {
 
     fn emitArray(self: *Codegen, node: Node) !void {
         try self.writeByte('[');
-        try self.emitList(node, ",");
+        try self.emitList(node, if (self.options.minify) "," else ", ");
         try self.writeByte(']');
     }
 
     fn emitObject(self: *Codegen, node: Node) !void {
-        try self.writeByte('{');
-        try self.emitList(node, ",");
-        try self.writeByte('}');
+        if (self.options.minify) {
+            try self.writeByte('{');
+            try self.emitList(node, ",");
+            try self.writeByte('}');
+        } else {
+            try self.write("{ ");
+            try self.emitList(node, ", ");
+            try self.write(" }");
+        }
     }
 
     /// object_property: binary = { left=key, right=value, flags }
@@ -789,7 +795,11 @@ pub const Codegen = struct {
         const value = node.data.binary.right;
         try self.emitNode(key);
         if (!value.isNone()) {
-            try self.writeByte(':');
+            if (self.options.minify) {
+                try self.writeByte(':');
+            } else {
+                try self.write(": ");
+            }
             try self.emitNode(value);
         }
     }
