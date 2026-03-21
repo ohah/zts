@@ -68,7 +68,7 @@ pub fn extractImportBindings(
     var source_to_record = std.AutoHashMap(u64, u32).init(allocator);
     defer source_to_record.deinit();
     for (import_records, 0..) |rec, i| {
-        const key = spanKey(rec.span);
+        const key = types.spanKey(rec.span);
         try source_to_record.put(key, @intCast(i));
     }
 
@@ -86,7 +86,7 @@ pub fn extractImportBindings(
 
         // source span으로 ImportRecord 인덱스 찾기
         const source_node = ast.getNode(source_idx);
-        const rec_idx = source_to_record.get(spanKey(source_node.span)) orelse continue;
+        const rec_idx = source_to_record.get(types.spanKey(source_node.span)) orelse continue;
 
         if (specs_len == 0) continue; // side-effect import
 
@@ -162,7 +162,7 @@ pub fn extractExportBindings(
     var source_to_record = std.AutoHashMap(u64, u32).init(allocator);
     defer source_to_record.deinit();
     for (import_records, 0..) |rec, i| {
-        const key = spanKey(rec.span);
+        const key = types.spanKey(rec.span);
         try source_to_record.put(key, @intCast(i));
     }
 
@@ -199,7 +199,7 @@ pub fn extractExportBindings(
                 const has_source = !source_idx.isNone();
                 const rec_idx: ?u32 = if (has_source) blk: {
                     const src_node = ast.getNode(source_idx);
-                    break :blk source_to_record.get(spanKey(src_node.span));
+                    break :blk source_to_record.get(types.spanKey(src_node.span));
                 } else null;
 
                 if (specs_len > 0) {
@@ -248,7 +248,7 @@ pub fn extractExportBindings(
                 const source_idx = node.data.binary.right;
                 if (source_idx.isNone()) continue;
                 const src_node = ast.getNode(source_idx);
-                const rec_idx = source_to_record.get(spanKey(src_node.span));
+                const rec_idx = source_to_record.get(types.spanKey(src_node.span));
 
                 try bindings.append(allocator, .{
                     .exported_name = "*",
@@ -330,10 +330,6 @@ fn extractDeclExportNames(allocator: std.mem.Allocator, ast: *const Ast, decl: N
     }
 
     return names.toOwnedSlice(allocator);
-}
-
-fn spanKey(span: Span) u64 {
-    return @as(u64, span.start) << 32 | span.end;
 }
 
 // ============================================================

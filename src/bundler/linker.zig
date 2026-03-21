@@ -135,7 +135,7 @@ pub const Linker = struct {
 
                 const bk = BindingKey{
                     .module_index = @intCast(i),
-                    .span_key = spanKey(ib.local_span),
+                    .span_key = types.spanKey(ib.local_span),
                 };
                 try self.resolved_bindings.put(bk, .{
                     .local_name = ib.local_name,
@@ -160,7 +160,7 @@ pub const Linker = struct {
         if (mod_i >= self.modules.len) return null;
 
         // 1. 직접 export 확인
-        var key_buf: [256]u8 = undefined;
+        var key_buf: [4096]u8 = undefined;
         const key = makeExportKeyBuf(&key_buf, @intCast(mod_i), name);
         if (self.export_map.get(key)) |entry| {
             if (entry.binding.kind == .re_export) {
@@ -208,7 +208,7 @@ pub const Linker = struct {
     pub fn getResolvedBinding(self: *const Linker, module_index: u32, span: Span) ?ResolvedBinding {
         const bk = BindingKey{
             .module_index = module_index,
-            .span_key = spanKey(span),
+            .span_key = types.spanKey(span),
         };
         return self.resolved_bindings.get(bk);
     }
@@ -234,10 +234,6 @@ pub const Linker = struct {
         }) catch {};
     }
 
-    fn spanKey(span: Span) u64 {
-        return @as(u64, span.start) << 32 | span.end;
-    }
-
     /// export 맵 키 생성 (할당). "module_index\x00name"
     fn makeExportKey(allocator: std.mem.Allocator, module_index: u32, name: []const u8) ![]const u8 {
         var buf = try allocator.alloc(u8, 4 + 1 + name.len);
@@ -248,9 +244,9 @@ pub const Linker = struct {
     }
 
     /// export 맵 키 생성 (스택 버퍼, 조회용).
-    fn makeExportKeyBuf(buf: *[256]u8, module_index: u32, name: []const u8) []const u8 {
+    fn makeExportKeyBuf(buf: *[4096]u8, module_index: u32, name: []const u8) []const u8 {
         const total = 5 + name.len;
-        if (total > 256) return "";
+        if (total > 4096) return "";
         @memcpy(buf[0..4], std.mem.asBytes(&module_index));
         buf[4] = 0;
         @memcpy(buf[5 .. 5 + name.len], name);

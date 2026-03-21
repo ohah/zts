@@ -169,6 +169,20 @@ test "ModuleType: fromExtension" {
     try std.testing.expectEqual(ModuleType.unknown, ModuleType.fromExtension(".wasm"));
 }
 
+// ============================================================
+// 공유 유틸리티
+// ============================================================
+
+/// Span을 u64 키로 변환. 번들러 전역에서 식별자/노드를 고유 식별하는 데 사용.
+/// binding_scanner, linker 등에서 동일 함수를 공유하여 키 불일치 방지.
+pub fn spanKey(span: Span) u64 {
+    return @as(u64, span.start) << 32 | span.end;
+}
+
+// ============================================================
+// Tests
+// ============================================================
+
 test "ImportRecord: default resolved is none" {
     const record = ImportRecord{
         .specifier = "./foo",
