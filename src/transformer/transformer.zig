@@ -296,7 +296,7 @@ pub const Transformer = struct {
             => self.copyNodeDirect(node),
 
             // === import/export specifiers ===
-            .import_specifier => self.visitBinaryNode(node),
+            .import_specifier => if (node.data.binary.flags & 1 != 0) .none else self.visitBinaryNode(node),
             .export_specifier => self.visitBinaryNode(node),
             // default/namespace specifier는 string_ref(span) 복사 — 자식 노드 없음
             .import_default_specifier,
