@@ -36,13 +36,15 @@ jobs:
         run: zig build test262
 
       - name: Bundle Integration Test
+        shell: bash
         run: |
-          mkdir -p /tmp/zts-ci-bundle
-          echo 'import { x } from "./b"; console.log(x);' > /tmp/zts-ci-bundle/a.ts
-          echo 'export const x: number = 42;' > /tmp/zts-ci-bundle/b.ts
-          zig-out/bin/zts --bundle /tmp/zts-ci-bundle/a.ts -o /tmp/zts-ci-bundle/out.js
-          cat /tmp/zts-ci-bundle/out.js
-          grep -q "const x = 42;" /tmp/zts-ci-bundle/out.js
+          TESTDIR="${RUNNER_TEMP}/zts-ci-bundle"
+          mkdir -p "$TESTDIR"
+          echo 'import { x } from "./b"; console.log(x);' > "$TESTDIR/a.ts"
+          echo 'export const x: number = 42;' > "$TESTDIR/b.ts"
+          zig-out/bin/zts --bundle "$TESTDIR/a.ts" -o "$TESTDIR/out.js"
+          cat "$TESTDIR/out.js"
+          grep -q "const x = 42;" "$TESTDIR/out.js"
 
       - name: Build (ReleaseSafe)
         run: zig build -Doptimize=ReleaseSafe
