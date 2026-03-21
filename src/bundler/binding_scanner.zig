@@ -236,9 +236,28 @@ pub fn extractExportBindings(
                 }
             },
             .export_default_declaration => {
+                // export default function greet() → local_name = "greet"
+                // export default class Foo → local_name = "Foo"
+                // export default 42 → local_name = "_default"
+                const inner_idx = node.data.unary.operand;
+                var local_name: []const u8 = "_default";
+                if (!inner_idx.isNone()) {
+                    const inner = ast.getNode(inner_idx);
+                    if (inner.tag == .function_declaration or inner.tag == .class_declaration) {
+                        // extra = [name_idx, ...] — 이름 노드 추출
+                        const e = inner.data.extra;
+                        if (e < ast.extra_data.items.len) {
+                            const name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
+                            if (!name_idx.isNone()) {
+                                const name_node = ast.getNode(name_idx);
+                                local_name = ast.source[name_node.data.string_ref.start..name_node.data.string_ref.end];
+                            }
+                        }
+                    }
+                }
                 try bindings.append(allocator, .{
                     .exported_name = "default",
-                    .local_name = "default",
+                    .local_name = local_name,
                     .local_span = node.span,
                     .kind = .local,
                 });

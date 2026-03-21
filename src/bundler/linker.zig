@@ -252,6 +252,14 @@ pub const Linker = struct {
         return false;
     }
 
+    /// export의 실제 local_name을 조회. default export에서 "default" → "greet" 등.
+    fn getExportLocalName(self: *const Linker, module_index: u32, exported_name: []const u8) ?[]const u8 {
+        var key_buf: [4096]u8 = undefined;
+        const key = makeExportKeyBuf(&key_buf, module_index, exported_name);
+        const entry = self.export_map.get(key) orelse return null;
+        return entry.binding.local_name;
+    }
+
     /// 특정 모듈+이름에 대한 canonical name 조회. 리네임 안 됐으면 null (원본 유지).
     pub fn getCanonicalName(self: *const Linker, module_index: u32, name: []const u8) ?[]const u8 {
         var key_buf: [4096]u8 = undefined;
@@ -302,7 +310,9 @@ pub const Linker = struct {
                     }
                 },
                 .export_default_declaration => {
-                    if (!is_entry) skip_nodes.set(node_idx);
+                    // 번들 모드에서 codegen이 "export default" 키워드만 생략하고
+                    // 내부 선언은 유지하므로 skip_nodes에 넣지 않음.
+                    // (emitExportDefault가 linking_metadata 체크하여 처리)
                 },
                 .export_all_declaration => skip_nodes.set(node_idx),
                 else => {},
@@ -327,10 +337,20 @@ pub const Linker = struct {
                 if (rec.resolved.isNone()) continue;
 
                 const canonical_mod = @intFromEnum(rec.resolved);
-                const target_name = if (self.getCanonicalName(@intCast(canonical_mod), ib.imported_name)) |renamed|
+
+                // default import 처리: "default" → export의 실제 local_name
+                // (e.g. "export default function greet()" → "greet")
+                var effective_name = ib.imported_name;
+                if (std.mem.eql(u8, ib.imported_name, "default")) {
+                    if (self.getExportLocalName(@intCast(canonical_mod), "default")) |local| {
+                        effective_name = local;
+                    }
+                }
+
+                const target_name = if (self.getCanonicalName(@intCast(canonical_mod), effective_name)) |renamed|
                     renamed
                 else
-                    ib.imported_name;
+                    effective_name;
 
                 if (!std.mem.eql(u8, ib.local_name, target_name)) {
                     if (module_scope.get(ib.local_name)) |sym_idx| {
