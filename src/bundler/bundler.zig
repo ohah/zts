@@ -307,3 +307,47 @@ test "Bundler: IIFE format" {
     try std.testing.expect(std.mem.startsWith(u8, result.output, "(function() {\n"));
     try std.testing.expect(std.mem.endsWith(u8, result.output, "})();\n"));
 }
+
+test "Bundler: CJS format" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .cjs,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.startsWith(u8, result.output, "'use strict';\n"));
+}
+
+test "Bundler: multiple entry points" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "e1.ts", "const a = 1;");
+    try writeFile(tmp.dir, "e2.ts", "const b = 2;");
+
+    const entry1 = try absPath(&tmp, "e1.ts");
+    defer std.testing.allocator.free(entry1);
+    const entry2 = try absPath(&tmp, "e2.ts");
+    defer std.testing.allocator.free(entry2);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{ entry1, entry2 },
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "const a = 1;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "const b = 2;") != null);
+}

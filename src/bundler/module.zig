@@ -154,3 +154,21 @@ test "Module: state transitions" {
     m.state = .ready;
     try std.testing.expectEqual(Module.State.ready, m.state);
 }
+
+test "Module: addDependency with none index — no-op" {
+    const alloc = std.testing.allocator;
+    var modules: [1]Module = .{Module.init(@enumFromInt(0), "a.ts")};
+    defer modules[0].deinit(alloc);
+
+    try modules[0].addDependency(alloc, .none, &modules);
+    try std.testing.expectEqual(@as(usize, 0), modules[0].dependencies.items.len);
+}
+
+test "Module: addDependency with out-of-bounds index — no-op" {
+    const alloc = std.testing.allocator;
+    var modules: [1]Module = .{Module.init(@enumFromInt(0), "a.ts")};
+    defer modules[0].deinit(alloc);
+
+    try modules[0].addDependency(alloc, @enumFromInt(99), &modules);
+    try std.testing.expectEqual(@as(usize, 0), modules[0].dependencies.items.len);
+}

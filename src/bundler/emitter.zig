@@ -273,3 +273,27 @@ test "emitter: chain A → B → C order" {
     try std.testing.expect(c_pos < b_pos);
     try std.testing.expect(b_pos < a_pos);
 }
+
+test "emitter: TS enum and interface stripping" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts",
+        \\interface Foo { x: number; }
+        \\enum Color { Red, Green, Blue }
+        \\const x: Foo = { x: 1 };
+    );
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "a.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const output = try emit(std.testing.allocator, &result.graph, .{});
+    defer std.testing.allocator.free(output);
+
+    // interface 제거됨
+    try std.testing.expect(std.mem.indexOf(u8, output, "interface") == null);
+    // enum → IIFE 변환
+    try std.testing.expect(std.mem.indexOf(u8, output, "Color") != null);
+    // 일반 코드 유지
+    try std.testing.expect(std.mem.indexOf(u8, output, "const x") != null);
+}
