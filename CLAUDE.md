@@ -139,7 +139,8 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
    - ✅ 모듈 그래프: 반복 DFS, exec_index 후위 순서, 순환 감지
    - ✅ emitter: exec_index 순 변환+코드젠, ESM/CJS/IIFE 포맷
    - ✅ CLI: `zts --bundle entry.ts -o bundle.js --external react --platform=node`
-   - 다음: linker (import→변수 참조 교체 + 스코프 호이스팅)
+   - ✅ linker: 스코프 호이스팅 (import 제거, export 키워드 제거, symbol_id 기반 리네임)
+   - 다음: 통합 테스트 강화 → ES 다운레벨링
 4. **ES 다운레벨링** (ES2024→ES2016 점진적, ES2015 이후, ES5) — 트랜스포머 visitor 추가. 독립적이라 언제든 가능하지만 AST 안정화 후가 이상적
    - 1차 ES2024→ES2020 (~200줄, 1~2일): `??`, `?.`, `??=`/`||=`/`&&=`, class public field
    - 2차 ES2019→ES2016 (~500줄, 3~5일): async/await→generator+Promise, rest/spread properties
