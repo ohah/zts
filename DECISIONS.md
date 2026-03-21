@@ -437,8 +437,20 @@
   - N-API 단계: `external: (string | RegExp | Function)[]` Rollup 호환 시그니처 지원
 - **참고**: `references/esbuild/pkg/api/api.go` (External []string)
 
+### D070: 모듈 ID 체계
+- **결정**: u32 정수 인덱스 (`ModuleIndex = enum(u32)`)
+- **비교**: 정수 인덱스(esbuild/Bun/Rolldown/SWC) vs 파일 경로 문자열(Rollup) vs 해시(webpack 빌드 시 변환)
+- **이유**: 기존 ZTS 패턴(`NodeIndex`, `SymbolId`, `ScopeId` 전부 u32 enum)과 일관. 배열 O(1) 접근, 정수 비교 1명령어, 4바이트. 문자열 ID는 해시맵 필요 + 비교 O(n). u16은 monorepo에서 node_modules 포함 시 65,535 초과 가능성 있고, 구조체 패딩으로 절약 효과 없음.
+- **설계**:
+  ```
+  ModuleIndex = enum(u32) { none = maxInt(u32), _ }
+  modules: ArrayList(Module)           // modules.items[@intFromEnum(id)]
+  path_to_module: StringHashMap(ModuleIndex)  // resolve 캐시
+  ```
+- **참고**: `references/bun/src/bundler/Graph.zig` (Index), `references/rolldown/crates/rolldown_common/src/types/module_idx.rs`
+
 ### Phase 6 (Advanced) 미결정 사항
-- D070: 소스맵 체이닝 알고리즘
+- D071: 소스맵 체이닝 알고리즘
 - D071: 청크 네이밍/해싱 전략
 - D072: JSON/asset 모듈 처리
 - CSS 번들링 (자체 파서 vs Lightning CSS 연동 vs 플러그인 위임)
