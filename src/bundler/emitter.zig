@@ -23,6 +23,8 @@ const Ast = @import("../parser/ast.zig").Ast;
 const Transformer = @import("../transformer/transformer.zig").Transformer;
 const Codegen = @import("../codegen/codegen.zig").Codegen;
 const CodegenOptions = @import("../codegen/codegen.zig").CodegenOptions;
+const Linker = @import("linker.zig").Linker;
+const LinkingMetadata = @import("linker.zig").LinkingMetadata;
 
 pub const EmitOptions = struct {
     format: Format = .esm,
@@ -46,6 +48,7 @@ pub fn emit(
     allocator: std.mem.Allocator,
     graph: *const ModuleGraph,
     options: EmitOptions,
+    linker: ?*const Linker,
 ) ![]const u8 {
     // 1. JS 모듈만 필터 + exec_index 순으로 정렬
     var sorted: std.ArrayList(*const Module) = .empty;
@@ -74,8 +77,15 @@ pub fn emit(
         .esm => {},
     }
 
+    // 엔트리 모듈 인덱스 (final exports용)
+    const entry_idx: ?u32 = if (sorted.items.len > 0)
+        @intFromEnum(sorted.items[sorted.items.len - 1].index)
+    else
+        null;
+
     for (sorted.items) |m| {
-        const code = try emitModule(allocator, m, options) orelse continue;
+        const is_entry = if (entry_idx) |ei| @intFromEnum(m.index) == ei else false;
+        const code = try emitModule(allocator, m, options, linker, is_entry) orelse continue;
         defer allocator.free(code);
 
         if (!options.minify) {
@@ -106,6 +116,8 @@ fn emitModule(
     allocator: std.mem.Allocator,
     module: *const Module,
     options: EmitOptions,
+    linker: ?*const Linker,
+    is_entry: bool,
 ) !?[]const u8 {
     const ast = &(module.ast orelse return null);
 
@@ -116,7 +128,30 @@ fn emitModule(
 
     // Transformer: TS 타입 스트리핑 등
     var transformer = Transformer.init(arena_alloc, ast, .{});
+    // symbol_ids 전파: semantic analyzer가 생성한 원본 AST의 symbol_ids를
+    // transformer가 new_ast 기준으로 재매핑
+    if (module.semantic) |sem| {
+        transformer.old_symbol_ids = sem.symbol_ids;
+    }
     const root = try transformer.transform();
+
+    // Linker 메타데이터 생성 (있으면) — new_ast 기준으로 구축
+    var metadata: ?LinkingMetadata = null;
+    defer if (metadata) |*m| m.deinit();
+
+    if (linker) |l| {
+        // new_ast 기준으로 skip_nodes 구축 (transformer 이후이므로 노드 인덱스가 new_ast와 일치)
+        var md = try l.buildMetadataForAst(
+            &transformer.new_ast,
+            @intFromEnum(module.index),
+            is_entry,
+        );
+        // transformer가 전파한 new_symbol_ids를 메타데이터에 설정
+        if (transformer.new_symbol_ids.items.len > 0) {
+            md.symbol_ids = transformer.new_symbol_ids.items;
+        }
+        metadata = md;
+    }
 
     // Codegen: AST → JS 문자열
     var cg = Codegen.initWithOptions(arena_alloc, &transformer.new_ast, .{
@@ -125,8 +160,17 @@ fn emitModule(
             .cjs => .cjs,
             else => .esm,
         },
+        .linking_metadata = if (metadata) |*m| m else null,
     });
     const code = try cg.generate(root);
+
+    // final_exports 붙이기 (엔트리 포인트)
+    if (metadata) |m| {
+        if (m.final_exports) |fe| {
+            const combined = try std.mem.concat(allocator, u8, &.{ code, fe });
+            return combined;
+        }
+    }
 
     // arena 해제 전에 복사 (caller 소유)
     return try allocator.dupe(u8, code);
@@ -166,7 +210,7 @@ test "emitter: single module" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const output = try emit(std.testing.allocator, &result.graph, .{});
+    const output = try emit(std.testing.allocator, &result.graph, .{}, null);
     defer std.testing.allocator.free(output);
 
     // TS 타입 스트리핑: "const x: number = 1;" → "const x = 1;"
@@ -183,7 +227,7 @@ test "emitter: two modules exec order" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const output = try emit(std.testing.allocator, &result.graph, .{});
+    const output = try emit(std.testing.allocator, &result.graph, .{}, null);
     defer std.testing.allocator.free(output);
 
     // b.ts가 a.ts보다 먼저 출력 (exec_index 순서)
@@ -201,7 +245,7 @@ test "emitter: minified output" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const output = try emit(std.testing.allocator, &result.graph, .{ .minify = true });
+    const output = try emit(std.testing.allocator, &result.graph, .{ .minify = true }, null);
     defer std.testing.allocator.free(output);
 
     // minify: 모듈 경계 주석 없음
@@ -218,7 +262,7 @@ test "emitter: IIFE format" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const output = try emit(std.testing.allocator, &result.graph, .{ .format = .iife });
+    const output = try emit(std.testing.allocator, &result.graph, .{ .format = .iife }, null);
     defer std.testing.allocator.free(output);
 
     try std.testing.expect(std.mem.startsWith(u8, output, "(function() {\n"));
@@ -234,7 +278,7 @@ test "emitter: CJS format" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const output = try emit(std.testing.allocator, &result.graph, .{ .format = .cjs });
+    const output = try emit(std.testing.allocator, &result.graph, .{ .format = .cjs }, null);
     defer std.testing.allocator.free(output);
 
     try std.testing.expect(std.mem.startsWith(u8, output, "'use strict';\n"));
@@ -246,7 +290,7 @@ test "emitter: empty graph" {
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    const output = try emit(std.testing.allocator, &graph, .{});
+    const output = try emit(std.testing.allocator, &graph, .{}, null);
     defer std.testing.allocator.free(output);
 
     try std.testing.expectEqual(@as(usize, 0), output.len);
@@ -263,7 +307,7 @@ test "emitter: chain A → B → C order" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const output = try emit(std.testing.allocator, &result.graph, .{});
+    const output = try emit(std.testing.allocator, &result.graph, .{}, null);
     defer std.testing.allocator.free(output);
 
     // C → B → A 순서
@@ -287,7 +331,7 @@ test "emitter: TS enum and interface stripping" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    const output = try emit(std.testing.allocator, &result.graph, .{});
+    const output = try emit(std.testing.allocator, &result.graph, .{}, null);
     defer std.testing.allocator.free(output);
 
     // interface 제거됨

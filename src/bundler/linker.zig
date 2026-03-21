@@ -20,6 +20,7 @@ const ImportBinding = @import("binding_scanner.zig").ImportBinding;
 const ExportBinding = @import("binding_scanner.zig").ExportBinding;
 const Span = @import("../lexer/token.zig").Span;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
+const Ast = @import("../parser/ast.zig").Ast;
 
 /// 크로스 모듈 심볼 참조. 어떤 모듈의 어떤 export를 가리키는지.
 /// codegen에 전달하는 per-module 메타데이터.
@@ -257,8 +258,131 @@ pub const Linker = struct {
         return self.canonical_names.get(key);
     }
 
-    /// 특정 모듈에 대한 LinkingMetadata를 생성한다.
-    /// codegen이 이 메타데이터를 참조하여 import 스킵 + 식별자 리네임.
+    /// transformer 이후의 new_ast를 기반으로 LinkingMetadata를 생성한다.
+    /// skip_nodes와 renames가 new_ast의 노드 인덱스와 일치.
+    pub fn buildMetadataForAst(
+        self: *const Linker,
+        new_ast: *const Ast,
+        module_index: u32,
+        is_entry: bool,
+    ) !LinkingMetadata {
+        if (module_index >= self.modules.len) {
+            return .{
+                .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, 0),
+                .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
+                .final_exports = null,
+                .symbol_ids = &.{},
+                .allocator = self.allocator,
+            };
+        }
+
+        const m = self.modules[module_index];
+        const node_count = new_ast.nodes.items.len;
+        var skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, node_count);
+        var renames = std.AutoHashMap(u32, []const u8).init(self.allocator);
+
+        // 1. new_ast에서 import/export 노드 스킵
+        for (new_ast.nodes.items, 0..) |node, node_idx| {
+            switch (node.tag) {
+                .import_declaration => skip_nodes.set(node_idx),
+                .export_named_declaration => {
+                    // export const x = 1 → export 키워드만 생략 (codegen 분기로 처리)
+                    // export { x } → 전체 스킵
+                    // export { x } from './dep' → 전체 스킵
+                    const e = node.data.extra;
+                    if (e + 3 < new_ast.extra_data.items.len) {
+                        const decl_idx: NodeIndex = @enumFromInt(new_ast.extra_data.items[e]);
+                        if (decl_idx.isNone()) {
+                            skip_nodes.set(node_idx); // export { } 또는 re-export
+                        }
+                        // export const → codegen에서 export 키워드만 생략
+                    }
+                },
+                .export_default_declaration => {
+                    if (!is_entry) skip_nodes.set(node_idx);
+                },
+                .export_all_declaration => skip_nodes.set(node_idx),
+                else => {},
+            }
+        }
+
+        // 2. import 바인딩 리네임 (모듈의 semantic 기반)
+        const sem = m.semantic orelse return .{
+            .skip_nodes = skip_nodes,
+            .renames = renames,
+            .final_exports = null,
+            .symbol_ids = &.{},
+            .allocator = self.allocator,
+        };
+
+        if (sem.scope_maps.len > 0) {
+            const module_scope = sem.scope_maps[0];
+            // import 바인딩 → canonical 이름
+            for (m.import_bindings) |ib| {
+                if (ib.import_record_index >= m.import_records.len) continue;
+                const rec = m.import_records[ib.import_record_index];
+                if (rec.resolved.isNone()) continue;
+
+                const canonical_mod = @intFromEnum(rec.resolved);
+                const target_name = if (self.getCanonicalName(@intCast(canonical_mod), ib.imported_name)) |renamed|
+                    renamed
+                else
+                    ib.imported_name;
+
+                if (!std.mem.eql(u8, ib.local_name, target_name)) {
+                    if (module_scope.get(ib.local_name)) |sym_idx| {
+                        try renames.put(@intCast(sym_idx), target_name);
+                    }
+                }
+            }
+
+            // 자체 top-level 심볼 리네임 (이름 충돌)
+            var sit = module_scope.iterator();
+            while (sit.next()) |scope_entry| {
+                const sym_name = scope_entry.key_ptr.*;
+                if (self.getCanonicalName(module_index, sym_name)) |renamed| {
+                    const sym_idx = scope_entry.value_ptr.*;
+                    try renames.put(@intCast(sym_idx), renamed);
+                }
+            }
+        }
+
+        // 3. 엔트리 포인트 final exports
+        var final_exports: ?[]const u8 = null;
+        if (is_entry and m.export_bindings.len > 0) {
+            var buf: std.ArrayList(u8) = .empty;
+            defer buf.deinit(self.allocator);
+            try buf.appendSlice(self.allocator, "export {");
+            var first = true;
+            for (m.export_bindings) |eb| {
+                if (eb.kind == .re_export_all) continue;
+                if (std.mem.eql(u8, eb.exported_name, "*")) continue;
+                if (!first) try buf.appendSlice(self.allocator, ",");
+                first = false;
+                const actual_name = self.getCanonicalName(module_index, eb.local_name) orelse eb.local_name;
+                try buf.append(self.allocator, ' ');
+                try buf.appendSlice(self.allocator, actual_name);
+                if (!std.mem.eql(u8, actual_name, eb.exported_name)) {
+                    try buf.appendSlice(self.allocator, " as ");
+                    try buf.appendSlice(self.allocator, eb.exported_name);
+                }
+            }
+            try buf.appendSlice(self.allocator, " };\n");
+            if (!first) {
+                final_exports = try self.allocator.dupe(u8, buf.items);
+            }
+        }
+
+        return .{
+            .skip_nodes = skip_nodes,
+            .renames = renames,
+            .final_exports = final_exports,
+            .symbol_ids = sem.symbol_ids,
+            .allocator = self.allocator,
+        };
+    }
+
+    /// 특정 모듈에 대한 LinkingMetadata를 생성한다 (원본 AST 기준, 테스트용).
     pub fn buildMetadata(self: *const Linker, module_index: u32, is_entry: bool) !LinkingMetadata {
         if (module_index >= self.modules.len) {
             return .{
