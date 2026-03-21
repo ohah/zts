@@ -560,12 +560,22 @@
 - **참고**: `references/rolldown/crates/rolldown/src/module_loader/`, `references/rollup/src/utils/executionOrder.ts`
 
 ### D078: 모듈 그래프 저장 방식
-- **결정**: 인접 리스트 (Module.dependencies 배열) + 필요 시 역방향 맵 빌드
-- **비교**: 인접 리스트만(A, esbuild/Rolldown/Bun) vs 별도 엣지 배열(B) vs 양방향(C, 메모리 2배)
-- **이유**: 순방향 탐색(DFS, tree-shaking)이 주 사용 패턴. 역방향("이 파일 바뀌면 누가 영향?")은 HMR 시점에만 필요 → 그때 한번 빌드하면 됨. CLAUDE.md 기존 Module 설계와 일관.
+- **결정**: 양방향 인접 리스트 (dependencies + importers)
+- **비교**: 순방향만(A, esbuild/Rolldown/Bun) vs 별도 엣지 배열(B) vs 양방향(C)
+- **이유**: HMR에서 "이 파일 바뀌면 누가 영향받나?" 역추적이 필수. 나중에 역방향 맵을 빌드하면 그래프 변경 시마다 재빌드해야 하는데, 양방향이면 항상 최신. 메모리 차이는 모듈 수천 개 × u32 인덱스라 무시 가능.
 - **배제 이유**:
+  - 순방향만: HMR/watch에서 매번 역방향 맵 재빌드 필요. 증분 재빌드 시 비효율
   - 별도 엣지 배열: 특정 모듈의 의존성 찾으려면 배열 스캔 필요. 인접 리스트가 O(1) 접근
-  - 양방향: 메모리 2배 + 동기화 복잡. esbuild/Rolldown/Bun 어디도 처음부터 양방향 안 함
+- **설계**:
+  ```
+  Module = struct {
+      dependencies: []ModuleIndex,    // 내가 import하는 것 (순방향)
+      importers: []ModuleIndex,       // 나를 import하는 것 (역방향)
+      dynamic_imports: []ModuleIndex, // 동적 import (별도)
+  }
+  ```
+  - 모듈 추가 시 양쪽 동시 업데이트: `A.dependencies.append(B)` + `B.importers.append(A)`
+  - 헬퍼 함수로 캡슐화하여 불일치 방지
 
 ### D079: import 추출 방식
 - **결정**: 파싱 후 AST 순회 (방법 B)
