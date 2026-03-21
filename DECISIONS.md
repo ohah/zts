@@ -449,9 +449,89 @@
   ```
 - **참고**: `references/bun/src/bundler/Graph.zig` (Index), `references/rolldown/crates/rolldown_common/src/types/module_idx.rs`
 
+### D071: 소스맵 체이닝
+- **결정**: 자체 파이프라인은 AST span 직접 매핑 + 플러그인은 collapse_sourcemaps() 합성
+- **비교**: esbuild(인라인 리맵핑만, 플러그인 제한적) vs Rollup(Source/Link 트리, ~270줄) vs Rolldown(lookup 테이블, ~60줄) vs Vite(`@jridgewell/remapping` JS 외부 의존)
+- **이유**: ZTS는 파이프라인 전체를 소유하므로 자체 변환은 중간 소스맵 불필요 (이미 D046에서 설계). 하지만 Rollup 호환 플러그인 시스템(D060)을 목표로 하므로, 플러그인 transform 시 소스맵 체이닝을 처음부터 설계해야 함.
+- **배제 이유**:
+  - esbuild 인라인만: 플러그인이 제한적이라 가능한 것. ZTS는 Rollup 호환 플러그인을 목표로 하므로 부족
+  - Rollup 트리 구조: 플러그인 체인 깊어질수록 메모리 증가. Rolldown이 lookup 테이블로 단순화한 이유 있음
+  - Vite `@jridgewell/remapping`: JS 외부 의존성, Zig에서 사용 불가
+- **설계**:
+  - 자체 파이프라인: AST span → codegen 시 원본 위치 직접 매핑 (중간 소스맵 없음)
+  - 플러그인: TransformResult에 소스맵 포함 → collapse_sourcemaps()로 VLQ 역추적 합성 (~200줄)
+  ```
+  TransformResult = struct {
+      code: []const u8,
+      map: ?SourceMap,  // 플러그인이 반환하면 체이닝
+  }
+  ```
+- **참고**: `references/rolldown/crates/rolldown_sourcemap/src/lib.rs`, `references/esbuild/internal/sourcemap/sourcemap.go`
+
+### D072: 청크 네이밍/해싱
+- **결정**: Rolldown 호환 `[name]-[hash].js` + xxhash64 + 플레이스홀더 2단계
+- **비교**: esbuild(xxhash64, goroutine별 격리) vs Rollup/Rolldown(xxhash128, 플레이스홀더 `!~{idx}~`) vs webpack/rspack(md4→xxhash64 전환 중, `[contenthash]`)
+- **이유**: `[hash]` = content hash (Rollup/Rolldown/esbuild 공통). xxhash64은 Zig 표준 라이브러리에 `std.hash.XxHash64` 내장으로 외부 의존성 0. Rolldown 플레이스홀더 방식이 순환 import 해시 문제를 우아하게 해결.
+- **배제 이유**:
+  - xxhash128: xxhash64로 충분 (충돌 확률 무시 가능). 128비트는 해시 길이만 늘림
+  - md4/sha256: 느림. webpack도 xxhash64로 전환 중
+  - esbuild goroutine 격리: Go에 최적화된 설계. Zig에서는 플레이스홀더가 더 자연스러움
+- **설계**:
+  - 기본 패턴: `[name]-[hash].js` (entry/chunk), `assets/[name]-[hash][ext]` (asset)
+  - 해시: xxhash64, 기본 8자, base64url 인코딩
+  - 2단계: 코드젠 시 `!~{idx}~` 플레이스홀더 삽입 → 전체 청크 완성 후 content hash 계산 → 치환
+  - 사용자 설정: `entryFileNames`, `chunkFileNames`, `assetFileNames` (Rollup 호환)
+- **참고**: `references/rolldown/crates/rolldown_utils/src/hash_placeholder.rs`, `references/esbuild/internal/xxhash/`
+
+### D073: 모듈 타입 + 에셋 처리
+- **결정**: rspack의 ModuleType enum + ParserAndGenerator 트레이트 패턴
+- **비교**: esbuild(고정 6종 로더, 확장 불가) vs Rollup(전부 플러그인, 내장 없음) vs Rolldown(내장 최소 + 플러그인) vs rspack(ModuleType enum + Custom + register_parser_and_generator_builder) vs webpack(문자열 타입 + 훅)
+- **이유**: 하나의 인터페이스(ParserAndGenerator)로 JS, JSON, CSS, asset, WASM, 커스텀 전부 처리. rspack에서 CSS 플러그인이 에셋과 동일한 구조로 동작하는 것이 증명. 사용자가 `.graphql`, `.mdx` 등 커스텀 타입을 플러그인으로 추가 가능.
+- **배제 이유**:
+  - esbuild 로더: 고정 6종, 사용자 확장 불가. 플러그인 시스템(D060) 목표와 충돌
+  - Rollup 전부 플러그인: JSON 같은 기본 타입도 플러그인 필요 → DX 나쁨
+  - webpack 문자열 타입: 타입 안전성 없음. enum이 Zig에 더 적합
+- **설계**:
+  ```
+  ModuleType = enum { javascript, json, css, asset, asset_inline, asset_resource, asset_source, custom }
+
+  ParserAndGenerator = struct {
+      parseFn: *const fn(*ParseContext) Error!ParseResult,
+      generateFn: *const fn(*GenerateContext) Error!GenerateResult,
+      sizeFn: *const fn(*Module) usize,
+  }
+  ```
+  - 내장: JS (파서+트랜스포머+코드젠 재사용), JSON (키별 named export + tree-shake), asset (auto inline/emit, 8KB 임계값)
+  - 플러그인: `registerParserAndGenerator(type, impl)` 로 확장
+  - JSON tree-shaking: Rolldown 방식 (키별 named export, 미사용 키 제거)
+- **참고**: `references/rspack/crates/rspack_plugin_asset/src/lib.rs`, `references/rspack/crates/rspack_core/src/parser_and_generator.rs`
+
+### D074: CSS 번들링
+- **결정**: Phase B1 최소 CSS (JS에서 import 해석 + 출력 복사) + Phase B3 Lightning CSS C ABI 연동
+- **비교**: esbuild(자체 CSS 파서 ~20파일, 풀 내장) vs Rolldown(기본 CSS + Lightning CSS 미니파이) vs Vite(PostCSS→Lightning CSS 전환 중) vs rspack(내장 Rust CSS) vs Rollup(플러그인 전용)
+- **이유**: CSS 파서 자체 구현은 규모가 매우 큼 (esbuild ~20파일). CSS 스펙은 JS만큼 복잡하고 벤더 프리픽스, CSS Modules, 중첩 등 끝이 없음. Lightning CSS가 C API 제공 → Zig `@cImport`로 호출 가능. Vite v8도 Lightning CSS 기본 전환.
+- **배제 이유**:
+  - 자체 CSS 파서: 구현 수개월. 번들러 핵심이 아닌 곳에 리소스 낭비
+  - PostCSS: JS 런타임 필요. Zig에서 사용 불가
+  - 플러그인 전용: 기본 CSS 처리도 못 하면 사용자 경험 나쁨
+- **설계**:
+  - B1: `import './style.css'` → 모듈 그래프에 CSS 노드 (ModuleType.css) → 출력에 복사
+  - B3: Lightning CSS C ABI로 @import 해석, CSS Modules, 미니파이, 벤더 프리픽스
+  - D073의 ParserAndGenerator로 CSS 처리 등록 (rspack과 동일 구조)
+- **참고**: `references/esbuild/internal/css_parser/` (규모 참고), Lightning CSS C API
+
+### D075: 개발 서버
+- **결정**: 번들 개발 모드 (esbuild --serve) + SSE 라이브 리로드 → 이후 WebSocket HMR
+- **비교**: Vite(언번들 ESM→v8에서 번들로 전환 중) vs esbuild(전체 리빌드+SSE, HMR 없음) vs webpack-dev-server(Express+WebSocket+증분) vs Turbopack(증분 번들+WebSocket) vs Bun(자체 HTTP+WebSocket)
+- **이유**: Vite조차 v8에서 번들 개발 모드로 전환 중 — 언번들 ESM은 대형 프로젝트에서 네트워크 요청 폭발 (Vite 팀: 3배 빠른 시작, 10배 적은 요청). ZTS가 Zig 네이티브로 빌드 빠르면 전체 리빌드도 충분. SSE가 WebSocket보다 단순 (단방향 충분).
+- **배제 이유**:
+  - 언번들 ESM (Vite v7): 대형 프로젝트에서 느림 (Vite 팀 자체 인정). 모듈 그래프+on-demand transform 파이프라인이 번들러보다 복잡해짐
+  - WebSocket HMR 먼저: 모듈 그래프 diff, HMR boundary 탐색, React Fast Refresh 통합 등 복잡도 높음. SSE로 시작 후 업그레이드
+  - webpack-dev-server: Express+sockjs 스택이 JS 전용
+- **설계**:
+  - B2: Zig `std.http.Server`로 번들 출력 서빙 + SSE 변경 감지 → 브라우저 전체 리로드
+  - B3: WebSocket 업그레이드 + 모듈 단위 HMR + React Fast Refresh
+- **참고**: `references/esbuild/pkg/api/serve_other.go`, `references/vite/packages/vite/src/node/server/`
+
 ### Phase 6 (Advanced) 미결정 사항
-- D071: 소스맵 체이닝 알고리즘
-- D071: 청크 네이밍/해싱 전략
-- D072: JSON/asset 모듈 처리
-- CSS 번들링 (자체 파서 vs Lightning CSS 연동 vs 플러그인 위임)
-- 개발 서버 (자체 HTTP vs Vite 위임 1단계)
+- 개발 서버 고급 기능 (증분 재빌드, 프레임워크 통합)
