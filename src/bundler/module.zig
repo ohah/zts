@@ -17,13 +17,16 @@ const Ast = @import("../parser/ast.zig").Ast;
 
 pub const Module = struct {
     index: ModuleIndex,
-    /// 절대 파일 경로. graph의 path_to_module 키와 동일한 메모리를 참조 (빌림, Module이 해제하지 않음).
+    /// 절대 파일 경로. graph의 path_to_module 키와 동일한 메모리를 참조 (빌림).
     path: []const u8,
-    /// 소스 코드. graph의 arena에서 할당 (빌림, Module이 해제하지 않음).
+    /// 소스 코드. parse_arena에서 할당 (Module.arena가 소유).
     source: []const u8,
+    /// 파싱된 AST. parse_arena에서 할당 (Module.arena가 소유).
     ast: ?Ast,
-    /// import_scanner가 추출한 레코드. graph의 arena에서 할당 (빌림).
+    /// import_scanner가 추출한 레코드. graph allocator에서 할당 (소스 텍스트를 참조).
     import_records: []ImportRecord,
+    /// 모듈별 Arena — Scanner/Parser/AST 메모리를 소유. graph.deinit에서 해제.
+    parse_arena: ?std.heap.ArenaAllocator,
 
     /// 내가 import하는 모듈들 (순방향)
     dependencies: std.ArrayList(ModuleIndex),
@@ -56,6 +59,7 @@ pub const Module = struct {
             .source = "",
             .ast = null,
             .import_records = &.{},
+            .parse_arena = null,
             .dependencies = .empty,
             .importers = .empty,
             .dynamic_imports = .empty,
@@ -97,7 +101,9 @@ pub const Module = struct {
         self.dependencies.deinit(allocator);
         self.importers.deinit(allocator);
         self.dynamic_imports.deinit(allocator);
-        if (self.ast) |*a| a.deinit();
+        // parse_arena가 Scanner/Parser/AST/source 메모리를 전부 소유.
+        // ast.deinit()는 불필요 — arena.deinit()이 일괄 해제.
+        if (self.parse_arena) |*arena| arena.deinit();
     }
 };
 
