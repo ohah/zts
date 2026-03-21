@@ -53,10 +53,13 @@ fn parseFunctionDeclarationWithFlags(self: *Parser, extra_flags: u32) ParseError
     self.in_formal_parameters = true;
     const scratch_top = self.saveScratch();
     while (self.current() != .r_paren and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
         const param = try self.parseBindingIdentifier();
         try self.scratch.append(self.allocator, param);
         try self.checkRestParameterLast(param);
         if (!try self.eat(.comma)) break;
+
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
     try self.expect(.r_paren);
     self.in_formal_parameters = false;
@@ -152,10 +155,13 @@ fn parseFunctionDeclarationWithFlagsOptionalName(self: *Parser, extra_flags: u32
     self.in_formal_parameters = true;
     const scratch_top = self.saveScratch();
     while (self.current() != .r_paren and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
         const param = try self.parseBindingIdentifier();
         try self.scratch.append(self.allocator, param);
         try self.checkRestParameterLast(param);
         if (!try self.eat(.comma)) break;
+
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
     try self.expect(.r_paren);
     self.in_formal_parameters = false;
@@ -224,10 +230,13 @@ pub fn parseFunctionExpressionWithFlags(self: *Parser, extra_flags: u32) ParseEr
     self.in_formal_parameters = true;
     const scratch_top = self.saveScratch();
     while (self.current() != .r_paren and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
         const param = try self.parseBindingIdentifier();
         try self.scratch.append(self.allocator, param);
         try self.checkRestParameterLast(param);
         if (!try self.eat(.comma)) break;
+
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
     try self.expect(.r_paren);
     self.in_formal_parameters = false;
@@ -356,6 +365,7 @@ fn parseClassBody(self: *Parser) ParseError2!NodeIndex {
 
     const scratch_top = self.saveScratch();
     while (self.current() != .r_curly and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
         // 세미콜론 스킵 (클래스 본문에서 허용)
         if (self.current() == .semicolon) {
             try self.advance();
@@ -363,6 +373,8 @@ fn parseClassBody(self: *Parser) ParseError2!NodeIndex {
         }
         const member = try parseClassMember(self);
         if (!member.isNone()) try self.scratch.append(self.allocator, member);
+
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
 
     self.in_class = saved_in_class;
@@ -528,10 +540,13 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         self.in_formal_parameters = true;
         const param_top = self.saveScratch();
         while (self.current() != .r_paren and self.current() != .eof) {
+            const loop_guard_pos = self.scanner.token.span.start;
             const param = try self.parseBindingIdentifier();
             try self.scratch.append(self.allocator, param);
             try self.checkRestParameterLast(param);
             if (!try self.eat(.comma)) break;
+
+            if (try self.ensureLoopProgress(loop_guard_pos)) break;
         }
         try self.expect(.r_paren);
         self.in_formal_parameters = false;

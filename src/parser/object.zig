@@ -23,9 +23,12 @@ pub fn parseObjectExpression(self: *Parser) ParseError2!NodeIndex {
     defer props.deinit(self.allocator);
 
     while (self.current() != .r_curly and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
         const prop = try parseObjectProperty(self);
         try props.append(self.allocator, prop);
         if (!try self.eat(.comma)) break;
+
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
 
     const end = self.currentSpan().end;
@@ -169,10 +172,13 @@ pub fn parseObjectMethodBody(self: *Parser, start: u32, key: NodeIndex, flags: u
     self.in_formal_parameters = true;
     const scratch_top = self.saveScratch();
     while (self.current() != .r_paren and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
         const param = try self.parseBindingIdentifier();
         try self.scratch.append(self.allocator, param);
         try self.checkRestParameterLast(param);
         if (!try self.eat(.comma)) break;
+
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
     try self.expect(.r_paren);
     self.in_formal_parameters = false;

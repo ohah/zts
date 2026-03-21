@@ -119,9 +119,12 @@ fn parseTsEnumDeclarationWithFlags(self: *Parser, flags: u32) ParseError2!NodeIn
 
     const scratch_top = self.saveScratch();
     while (self.current() != .r_curly and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
         const member = try parseTsEnumMember(self);
         try self.scratch.append(self.allocator, member);
         if (!try self.eat(.comma)) break;
+
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
 
     const end = self.currentSpan().end;
@@ -267,9 +270,12 @@ pub fn parseTsTypeParameterDeclaration(self: *Parser) ParseError2!NodeIndex {
 
     const scratch_top = self.saveScratch();
     while (self.current() != .r_angle and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
         const param = try parseTsTypeParameter(self);
         try self.scratch.append(self.allocator, param);
         if (!try self.eat(.comma)) break;
+
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
     try self.expect(.r_angle);
 
@@ -546,9 +552,12 @@ fn parseTypeArguments(self: *Parser) ParseError2!NodeIndex {
 
     const scratch_top = self.saveScratch();
     while (self.current() != .r_angle and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
         const ty = try parseType(self);
         try self.scratch.append(self.allocator, ty);
         if (!try self.eat(.comma)) break;
+
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
     try self.expect(.r_angle);
 
@@ -613,12 +622,15 @@ fn parseObjectType(self: *Parser) ParseError2!NodeIndex {
 
     const scratch_top = self.saveScratch();
     while (self.current() != .r_curly and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
         const member = try parseTypeMember(self);
         try self.scratch.append(self.allocator, member);
         // ; 또는 , 로 구분
         if (!try self.eat(.semicolon) and !try self.eat(.comma)) {
             if (self.current() != .r_curly) break;
         }
+
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
 
     const end = self.currentSpan().end;
@@ -655,9 +667,12 @@ fn parseTupleType(self: *Parser) ParseError2!NodeIndex {
 
     const scratch_top = self.saveScratch();
     while (self.current() != .r_bracket and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
         const ty = try parseType(self);
         try self.scratch.append(self.allocator, ty);
         if (!try self.eat(.comma)) break;
+
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
 
     const end = self.currentSpan().end;

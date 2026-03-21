@@ -257,6 +257,7 @@ pub const Parser = struct {
 
     /// 현재 토큰이 expected이면 소비, 아니면 "Expected X but found Y" 에러 추가.
     /// 닫는 괄호를 기대하는 경우, 매칭되는 여는 괄호 위치도 표시한다.
+    /// 에러 시 토큰을 advance하지 않음 — 각 루프의 progress guard가 무한 루프를 방지.
     pub fn expect(self: *Parser, expected: Kind) !void {
         if (!try self.eat(expected)) {
             const opening = self.findMatchingOpenBracket(expected);
@@ -290,6 +291,17 @@ pub const Parser = struct {
             .found = self.current().symbol(),
             .hint = "Try inserting a semicolon here",
         });
+    }
+
+    /// 루프 progress guard: 토큰이 진행되지 않았으면 강제 advance.
+    /// EOF에 도달하여 루프를 탈출해야 하면 true 반환.
+    /// 사용법: `if (try self.ensureLoopProgress(saved_pos)) break;`
+    pub fn ensureLoopProgress(self: *Parser, saved_pos: u32) !bool {
+        if (self.scanner.token.span.start == saved_pos) {
+            if (self.current() == .eof) return true;
+            try self.advance();
+        }
+        return false;
     }
 
     /// 에러를 추가한다. 기존 호출부 하위 호환 — found/hint 등은 null.
@@ -1263,6 +1275,7 @@ pub const Parser = struct {
         var prologue_octal_span: Span = Span.EMPTY;
 
         while (self.current() != .r_curly and self.current() != .eof) {
+            const loop_guard_pos = self.scanner.token.span.start;
             if (in_directive_prologue) {
                 if (self.isUseStrictDirective()) {
                     // non-simple parameters + "use strict" → 에러
@@ -1289,6 +1302,7 @@ pub const Parser = struct {
 
             const stmt = try self.parseStatement();
             if (!stmt.isNone()) try stmts.append(self.allocator, stmt);
+            if (try self.ensureLoopProgress(loop_guard_pos)) break;
         }
 
         const end = self.currentSpan().end;
