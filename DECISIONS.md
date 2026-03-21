@@ -293,6 +293,39 @@
 - **결정**: parse + early 통합 (is_negative_parse 하나로 처리)
 - **이유**: ECMAScript에서 early error는 실행 전 검출 대상. 트랜스파일러 관점에서 parse/early 구분 불필요. oxc/SWC도 같은 파이프라인에서 처리
 
+---
+
+## 번들러 의사결정 요약 (D056~D079)
+
+| # | 토픽 | 결정 | 참고한 번들러 | 배제한 방식 (이유) |
+|---|------|------|-------------|-------------------|
+| **D056** | 개발 전략 | 품질 먼저 → 속도 추가 | Rollup→Rolldown | esbuild/Bun 속도 먼저 (정교한 분석 끼워넣기 어려움) |
+| **D057** | 최우선 구현 | 모듈 그래프 | 전체 공통 | — |
+| **D058** | ESM 실행 순서 | DFS 후위 + 슬롯 예약 | Rollup, Rolldown | — |
+| **D059** | 스코프 호이스팅 | Rollup 알고리즘 + Zig 속도 | Rolldown | webpack 래핑 (런타임 오버헤드), esbuild 보수적 (번들 품질 희생) |
+| **D060** | 플러그인 | Rollup 호환 JS + Zig 네이티브 + WASM | Rolldown | esbuild IPC (느림), SWC WASM only (진입장벽) |
+| **D061** | Arena | 파일당 1개, Phase 분리 불필요 | Bun | — |
+| **D062** | WASM AST | 바이너리 우선 + ESTree 나중 | — | oxc JSON 직렬화 (병목) |
+| **D063** | Tree-shaking | 점진적 (export→@__PURE__→사이드이펙트) | esbuild, Rolldown | — |
+| **D064** | Conditional exports | import kind별 resolver 인스턴스 | Rolldown/oxc_resolver | esbuild (`module` 자동 제거 함정), webpack (기본값 없음) |
+| **D065** | 순환 참조 | DFS + 경고 + 배열 스캔 | Rollup (알고리즘), Bun (구현) | esbuild (감지 안 함), SWC petgraph (과도) |
+| **D066** | 에러 핸들링 | suggestion + step enum | esbuild (suggestion), Bun (step) | Rollup (전체 빌드 중단), webpack (문자열 기반) |
+| **D067** | 워크스페이스 | MVP 제외, 심링크 충분 | 전체 (심링크 의존) | Bun 자체 패키지 매니저 (범위 과다) |
+| **D068** | CJS/ESM 헬퍼 | `__` 프리픽스, 6개 핵심 헬퍼 | esbuild, Rolldown | SWC 인라인 (중복), webpack 축약 (가독성 희생) |
+| **D069** | External 옵션 | 문자열 + `*` 글롭 | esbuild | Rolldown 정규식 (Zig에 엔진 없음, CLI에서 불편) |
+| **D070** | 모듈 ID | `ModuleIndex = enum(u32)` | esbuild, Bun, Rolldown, SWC | Rollup 문자열 (해시맵 필요, 비교 O(n)) |
+| **D071** | 소스맵 체이닝 | AST 직접 매핑 + 플러그인 collapse | Rolldown (~60줄) | Rollup 트리 (메모리 증가), Vite (JS 의존성) |
+| **D072** | 청크 해싱 | xxhash64 + 플레이스홀더 2단계 | Rolldown | xxhash128 (불필요), md4 (느림) |
+| **D073** | 모듈 타입/에셋 | ModuleType enum + ParserAndGenerator | rspack | esbuild 로더 (확장 불가), Rollup 전부 플러그인 (DX 나쁨) |
+| **D074** | CSS | B1 복사 → B3 Lightning CSS C ABI | Rolldown, Vite v8 | 자체 파서 (수개월), PostCSS (JS 전용) |
+| **D075** | 개발 서버 | 번들 모드 + SSE → WebSocket HMR | esbuild --serve, Vite v8 방향 | 언번들 ESM (대형 프로젝트 느림, Vite도 전환 중) |
+| **D076** | 그래프 순회 | DFS | Rollup, Rolldown, SWC | BFS (exec_index/순환 감지에 별도 알고리즘 필요) |
+| **D077** | 병렬 파싱 | 싱글 MVP → Rolldown 슬롯 예약 | Rolldown | 처음부터 병렬 (동기화 버그 디버깅 고통) |
+| **D078** | 그래프 저장 | 양방향 인접 리스트 | — (HMR 고려) | 순방향만 (HMR 역추적 비효율), 엣지 배열 (O(1) 접근 불가) |
+| **D079** | Import 추출 | 파싱 후 AST 순회 | Rollup, Rolldown | 파서에서 수집 (완성된 파서 수정 리스크) |
+
+---
+
 ### D056: 번들러 개발 전략
 - **결정**: 품질 먼저 → 속도 추가 (방법 B)
 - **비교**: 방법 A(속도 먼저, esbuild/Bun) vs 방법 B(품질 먼저, Rollup→Rolldown)
