@@ -22,6 +22,7 @@ pub const resolve_cache = @import("resolve_cache.zig");
 pub const module = @import("module.zig");
 pub const graph = @import("graph.zig");
 pub const emitter = @import("emitter.zig");
+pub const bundler_core = @import("bundler.zig");
 
 // 공개 타입 re-export
 pub const ModuleIndex = types.ModuleIndex;
@@ -36,6 +37,9 @@ pub const ResolveCache = resolve_cache.ResolveCache;
 pub const Platform = resolve_cache.Platform;
 pub const Module = module.Module;
 pub const ModuleGraph = graph.ModuleGraph;
+pub const Bundler = bundler_core.Bundler;
+pub const BundleOptions = bundler_core.BundleOptions;
+pub const BundleResult = bundler_core.BundleResult;
 
 test {
     _ = types;
@@ -46,4 +50,5 @@ test {
     _ = module;
     _ = graph;
     _ = emitter;
+    _ = bundler_core;
 }
