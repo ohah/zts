@@ -24,7 +24,7 @@ pub fn parseObjectExpression(self: *Parser) ParseError2!NodeIndex {
 
     while (self.current() != .r_curly and self.current() != .eof) {
         const prop = try parseObjectProperty(self);
-        try props.append(self.allocator,prop);
+        try props.append(self.allocator, prop);
         if (!try self.eat(.comma)) break;
     }
 
@@ -170,7 +170,7 @@ pub fn parseObjectMethodBody(self: *Parser, start: u32, key: NodeIndex, flags: u
     const scratch_top = self.saveScratch();
     while (self.current() != .r_paren and self.current() != .eof) {
         const param = try self.parseBindingIdentifier();
-        try self.scratch.append(self.allocator,param);
+        try self.scratch.append(self.allocator, param);
         try self.checkRestParameterLast(param);
         if (!try self.eat(.comma)) break;
     }

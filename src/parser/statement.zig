@@ -394,7 +394,7 @@ fn parseVariableDeclaration(self: *Parser) ParseError2!NodeIndex {
                 }
             }
         }
-        try self.scratch.append(self.allocator,decl);
+        try self.scratch.append(self.allocator, decl);
         if (!try self.eat(.comma)) break;
     }
 
@@ -780,7 +780,7 @@ fn parseSwitchStatement(self: *Parser) ParseError2!NodeIndex {
             }
             has_default = true;
         }
-        try self.scratch.append(self.allocator,case_node);
+        try self.scratch.append(self.allocator, case_node);
     }
 
     self.restoreContext(saved_ctx);
@@ -824,7 +824,7 @@ fn parseSwitchCase(self: *Parser) ParseError2!NodeIndex {
         self.current() != .r_curly and self.current() != .eof)
     {
         const stmt = try parseStatement(self);
-        if (!stmt.isNone()) try self.scratch.append(self.allocator,stmt);
+        if (!stmt.isNone()) try self.scratch.append(self.allocator, stmt);
     }
 
     const body = try self.ast.addNodeList(self.scratch.items[body_top..]);

@@ -643,7 +643,7 @@ pub const Parser = struct {
                         return;
                     }
                 }
-                try self.param_name_spans.append(self.allocator,node.span);
+                try self.param_name_spans.append(self.allocator, node.span);
             },
             .parenthesized_expression => try self.collectCoverParamNames(node.data.unary.operand),
             .sequence_expression => {
@@ -1147,7 +1147,7 @@ pub const Parser = struct {
         switch (node.tag) {
             // 단말 노드: 이름 1개 추가
             .binding_identifier => {
-                try self.param_name_spans.append(self.allocator,node.span);
+                try self.param_name_spans.append(self.allocator, node.span);
             },
             // x = default → 왼쪽이 실제 바인딩
             .assignment_pattern => {
