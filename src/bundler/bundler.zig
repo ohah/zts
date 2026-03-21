@@ -882,8 +882,9 @@ test "TypeScript: mixed type and value exports" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts",
-        \\import { API_URL } from './config';
-        \\console.log(API_URL);
+        \\import { API_URL, type Config } from './config';
+        \\const url: Config = { url: API_URL };
+        \\console.log(url);
     );
     try writeFile(tmp.dir, "config.ts",
         \\export type Config = { url: string };
@@ -901,7 +902,7 @@ test "TypeScript: mixed type and value exports" {
     try std.testing.expect(!result.hasErrors());
     // type은 제거, 값은 유지
     try std.testing.expect(std.mem.indexOf(u8, result.output, "type Config") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "api.example.com") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "'https://api.example.com'") != null);
 }
 
 // ============================================================
@@ -1585,7 +1586,7 @@ test "Complex: platform node with external builtins" {
 
     // node builtins (fs, path) are external on node platform
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "3000") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "port: 3000") != null);
 }
 
 test "Complex: arrow functions across modules" {
@@ -3960,11 +3961,7 @@ test "Scope hoisting: imported value in array destructuring" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // 배열 리터럴 포함 여부 (공백 유무에 상관없이)
-    try std.testing.expect(
-        std.mem.indexOf(u8, result.output, "[1, 2]") != null or
-            std.mem.indexOf(u8, result.output, "[1,2]") != null,
-    );
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "[1, 2]") != null);
 }
 
 test "Scope hoisting: imported value in ternary" {
