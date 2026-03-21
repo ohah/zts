@@ -118,24 +118,24 @@ pub const SourceMapBuilder = struct {
         self.buf.clearRetainingCapacity();
 
         // JSON 시작
-        try self.buf.appendSlice(self.allocator,"{\"version\":3,\"file\":\"");
-        try self.buf.appendSlice(self.allocator,output_file);
-        try self.buf.appendSlice(self.allocator,"\",\"sourceRoot\":\"\",\"sources\":[");
+        try self.buf.appendSlice(self.allocator, "{\"version\":3,\"file\":\"");
+        try self.buf.appendSlice(self.allocator, output_file);
+        try self.buf.appendSlice(self.allocator, "\",\"sourceRoot\":\"\",\"sources\":[");
 
         // sources 배열
         for (self.sources.items, 0..) |src, i| {
-            if (i > 0) try self.buf.append(self.allocator,',');
-            try self.buf.append(self.allocator,'"');
-            try self.buf.appendSlice(self.allocator,src);
-            try self.buf.append(self.allocator,'"');
+            if (i > 0) try self.buf.append(self.allocator, ',');
+            try self.buf.append(self.allocator, '"');
+            try self.buf.appendSlice(self.allocator, src);
+            try self.buf.append(self.allocator, '"');
         }
 
-        try self.buf.appendSlice(self.allocator,"],\"names\":[],\"mappings\":\"");
+        try self.buf.appendSlice(self.allocator, "],\"names\":[],\"mappings\":\"");
 
         // mappings 인코딩
         try self.encodeMappings();
 
-        try self.buf.appendSlice(self.allocator,"\"}");
+        try self.buf.appendSlice(self.allocator, "\"}");
 
         return self.buf.items;
     }
@@ -152,7 +152,7 @@ pub const SourceMapBuilder = struct {
         for (self.mappings.items) |m| {
             // 줄이 바뀌면 세미콜론 추가
             while (prev_gen_line < m.generated_line) {
-                try self.buf.append(self.allocator,';');
+                try self.buf.append(self.allocator, ';');
                 prev_gen_line += 1;
                 prev_gen_col = 0;
                 is_first_segment_on_line = true;
@@ -160,7 +160,7 @@ pub const SourceMapBuilder = struct {
 
             // 같은 줄의 이전 세그먼트와 콤마로 구분
             if (!is_first_segment_on_line) {
-                try self.buf.append(self.allocator,',');
+                try self.buf.append(self.allocator, ',');
             }
             is_first_segment_on_line = false;
 

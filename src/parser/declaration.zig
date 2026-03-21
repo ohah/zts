@@ -49,7 +49,7 @@ fn parseFunctionDeclarationWithFlags(self: *Parser, extra_flags: u32) ParseError
     const scratch_top = self.saveScratch();
     while (self.current() != .r_paren and self.current() != .eof) {
         const param = try self.parseBindingIdentifier();
-        try self.scratch.append(self.allocator,param);
+        try self.scratch.append(self.allocator, param);
         try self.checkRestParameterLast(param);
         if (!try self.eat(.comma)) break;
     }
@@ -143,7 +143,7 @@ fn parseFunctionDeclarationWithFlagsOptionalName(self: *Parser, extra_flags: u32
     const scratch_top = self.saveScratch();
     while (self.current() != .r_paren and self.current() != .eof) {
         const param = try self.parseBindingIdentifier();
-        try self.scratch.append(self.allocator,param);
+        try self.scratch.append(self.allocator, param);
         try self.checkRestParameterLast(param);
         if (!try self.eat(.comma)) break;
     }
@@ -210,7 +210,7 @@ pub fn parseFunctionExpressionWithFlags(self: *Parser, extra_flags: u32) ParseEr
     const scratch_top = self.saveScratch();
     while (self.current() != .r_paren and self.current() != .eof) {
         const param = try self.parseBindingIdentifier();
-        try self.scratch.append(self.allocator,param);
+        try self.scratch.append(self.allocator, param);
         try self.checkRestParameterLast(param);
         if (!try self.eat(.comma)) break;
     }
@@ -347,7 +347,7 @@ fn parseClassBody(self: *Parser) ParseError2!NodeIndex {
             continue;
         }
         const member = try parseClassMember(self);
-        if (!member.isNone()) try self.scratch.append(self.allocator,member);
+        if (!member.isNone()) try self.scratch.append(self.allocator, member);
     }
 
     self.in_class = saved_in_class;
@@ -372,7 +372,7 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
     const deco_scratch_top = self.saveScratch();
     while (self.current() == .at) {
         const dec = try self.parseDecorator();
-        try self.scratch.append(self.allocator,dec);
+        try self.scratch.append(self.allocator, dec);
     }
     const decorators = try self.ast.addNodeList(self.scratch.items[deco_scratch_top..]);
     self.restoreScratch(deco_scratch_top);
@@ -514,7 +514,7 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         const param_top = self.saveScratch();
         while (self.current() != .r_paren and self.current() != .eof) {
             const param = try self.parseBindingIdentifier();
-            try self.scratch.append(self.allocator,param);
+            try self.scratch.append(self.allocator, param);
             try self.checkRestParameterLast(param);
             if (!try self.eat(.comma)) break;
         }

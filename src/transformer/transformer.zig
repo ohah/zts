@@ -409,7 +409,7 @@ pub const Transformer = struct {
             }
 
             if (!new_child.isNone()) {
-                try self.scratch.append(self.allocator,new_child);
+                try self.scratch.append(self.allocator, new_child);
             }
         }
 
@@ -659,7 +659,7 @@ pub const Transformer = struct {
             if (param_node.tag == .formal_parameter and param_node.data.unary.flags != 0) {
                 // parameter property: modifier를 제거하고 내부 패턴만 복사
                 const inner = try self.visitNode(param_node.data.unary.operand);
-                try self.scratch.append(self.allocator,inner);
+                try self.scratch.append(self.allocator, inner);
 
                 // this.x = x 문 생성을 위해 이름 저장
                 if (prop_count < prop_names.len) {
@@ -669,7 +669,7 @@ pub const Transformer = struct {
             } else {
                 const new_param = try self.visitNode(@enumFromInt(raw_idx));
                 if (!new_param.isNone()) {
-                    try self.scratch.append(self.allocator,new_param);
+                    try self.scratch.append(self.allocator, new_param);
                 }
             }
         }
@@ -727,13 +727,13 @@ pub const Transformer = struct {
                 .span = name_node.span,
                 .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
             });
-            try self.scratch.append(self.allocator,stmt);
+            try self.scratch.append(self.allocator, stmt);
         }
 
         // 기존 바디 문들을 추가
         const old_stmts = self.new_ast.extra_data.items[old_list.start .. old_list.start + old_list.len];
         for (old_stmts) |raw_idx| {
-            try self.scratch.append(self.allocator,@enumFromInt(raw_idx));
+            try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
         }
 
         const new_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
