@@ -16,6 +16,7 @@
 
 pub const types = @import("types.zig");
 pub const import_scanner = @import("import_scanner.zig");
+pub const resolver = @import("resolver.zig");
 
 // 공개 타입 re-export
 pub const ModuleIndex = types.ModuleIndex;
@@ -24,8 +25,11 @@ pub const ModuleType = types.ModuleType;
 pub const ImportRecord = types.ImportRecord;
 pub const BundlerDiagnostic = types.BundlerDiagnostic;
 pub const extractImports = import_scanner.extractImports;
+pub const Resolver = resolver.Resolver;
+pub const ResolveResult = resolver.ResolveResult;
 
 test {
     _ = types;
     _ = import_scanner;
+    _ = resolver;
 }
