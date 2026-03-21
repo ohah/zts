@@ -219,44 +219,69 @@ pub const ModuleGraph = struct {
         }
     }
 
-    /// Phase 2: DFS 후위 순서 순회. exec_index 부여 + 순환 감지 (D065, D076).
-    /// modules 배열은 Phase 1에서 확정되어 더 이상 변경되지 않음.
-    fn dfs(self: *ModuleGraph, idx: ModuleIndex, visited: *std.DynamicBitSet, in_stack: *std.DynamicBitSet) !void {
-        const mod_idx = @intFromEnum(idx);
-        if (mod_idx >= self.modules.items.len) return;
+    /// Phase 2: 반복 DFS 후위 순서 순회. exec_index 부여 + 순환 감지 (D065, D076).
+    /// 재귀 대신 명시적 스택 사용 — 깊은 모듈 체인에서도 스택 오버플로 없음.
+    fn dfs(self: *ModuleGraph, start_idx: ModuleIndex, visited: *std.DynamicBitSet, in_stack: *std.DynamicBitSet) !void {
+        const DfsEntry = struct {
+            idx: u32,
+            post: bool, // true = 후처리 (exec_index 부여), false = 전처리 (의존성 push)
+        };
 
-        if (visited.isSet(mod_idx)) return;
+        var stack: std.ArrayList(DfsEntry) = .empty;
+        defer stack.deinit(self.allocator);
 
-        // 순환 감지 (D065)
-        if (in_stack.isSet(mod_idx)) {
-            self.cycle_counter += 1;
-            self.modules.items[mod_idx].cycle_group = self.cycle_counter;
-            self.addDiag(
-                .circular_dependency,
-                .warning,
-                self.modules.items[mod_idx].path,
-                Span.EMPTY,
-                .link,
-                "Circular dependency detected",
-                null,
-            );
-            return;
+        const start = @intFromEnum(start_idx);
+        if (start >= self.modules.items.len) return;
+        if (visited.isSet(start)) return;
+
+        try stack.append(self.allocator, .{ .idx = start, .post = false });
+
+        while (stack.items.len > 0) {
+            const entry = stack.pop() orelse break;
+
+            if (entry.post) {
+                // 후처리: exec_index 부여 + in_stack 해제
+                in_stack.unset(entry.idx);
+                visited.set(entry.idx);
+                self.modules.items[entry.idx].exec_index = self.exec_counter;
+                self.exec_counter += 1;
+                continue;
+            }
+
+            if (visited.isSet(entry.idx)) continue;
+
+            // 순환 감지 (D065)
+            if (in_stack.isSet(entry.idx)) {
+                self.cycle_counter += 1;
+                self.modules.items[entry.idx].cycle_group = self.cycle_counter;
+                self.addDiag(
+                    .circular_dependency,
+                    .warning,
+                    self.modules.items[entry.idx].path,
+                    Span.EMPTY,
+                    .link,
+                    "Circular dependency detected",
+                    null,
+                );
+                continue;
+            }
+
+            in_stack.set(entry.idx);
+
+            // 후처리를 먼저 push (LIFO이므로 나중에 실행)
+            try stack.append(self.allocator, .{ .idx = entry.idx, .post = true });
+
+            // 의존성을 역순으로 push (원래 순서대로 방문하기 위해)
+            const deps = self.modules.items[entry.idx].dependencies.items;
+            var j: usize = deps.len;
+            while (j > 0) {
+                j -= 1;
+                const dep = @intFromEnum(deps[j]);
+                if (dep < self.modules.items.len and !visited.isSet(dep)) {
+                    try stack.append(self.allocator, .{ .idx = dep, .post = false });
+                }
+            }
         }
-
-        in_stack.set(mod_idx);
-
-        // 의존성 순회 (Phase 1에서 이미 resolve 완료)
-        const deps = self.modules.items[mod_idx].dependencies.items;
-        for (deps) |dep_idx| {
-            try self.dfs(dep_idx, visited, in_stack);
-        }
-
-        in_stack.unset(mod_idx);
-        visited.set(mod_idx);
-
-        // 후위 순서로 exec_index 부여 (D058)
-        self.modules.items[mod_idx].exec_index = self.exec_counter;
-        self.exec_counter += 1;
     }
 
     fn addDiag(
@@ -536,4 +561,79 @@ test "graph: re-export adds dependency" {
 
     try std.testing.expectEqual(@as(usize, 2), graph.modules.items.len);
     try std.testing.expectEqual(@as(usize, 1), graph.modules.items[0].dependencies.items.len);
+}
+
+test "graph: multiple entry points" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry1.ts", "const a = 1;");
+    try writeFile(tmp.dir, "entry2.ts", "const b = 2;");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const e1 = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry1.ts" });
+    defer std.testing.allocator.free(e1);
+    const e2 = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry2.ts" });
+    defer std.testing.allocator.free(e2);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+
+    try graph.build(&.{ e1, e2 });
+
+    try std.testing.expectEqual(@as(usize, 2), graph.modules.items.len);
+    // 둘 다 exec_index가 할당됨 (maxInt 아님)
+    try std.testing.expect(graph.modules.items[0].exec_index != std.math.maxInt(u32));
+    try std.testing.expect(graph.modules.items[1].exec_index != std.math.maxInt(u32));
+}
+
+test "graph: dynamic import stored in dynamic_imports" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "const m = import('./lazy');");
+    try writeFile(tmp.dir, "lazy.ts", "export const x = 1;");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+
+    try graph.build(&.{entry});
+
+    try std.testing.expectEqual(@as(usize, 2), graph.modules.items.len);
+    // 동적 import는 dynamic_imports에, dependencies에는 없음
+    try std.testing.expectEqual(@as(usize, 0), graph.modules.items[0].dependencies.items.len);
+    try std.testing.expectEqual(@as(usize, 1), graph.modules.items[0].dynamic_imports.items.len);
+}
+
+test "graph: JSON module — no AST, in graph" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import './data.json';");
+    try writeFile(tmp.dir, "data.json", "{\"key\":\"value\"}");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+
+    try graph.build(&.{entry});
+
+    try std.testing.expectEqual(@as(usize, 2), graph.modules.items.len);
+    // JSON 모듈은 AST 없음 (파싱 안 함)
+    const json_mod = graph.modules.items[1];
+    try std.testing.expect(json_mod.ast == null);
+    try std.testing.expectEqual(types.ModuleType.json, json_mod.module_type);
 }
