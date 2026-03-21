@@ -355,6 +355,18 @@ fn createFile(dir: std.fs.Dir, path: []const u8) !void {
     file.close();
 }
 
+/// 테스트용 헬퍼: 경로 끝 부분 비교 (구분자 독립 — Windows `\` + Unix `/` 모두 처리).
+fn pathEndsWith(path: []const u8, expected_suffix: []const u8) bool {
+    if (path.len < expected_suffix.len) return false;
+    const tail = path[path.len - expected_suffix.len ..];
+    for (tail, expected_suffix) |a, b| {
+        const na = if (a == '\\') @as(u8, '/') else a;
+        const nb = if (b == '\\') @as(u8, '/') else b;
+        if (na != nb) return false;
+    }
+    return true;
+}
+
 /// 테스트용 헬퍼: tmpDir에 파일 생성 + 내용 쓰기 (부모 디렉토리 자동 생성)
 fn writeFile(dir: std.fs.Dir, path: []const u8, data: []const u8) !void {
     if (std.fs.path.dirname(path)) |parent| {
@@ -375,7 +387,7 @@ test "resolve: exact file" {
     const result = try resolver.resolve(dir_path, "./foo.ts");
     defer std.testing.allocator.free(result.path);
 
-    try std.testing.expect(std.mem.endsWith(u8, result.path, "foo.ts"));
+    try std.testing.expect(pathEndsWith(result.path, "foo.ts"));
     try std.testing.expectEqual(ModuleType.javascript, result.module_type);
 }
 
@@ -391,7 +403,7 @@ test "resolve: extension search (.ts)" {
     const result = try resolver.resolve(dir_path, "./bar");
     defer std.testing.allocator.free(result.path);
 
-    try std.testing.expect(std.mem.endsWith(u8, result.path, "bar.ts"));
+    try std.testing.expect(pathEndsWith(result.path, "bar.ts"));
 }
 
 test "resolve: extension search (.tsx before .js)" {
@@ -408,7 +420,7 @@ test "resolve: extension search (.tsx before .js)" {
     defer std.testing.allocator.free(result.path);
 
     // .ts → .tsx → .js 순서이므로 .tsx가 먼저
-    try std.testing.expect(std.mem.endsWith(u8, result.path, "comp.tsx"));
+    try std.testing.expect(pathEndsWith(result.path, "comp.tsx"));
 }
 
 test "resolve: TS extension mapping (.js → .ts)" {
@@ -424,7 +436,7 @@ test "resolve: TS extension mapping (.js → .ts)" {
     const result = try resolver.resolve(dir_path, "./util.js");
     defer std.testing.allocator.free(result.path);
 
-    try std.testing.expect(std.mem.endsWith(u8, result.path, "util.ts"));
+    try std.testing.expect(pathEndsWith(result.path, "util.ts"));
 }
 
 test "resolve: TS extension mapping (.jsx → .tsx)" {
@@ -439,7 +451,7 @@ test "resolve: TS extension mapping (.jsx → .tsx)" {
     const result = try resolver.resolve(dir_path, "./App.jsx");
     defer std.testing.allocator.free(result.path);
 
-    try std.testing.expect(std.mem.endsWith(u8, result.path, "App.tsx"));
+    try std.testing.expect(pathEndsWith(result.path, "App.tsx"));
 }
 
 test "resolve: directory index (./dir → ./dir/index.ts)" {
@@ -454,7 +466,7 @@ test "resolve: directory index (./dir → ./dir/index.ts)" {
     const result = try resolver.resolve(dir_path, "./components");
     defer std.testing.allocator.free(result.path);
 
-    try std.testing.expect(std.mem.endsWith(u8, result.path, "components/index.ts"));
+    try std.testing.expect(pathEndsWith(result.path, "components/index.ts"));
 }
 
 test "resolve: directory index (.tsx)" {
@@ -469,7 +481,7 @@ test "resolve: directory index (.tsx)" {
     const result = try resolver.resolve(dir_path, "./pages");
     defer std.testing.allocator.free(result.path);
 
-    try std.testing.expect(std.mem.endsWith(u8, result.path, "pages/index.tsx"));
+    try std.testing.expect(pathEndsWith(result.path, "pages/index.tsx"));
 }
 
 test "resolve: parent directory (../)" {
@@ -485,7 +497,7 @@ test "resolve: parent directory (../)" {
     const result = try resolver.resolve(sub_path, "../shared");
     defer std.testing.allocator.free(result.path);
 
-    try std.testing.expect(std.mem.endsWith(u8, result.path, "shared.ts"));
+    try std.testing.expect(pathEndsWith(result.path, "shared.ts"));
 }
 
 test "resolve: module not found" {
@@ -513,7 +525,7 @@ test "resolve: bare specifier with main field" {
     const result = try resolver.resolve(dir_path, "my-lib");
     defer std.testing.allocator.free(result.path);
 
-    try std.testing.expect(std.mem.endsWith(u8, result.path, "my-lib/lib/index.js"));
+    try std.testing.expect(pathEndsWith(result.path, "my-lib/lib/index.js"));
 }
 
 test "resolve: bare specifier with module field" {
@@ -531,7 +543,7 @@ test "resolve: bare specifier with module field" {
     defer std.testing.allocator.free(result.path);
 
     // module 필드가 main보다 우선
-    try std.testing.expect(std.mem.endsWith(u8, result.path, "esm-pkg/esm/index.js"));
+    try std.testing.expect(pathEndsWith(result.path, "esm-pkg/esm/index.js"));
 }
 
 test "resolve: bare specifier with exports field" {
@@ -549,7 +561,7 @@ test "resolve: bare specifier with exports field" {
     defer std.testing.allocator.free(result.path);
 
     // 기본 conditions에 "import"가 포함되어 esm.js 선택
-    try std.testing.expect(std.mem.endsWith(u8, result.path, "exp-pkg/esm.js"));
+    try std.testing.expect(pathEndsWith(result.path, "exp-pkg/esm.js"));
 }
 
 test "resolve: bare specifier with index fallback" {
@@ -565,7 +577,7 @@ test "resolve: bare specifier with index fallback" {
     const result = try resolver.resolve(dir_path, "simple");
     defer std.testing.allocator.free(result.path);
 
-    try std.testing.expect(std.mem.endsWith(u8, result.path, "simple/index.js"));
+    try std.testing.expect(pathEndsWith(result.path, "simple/index.js"));
 }
 
 test "resolve: bare specifier walk up directories" {
@@ -583,7 +595,7 @@ test "resolve: bare specifier walk up directories" {
     const result = try resolver.resolve(deep_path, "top-pkg");
     defer std.testing.allocator.free(result.path);
 
-    try std.testing.expect(std.mem.endsWith(u8, result.path, "top-pkg/index.js"));
+    try std.testing.expect(pathEndsWith(result.path, "top-pkg/index.js"));
 }
 
 test "resolve: bare specifier not found" {
@@ -661,7 +673,7 @@ test "resolve: extension search priority (.ts > .tsx > .js)" {
     defer std.testing.allocator.free(result.path);
 
     // .ts가 가장 먼저
-    try std.testing.expect(std.mem.endsWith(u8, result.path, "mod.ts"));
+    try std.testing.expect(pathEndsWith(result.path, "mod.ts"));
 }
 
 test "resolve: exact .js file exists (no TS mapping)" {
@@ -678,5 +690,5 @@ test "resolve: exact .js file exists (no TS mapping)" {
     defer std.testing.allocator.free(result.path);
 
     // 정확한 .js가 있으면 TS 매핑하지 않음
-    try std.testing.expect(std.mem.endsWith(u8, result.path, "lib.js"));
+    try std.testing.expect(pathEndsWith(result.path, "lib.js"));
 }

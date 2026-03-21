@@ -21,6 +21,7 @@ pub const package_json = @import("package_json.zig");
 pub const resolve_cache = @import("resolve_cache.zig");
 pub const module = @import("module.zig");
 pub const graph = @import("graph.zig");
+pub const emitter = @import("emitter.zig");
 
 // 공개 타입 re-export
 pub const ModuleIndex = types.ModuleIndex;
@@ -44,4 +45,5 @@ test {
     _ = resolve_cache;
     _ = module;
     _ = graph;
+    _ = emitter;
 }
