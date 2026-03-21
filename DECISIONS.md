@@ -533,5 +533,31 @@
   - B3: WebSocket 업그레이드 + 모듈 단위 HMR + React Fast Refresh
 - **참고**: `references/esbuild/pkg/api/serve_other.go`, `references/vite/packages/vite/src/node/server/`
 
+### D076: 모듈 그래프 순회 방식
+- **결정**: DFS (깊이 우선) — 싱글스레드 MVP, 이후 병렬 파싱 추가
+- **비교**: DFS(Rollup/Rolldown/SWC) vs BFS(esbuild, goroutine 병렬에 최적화)
+- **이유**: DFS 후위 순서가 곧 ESM 실행 순서 (D058). 순환 참조 감지가 DFS 스택에서 공짜 (D065). BFS는 별도 위상 정렬 + 순환 감지 알고리즘 필요. 시간복잡도는 둘 다 O(V+E)로 동일.
+- **배제 이유**:
+  - BFS: esbuild가 쓰는 이유는 Go goroutine 병렬 파싱에 BFS 큐가 자연스러워서. Zig에서는 DFS가 더 단순하고, exec_index + 순환 감지가 한 패스에 끝남
+- **설계**:
+  - MVP: 싱글스레드 DFS. 정확한 그래프 먼저 (D056 품질 먼저 전략)
+  - 이후: 프로파일링 후 파싱이 병목이면 병렬 추가
+  - DFS 한 패스로: import 추출 → 의존성 재귀 방문 → 후위 순서로 exec_index → 순환 감지
+
+### D077: 병렬 파싱 전략
+- **결정**: 싱글스레드 MVP → 프로파일링 후 Rolldown 슬롯 예약 방식으로 병렬화
+- **비교**: esbuild(goroutine BFS, 처음부터 병렬) vs Rolldown(슬롯 예약 + 스레드 풀) vs Rollup(싱글스레드, 10년간 충분) vs SWC(petgraph 싱글)
+- **이유**: 싱글스레드 DFS가 정확하면 병렬은 스레드 풀 + 슬롯 예약만 추가하면 됨. Module.state `reserved→parsing→ready`가 이미 설계되어 슬롯 예약 패턴 지원. 대부분의 프로젝트에서 병목은 파싱이 아니라 파일 I/O.
+- **배제 이유**:
+  - 처음부터 병렬 (esbuild): 정확성 검증이 어려움. 동기화 버그는 재현이 어렵고 디버깅이 고통. 품질 먼저 전략(D056)과 충돌
+  - 영원히 싱글: 대형 모노레포(수천 파일)에서 파싱이 병목이 될 수 있음. 옵션은 열어둬야 함
+- **Rolldown 슬롯 예약 패턴**:
+  1. import 발견 → 그래프에 슬롯 예약 (import 순서대로, 싱글스레드)
+  2. 예약된 모듈들을 `std.Thread.Pool`에서 병렬 파싱 (파일별 Arena, lock-free)
+  3. 파싱 완료 → 슬롯에 AST 채움 → 새 import 발견 → 다시 슬롯 예약
+  4. 모든 파싱 완료 후 DFS 후위로 exec_index 부여 (싱글스레드)
+  - 슬롯 예약 순서가 import 순서를 보장 → exec_index가 ESM 실행 순서 보장
+- **참고**: `references/rolldown/crates/rolldown/src/module_loader/`, `references/rollup/src/utils/executionOrder.ts`
+
 ### Phase 6 (Advanced) 미결정 사항
 - 개발 서버 고급 기능 (증분 재빌드, 프레임워크 통합)
