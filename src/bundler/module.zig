@@ -30,6 +30,8 @@ pub const ModuleSemanticData = struct {
     scope_maps: []const std.StringHashMap(usize),
     /// export된 이름 목록. exported_names.get("x") → Span.
     exported_names: std.StringHashMap(Span),
+    /// 노드 인덱스 → 심볼 인덱스 매핑. 식별자 노드만 유효값.
+    symbol_ids: []const ?u32,
 };
 
 pub const Module = struct {

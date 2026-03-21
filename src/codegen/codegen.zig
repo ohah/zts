@@ -32,6 +32,10 @@ pub const IndentChar = enum {
     space,
 };
 
+/// 번들러 linker가 생성하는 per-module 메타데이터.
+/// codegen이 import 스킵 + 식별자 리네임에 사용.
+pub const LinkingMetadata = @import("../bundler/linker.zig").LinkingMetadata;
+
 pub const CodegenOptions = struct {
     module_format: ModuleFormat = .esm,
     /// 들여쓰기 문자 (D044: Tab 기본)
@@ -46,6 +50,8 @@ pub const CodegenOptions = struct {
     sourcemap: bool = false,
     /// non-ASCII 문자를 \uXXXX로 이스케이프 (D031)
     ascii_only: bool = false,
+    /// 번들러 linker 메타데이터. 설정 시 import 스킵 + 식별자 리네임 적용.
+    linking_metadata: ?*const LinkingMetadata = null,
 };
 
 const SourceMapBuilder = @import("sourcemap.zig").SourceMapBuilder;
@@ -302,6 +308,12 @@ pub const Codegen = struct {
     fn emitNode(self: *Codegen, idx: NodeIndex) Error!void {
         if (idx.isNone()) return;
 
+        // 번들 모드: skip_nodes에 있으면 출력하지 않음 (import/export 제거)
+        if (self.options.linking_metadata) |meta| {
+            const node_idx = @intFromEnum(idx);
+            if (node_idx < meta.skip_nodes.capacity() and meta.skip_nodes.isSet(node_idx)) return;
+        }
+
         const node = self.ast.getNode(idx);
 
         // 이 노드 이전에 위치한 주석들을 출력
@@ -349,12 +361,25 @@ pub const Codegen = struct {
             .regexp_literal,
             => try self.writeNodeSpan(node),
 
-            // Identifiers
+            // Identifiers — 번들 모드에서 symbol_id 기반 리네임 적용
             .identifier_reference,
             .private_identifier,
             .binding_identifier,
             .assignment_target_identifier,
-            => try self.writeSpan(node.data.string_ref),
+            => {
+                if (self.options.linking_metadata) |meta| {
+                    const node_i = @intFromEnum(idx);
+                    if (node_i < meta.symbol_ids.len) {
+                        if (meta.symbol_ids[node_i]) |sym_id| {
+                            if (meta.renames.get(sym_id)) |new_name| {
+                                try self.write(new_name);
+                                return;
+                            }
+                        }
+                    }
+                }
+                try self.writeSpan(node.data.string_ref);
+            },
 
             .this_expression => try self.write("this"),
             .super_expression => try self.write("super"),
@@ -1287,6 +1312,12 @@ pub const Codegen = struct {
 
         if (self.options.module_format == .cjs) {
             return self.emitExportNamedCJS(decl, specs_start, specs_len, source);
+        }
+
+        // 번들 모드: export 키워드 생략, declaration만 출력
+        if (self.options.linking_metadata != null and !decl.isNone()) {
+            try self.emitNode(decl);
+            return;
         }
 
         try self.write("export ");
