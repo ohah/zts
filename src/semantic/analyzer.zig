@@ -90,8 +90,10 @@ pub const SemanticAnalyzer = struct {
     /// key는 소스 코드 슬라이스 (zero-copy), value는 symbols 배열의 인덱스.
     scope_maps: std.ArrayList(std.StringHashMap(usize)),
 
-    // Note: 개별 Reference 배열은 번들러(Phase 6)에서 추가 예정.
-    // 현재는 Symbol.reference_count만으로 tree-shaking 판단에 충분.
+    /// 노드 인덱스 → 심볼 인덱스 매핑. 번들러 linker가 codegen에서 식별자 리네임에 사용.
+    /// 식별자 참조/선언 노드만 유효한 값을 가지고, 나머지는 null.
+    /// resolveIdentifier/declareSymbol에서 채워진다.
+    symbol_ids: std.ArrayList(?u32),
 
     const PrivateRef = struct {
         name: []const u8,
@@ -129,6 +131,7 @@ pub const SemanticAnalyzer = struct {
             .labels = .empty,
             .resolved_names = .empty,
             .scope_maps = .empty,
+            .symbol_ids = .empty,
             .errors = .empty,
             .allocator = allocator,
         };
@@ -151,6 +154,7 @@ pub const SemanticAnalyzer = struct {
         }
         self.resolved_names.deinit(self.allocator);
         self.errors.deinit(self.allocator);
+        self.symbol_ids.deinit(self.allocator);
         for (self.class_private_declared.items) |*map| map.deinit();
         self.class_private_declared.deinit(self.allocator);
         for (self.class_private_refs.items) |*list| list.deinit(self.allocator);
@@ -164,6 +168,12 @@ pub const SemanticAnalyzer = struct {
     /// 분석을 실행한다. AST의 루트(마지막 노드 = program)부터 시작.
     pub fn analyze(self: *SemanticAnalyzer) AllocError!void {
         if (self.ast.nodes.items.len == 0) return;
+
+        // symbol_ids 배열 초기화: 노드 수만큼 null로 채움
+        try self.symbol_ids.ensureTotalCapacity(self.allocator, self.ast.nodes.items.len);
+        self.symbol_ids.items.len = self.ast.nodes.items.len;
+        @memset(self.symbol_ids.items, null);
+
         const root_idx: NodeIndex = @enumFromInt(@as(u32, @intCast(self.ast.nodes.items.len - 1)));
         try self.visitNode(root_idx);
     }
@@ -369,6 +379,10 @@ pub const SemanticAnalyzer = struct {
     /// let/const/class는 현재 블록 스코프에 등록.
     /// 중복 선언이면 에러를 추가한다.
     fn declareSymbol(self: *SemanticAnalyzer, name_span: Span, kind: SymbolKind, decl_span: Span) AllocError!void {
+        return self.declareSymbolWithNode(name_span, kind, decl_span, null);
+    }
+
+    fn declareSymbolWithNode(self: *SemanticAnalyzer, name_span: Span, kind: SymbolKind, decl_span: Span, node_idx: ?u32) AllocError!void {
         const name_text = self.ast.source[name_span.start..name_span.end];
 
         // function-like 선언의 스코핑 규칙:
@@ -420,6 +434,13 @@ pub const SemanticAnalyzer = struct {
             .declaration_span = decl_span,
             .origin_scope = self.current_scope,
         });
+
+        // symbol_ids에 선언 노드 기록
+        if (node_idx) |ni| {
+            if (ni < self.symbol_ids.items.len) {
+                self.symbol_ids.items[ni] = @intCast(sym_index);
+            }
+        }
 
         // per-scope HashMap에도 등록 (O(1) 검색용)
         if (!target_scope.isNone()) {
@@ -563,7 +584,7 @@ pub const SemanticAnalyzer = struct {
     ///
     /// Note: 번들러(Phase 6)에서는 Reference 배열도 기록하여 read/write/read_write
     /// 종류와 정확한 위치를 추적할 예정 (dead store 분석 등).
-    fn resolveIdentifier(self: *SemanticAnalyzer, name: []const u8) void {
+    fn resolveIdentifier(self: *SemanticAnalyzer, name: []const u8, node_idx: ?u32) void {
         var scope_id = self.current_scope;
 
         // 스코프 체인을 따라 올라가며 심볼 검색
@@ -574,16 +595,18 @@ pub const SemanticAnalyzer = struct {
             if (self.scope_maps.items[idx].get(name)) |sym_idx| {
                 // 심볼을 찾음 — reference_count 증가
                 self.symbols.items[sym_idx].reference_count += 1;
+                // symbol_ids에 기록: 이 노드가 어떤 심볼을 참조하는지
+                if (node_idx) |ni| {
+                    if (ni < self.symbol_ids.items.len) {
+                        self.symbol_ids.items[ni] = @intCast(sym_idx);
+                    }
+                }
                 return;
             }
 
             // 부모 스코프로 이동
             scope_id = self.scopes.items[idx].parent;
         }
-
-        // 미선언 변수 (글로벌 변수, console 등) — 무시
-        // 번들러에서는 외부 참조로 별도 처리할 수 있지만,
-        // 현재 단계에서는 reference를 기록하지 않는다.
     }
 
     /// 노드가 식별자 참조이면 resolveIdentifier를 호출하고 true를 반환한다.
@@ -594,7 +617,7 @@ pub const SemanticAnalyzer = struct {
         const node = self.ast.getNode(node_idx);
         if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
             const name = self.ast.getSourceText(node.span);
-            self.resolveIdentifier(name);
+            self.resolveIdentifier(name, @intFromEnum(node_idx));
             return true;
         }
         return false;
@@ -740,10 +763,8 @@ pub const SemanticAnalyzer = struct {
 
             // ---- 식별자 참조 추적 ----
             .identifier_reference => {
-                // 식별자가 참조하는 심볼을 스코프 체인에서 찾아 reference를 기록.
-                // tree-shaking에서 미사용 심볼 판단의 핵심 데이터.
                 const name = self.ast.getSourceText(node.span);
-                self.resolveIdentifier(name);
+                self.resolveIdentifier(name, @intFromEnum(idx));
             },
 
             // ---- 일반 표현식 순회 (private name 참조 등을 위해) ----

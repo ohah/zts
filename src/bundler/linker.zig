@@ -19,8 +19,29 @@ const Module = @import("module.zig").Module;
 const ImportBinding = @import("binding_scanner.zig").ImportBinding;
 const ExportBinding = @import("binding_scanner.zig").ExportBinding;
 const Span = @import("../lexer/token.zig").Span;
+const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 
 /// 크로스 모듈 심볼 참조. 어떤 모듈의 어떤 export를 가리키는지.
+/// codegen에 전달하는 per-module 메타데이터.
+/// AST를 수정하지 않고 codegen이 출력 시 참조.
+pub const LinkingMetadata = struct {
+    /// 스킵할 AST 노드 인덱스 (import_declaration, export 키워드 등)
+    skip_nodes: std.DynamicBitSet,
+    /// symbol_id → 새 이름. codegen이 식별자 출력 시 symbol_ids[node_idx]로 조회.
+    renames: std.AutoHashMap(u32, []const u8),
+    /// 엔트리 포인트의 최종 export 문 (e.g. "export { x, y$1 as y };\n")
+    final_exports: ?[]const u8,
+    /// 노드 인덱스 → 심볼 인덱스 매핑 (semantic analyzer가 생성)
+    symbol_ids: []const ?u32,
+    allocator: std.mem.Allocator,
+
+    pub fn deinit(self: *LinkingMetadata) void {
+        self.skip_nodes.deinit();
+        self.renames.deinit();
+        if (self.final_exports) |fe| self.allocator.free(fe);
+    }
+};
+
 pub const SymbolRef = struct {
     module_index: ModuleIndex,
     /// 해당 모듈의 export 이름 (e.g. "x", "default")
@@ -234,6 +255,164 @@ pub const Linker = struct {
         var key_buf: [4096]u8 = undefined;
         const key = makeExportKeyBuf(&key_buf, module_index, name);
         return self.canonical_names.get(key);
+    }
+
+    /// 특정 모듈에 대한 LinkingMetadata를 생성한다.
+    /// codegen이 이 메타데이터를 참조하여 import 스킵 + 식별자 리네임.
+    pub fn buildMetadata(self: *const Linker, module_index: u32, is_entry: bool) !LinkingMetadata {
+        if (module_index >= self.modules.len) {
+            return .{
+                .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, 0),
+                .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
+                .final_exports = null,
+                .allocator = self.allocator,
+            };
+        }
+
+        const m = self.modules[module_index];
+        const ast = m.ast orelse {
+            return .{
+                .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, 0),
+                .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
+                .final_exports = null,
+                .allocator = self.allocator,
+            };
+        };
+
+        const node_count = ast.nodes.items.len;
+        var skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, node_count);
+        var renames = std.AutoHashMap(u32, []const u8).init(self.allocator);
+
+        // 1. import_declaration → 전체 스킵
+        for (ast.nodes.items, 0..) |node, node_idx| {
+            if (node.tag == .import_declaration) {
+                skip_nodes.set(node_idx);
+            }
+        }
+
+        // 2. export 키워드 처리
+        for (ast.nodes.items, 0..) |node, node_idx| {
+            switch (node.tag) {
+                .export_named_declaration => {
+                    const e = node.data.extra;
+                    if (e + 3 >= ast.extra_data.items.len) continue;
+                    const decl_idx_raw = ast.extra_data.items[e];
+                    const decl_idx: NodeIndex = @enumFromInt(decl_idx_raw);
+                    const source_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e + 3]);
+
+                    if (!decl_idx.isNone()) {
+                        // export const x = 1; → export 노드 스킵, declaration은 유지
+                        // codegen은 skip_nodes에 있으면 emitNode를 건너뜀.
+                        // declaration을 직접 출력하기 위해 export_named_declaration을 스킵하고
+                        // declaration 노드만 남김.
+                        // 하지만 이렇게 하면 declaration도 스킵됨...
+                        // 대신: export_named_declaration을 스킵하지 않고,
+                        // codegen에서 linking 모드일 때 "export " 키워드만 생략하도록 함.
+                        // → skip_nodes 대신 codegen 분기로 처리 (PR #5 codegen 수정에서)
+                    } else if (!source_idx.isNone()) {
+                        // export { x } from './dep' — re-export: 전체 스킵
+                        skip_nodes.set(node_idx);
+                    } else {
+                        // export { x } — 로컬 export: 전체 스킵 (심볼은 이미 선언됨)
+                        skip_nodes.set(node_idx);
+                    }
+                },
+                .export_default_declaration => {
+                    // export default expr — 비-엔트리 모듈에서는 스킵
+                    if (!is_entry) {
+                        skip_nodes.set(node_idx);
+                    }
+                },
+                .export_all_declaration => {
+                    // export * from './dep' — 전체 스킵
+                    skip_nodes.set(node_idx);
+                },
+                else => {},
+            }
+        }
+
+        const sem = m.semantic orelse return .{
+            .skip_nodes = skip_nodes,
+            .renames = renames,
+            .final_exports = null,
+            .symbol_ids = &.{},
+            .allocator = self.allocator,
+        };
+
+        // 3. import 바인딩: import된 심볼을 canonical 이름으로 치환
+        // import binding의 심볼 인덱스를 모듈 스코프에서 이름으로 조회
+        if (sem.scope_maps.len > 0) {
+            const module_scope = sem.scope_maps[0];
+            for (m.import_bindings) |ib| {
+                if (ib.import_record_index >= m.import_records.len) continue;
+                const rec = m.import_records[ib.import_record_index];
+                if (rec.resolved.isNone()) continue;
+
+                const canonical_mod = @intFromEnum(rec.resolved);
+                const target_name = if (self.getCanonicalName(@intCast(canonical_mod), ib.imported_name)) |renamed|
+                    renamed
+                else
+                    ib.imported_name;
+
+                if (!std.mem.eql(u8, ib.local_name, target_name)) {
+                    // 모듈 스코프에서 import binding의 심볼 인덱스 찾기
+                    if (module_scope.get(ib.local_name)) |sym_idx| {
+                        try renames.put(@intCast(sym_idx), target_name);
+                    }
+                }
+            }
+        }
+
+        // 4. 이 모듈 자체의 top-level 심볼 리네임 (이름 충돌로 인한)
+        if (sem.scope_maps.len > 0) {
+            const module_scope = sem.scope_maps[0];
+            var sit = module_scope.iterator();
+            while (sit.next()) |scope_entry| {
+                const sym_name = scope_entry.key_ptr.*;
+                if (self.getCanonicalName(module_index, sym_name)) |renamed| {
+                    const sym_idx = scope_entry.value_ptr.*;
+                    try renames.put(@intCast(sym_idx), renamed);
+                }
+            }
+        }
+
+        // 5. 엔트리 포인트: final exports
+        var final_exports: ?[]const u8 = null;
+        if (is_entry and m.export_bindings.len > 0) {
+            var buf: std.ArrayList(u8) = .empty;
+            defer buf.deinit(self.allocator);
+            try buf.appendSlice(self.allocator, "export {");
+            var first = true;
+            for (m.export_bindings) |eb| {
+                if (eb.kind == .re_export_all) continue;
+                if (std.mem.eql(u8, eb.exported_name, "*")) continue;
+
+                if (!first) try buf.appendSlice(self.allocator, ",");
+                first = false;
+
+                // canonical 이름 (리네임됐으면 변경된 이름)
+                const actual_name = self.getCanonicalName(module_index, eb.local_name) orelse eb.local_name;
+
+                try buf.append(self.allocator, ' ');
+                try buf.appendSlice(self.allocator, actual_name);
+                if (!std.mem.eql(u8, actual_name, eb.exported_name)) {
+                    try buf.appendSlice(self.allocator, " as ");
+                    try buf.appendSlice(self.allocator, eb.exported_name);
+                }
+            }
+            try buf.appendSlice(self.allocator, " };\n");
+            if (!first) {
+                final_exports = try self.allocator.dupe(u8, buf.items);
+            }
+        }
+
+        return .{
+            .skip_nodes = skip_nodes,
+            .renames = renames,
+            .final_exports = final_exports,
+            .symbol_ids = sem.symbol_ids,
+            .allocator = self.allocator,
+        };
     }
 
     /// 모든 모듈의 export를 수집하여 export_map에 등록.
