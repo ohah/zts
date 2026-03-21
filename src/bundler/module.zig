@@ -14,6 +14,20 @@ const ModuleIndex = types.ModuleIndex;
 const ModuleType = types.ModuleType;
 const ImportRecord = types.ImportRecord;
 const Ast = @import("../parser/ast.zig").Ast;
+const Span = @import("../lexer/token.zig").Span;
+const Symbol = @import("../semantic/symbol.zig").Symbol;
+const Scope = @import("../semantic/scope.zig").Scope;
+
+/// Semantic analyzer 결과. parse_arena가 소유하는 데이터의 참조.
+/// linker가 import→export 연결 + 이름 충돌 해결에 사용.
+pub const ModuleSemanticData = struct {
+    symbols: []const Symbol,
+    scopes: []const Scope,
+    /// 스코프별 이름→심볼 인덱스 조회. scope_maps[scope_id].get("x") → symbol index.
+    scope_maps: []const std.StringHashMap(usize),
+    /// export된 이름 목록. exported_names.get("x") → Span.
+    exported_names: std.StringHashMap(Span),
+};
 
 pub const Module = struct {
     index: ModuleIndex,
@@ -25,8 +39,10 @@ pub const Module = struct {
     ast: ?Ast,
     /// import_scanner가 추출한 레코드. graph allocator에서 할당 (소스 텍스트를 참조).
     import_records: []ImportRecord,
-    /// 모듈별 Arena — Scanner/Parser/AST 메모리를 소유. graph.deinit에서 해제.
+    /// 모듈별 Arena — Scanner/Parser/AST/Semantic 메모리를 소유. graph.deinit에서 해제.
     parse_arena: ?std.heap.ArenaAllocator,
+    /// semantic analyzer 결과. parse_arena가 소유. linker에서 사용.
+    semantic: ?ModuleSemanticData,
 
     /// 내가 import하는 모듈들 (순방향)
     dependencies: std.ArrayList(ModuleIndex),
@@ -61,6 +77,7 @@ pub const Module = struct {
             .ast = null,
             .import_records = &.{},
             .parse_arena = null,
+            .semantic = null,
             .dependencies = .empty,
             .importers = .empty,
             .dynamic_imports = .empty,
