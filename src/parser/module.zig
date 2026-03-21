@@ -113,7 +113,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
                 .span = spec_span,
                 .data = .{ .string_ref = spec_span },
             });
-            try self.scratch.append(spec);
+            try self.scratch.append(self.allocator,spec);
             has_default = true;
 
             if (try self.eat(.comma)) {
@@ -151,7 +151,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
             .span = local_span,
             .data = .{ .string_ref = local_span },
         });
-        try self.scratch.append(spec);
+        try self.scratch.append(self.allocator,spec);
     }
 
     // named imports: import { a, b as c } from "module"
@@ -159,7 +159,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
         try self.advance(); // skip {
         while (self.current() != .r_curly and self.current() != .eof) {
             const spec = try parseImportSpecifier(self);
-            try self.scratch.append(spec);
+            try self.scratch.append(self.allocator,spec);
             if (!try self.eat(.comma)) break;
         }
         try self.expect(.r_curly);
@@ -282,7 +282,7 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
         const scratch_top = self.saveScratch();
         while (self.current() != .r_curly and self.current() != .eof) {
             const spec = try parseExportSpecifier(self);
-            try self.scratch.append(spec);
+            try self.scratch.append(self.allocator,spec);
             if (!try self.eat(.comma)) break;
         }
         try self.expect(.r_curly);

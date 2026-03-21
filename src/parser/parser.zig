@@ -185,12 +185,12 @@ pub const Parser = struct {
         return .{
             .scanner = scanner,
             .ast = Ast.init(allocator, scanner.source),
-            .errors = std.ArrayList(Diagnostic).init(allocator),
-            .scratch = std.ArrayList(NodeIndex).init(allocator),
-            .param_name_spans = std.ArrayList(Span).init(allocator),
+            .errors = .empty,
+            .scratch = .empty,
+            .param_name_spans = .empty,
             .bracket_stack = blk: {
-                var stack = std.ArrayList(BracketInfo).init(allocator);
-                stack.ensureTotalCapacity(8) catch {}; // pre-alloc 실패해도 동작에 지장 없음
+                var stack: std.ArrayList(BracketInfo) = .empty;
+                stack.ensureTotalCapacity(allocator, 8) catch {}; // pre-alloc 실패해도 동작에 지장 없음
                 break :blk stack;
             },
             .allocator = allocator,
@@ -199,10 +199,10 @@ pub const Parser = struct {
 
     pub fn deinit(self: *Parser) void {
         self.ast.deinit();
-        self.errors.deinit();
-        self.scratch.deinit();
-        self.param_name_spans.deinit();
-        self.bracket_stack.deinit();
+        self.errors.deinit(self.allocator);
+        self.scratch.deinit(self.allocator);
+        self.param_name_spans.deinit(self.allocator);
+        self.bracket_stack.deinit(self.allocator);
     }
 
     // ================================================================
@@ -224,7 +224,7 @@ pub const Parser = struct {
         const kind = self.current();
         // 여는 괄호면 스택에 push
         if (kind == .l_paren or kind == .l_bracket or kind == .l_curly) {
-            try self.bracket_stack.append(.{
+            try self.bracket_stack.append(self.allocator, .{
                 .kind = kind,
                 .span = self.currentSpan(),
             });
@@ -260,7 +260,7 @@ pub const Parser = struct {
     pub fn expect(self: *Parser, expected: Kind) !void {
         if (!try self.eat(expected)) {
             const opening = self.findMatchingOpenBracket(expected);
-            try self.errors.append(.{
+            try self.errors.append(self.allocator, .{
                 .span = self.currentSpan(),
                 .message = expected.symbol(),
                 .found = self.current().symbol(),
@@ -284,7 +284,7 @@ pub const Parser = struct {
         if (try self.eat(.semicolon)) return;
         if (self.scanner.token.has_newline_before) return;
         if (self.current() == .r_curly or self.current() == .eof) return;
-        try self.errors.append(.{
+        try self.errors.append(self.allocator, .{
             .span = self.currentSpan(),
             .message = ";",
             .found = self.current().symbol(),
@@ -294,7 +294,7 @@ pub const Parser = struct {
 
     /// 에러를 추가한다. 기존 호출부 하위 호환 — found/hint 등은 null.
     pub fn addError(self: *Parser, span: Span, expected: []const u8) !void {
-        try self.errors.append(.{
+        try self.errors.append(self.allocator, .{
             .span = span,
             .message = expected,
         });
@@ -643,7 +643,7 @@ pub const Parser = struct {
                         return;
                     }
                 }
-                try self.param_name_spans.append(node.span);
+                try self.param_name_spans.append(self.allocator,node.span);
             },
             .parenthesized_expression => try self.collectCoverParamNames(node.data.unary.operand),
             .sequence_expression => {
@@ -1147,7 +1147,7 @@ pub const Parser = struct {
         switch (node.tag) {
             // 단말 노드: 이름 1개 추가
             .binding_identifier => {
-                try self.param_name_spans.append(node.span);
+                try self.param_name_spans.append(self.allocator,node.span);
             },
             // x = default → 왼쪽이 실제 바인딩
             .assignment_pattern => {
@@ -1252,8 +1252,8 @@ pub const Parser = struct {
         const start = self.currentSpan().start;
         try self.expect(.l_curly);
 
-        var stmts = std.ArrayList(NodeIndex).init(self.allocator);
-        defer stmts.deinit();
+        var stmts: std.ArrayList(NodeIndex) = .empty;
+        defer stmts.deinit(self.allocator);
 
         // directive prologue: 본문 시작의 문자열 리터럴 expression statement 중 "use strict" 감지
         var in_directive_prologue = true;
@@ -1288,7 +1288,7 @@ pub const Parser = struct {
             }
 
             const stmt = try self.parseStatement();
-            if (!stmt.isNone()) try stmts.append(stmt);
+            if (!stmt.isNone()) try stmts.append(self.allocator, stmt);
         }
 
         const end = self.currentSpan().end;

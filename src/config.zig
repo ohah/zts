@@ -50,11 +50,13 @@ pub const TsConfig = struct {
     /// TsConfig가 소유한 동적 메모리를 해제한다.
     /// load()로 생성한 TsConfig는 반드시 deinit()을 호출해야 한다.
     pub fn deinit(self: *TsConfig) void {
-        if (self._allocated_strings) |*list| {
-            for (list.items) |s| {
-                list.allocator.free(s);
+        if (self._allocator) |allocator| {
+            if (self._allocated_strings) |*list| {
+                for (list.items) |s| {
+                    allocator.free(s);
+                }
+                list.deinit(allocator);
             }
-            list.deinit();
         }
         self._allocated_strings = null;
         self._allocator = null;
@@ -126,7 +128,7 @@ pub const TsConfig = struct {
         // 결과 TsConfig 초기화
         var config = TsConfig{
             ._allocator = allocator,
-            ._allocated_strings = std.ArrayList([]const u8).init(allocator),
+            ._allocated_strings = .empty,
         };
         errdefer config.deinit();
 
@@ -213,14 +215,14 @@ pub const TsConfig = struct {
         if (!std.mem.eql(u8, base.jsx_factory, "React.createElement")) {
             if (std.mem.eql(u8, target.jsx_factory, "React.createElement")) {
                 const duped = try allocator.dupe(u8, base.jsx_factory);
-                try target._allocated_strings.?.append(duped);
+                try target._allocated_strings.?.append(allocator, duped);
                 target.jsx_factory = duped;
             }
         }
         if (!std.mem.eql(u8, base.jsx_fragment_factory, "React.Fragment")) {
             if (std.mem.eql(u8, target.jsx_fragment_factory, "React.Fragment")) {
                 const duped = try allocator.dupe(u8, base.jsx_fragment_factory);
-                try target._allocated_strings.?.append(duped);
+                try target._allocated_strings.?.append(allocator, duped);
                 target.jsx_fragment_factory = duped;
             }
         }
@@ -247,7 +249,7 @@ fn dupeJsonString(
     const v = co.get(key) orelse return null;
     if (v != .string) return null;
     const duped = try allocator.dupe(u8, v.string);
-    try allocated_strings.append(duped);
+    try allocated_strings.append(allocator, duped);
     return duped;
 }
 
@@ -262,7 +264,7 @@ fn mergeOptionalString(
     if (target_val != null) return target_val;
     const v = base_val orelse return null;
     const duped = try allocator.dupe(u8, v);
-    try allocated_strings.append(duped);
+    try allocated_strings.append(allocator, duped);
     return duped;
 }
 

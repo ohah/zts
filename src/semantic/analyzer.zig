@@ -121,15 +121,15 @@ pub const SemanticAnalyzer = struct {
     pub fn init(allocator: std.mem.Allocator, ast: *const Ast) SemanticAnalyzer {
         return .{
             .ast = ast,
-            .scopes = std.ArrayList(Scope).init(allocator),
-            .symbols = std.ArrayList(Symbol).init(allocator),
+            .scopes = .empty,
+            .symbols = .empty,
             .exported_names = std.StringHashMap(Span).init(allocator),
-            .class_private_declared = std.ArrayList(std.StringHashMap(PrivateNameInfo)).init(allocator),
-            .class_private_refs = std.ArrayList(std.ArrayList(PrivateRef)).init(allocator),
-            .labels = std.ArrayList(LabelEntry).init(allocator),
-            .resolved_names = std.ArrayList([]const u8).init(allocator),
-            .scope_maps = std.ArrayList(std.StringHashMap(usize)).init(allocator),
-            .errors = std.ArrayList(Diagnostic).init(allocator),
+            .class_private_declared = .empty,
+            .class_private_refs = .empty,
+            .labels = .empty,
+            .resolved_names = .empty,
+            .scope_maps = .empty,
+            .errors = .empty,
             .allocator = allocator,
         };
     }
@@ -139,22 +139,22 @@ pub const SemanticAnalyzer = struct {
         for (self.errors.items) |err| {
             self.allocator.free(err.message);
         }
-        self.scopes.deinit();
-        self.symbols.deinit();
+        self.scopes.deinit(self.allocator);
+        self.symbols.deinit(self.allocator);
         for (self.scope_maps.items) |*m| m.deinit();
-        self.scope_maps.deinit();
+        self.scope_maps.deinit(self.allocator);
         self.exported_names.deinit();
-        self.labels.deinit();
+        self.labels.deinit(self.allocator);
         // resolvePrivateName에서 할당된 문자열 해제
         for (self.resolved_names.items) |name| {
             self.allocator.free(name);
         }
-        self.resolved_names.deinit();
-        self.errors.deinit();
+        self.resolved_names.deinit(self.allocator);
+        self.errors.deinit(self.allocator);
         for (self.class_private_declared.items) |*map| map.deinit();
-        self.class_private_declared.deinit();
-        for (self.class_private_refs.items) |*list| list.deinit();
-        self.class_private_refs.deinit();
+        self.class_private_declared.deinit(self.allocator);
+        for (self.class_private_refs.items) |*list| list.deinit(self.allocator);
+        self.class_private_refs.deinit(self.allocator);
     }
 
     // ================================================================
@@ -176,13 +176,13 @@ pub const SemanticAnalyzer = struct {
     fn enterScope(self: *SemanticAnalyzer, kind: ScopeKind, is_strict: bool) AllocError!ScopeId {
         const parent = self.current_scope;
         const new_id: ScopeId = @enumFromInt(@as(u32, @intCast(self.scopes.items.len)));
-        try self.scopes.append(.{
+        try self.scopes.append(self.allocator, .{
             .parent = parent,
             .kind = kind,
             .is_strict = is_strict,
         });
         // scope_maps는 scopes와 동일 인덱스를 공유 — 빈 HashMap 추가
-        try self.scope_maps.append(std.StringHashMap(usize).init(self.allocator));
+        try self.scope_maps.append(self.allocator, std.StringHashMap(usize).init(self.allocator));
         self.current_scope = new_id;
         return parent;
     }
@@ -239,8 +239,8 @@ pub const SemanticAnalyzer = struct {
 
     /// class body 진입 시 private name 스코프를 push한다.
     fn pushClassScope(self: *SemanticAnalyzer) AllocError!void {
-        try self.class_private_declared.append(std.StringHashMap(PrivateNameInfo).init(self.allocator));
-        try self.class_private_refs.append(std.ArrayList(PrivateRef).init(self.allocator));
+        try self.class_private_declared.append(self.allocator, std.StringHashMap(PrivateNameInfo).init(self.allocator));
+        try self.class_private_refs.append(self.allocator, .empty);
     }
 
     /// class body 퇴장 시 private name 참조를 검증하고 pop한다.
@@ -250,7 +250,7 @@ pub const SemanticAnalyzer = struct {
         var declared = self.class_private_declared.pop() orelse return;
         defer declared.deinit();
         var refs = self.class_private_refs.pop() orelse return;
-        defer refs.deinit();
+        defer refs.deinit(self.allocator);
 
         // 참조된 private name이 선언되었는지 확인
         for (refs.items) |ref| {
@@ -301,8 +301,8 @@ pub const SemanticAnalyzer = struct {
         if (std.mem.indexOfScalar(u8, raw, '\\') == null) return raw;
 
         // escape가 포함된 경우: 디코딩하여 새 문자열 생성
-        var buf = std.ArrayList(u8).init(self.allocator);
-        defer buf.deinit();
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
         var i: usize = 0;
 
         while (i < raw.len) {
@@ -331,16 +331,16 @@ pub const SemanticAnalyzer = struct {
                 if (codepoint > 0x10FFFF) return raw;
                 var encode_buf: [4]u8 = undefined;
                 const len = std.unicode.utf8Encode(@intCast(codepoint), &encode_buf) catch return raw;
-                try buf.appendSlice(encode_buf[0..len]);
+                try buf.appendSlice(self.allocator, encode_buf[0..len]);
             } else {
-                try buf.append(raw[i]);
+                try buf.append(self.allocator, raw[i]);
                 i += 1;
             }
         }
 
         const result = try self.allocator.dupe(u8, buf.items);
         // 할당된 문자열을 추적하여 deinit에서 해제
-        try self.resolved_names.append(result);
+        try self.resolved_names.append(self.allocator, result);
         return result;
     }
 
@@ -352,7 +352,7 @@ pub const SemanticAnalyzer = struct {
             return;
         }
         var current = &self.class_private_refs.items[self.class_private_refs.items.len - 1];
-        try current.append(.{ .name = name, .span = span });
+        try current.append(self.allocator, .{ .name = name, .span = span });
     }
 
     /// 현재 class scope 안에 있는지 (private name 참조 가능 여부).
@@ -412,7 +412,7 @@ pub const SemanticAnalyzer = struct {
         }
 
         const sym_index = self.symbols.items.len;
-        try self.symbols.append(.{
+        try self.symbols.append(self.allocator, .{
             .name = name_span,
             .scope_id = target_scope,
             .kind = kind,
@@ -613,7 +613,7 @@ pub const SemanticAnalyzer = struct {
     }
 
     fn addErrorMsg(self: *SemanticAnalyzer, span: Span, msg: []const u8) AllocError!void {
-        try self.errors.append(.{
+        try self.errors.append(self.allocator, .{
             .span = span,
             .message = msg,
             .kind = .semantic,
@@ -1243,7 +1243,7 @@ pub const SemanticAnalyzer = struct {
                     body_tag == .do_while_statement;
             } else false;
 
-            try self.labels.append(.{ .name = name, .span = label_node.span, .is_loop = is_loop });
+            try self.labels.append(self.allocator, .{ .name = name, .span = label_node.span, .is_loop = is_loop });
             try self.visitNode(body_idx);
             _ = self.labels.pop();
         } else {

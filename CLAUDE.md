@@ -4,7 +4,7 @@
 Zig로 작성하는 JavaScript/TypeScript/Flow 트랜스파일러. SWC/oxc 수준의 프로덕션 레벨 품질을 목표로 하는 학습 + 실용 프로젝트. 추후 번들러까지 확장 예정.
 
 ## Tech Stack
-- **Language**: Zig 0.14.0
+- **Language**: Zig 0.15.2
 - **Version Manager**: mise
 - **Build**: `zig build` (build.zig)
 - **Test**: `zig build test`

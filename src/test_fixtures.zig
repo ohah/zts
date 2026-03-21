@@ -61,7 +61,7 @@ fn runFixture(allocator: std.mem.Allocator, source: []const u8, cg_options: Code
     // Transformer: TS-전용 노드(타입, interface 등)를 제거하고 새 AST를 만든다.
     var t = Transformer.init(allocator, &parser_ptr.ast, .{});
     const root = try t.transform();
-    t.scratch.deinit();
+    t.scratch.deinit(allocator);
 
     // Codegen: 변환된 AST를 JS 문자열로 출력한다.
     const cg = try allocator.create(Codegen);

@@ -14,7 +14,7 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const stdout = std.io.getStdOut().writer();
+    const stdout = std.fs.File.stdout().deprecatedWriter();
 
     // 프로젝트 루트 기준 test262 경로
     // 실행 파일 위치에서 상대 경로로 찾기

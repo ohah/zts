@@ -199,7 +199,7 @@ pub fn runTest(allocator: mem.Allocator, source: []const u8, meta: TestMetadata,
     // verbose 모드: 양성 테스트가 에러로 실패한 경우 첫 에러 출력 + 에러 위치의 토큰
     if (verbose and result == .fail and !meta.is_negative_parse and parser.errors.items.len > 0) {
         const err = parser.errors.items[0];
-        const stderr = std.io.getStdErr().writer();
+        const stderr = std.fs.File.stderr().deprecatedWriter();
         // 에러 위치 앞 20자 + 뒤 30자
         const before_start = if (err.span.start > 20) err.span.start - 20 else 0;
         const ctx_end = @min(err.span.start + 30, @as(u32, @intCast(source.len)));
@@ -223,10 +223,10 @@ pub const CategorySummary = struct {
 /// show_failures가 true이면 실패한 파일 목록을 stderr에 출력한다.
 pub fn runDirectory(allocator: mem.Allocator, dir_path: []const u8, show_failures: bool) !TestSummary {
     var summary = TestSummary{};
-    var failed_list = std.ArrayList([]const u8).init(allocator);
+    var failed_list: std.ArrayList([]const u8) = .empty;
     defer {
         for (failed_list.items) |path| allocator.free(path);
-        failed_list.deinit();
+        failed_list.deinit(allocator);
     }
 
     var dir = try fs.openDirAbsolute(dir_path, .{ .iterate = true });
@@ -258,7 +258,7 @@ pub fn runDirectory(allocator: mem.Allocator, dir_path: []const u8, show_failure
             .fail => {
                 summary.failed += 1;
                 if (show_failures) {
-                    try failed_list.append(try allocator.dupe(u8, entry.path));
+                    try failed_list.append(allocator, try allocator.dupe(u8, entry.path));
                 }
             },
             .skip => summary.skipped += 1,
@@ -267,7 +267,7 @@ pub fn runDirectory(allocator: mem.Allocator, dir_path: []const u8, show_failure
 
     // 실패 목록 출력
     if (show_failures and failed_list.items.len > 0) {
-        const stderr = std.io.getStdErr().writer();
+        const stderr = std.fs.File.stderr().deprecatedWriter();
         try stderr.print("\n--- Failed Tests ({d}) ---\n", .{failed_list.items.len});
         for (failed_list.items) |path| {
             try stderr.print("  FAIL: {s}\n", .{path});
@@ -279,7 +279,7 @@ pub fn runDirectory(allocator: mem.Allocator, dir_path: []const u8, show_failure
 
 /// 여러 카테고리(서브디렉토리)를 순회하며 각각의 통과율을 계산한다.
 pub fn runCategories(allocator: mem.Allocator, base_dir_path: []const u8) ![]CategorySummary {
-    var categories = std.ArrayList(CategorySummary).init(allocator);
+    var categories: std.ArrayList(CategorySummary) = .empty;
 
     var dir = try fs.openDirAbsolute(base_dir_path, .{ .iterate = true });
     defer dir.close();
@@ -294,13 +294,13 @@ pub fn runCategories(allocator: mem.Allocator, base_dir_path: []const u8) ![]Cat
         const summary = runDirectory(allocator, sub_path, false) catch continue;
         if (summary.total == 0) continue;
 
-        try categories.append(.{
+        try categories.append(allocator, .{
             .name = try allocator.dupe(u8, entry.name),
             .summary = summary,
         });
     }
 
-    return categories.toOwnedSlice();
+    return categories.toOwnedSlice(allocator);
 }
 
 // ============================================================

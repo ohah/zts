@@ -53,6 +53,7 @@ const Mapping = @import("sourcemap.zig").Mapping;
 
 pub const Codegen = struct {
     ast: *const Ast,
+    allocator: std.mem.Allocator,
     buf: std.ArrayList(u8),
     options: CodegenOptions,
     /// 현재 들여쓰기 레벨
@@ -78,7 +79,8 @@ pub const Codegen = struct {
     pub fn initWithOptions(allocator: std.mem.Allocator, ast: *const Ast, options: CodegenOptions) Codegen {
         return .{
             .ast = ast,
-            .buf = std.ArrayList(u8).init(allocator),
+            .allocator = allocator,
+            .buf = .empty,
             .options = options,
             .indent_level = 0,
             .sm_builder = if (options.sourcemap) SourceMapBuilder.init(allocator) else null,
@@ -88,14 +90,14 @@ pub const Codegen = struct {
     }
 
     pub fn deinit(self: *Codegen) void {
-        self.buf.deinit();
+        self.buf.deinit(self.allocator);
         if (self.sm_builder) |*sm| sm.deinit();
     }
 
     /// AST를 JS 문자열로 출력한다.
     pub fn generate(self: *Codegen, root: NodeIndex) ![]const u8 {
         // 출력 크기는 보통 소스 크기와 비슷 → 사전 할당
-        try self.buf.ensureTotalCapacity(self.ast.source.len);
+        try self.buf.ensureTotalCapacity(self.allocator, self.ast.source.len);
         try self.emitNode(root);
         return self.buf.items;
     }
@@ -141,7 +143,7 @@ pub const Codegen = struct {
     // ================================================================
 
     fn write(self: *Codegen, s: []const u8) !void {
-        try self.buf.appendSlice(s);
+        try self.buf.appendSlice(self.allocator, s);
         // 줄/열 추적
         for (s) |c| {
             if (c == '\n') {
@@ -154,7 +156,7 @@ pub const Codegen = struct {
     }
 
     fn writeByte(self: *Codegen, b: u8) !void {
-        try self.buf.append(b);
+        try self.buf.append(self.allocator, b);
         if (b == '\n') {
             self.gen_line += 1;
             self.gen_col = 0;
@@ -238,7 +240,7 @@ pub const Codegen = struct {
                     if (cp <= 0xFFFF) {
                         var hex_buf: [6]u8 = undefined;
                         _ = std.fmt.bufPrint(&hex_buf, "\\u{x:0>4}", .{cp}) catch unreachable;
-                        try self.buf.appendSlice(&hex_buf);
+                        try self.buf.appendSlice(self.allocator, &hex_buf);
                     } else {
                         // 서로게이트 페어
                         const adjusted = cp - 0x10000;
@@ -246,7 +248,7 @@ pub const Codegen = struct {
                         const low: u16 = @intCast((adjusted & 0x3FF) + 0xDC00);
                         var hex_buf: [12]u8 = undefined;
                         _ = std.fmt.bufPrint(&hex_buf, "\\u{x:0>4}\\u{x:0>4}", .{ high, low }) catch unreachable;
-                        try self.buf.appendSlice(&hex_buf);
+                        try self.buf.appendSlice(self.allocator, &hex_buf);
                     }
                     // 줄/열 추적
                     if (cp <= 0xFFFF) {
@@ -1726,8 +1728,8 @@ pub const Codegen = struct {
 
     fn emitInt(self: *Codegen, value: i64) !void {
         var buf: [20]u8 = undefined;
-        const len = std.fmt.formatIntBuf(&buf, value, 10, .lower, .{});
-        try self.buf.appendSlice(buf[0..len]);
+        const result = std.fmt.bufPrint(&buf, "{d}", .{value}) catch unreachable;
+        try self.buf.appendSlice(self.allocator, result);
     }
 
     // ================================================================
@@ -1768,7 +1770,7 @@ fn generateJS(allocator: std.mem.Allocator, source: []const u8) !struct { output
 
     var t = Transformer.init(allocator, &parser_ptr.ast, .{});
     const root = try t.transform();
-    t.scratch.deinit();
+    t.scratch.deinit(allocator);
 
     const cg = try allocator.create(Codegen);
     cg.* = Codegen.init(allocator, &t.new_ast);
@@ -1820,7 +1822,7 @@ fn e2eFull(allocator: std.mem.Allocator, source: []const u8, t_options: Transfor
 
     var t = Transformer.init(allocator, &parser_ptr.ast, t_options);
     const root = try t.transform();
-    t.scratch.deinit();
+    t.scratch.deinit(allocator);
 
     const cg = try allocator.create(Codegen);
     cg.* = Codegen.initWithOptions(allocator, &t.new_ast, cg_options);

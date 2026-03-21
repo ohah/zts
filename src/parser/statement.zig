@@ -32,8 +32,8 @@ pub fn parse(self: *Parser) !NodeIndex {
         try self.advance();
     }
 
-    var stmts = std.ArrayList(NodeIndex).init(self.allocator);
-    defer stmts.deinit();
+    var stmts: std.ArrayList(NodeIndex) = .empty;
+    defer stmts.deinit(self.allocator);
 
     // directive prologue 감지: 프로그램 시작 부분의 "use strict"
     var in_directive_prologue = true;
@@ -50,7 +50,7 @@ pub fn parse(self: *Parser) !NodeIndex {
 
         const stmt = try parseStatement(self);
         if (!stmt.isNone()) {
-            try stmts.append(stmt);
+            try stmts.append(self.allocator, stmt);
         }
     }
 
@@ -188,12 +188,12 @@ pub fn parseBlockStatement(self: *Parser) ParseError2!NodeIndex {
     const block_saved = self.ctx;
     self.ctx.is_top_level = false;
 
-    var stmts = std.ArrayList(NodeIndex).init(self.allocator);
-    defer stmts.deinit();
+    var stmts: std.ArrayList(NodeIndex) = .empty;
+    defer stmts.deinit(self.allocator);
 
     while (self.current() != .r_curly and self.current() != .eof) {
         const stmt = try parseStatement(self);
-        if (!stmt.isNone()) try stmts.append(stmt);
+        if (!stmt.isNone()) try stmts.append(self.allocator, stmt);
     }
 
     self.ctx = block_saved;
@@ -394,7 +394,7 @@ fn parseVariableDeclaration(self: *Parser) ParseError2!NodeIndex {
                 }
             }
         }
-        try self.scratch.append(decl);
+        try self.scratch.append(self.allocator,decl);
         if (!try self.eat(.comma)) break;
     }
 
@@ -780,7 +780,7 @@ fn parseSwitchStatement(self: *Parser) ParseError2!NodeIndex {
             }
             has_default = true;
         }
-        try self.scratch.append(case_node);
+        try self.scratch.append(self.allocator,case_node);
     }
 
     self.restoreContext(saved_ctx);
@@ -824,7 +824,7 @@ fn parseSwitchCase(self: *Parser) ParseError2!NodeIndex {
         self.current() != .r_curly and self.current() != .eof)
     {
         const stmt = try parseStatement(self);
-        if (!stmt.isNone()) try self.scratch.append(stmt);
+        if (!stmt.isNone()) try self.scratch.append(self.allocator,stmt);
     }
 
     const body = try self.ast.addNodeList(self.scratch.items[body_top..]);

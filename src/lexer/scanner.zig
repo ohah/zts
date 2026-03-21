@@ -46,6 +46,9 @@ pub const Comment = struct {
 /// }
 /// ```
 pub const Scanner = struct {
+    /// 메모리 할당자. ArrayList 메서드 호출에 사용한다.
+    allocator: std.mem.Allocator,
+
     /// 소스 코드 (UTF-8)
     source: []const u8,
 
@@ -104,15 +107,16 @@ pub const Scanner = struct {
         // 4GB 이상의 소스는 u32 offset으로 표현 불가 (D015)
         std.debug.assert(source.len <= std.math.maxInt(u32));
 
-        var line_offsets = std.ArrayList(u32).init(allocator);
+        var line_offsets: std.ArrayList(u32) = .empty;
         // 첫 번째 줄의 시작 offset은 항상 0. 이 append가 실패하면 getLineColumn()이 동작 불가.
-        try line_offsets.append(0);
+        try line_offsets.append(allocator, 0);
 
         var scanner = Scanner{
+            .allocator = allocator,
             .source = source,
             .line_offsets = line_offsets,
-            .template_depth_stack = std.ArrayList(u32).init(allocator),
-            .comments = std.ArrayList(Comment).init(allocator),
+            .template_depth_stack = .empty,
+            .comments = .empty,
         };
 
         // UTF-8 BOM 스킵 (0xEF 0xBB 0xBF)
@@ -128,9 +132,9 @@ pub const Scanner = struct {
     }
 
     pub fn deinit(self: *Scanner) void {
-        self.line_offsets.deinit();
-        self.template_depth_stack.deinit();
-        self.comments.deinit();
+        self.line_offsets.deinit(self.allocator);
+        self.template_depth_stack.deinit(self.allocator);
+        self.comments.deinit(self.allocator);
     }
 
     // ====================================================================
@@ -212,7 +216,7 @@ pub const Scanner = struct {
     fn recordNewline(self: *Scanner) !void {
         self.line += 1;
         self.line_start = self.current;
-        try self.line_offsets.append(self.current);
+        try self.line_offsets.append(self.allocator, self.current);
     }
 
     /// 줄바꿈 문자를 처리한다.
@@ -848,7 +852,7 @@ pub const Scanner = struct {
         self.checkPureComment(comment_text);
 
         // 주석을 기록한다 (start = 첫 번째 '/' 위치, end = 줄바꿈 직전)
-        try self.comments.append(.{
+        try self.comments.append(self.allocator, .{
             .start = self.start,
             .end = self.current,
             .is_multiline = false,
@@ -873,7 +877,7 @@ pub const Scanner = struct {
                 self.checkPureComment(comment_text);
 
                 // 주석을 기록한다 (start = 첫 번째 '/' 위치, end = '*/' 직후)
-                try self.comments.append(.{
+                try self.comments.append(self.allocator, .{
                     .start = self.start,
                     .end = self.current,
                     .is_multiline = true,
@@ -1553,7 +1557,7 @@ pub const Scanner = struct {
             if (c == '$' and self.peekAt(1) == '{') {
                 self.current += 2; // skip ${
                 // 현재 brace depth를 스택에 push (나중에 }에서 매칭)
-                try self.template_depth_stack.append(self.brace_depth);
+                try self.template_depth_stack.append(self.allocator, self.brace_depth);
                 self.brace_depth += 1;
                 return interpolation_kind;
             }
