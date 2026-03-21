@@ -339,6 +339,74 @@
 - **2단계**: `@__PURE__` 활용 + 미사용 함수 선언 제거
 - **3단계** (프로덕션 전): 함수 본문 사이드이펙트 분석, 참조 그래프 (Rollup 수준)
 
+### D064: package.json conditional exports 처리
+- **결정**: Rolldown 방식 — import kind별 resolver 인스턴스 분리
+- **비교**: esbuild(3개 맵, 커스텀 조건 시 `module` 자동 제거 함정) vs webpack(기본값 없이 전체 대체, DX 나쁨) vs SWC(exports 미흡, main/module/browser 필드 중심) vs Rolldown/oxc_resolver(kind별 인스턴스, 조건 고정)
+- **이유**: resolver 생성 시 조건 세트를 고정하면 resolve 호출마다 분기 없음(성능). ESM/CJS/CSS 각각 다른 조건 필요한 건 스펙상 사실. Zig에서도 구조체 3~4개로 자연스럽게 구현.
+- **설계**:
+  - `resolver_import`: `["import", "module", "browser"(플랫폼별), "default"]`
+  - `resolver_require`: `["require", "node"(플랫폼별), "default"]`
+  - `resolver_css`: prefer_relative=true
+  - 커스텀 조건은 추가 방식 (Rollup처럼), `module` 절대 자동 제거 안 함
+  - TS 확장자 매핑: `.js`→`[.js, .ts, .tsx]` (Rolldown 방식)
+  - `default`는 항상 마지막 (Node.js 스펙)
+- **참고**: `references/rolldown/crates/rolldown_resolver/src/resolver_config.rs`, `references/bun/src/resolver/package_json.zig`
+
+### D065: 순환 참조 처리
+- **결정**: Rollup 알고리즘 + Bun 구현 패턴
+- **비교**: esbuild(감지 안 함, const→var 변환으로 회피) vs SWC(petgraph 전이 폐포, 메모리 O(n²)) vs webpack(플러그인 위임) vs Rollup(DFS + 부모 체인 역추적, ~100줄) vs Bun(배열 스캔, defer 정리)
+- **이유**: Rollup이 10년간 검증한 알고리즘이 가장 신뢰할 수 있음. Bun의 "작은 배열 스캔"이 Zig에 딱 맞음 — 순환 경로는 보통 3~5개 모듈이라 O(n²)이 해시맵보다 빠르고, defer로 스택 정리가 Zig 관용구. 경고(에러 아님)가 맞음 — d3, three.js 등 실제 프로젝트에 순환 흔함.
+- **배제 이유**:
+  - esbuild: 감지 안 하면 사용자가 문제를 모름. const→var는 의미 변경이라 위험
+  - SWC: petgraph는 Rust 전용. 전이 폐포 O(n²) 메모리는 MVP에 과도
+  - webpack: 핵심 기능을 외부 플러그인에 맡기면 안 됨
+- **설계**:
+  - DFS 시 `visited` + `in_stack` 배열로 순환 감지
+  - 순환 발견 시 `cycle_group: u32` 부여, 경고 emit
+  - 순환 그룹 내: re-export 축약 비활성화, 원본 import 순서 보존
+  - const/let 의미 유지 (esbuild 방식 거부)
+- **참고**: `references/rollup/src/utils/executionOrder.ts`, `references/bun/src/bundler/LinkerContext.zig`
+
+### D066: 번들러 에러 핸들링
+- **결정**: esbuild의 suggestion + Bun의 step enum + ZTS 기존 Diagnostic 확장
+- **비교**: Rollup(파싱 에러 시 전체 빌드 중단) vs SWC(miette/anyhow, Rust 전용) vs webpack(구조화 안 된 문자열) vs esbuild(suggestion 포함, 파일별 독립) vs Bun(step enum, Logger.Log 중앙 수집)
+- **이유**: esbuild의 suggestion이 DX에서 압도적 — `import './foo'` 실패 시 `Did you mean './foo.js'?` 제안. Bun의 `step: Step` enum (read_file/parse/resolve)이 디버깅에 결정적.
+- **배제 이유**:
+  - Rollup: 파싱 에러 하나로 전체 빌드 중단은 대형 프로젝트에서 불편
+  - SWC: miette는 Rust 전용 에코시스템, Zig에서 재현 불필요
+  - webpack: 문자열 기반 에러는 프로그래밍적 처리 어려움
+- **설계**:
+  ```
+  BundlerDiagnostic {
+      code: ErrorCode,         // UNRESOLVED_IMPORT, MISSING_EXPORT, CIRCULAR_DEPENDENCY...
+      severity: Severity,      // error, warning, info
+      message: []const u8,
+      file_path: []const u8,
+      span: Span,              // 기존 ZTS Span 재사용
+      step: Step,              // resolve, parse, transform, link
+      suggestion: ?[]const u8, // "Did you mean './foo.js'?"
+      notes: []Note,           // 보조 위치 ("opened here", "defined here")
+  }
+  ```
+  - 파싱 에러: 해당 모듈만 실패, 나머지 그래프 계속 빌드
+  - 모듈 못 찾음: 경로형(`./`)이면 에러, bare specifier면 경고+external
+  - 에러 누적 후 마지막에 일괄 출력
+- **참고**: `references/esbuild/internal/resolver/resolver.go`, `references/bun/src/bundler/ParseTask.zig`, `references/bun/src/logger.zig`
+
+### D067: 워크스페이스/모노레포
+- **결정**: MVP에서 제외, 심링크 지원으로 충분
+- **비교**: Bun(자체 패키지 매니저로 워크스페이스 감지) vs 나머지 6개 도구(전부 심링크에 의존)
+- **이유**: 7개 도구 중 모노레포를 특별 처리하는 건 Bun뿐 (자체 패키지 매니저 내장이라 가능). esbuild, Rollup, Rolldown, webpack, SWC 전부 심링크에 의존. 심링크 + preserveSymlinks + realpath 캐시면 npm/yarn/pnpm 워크스페이스 전부 동작.
+- **배제 이유**:
+  - 자체 패키지 매니저: 범위가 너무 큼
+  - 워크스페이스 자동 감지: 심링크가 이미 해결
+  - Yarn PnP 우선 지원: 사용률 대비 구현 비용이 안 맞음
+- **설계**:
+  - resolver에 `resolveRealPath()` + 캐시 (Bun의 entry.cache.symlink 패턴)
+  - `preserveSymlinks: bool` 옵션
+  - Yarn PnP: 번들러 MVP 이후, resolver에 분기 추가
+- **참고**: `references/bun/src/resolver/resolver.zig`, `references/esbuild/internal/resolver/resolver.go`
+
 ### Phase 6 (Advanced) 미결정 사항
 - CSS 번들링 (자체 파서 vs Lightning CSS 연동 vs 플러그인 위임)
 - 개발 서버 (자체 HTTP vs Vite 위임 1단계)
