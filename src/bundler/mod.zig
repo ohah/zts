@@ -18,6 +18,7 @@ pub const types = @import("types.zig");
 pub const import_scanner = @import("import_scanner.zig");
 pub const resolver = @import("resolver.zig");
 pub const package_json = @import("package_json.zig");
+pub const resolve_cache = @import("resolve_cache.zig");
 
 // 공개 타입 re-export
 pub const ModuleIndex = types.ModuleIndex;
@@ -28,10 +29,13 @@ pub const BundlerDiagnostic = types.BundlerDiagnostic;
 pub const extractImports = import_scanner.extractImports;
 pub const Resolver = resolver.Resolver;
 pub const ResolveResult = resolver.ResolveResult;
+pub const ResolveCache = resolve_cache.ResolveCache;
+pub const Platform = resolve_cache.Platform;
 
 test {
     _ = types;
     _ = import_scanner;
     _ = resolver;
     _ = package_json;
+    _ = resolve_cache;
 }
