@@ -48,9 +48,9 @@ pub const BundleResult = struct {
         allocator.free(self.output);
         if (self.diagnostics) |diags| {
             for (diags) |d| {
+                allocator.free(d.message);
                 allocator.free(d.file_path);
                 if (d.suggestion) |s| allocator.free(s);
-                // message는 string literal (comptime) → free 불필요
             }
             allocator.free(diags);
         }
@@ -107,15 +107,23 @@ pub const Bundler = struct {
         const diagnostics: ?[]BundleResult.OwnedDiagnostic = if (graph.diagnostics.items.len > 0) blk: {
             const diags = try self.allocator.alloc(BundleResult.OwnedDiagnostic, graph.diagnostics.items.len);
             errdefer self.allocator.free(diags);
+            // M1 수정: 부분 할당 후 OOM 시 이미 복사한 문자열 해제
+            var filled: usize = 0;
+            errdefer for (diags[0..filled]) |d| {
+                self.allocator.free(d.message);
+                self.allocator.free(d.file_path);
+                if (d.suggestion) |s| self.allocator.free(s);
+            };
             for (graph.diagnostics.items, 0..) |d, i| {
                 diags[i] = .{
                     .code = d.code,
                     .severity = d.severity,
-                    .message = d.message, // string literal — 복사 불필요
+                    .message = try self.allocator.dupe(u8, d.message),
                     .file_path = try self.allocator.dupe(u8, d.file_path),
                     .step = d.step,
                     .suggestion = if (d.suggestion) |s| try self.allocator.dupe(u8, s) else null,
                 };
+                filled = i + 1;
             }
             break :blk diags;
         } else null;
@@ -135,7 +143,7 @@ fn writeFile(dir: std.fs.Dir, path: []const u8, data: []const u8) !void {
     if (std.fs.path.dirname(path)) |parent| {
         dir.makePath(parent) catch {};
     }
-    dir.writeFile(.{ .sub_path = path, .data = data }) catch |err| return err;
+    try dir.writeFile(.{ .sub_path = path, .data = data });
 }
 
 fn absPath(tmp: *std.testing.TmpDir, rel: []const u8) ![]const u8 {
