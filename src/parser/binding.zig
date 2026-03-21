@@ -262,7 +262,7 @@ pub fn parseArrayPattern(self: *Parser) ParseError2!NodeIndex {
         if (self.current() == .comma) {
             // elision (빈 슬롯) — placeholder 노드 추가
             const hole_span = self.currentSpan();
-            try self.scratch.append(try self.ast.addNode(.{
+            try self.scratch.append(self.allocator,try self.ast.addNode(.{
                 .tag = .elision,
                 .span = hole_span,
                 .data = .{ .none = 0 },
@@ -281,7 +281,7 @@ pub fn parseArrayPattern(self: *Parser) ParseError2!NodeIndex {
                 .span = .{ .start = rest_start, .end = self.currentSpan().start },
                 .data = .{ .unary = .{ .operand = rest_arg, .flags = 0 } },
             });
-            try self.scratch.append(rest);
+            try self.scratch.append(self.allocator,rest);
             break; // rest는 항상 마지막
         }
         const elem_raw = try parseBindingName(self);
@@ -290,7 +290,7 @@ pub fn parseArrayPattern(self: *Parser) ParseError2!NodeIndex {
         // TS: optional (?) + type annotation — 배열 패턴 요소에도 가능
         _ = try self.eat(.question);
         _ = try self.tryParseTypeAnnotation();
-        if (!elem.isNone()) try self.scratch.append(elem);
+        if (!elem.isNone()) try self.scratch.append(self.allocator,elem);
         if (!try self.eat(.comma)) break;
     }
 
@@ -324,12 +324,12 @@ pub fn parseObjectPattern(self: *Parser) ParseError2!NodeIndex {
                 .span = .{ .start = rest_start, .end = self.currentSpan().start },
                 .data = .{ .unary = .{ .operand = rest_arg, .flags = 0 } },
             });
-            try self.scratch.append(rest);
+            try self.scratch.append(self.allocator,rest);
             break;
         }
 
         const prop = try parseBindingProperty(self);
-        if (!prop.isNone()) try self.scratch.append(prop);
+        if (!prop.isNone()) try self.scratch.append(self.allocator,prop);
         if (!try self.eat(.comma)) break;
     }
 

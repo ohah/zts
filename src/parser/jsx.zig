@@ -31,7 +31,7 @@ pub fn parseJSXElement(self: *Parser) ParseError2!NodeIndex {
     const scratch_top = self.saveScratch();
     while (self.current() != .r_angle and self.current() != .slash and self.current() != .eof) {
         const attr = try parseJSXAttribute(self);
-        try self.scratch.append(attr);
+        try self.scratch.append(self.allocator,attr);
     }
     const attrs = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
@@ -68,7 +68,7 @@ pub fn parseJSXElement(self: *Parser) ParseError2!NodeIndex {
             if (try self.peekNextKindJSX() == .slash) break;
             // 중첩 JSX element
             const child = try parseJSXElement(self);
-            try self.scratch.append(child);
+            try self.scratch.append(self.allocator,child);
         } else if (self.current() == .l_curly) {
             // JSX expression: {expr}
             try self.advance(); // skip {
@@ -79,11 +79,11 @@ pub fn parseJSXElement(self: *Parser) ParseError2!NodeIndex {
                 .span = .{ .start = 0, .end = self.currentSpan().start },
                 .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
             });
-            try self.scratch.append(container);
+            try self.scratch.append(self.allocator,container);
             try self.scanner.nextJSXChild(); // '{expr}' 이후 다시 children 모드
         } else if (self.current() == .jsx_text) {
             const text_span = self.currentSpan();
-            try self.scratch.append(try self.ast.addNode(.{
+            try self.scratch.append(self.allocator,try self.ast.addNode(.{
                 .tag = .jsx_text,
                 .span = text_span,
                 .data = .{ .string_ref = text_span },
@@ -127,7 +127,7 @@ fn parseJSXFragment(self: *Parser, start: u32) ParseError2!NodeIndex {
             // JSX 모드로 peek (normal 모드에서는 /가 regex로 해석될 수 있음)
             if (try self.peekNextKindJSX() == .slash) break;
             const child = try parseJSXElement(self);
-            try self.scratch.append(child);
+            try self.scratch.append(self.allocator,child);
         } else if (self.current() == .l_curly) {
             try self.advance();
             const expr = try self.parseExpression();
@@ -137,11 +137,11 @@ fn parseJSXFragment(self: *Parser, start: u32) ParseError2!NodeIndex {
                 .span = .{ .start = 0, .end = self.currentSpan().start },
                 .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
             });
-            try self.scratch.append(container);
+            try self.scratch.append(self.allocator,container);
             try self.scanner.nextJSXChild();
         } else if (self.current() == .jsx_text) {
             const text_span = self.currentSpan();
-            try self.scratch.append(try self.ast.addNode(.{
+            try self.scratch.append(self.allocator,try self.ast.addNode(.{
                 .tag = .jsx_text,
                 .span = text_span,
                 .data = .{ .string_ref = text_span },

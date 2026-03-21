@@ -38,7 +38,7 @@ const base64_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012345
 ///     → 첫 digit: 00000 | continuation=1 → 'g' (32)
 ///     → 둘째 digit: 00001 | continuation=0 → 'B' (1)
 ///     → "gB"
-pub fn encodeVLQ(buf: *std.ArrayList(u8), value: i32) !void {
+pub fn encodeVLQ(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), value: i32) !void {
     // 부호 처리: bit 0 = sign, 나머지 = magnitude
     var v: u32 = if (value < 0)
         (@as(u32, @intCast(-value)) << 1) | 1
@@ -52,7 +52,7 @@ pub fn encodeVLQ(buf: *std.ArrayList(u8), value: i32) !void {
         if (v > 0) {
             digit |= 0x20; // continuation bit
         }
-        try buf.append(base64_chars[digit]);
+        try buf.append(allocator, base64_chars[digit]);
         if (v == 0) break;
     }
 }
@@ -88,29 +88,29 @@ pub const SourceMapBuilder = struct {
 
     pub fn init(allocator: std.mem.Allocator) SourceMapBuilder {
         return .{
-            .mappings = std.ArrayList(Mapping).init(allocator),
-            .sources = std.ArrayList([]const u8).init(allocator),
-            .buf = std.ArrayList(u8).init(allocator),
+            .mappings = .empty,
+            .sources = .empty,
+            .buf = .empty,
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *SourceMapBuilder) void {
-        self.mappings.deinit();
-        self.sources.deinit();
-        self.buf.deinit();
+        self.mappings.deinit(self.allocator);
+        self.sources.deinit(self.allocator);
+        self.buf.deinit(self.allocator);
     }
 
     /// 소스 파일 추가. 인덱스를 반환.
     pub fn addSource(self: *SourceMapBuilder, source_name: []const u8) !u32 {
         const idx: u32 = @intCast(self.sources.items.len);
-        try self.sources.append(source_name);
+        try self.sources.append(self.allocator, source_name);
         return idx;
     }
 
     /// 매핑 추가.
     pub fn addMapping(self: *SourceMapBuilder, mapping: Mapping) !void {
-        try self.mappings.append(mapping);
+        try self.mappings.append(self.allocator, mapping);
     }
 
     /// 소스맵 JSON을 생성한다.
@@ -118,24 +118,24 @@ pub const SourceMapBuilder = struct {
         self.buf.clearRetainingCapacity();
 
         // JSON 시작
-        try self.buf.appendSlice("{\"version\":3,\"file\":\"");
-        try self.buf.appendSlice(output_file);
-        try self.buf.appendSlice("\",\"sourceRoot\":\"\",\"sources\":[");
+        try self.buf.appendSlice(self.allocator,"{\"version\":3,\"file\":\"");
+        try self.buf.appendSlice(self.allocator,output_file);
+        try self.buf.appendSlice(self.allocator,"\",\"sourceRoot\":\"\",\"sources\":[");
 
         // sources 배열
         for (self.sources.items, 0..) |src, i| {
-            if (i > 0) try self.buf.append(',');
-            try self.buf.append('"');
-            try self.buf.appendSlice(src);
-            try self.buf.append('"');
+            if (i > 0) try self.buf.append(self.allocator,',');
+            try self.buf.append(self.allocator,'"');
+            try self.buf.appendSlice(self.allocator,src);
+            try self.buf.append(self.allocator,'"');
         }
 
-        try self.buf.appendSlice("],\"names\":[],\"mappings\":\"");
+        try self.buf.appendSlice(self.allocator,"],\"names\":[],\"mappings\":\"");
 
         // mappings 인코딩
         try self.encodeMappings();
 
-        try self.buf.appendSlice("\"}");
+        try self.buf.appendSlice(self.allocator,"\"}");
 
         return self.buf.items;
     }
@@ -152,7 +152,7 @@ pub const SourceMapBuilder = struct {
         for (self.mappings.items) |m| {
             // 줄이 바뀌면 세미콜론 추가
             while (prev_gen_line < m.generated_line) {
-                try self.buf.append(';');
+                try self.buf.append(self.allocator,';');
                 prev_gen_line += 1;
                 prev_gen_col = 0;
                 is_first_segment_on_line = true;
@@ -160,19 +160,19 @@ pub const SourceMapBuilder = struct {
 
             // 같은 줄의 이전 세그먼트와 콤마로 구분
             if (!is_first_segment_on_line) {
-                try self.buf.append(',');
+                try self.buf.append(self.allocator,',');
             }
             is_first_segment_on_line = false;
 
             // 4개 필드 VLQ 인코딩
             // 1. 출력 열 (이전 세그먼트 대비 상대값)
-            try encodeVLQ(&self.buf, @as(i32, @intCast(m.generated_column)) - prev_gen_col);
+            try encodeVLQ(self.allocator, &self.buf, @as(i32, @intCast(m.generated_column)) - prev_gen_col);
             // 2. 소스 인덱스 (상대값)
-            try encodeVLQ(&self.buf, @as(i32, @intCast(m.source_index)) - prev_src_idx);
+            try encodeVLQ(self.allocator, &self.buf, @as(i32, @intCast(m.source_index)) - prev_src_idx);
             // 3. 소스 줄 (상대값)
-            try encodeVLQ(&self.buf, @as(i32, @intCast(m.original_line)) - prev_src_line);
+            try encodeVLQ(self.allocator, &self.buf, @as(i32, @intCast(m.original_line)) - prev_src_line);
             // 4. 소스 열 (상대값)
-            try encodeVLQ(&self.buf, @as(i32, @intCast(m.original_column)) - prev_src_col);
+            try encodeVLQ(self.allocator, &self.buf, @as(i32, @intCast(m.original_column)) - prev_src_col);
 
             prev_gen_col = @intCast(m.generated_column);
             prev_src_idx = @intCast(m.source_index);
@@ -187,37 +187,37 @@ pub const SourceMapBuilder = struct {
 // ============================================================
 
 test "VLQ: encode 0" {
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
-    defer buf.deinit();
-    try encodeVLQ(&buf, 0);
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try encodeVLQ(std.testing.allocator, &buf, 0);
     try std.testing.expectEqualStrings("A", buf.items);
 }
 
 test "VLQ: encode 1" {
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
-    defer buf.deinit();
-    try encodeVLQ(&buf, 1);
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try encodeVLQ(std.testing.allocator, &buf, 1);
     try std.testing.expectEqualStrings("C", buf.items);
 }
 
 test "VLQ: encode -1" {
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
-    defer buf.deinit();
-    try encodeVLQ(&buf, -1);
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try encodeVLQ(std.testing.allocator, &buf, -1);
     try std.testing.expectEqualStrings("D", buf.items);
 }
 
 test "VLQ: encode 16" {
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
-    defer buf.deinit();
-    try encodeVLQ(&buf, 16);
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try encodeVLQ(std.testing.allocator, &buf, 16);
     try std.testing.expectEqualStrings("gB", buf.items);
 }
 
 test "VLQ: encode -16" {
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
-    defer buf.deinit();
-    try encodeVLQ(&buf, -16);
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try encodeVLQ(std.testing.allocator, &buf, -16);
     try std.testing.expectEqualStrings("hB", buf.items);
 }
 

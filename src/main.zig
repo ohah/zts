@@ -40,8 +40,8 @@ fn transpileFile(
     output_path: ?[]const u8,
     options: TranspileOptions,
 ) !void {
-    const stderr = std.io.getStdErr().writer();
-    const stdout = std.io.getStdOut().writer();
+    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stdout = std.fs.File.stdout().deprecatedWriter();
 
     // 파일당 Arena allocator: 모든 내부 할당을 Arena에서 수행하고,
     // 함수 끝에서 일괄 해제한다. backing allocator(GPA)는 debug leak detection용.
@@ -160,8 +160,8 @@ fn walkAndTranspile(
     output_dir: []const u8,
     options: TranspileOptions,
 ) !void {
-    const stderr = std.io.getStdErr().writer();
-    const stdout = std.io.getStdOut().writer();
+    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stdout = std.fs.File.stdout().deprecatedWriter();
 
     // 입력 디렉토리 열기
     var dir = std.fs.cwd().openDir(input_dir, .{ .iterate = true }) catch |err| {
@@ -231,8 +231,8 @@ fn walkAndTranspile(
 }
 
 pub fn main() !void {
-    const stdout = std.io.getStdOut().writer();
-    const stderr = std.io.getStdErr().writer();
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stderr = std.fs.File.stderr().deprecatedWriter();
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -447,7 +447,7 @@ pub fn main() !void {
     const file_path = if (is_stdin) "<stdin>" else input_path_str;
 
     if (is_stdin) {
-        const source = std.io.getStdIn().readToEndAlloc(allocator, 100 * 1024 * 1024) catch |err| {
+        const source = std.fs.File.stdin().readToEndAlloc(allocator, 100 * 1024 * 1024) catch |err| {
             try stderr.print("zts: cannot read stdin: {}\n", .{err});
             return;
         };
@@ -471,7 +471,7 @@ fn watchFile(
     options: TranspileOptions,
     stderr: anytype,
 ) !void {
-    const stdout = std.io.getStdOut().writer();
+    const stdout = std.fs.File.stdout().deprecatedWriter();
 
     // 초기 mtime 저장
     var last_mtime = getFileMtime(file_path) catch |err| {
@@ -482,7 +482,7 @@ fn watchFile(
     try stdout.print("[watch] Watching for file changes...\n", .{});
 
     while (true) {
-        std.time.sleep(500 * std.time.ns_per_ms);
+        std.Thread.sleep(500 * std.time.ns_per_ms);
 
         const current_mtime = getFileMtime(file_path) catch continue;
 
@@ -506,7 +506,7 @@ fn watchDirectory(
     options: TranspileOptions,
     stderr: anytype,
 ) !void {
-    const stdout = std.io.getStdOut().writer();
+    const stdout = std.fs.File.stdout().deprecatedWriter();
 
     // mtime 맵: 파일 경로(소유) -> mtime
     var mtime_map = std.StringHashMap(i128).init(allocator);
@@ -524,7 +524,7 @@ fn watchDirectory(
     try stdout.print("[watch] Watching for file changes...\n", .{});
 
     while (true) {
-        std.time.sleep(500 * std.time.ns_per_ms);
+        std.Thread.sleep(500 * std.time.ns_per_ms);
 
         // 현재 파일 상태 수집
         var current_mtimes = std.StringHashMap(i128).init(allocator);

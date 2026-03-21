@@ -51,7 +51,7 @@ fn e2e(allocator: std.mem.Allocator, source: []const u8) !TestResult {
 
     var t = Transformer.init(allocator, &parser_ptr.ast, .{});
     const root = try t.transform();
-    t.scratch.deinit();
+    t.scratch.deinit(allocator);
 
     const cg = try allocator.create(Codegen);
     cg.* = Codegen.initWithOptions(allocator, &t.new_ast, .{ .minify = true });

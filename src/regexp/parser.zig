@@ -56,9 +56,11 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         /// pre-parse에서 수집한 총 capturing group 수 (forward reference 즉시 검증용).
         total_group_count: u32 = 0,
         /// named group 목록 (ES2025 중복 검증용).
-        named_groups: std.BoundedArray(NamedGroupEntry, 16) = .{},
+        named_groups_buf: [16]NamedGroupEntry = undefined,
+        named_groups_len: u8 = 0,
         /// named back reference 목록 (파싱 끝에서 존재 검증).
-        named_refs: std.BoundedArray([]const u8, 32) = .{},
+        named_refs_buf: [32][]const u8 = undefined,
+        named_refs_len: u8 = 0,
         /// \k가 < 없이 사용되었는지 (named group이 있으면 에러).
         has_bare_k_escape: bool = false,
 
@@ -87,9 +89,12 @@ pub fn PatternParser(comptime emit_ast: bool) type {
 
         /// AST 노드 flat 배열.
         ast_nodes: if (emit_ast) std.ArrayList(ast.Node) else void =
-            if (emit_ast) undefined else {},
+            if (emit_ast) .empty else {},
         /// 가변 길이 자식 리스트 데이터.
         ast_extra: if (emit_ast) std.ArrayList(u32) else void =
+            if (emit_ast) .empty else {},
+        /// AST 모드에서 사용하는 allocator (emit_ast=true에서만 유효).
+        allocator: if (emit_ast) std.mem.Allocator else void =
             if (emit_ast) undefined else {},
         /// 마지막으로 빌드한 AST 노드. parse 함수들이 결과를 전달하는 데 사용.
         last_node: if (emit_ast) ast.NodeIndex else void =
@@ -113,24 +118,25 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         /// allocator는 AST 노드와 extra_data 저장에 사용.
         pub fn initWithAllocator(source: []const u8, parsed_flags: Flags, alloc: std.mem.Allocator) Self {
             if (!emit_ast) @compileError("initWithAllocator() requires emit_ast=true");
-            var nodes = std.ArrayList(ast.Node).init(alloc);
-            var extra = std.ArrayList(u32).init(alloc);
+            var nodes: std.ArrayList(ast.Node) = .empty;
+            var extra: std.ArrayList(u32) = .empty;
             // 대부분의 정규식은 32개 미만 노드 → 재할당 최소화
-            nodes.ensureTotalCapacity(32) catch {}; // pre-alloc 실패해도 동작에 지장 없음
-            extra.ensureTotalCapacity(64) catch {}; // pre-alloc 실패해도 동작에 지장 없음
+            nodes.ensureTotalCapacity(alloc, 32) catch {}; // pre-alloc 실패해도 동작에 지장 없음
+            extra.ensureTotalCapacity(alloc, 64) catch {}; // pre-alloc 실패해도 동작에 지장 없음
             return .{
                 .source = source,
                 .flags = parsed_flags,
                 .ast_nodes = nodes,
                 .ast_extra = extra,
+                .allocator = alloc,
             };
         }
 
         /// AST 모드 리소스 해제.
         pub fn deinit(self: *Self) void {
             if (emit_ast) {
-                self.ast_nodes.deinit();
-                self.ast_extra.deinit();
+                self.ast_nodes.deinit(self.allocator);
+                self.ast_extra.deinit(self.allocator);
             }
         }
 
@@ -158,9 +164,9 @@ pub fn PatternParser(comptime emit_ast: bool) type {
 
             // toOwnedSlice로 소유권 이전 — 호출자가 RegExpAst.deinit()으로 해제.
             // toOwnedSlice 후 ArrayList는 capacity=0이므로 p.deinit()은 안전한 no-op.
-            const alloc = self.ast_nodes.allocator;
-            const nodes = self.ast_nodes.toOwnedSlice() catch return null;
-            const extra = self.ast_extra.toOwnedSlice() catch {
+            const alloc = self.allocator;
+            const nodes = self.ast_nodes.toOwnedSlice(alloc) catch return null;
+            const extra = self.ast_extra.toOwnedSlice(alloc) catch {
                 alloc.free(nodes); // 첫 번째 할당 정리
                 return null;
             };
@@ -246,9 +252,9 @@ pub fn PatternParser(comptime emit_ast: bool) type {
             }
 
             // named back reference가 정의된 named group을 참조하는지 검증
-            for (self.named_refs.slice()) |ref_name| {
+            for (self.named_refs_buf[0..self.named_refs_len]) |ref_name| {
                 var found = false;
-                for (self.named_groups.slice()) |entry| {
+                for (self.named_groups_buf[0..self.named_groups_len]) |entry| {
                     if (std.mem.eql(u8, ref_name, entry.name)) {
                         found = true;
                         break;
@@ -261,7 +267,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
             }
 
             // \k without < in pattern that has named groups → error
-            if (self.has_bare_k_escape and self.named_groups.len > 0) {
+            if (self.has_bare_k_escape and self.named_groups_len > 0) {
                 self.err_message = "invalid named back reference";
                 return;
             }
@@ -279,7 +285,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         /// 노드를 추가하고 인덱스를 반환한다.
         fn addNode(self: *Self, tag: ast.Tag, span: ast.Span, data: [3]u32) ast.NodeIndex {
             if (emit_ast) {
-                self.ast_nodes.append(.{
+                self.ast_nodes.append(self.allocator, .{
                     .tag = tag,
                     .span = span,
                     .data = data,
@@ -295,7 +301,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         /// extra_data에 값을 추가한다.
         fn appendExtra(self: *Self, value: u32) void {
             if (emit_ast) {
-                self.ast_extra.append(value) catch {
+                self.ast_extra.append(self.allocator, value) catch {
                     self.setError("out of memory building regexp AST");
                 };
             }
@@ -900,10 +906,12 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         if (!self.parseGroupName()) return false;
                         // 참조 이름을 수집 (파싱 끝에서 존재 검증)
                         const ref_name = self.source[ref_name_start .. self.pos - 1];
-                        self.named_refs.append(ref_name) catch {
+                        if (self.named_refs_len >= self.named_refs_buf.len) {
                             self.setError("too many named back references");
                             return false;
-                        };
+                        }
+                        self.named_refs_buf[self.named_refs_len] = ref_name;
+                        self.named_refs_len += 1;
                         if (emit_ast) {
                             self.last_node = self.addNode(.named_reference, .{
                                 .start = bs_pos,
@@ -1154,7 +1162,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         // ES2025 중복 이름 체크: 같은 alternative면 에러, 다른 alternative면 허용
                         const cur_depth = @min(self.alt_depth, 7);
                         const cur_path = self.alt_indices[0 .. cur_depth + 1];
-                        for (self.named_groups.slice()) |existing| {
+                        for (self.named_groups_buf[0..self.named_groups_len]) |existing| {
                             if (std.mem.eql(u8, existing.name, name)) {
                                 const ex_path = existing.alt_path[0 .. existing.alt_depth + 1];
                                 if (!canParticipate(ex_path, cur_path)) {
@@ -1163,7 +1171,11 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                                 }
                             }
                         }
-                        self.named_groups.append(.{
+                        if (self.named_groups_len >= self.named_groups_buf.len) {
+                            self.setError("too many named capturing groups");
+                            return false;
+                        }
+                        self.named_groups_buf[self.named_groups_len] = .{
                             .name = name,
                             .alt_path = blk: {
                                 var path: [8]u32 = [_]u32{0} ** 8;
@@ -1172,10 +1184,8 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                                 break :blk path;
                             },
                             .alt_depth = cur_depth,
-                        }) catch {
-                            self.setError("too many named capturing groups");
-                            return false;
                         };
+                        self.named_groups_len += 1;
                         self.group_count += 1;
 
                         self.parseDisjunction();

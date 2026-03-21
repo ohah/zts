@@ -86,7 +86,7 @@ pub fn checkDuplicateConstructors(
 
         if (first_constructor_span) |_| {
             // 두 번째 constructor → 에러
-            try addError(errors, node.span, try std.fmt.allocPrint(allocator, "A class may only have one constructor", .{}));
+            try addError(errors, allocator, node.span, try std.fmt.allocPrint(allocator, "A class may only have one constructor", .{}));
             return; // 첫 중복만 보고
         } else {
             first_constructor_span = node.span;
@@ -118,8 +118,8 @@ fn matchKeyName(ast: *const Ast, key_idx: NodeIndex, target: []const u8) bool {
 }
 
 /// 에러를 errors 목록에 추가한다.
-fn addError(errors: *std.ArrayList(Diagnostic), span: Span, msg: []const u8) AllocError!void {
-    try errors.append(.{ .span = span, .message = msg, .kind = .semantic });
+fn addError(errors: *std.ArrayList(Diagnostic), allocator: std.mem.Allocator, span: Span, msg: []const u8) AllocError!void {
+    try errors.append(allocator, .{ .span = span, .message = msg, .kind = .semantic });
 }
 
 // ====================================================================
@@ -202,7 +202,7 @@ fn checkPrivateKeyStaticConflict(
     if (declared.get(name)) |existing| {
         // 같은 이름이 이미 등록됨 → static 상태가 다르면 에러
         if (existing.is_static != is_static) {
-            try addError(errors, key_node.span, try std.fmt.allocPrint(
+            try addError(errors, allocator, key_node.span, try std.fmt.allocPrint(
                 allocator,
                 "Private field '{s}' has already been declared",
                 .{name},
@@ -257,7 +257,7 @@ pub fn checkObjectDuplicateProto(
         if (!matchKeyName(ast, key_idx, "__proto__")) continue;
 
         if (first_proto_span) |_| {
-            try addError(errors, node.span, try std.fmt.allocPrint(allocator, "Property name __proto__ appears more than once in object literal", .{}));
+            try addError(errors, allocator, node.span, try std.fmt.allocPrint(allocator, "Property name __proto__ appears more than once in object literal", .{}));
             return; // 첫 중복만 보고
         } else {
             first_proto_span = node.span;
@@ -293,11 +293,11 @@ pub fn checkGetterSetterParams(
     const params_len = ast.extra_data.items[extra_start + 2];
 
     if ((flags & METHOD_FLAG_GETTER) != 0 and params_len != 0) {
-        try addError(errors, node.span, try std.fmt.allocPrint(allocator, "Getter must not have any formal parameters", .{}));
+        try addError(errors, allocator, node.span, try std.fmt.allocPrint(allocator, "Getter must not have any formal parameters", .{}));
     }
 
     if ((flags & METHOD_FLAG_SETTER) != 0 and params_len != 1) {
-        try addError(errors, node.span, try std.fmt.allocPrint(allocator, "Setter must have exactly one formal parameter", .{}));
+        try addError(errors, allocator, node.span, try std.fmt.allocPrint(allocator, "Setter must have exactly one formal parameter", .{}));
     }
 }
 
@@ -345,7 +345,7 @@ fn recordSeenName(
     allocator: std.mem.Allocator,
 ) AllocError!void {
     if (seen.get(name)) |_| {
-        try addError(errors, span, try std.fmt.allocPrint(
+        try addError(errors, allocator, span, try std.fmt.allocPrint(
             allocator,
             "Duplicate parameter name '{s}'",
             .{name},
@@ -497,10 +497,10 @@ test "checker: duplicate constructor is error" {
     defer parser.deinit();
     _ = try parser.parse();
 
-    var errs = std.ArrayList(Diagnostic).init(std.testing.allocator);
+    var errs: std.ArrayList(Diagnostic) = .empty;
     defer {
         for (errs.items) |e| std.testing.allocator.free(e.message);
-        errs.deinit();
+        errs.deinit(std.testing.allocator);
     }
 
     // class body를 찾아서 검사
@@ -523,8 +523,8 @@ test "checker: single constructor is valid" {
     defer parser.deinit();
     _ = try parser.parse();
 
-    var errs = std.ArrayList(Diagnostic).init(std.testing.allocator);
-    defer errs.deinit();
+    var errs: std.ArrayList(Diagnostic) = .empty;
+    defer errs.deinit(std.testing.allocator);
 
     const ast = &parser.ast;
     for (ast.nodes.items) |node| {
@@ -544,10 +544,10 @@ test "checker: static/instance private name conflict is error" {
     defer parser.deinit();
     _ = try parser.parse();
 
-    var errs = std.ArrayList(Diagnostic).init(std.testing.allocator);
+    var errs: std.ArrayList(Diagnostic) = .empty;
     defer {
         for (errs.items) |e| std.testing.allocator.free(e.message);
-        errs.deinit();
+        errs.deinit(std.testing.allocator);
     }
 
     const ast = &parser.ast;
@@ -568,8 +568,8 @@ test "checker: same static private getter+setter is valid" {
     defer parser.deinit();
     _ = try parser.parse();
 
-    var errs = std.ArrayList(Diagnostic).init(std.testing.allocator);
-    defer errs.deinit();
+    var errs: std.ArrayList(Diagnostic) = .empty;
+    defer errs.deinit(std.testing.allocator);
 
     const ast = &parser.ast;
     for (ast.nodes.items) |node| {
@@ -589,10 +589,10 @@ test "checker: duplicate __proto__ is error" {
     defer parser.deinit();
     _ = try parser.parse();
 
-    var errs = std.ArrayList(Diagnostic).init(std.testing.allocator);
+    var errs: std.ArrayList(Diagnostic) = .empty;
     defer {
         for (errs.items) |e| std.testing.allocator.free(e.message);
-        errs.deinit();
+        errs.deinit(std.testing.allocator);
     }
 
     const ast = &parser.ast;
@@ -613,8 +613,8 @@ test "checker: single __proto__ is valid" {
     defer parser.deinit();
     _ = try parser.parse();
 
-    var errs = std.ArrayList(Diagnostic).init(std.testing.allocator);
-    defer errs.deinit();
+    var errs: std.ArrayList(Diagnostic) = .empty;
+    defer errs.deinit(std.testing.allocator);
 
     const ast = &parser.ast;
     for (ast.nodes.items) |node| {

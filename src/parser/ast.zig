@@ -409,28 +409,32 @@ pub const Ast = struct {
     /// getText(span)으로 투명하게 접근.
     string_table: std.ArrayList(u8),
 
+    /// 메모리 할당자 (Zig 0.15: ArrayList가 더 이상 allocator를 저장하지 않음)
+    allocator: std.mem.Allocator,
+
     /// string_table 마커. Span.start의 bit 31이 1이면 string_table 참조.
     pub const STRING_TABLE_BIT: u32 = 0x80000000;
 
     pub fn init(allocator: std.mem.Allocator, source: []const u8) Ast {
         return .{
-            .nodes = std.ArrayList(Node).init(allocator),
-            .extra_data = std.ArrayList(u32).init(allocator),
-            .string_table = std.ArrayList(u8).init(allocator),
+            .nodes = .empty,
+            .extra_data = .empty,
+            .string_table = .empty,
+            .allocator = allocator,
             .source = source,
         };
     }
 
     pub fn deinit(self: *Ast) void {
-        self.nodes.deinit();
-        self.extra_data.deinit();
-        self.string_table.deinit();
+        self.nodes.deinit(self.allocator);
+        self.extra_data.deinit(self.allocator);
+        self.string_table.deinit(self.allocator);
     }
 
     /// 노드를 추가하고 인덱스를 반환한다.
     pub fn addNode(self: *Ast, node: Node) !NodeIndex {
         const index: u32 = @intCast(self.nodes.items.len);
-        try self.nodes.append(node);
+        try self.nodes.append(self.allocator, node);
         return @enumFromInt(index);
     }
 
@@ -448,7 +452,7 @@ pub const Ast = struct {
     /// extra_data에 값을 추가하고 시작 인덱스를 반환한다.
     pub fn addExtra(self: *Ast, value: u32) !u32 {
         const index: u32 = @intCast(self.extra_data.items.len);
-        try self.extra_data.append(value);
+        try self.extra_data.append(self.allocator, value);
         return index;
     }
 
@@ -457,7 +461,7 @@ pub const Ast = struct {
     pub fn addNodeList(self: *Ast, indices: []const NodeIndex) !NodeList {
         const start: u32 = @intCast(self.extra_data.items.len);
         const len: u32 = @intCast(indices.len);
-        try self.extra_data.ensureUnusedCapacity(len);
+        try self.extra_data.ensureUnusedCapacity(self.allocator, len);
         for (indices) |idx| {
             self.extra_data.appendAssumeCapacity(@intFromEnum(idx));
         }
@@ -468,7 +472,7 @@ pub const Ast = struct {
     /// 한 번의 capacity check로 전체를 추가 (개별 addExtra N번보다 효율적).
     pub fn addExtras(self: *Ast, values: []const u32) !u32 {
         const start: u32 = @intCast(self.extra_data.items.len);
-        try self.extra_data.ensureUnusedCapacity(values.len);
+        try self.extra_data.ensureUnusedCapacity(self.allocator, values.len);
         for (values) |v| {
             self.extra_data.appendAssumeCapacity(v);
         }
@@ -491,7 +495,7 @@ pub const Ast = struct {
         // string_table은 bit 31 미만이어야 함 (bit 31은 마커로 사용)
         std.debug.assert(self.string_table.items.len + text.len < STRING_TABLE_BIT);
         const start: u32 = @intCast(self.string_table.items.len);
-        try self.string_table.appendSlice(text);
+        try self.string_table.appendSlice(self.allocator, text);
         const end: u32 = @intCast(self.string_table.items.len);
         return .{
             .start = start | STRING_TABLE_BIT,

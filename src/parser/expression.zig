@@ -36,7 +36,7 @@ fn parseExpressionOrRest(self: *Parser) ParseError2!NodeIndex {
     if (self.current() != .comma) return first;
 
     const scratch_top = self.saveScratch();
-    try self.scratch.append(first);
+    try self.scratch.append(self.allocator,first);
     var had_trailing_comma = false;
     while (try self.eat(.comma)) {
         if (self.current() == .r_paren) {
@@ -44,7 +44,7 @@ fn parseExpressionOrRest(self: *Parser) ParseError2!NodeIndex {
             break;
         }
         const elem = try parseSpreadOrAssignment(self);
-        try self.scratch.append(elem);
+        try self.scratch.append(self.allocator,elem);
     }
     // rest element 뒤 trailing comma 감지: (...a,) → SyntaxError
     // 마지막 요소가 spread이고 while이 trailing comma 때문에 break했으면 플래그 설정
@@ -77,12 +77,12 @@ pub fn parseExpression(self: *Parser) ParseError2!NodeIndex {
 
     // 콤마 연산자 → sequence expression
     const scratch_top = self.saveScratch();
-    try self.scratch.append(first);
+    try self.scratch.append(self.allocator,first);
     while (try self.eat(.comma)) {
         // trailing comma: 콤마 뒤에 )가 오면 arrow function 파라미터 trailing comma
         if (self.current() == .r_paren) break;
         const elem = try parseAssignmentExpression(self);
-        try self.scratch.append(elem);
+        try self.scratch.append(self.allocator,elem);
     }
     const first_span = self.ast.getNode(first).span;
     const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
@@ -960,7 +960,7 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
             const scratch_top = self.saveScratch();
             while (self.current() == .at) {
                 const dec = try self.parseDecorator();
-                try self.scratch.append(dec);
+                try self.scratch.append(self.allocator,dec);
             }
             const decorators = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
             self.restoreScratch(scratch_top);
@@ -1145,7 +1145,7 @@ fn parseTemplateLiteral(self: *Parser, is_tagged: bool) ParseError2!NodeIndex {
     const scratch_top = self.saveScratch();
 
     // template_head: `text${
-    try self.scratch.append(try self.ast.addNode(.{
+    try self.scratch.append(self.allocator,try self.ast.addNode(.{
         .tag = .template_element,
         .span = self.currentSpan(),
         .data = .{ .none = 0 },
@@ -1157,7 +1157,7 @@ fn parseTemplateLiteral(self: *Parser, is_tagged: bool) ParseError2!NodeIndex {
         const tmpl_saved = self.enterAllowInContext(true);
         const expr = try parseExpression(self);
         self.restoreContext(tmpl_saved);
-        try self.scratch.append(expr);
+        try self.scratch.append(self.allocator,expr);
 
         // template_middle: }text${ 또는 template_tail: }text`
         if (self.current() == .template_middle) {
@@ -1165,7 +1165,7 @@ fn parseTemplateLiteral(self: *Parser, is_tagged: bool) ParseError2!NodeIndex {
             if (!is_tagged and self.scanner.token.has_invalid_escape) {
                 try self.addError(self.currentSpan(), "Invalid escape sequence in template literal");
             }
-            try self.scratch.append(try self.ast.addNode(.{
+            try self.scratch.append(self.allocator,try self.ast.addNode(.{
                 .tag = .template_element,
                 .span = self.currentSpan(),
                 .data = .{ .none = 0 },
@@ -1176,7 +1176,7 @@ fn parseTemplateLiteral(self: *Parser, is_tagged: bool) ParseError2!NodeIndex {
             if (!is_tagged and self.scanner.token.has_invalid_escape) {
                 try self.addError(self.currentSpan(), "Invalid escape sequence in template literal");
             }
-            try self.scratch.append(try self.ast.addNode(.{
+            try self.scratch.append(self.allocator,try self.ast.addNode(.{
                 .tag = .template_element,
                 .span = self.currentSpan(),
                 .data = .{ .none = 0 },
@@ -1204,14 +1204,14 @@ fn parseArrayExpression(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     try self.advance(); // skip [
 
-    var elements = std.ArrayList(NodeIndex).init(self.allocator);
-    defer elements.deinit();
+    var elements: std.ArrayList(NodeIndex) = .empty;
+    defer elements.deinit(self.allocator);
 
     while (self.current() != .r_bracket and self.current() != .eof) {
         if (self.current() == .comma) {
             // elision (빈 슬롯)
             const hole_span = self.currentSpan();
-            try elements.append(try self.ast.addNode(.{
+            try elements.append(self.allocator,try self.ast.addNode(.{
                 .tag = .elision,
                 .span = hole_span,
                 .data = .{ .none = 0 },
@@ -1220,7 +1220,7 @@ fn parseArrayExpression(self: *Parser) ParseError2!NodeIndex {
             continue;
         }
         const elem = try parseSpreadOrAssignment(self);
-        try elements.append(elem);
+        try elements.append(self.allocator,elem);
         if (!try self.eat(.comma)) break;
         // spread 뒤에 trailing comma가 있고 바로 ]가 오면 플래그를 설정.
         // 이 정보는 coverArrayExpressionToTarget에서 rest trailing comma 에러에 사용된다.
@@ -1367,7 +1367,7 @@ fn parseArgumentList(self: *Parser) ParseError2!NodeList {
     const scratch_top = self.saveScratch();
     while (self.current() != .r_paren and self.current() != .eof) {
         const arg = try parseSpreadOrAssignment(self);
-        try self.scratch.append(arg);
+        try self.scratch.append(self.allocator,arg);
         if (!try self.eat(.comma)) break;
     }
     try self.expect(.r_paren);

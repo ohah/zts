@@ -59,6 +59,9 @@ pub const Transformer = struct {
     /// 설정
     options: TransformOptions,
 
+    /// allocator (ArrayList 호출에 필요)
+    allocator: std.mem.Allocator,
+
     /// 임시 버퍼 (리스트 변환 시 재사용)
     scratch: std.ArrayList(NodeIndex),
 
@@ -72,15 +75,16 @@ pub const Transformer = struct {
             .old_ast = old_ast,
             .new_ast = Ast.init(allocator, old_ast.source),
             .options = options,
-            .scratch = std.ArrayList(NodeIndex).init(allocator),
-            .pending_nodes = std.ArrayList(NodeIndex).init(allocator),
+            .allocator = allocator,
+            .scratch = .empty,
+            .pending_nodes = .empty,
         };
     }
 
     pub fn deinit(self: *Transformer) void {
         self.new_ast.deinit();
-        self.scratch.deinit();
-        self.pending_nodes.deinit();
+        self.scratch.deinit(self.allocator);
+        self.pending_nodes.deinit(self.allocator);
     }
 
     // ================================================================
@@ -400,12 +404,12 @@ pub const Transformer = struct {
 
             // pending_nodes 드레인: visitNode가 추가한 보류 노드를 먼저 삽입
             if (self.pending_nodes.items.len > pending_top) {
-                try self.scratch.appendSlice(self.pending_nodes.items[pending_top..]);
+                try self.scratch.appendSlice(self.allocator, self.pending_nodes.items[pending_top..]);
                 self.pending_nodes.shrinkRetainingCapacity(pending_top);
             }
 
             if (!new_child.isNone()) {
-                try self.scratch.append(new_child);
+                try self.scratch.append(self.allocator,new_child);
             }
         }
 
@@ -655,7 +659,7 @@ pub const Transformer = struct {
             if (param_node.tag == .formal_parameter and param_node.data.unary.flags != 0) {
                 // parameter property: modifier를 제거하고 내부 패턴만 복사
                 const inner = try self.visitNode(param_node.data.unary.operand);
-                try self.scratch.append(inner);
+                try self.scratch.append(self.allocator,inner);
 
                 // this.x = x 문 생성을 위해 이름 저장
                 if (prop_count < prop_names.len) {
@@ -665,7 +669,7 @@ pub const Transformer = struct {
             } else {
                 const new_param = try self.visitNode(@enumFromInt(raw_idx));
                 if (!new_param.isNone()) {
-                    try self.scratch.append(new_param);
+                    try self.scratch.append(self.allocator,new_param);
                 }
             }
         }
@@ -723,13 +727,13 @@ pub const Transformer = struct {
                 .span = name_node.span,
                 .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
             });
-            try self.scratch.append(stmt);
+            try self.scratch.append(self.allocator,stmt);
         }
 
         // 기존 바디 문들을 추가
         const old_stmts = self.new_ast.extra_data.items[old_list.start .. old_list.start + old_list.len];
         for (old_stmts) |raw_idx| {
-            try self.scratch.append(@enumFromInt(raw_idx));
+            try self.scratch.append(self.allocator,@enumFromInt(raw_idx));
         }
 
         const new_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
@@ -1218,7 +1222,7 @@ fn parseAndTransform(allocator: std.mem.Allocator, source: []const u8) !TestResu
 
     var t = Transformer.init(allocator, &parser_ptr.ast, .{});
     const root = try t.transform();
-    t.scratch.deinit();
+    t.scratch.deinit(allocator);
 
     return .{ .ast = t.new_ast, .root = root, .scanner = scanner_ptr, .parser = parser_ptr, .allocator = allocator };
 }
