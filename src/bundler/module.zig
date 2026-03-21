@@ -1,0 +1,142 @@
+//! ZTS Bundler — Module
+//!
+//! 모듈 그래프의 노드. 하나의 JS/TS/JSON/CSS 파일에 대응.
+//!
+//! 설계:
+//!   - D070: ModuleIndex = enum(u32)
+//!   - D073: ModuleType enum
+//!   - D078: 양방향 인접 리스트 (dependencies + importers)
+//!   - D079: ImportRecord 배열로 import 정보 보유
+
+const std = @import("std");
+const types = @import("types.zig");
+const ModuleIndex = types.ModuleIndex;
+const ModuleType = types.ModuleType;
+const ImportRecord = types.ImportRecord;
+const Ast = @import("../parser/ast.zig").Ast;
+
+pub const Module = struct {
+    index: ModuleIndex,
+    path: []const u8,
+    source: []const u8,
+    ast: ?Ast,
+    import_records: []ImportRecord,
+
+    /// 내가 import하는 모듈들 (순방향)
+    dependencies: std.ArrayList(ModuleIndex),
+    /// 나를 import하는 모듈들 (역방향, D078 HMR용)
+    importers: std.ArrayList(ModuleIndex),
+    /// 동적 import (별도 관리, code splitting용)
+    dynamic_imports: std.ArrayList(ModuleIndex),
+
+    module_type: ModuleType,
+    side_effects: bool,
+    /// DFS 후위 순서 = ESM 실행 순서 (D058, D076)
+    exec_index: u32,
+    /// 순환 참조 그룹 ID. 0 = 순환 없음 (D065)
+    cycle_group: u32,
+    state: State,
+
+    pub const State = enum {
+        /// 슬롯만 예약됨, 아직 파싱 안 됨
+        reserved,
+        /// 파싱 중
+        parsing,
+        /// 파싱 완료, import 추출 완료
+        ready,
+    };
+
+    pub fn init(index: ModuleIndex, path: []const u8) Module {
+        return .{
+            .index = index,
+            .path = path,
+            .source = "",
+            .ast = null,
+            .import_records = &.{},
+            .dependencies = .empty,
+            .importers = .empty,
+            .dynamic_imports = .empty,
+            .module_type = .unknown,
+            .side_effects = true,
+            .exec_index = 0,
+            .cycle_group = 0,
+            .state = .reserved,
+        };
+    }
+
+    /// 양방향 의존성 추가 (D078).
+    /// self → dep 순방향 + dep → self 역방향을 동시에 업데이트.
+    pub fn addDependency(
+        self: *Module,
+        allocator: std.mem.Allocator,
+        dep_index: ModuleIndex,
+        all_modules: []Module,
+    ) !void {
+        try self.dependencies.append(allocator, dep_index);
+        var dep = &all_modules[@intFromEnum(dep_index)];
+        try dep.importers.append(allocator, self.index);
+    }
+
+    /// 동적 import 추가.
+    pub fn addDynamicImport(
+        self: *Module,
+        allocator: std.mem.Allocator,
+        dep_index: ModuleIndex,
+    ) !void {
+        try self.dynamic_imports.append(allocator, dep_index);
+    }
+
+    pub fn deinit(self: *Module, allocator: std.mem.Allocator) void {
+        self.dependencies.deinit(allocator);
+        self.importers.deinit(allocator);
+        self.dynamic_imports.deinit(allocator);
+        if (self.ast) |*a| a.deinit();
+    }
+};
+
+// ============================================================
+// Tests
+// ============================================================
+
+test "Module: init defaults" {
+    const m = Module.init(@enumFromInt(0), "src/index.ts");
+    try std.testing.expectEqual(Module.State.reserved, m.state);
+    try std.testing.expectEqual(@as(u32, 0), m.exec_index);
+    try std.testing.expectEqual(@as(u32, 0), m.cycle_group);
+    try std.testing.expect(m.side_effects);
+    try std.testing.expect(m.ast == null);
+    try std.testing.expectEqual(@as(usize, 0), m.dependencies.items.len);
+    try std.testing.expectEqual(@as(usize, 0), m.importers.items.len);
+}
+
+test "Module: addDependency bidirectional" {
+    const alloc = std.testing.allocator;
+    var modules: [2]Module = .{
+        Module.init(@enumFromInt(0), "a.ts"),
+        Module.init(@enumFromInt(1), "b.ts"),
+    };
+    defer modules[0].deinit(alloc);
+    defer modules[1].deinit(alloc);
+
+    // A depends on B
+    try modules[0].addDependency(alloc, @enumFromInt(1), &modules);
+
+    // A.dependencies에 B가 있어야 함
+    try std.testing.expectEqual(@as(usize, 1), modules[0].dependencies.items.len);
+    try std.testing.expectEqual(@as(u32, 1), @intFromEnum(modules[0].dependencies.items[0]));
+
+    // B.importers에 A가 있어야 함 (역방향)
+    try std.testing.expectEqual(@as(usize, 1), modules[1].importers.items.len);
+    try std.testing.expectEqual(@as(u32, 0), @intFromEnum(modules[1].importers.items[0]));
+}
+
+test "Module: state transitions" {
+    var m = Module.init(@enumFromInt(0), "test.ts");
+    defer m.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(Module.State.reserved, m.state);
+    m.state = .parsing;
+    try std.testing.expectEqual(Module.State.parsing, m.state);
+    m.state = .ready;
+    try std.testing.expectEqual(Module.State.ready, m.state);
+}
