@@ -8,6 +8,7 @@ const Transformer = lib.transformer.Transformer;
 const Codegen = lib.codegen.Codegen;
 const TsConfig = lib.config.TsConfig;
 const runner = lib.test262.runner;
+const Bundler = lib.bundler.Bundler;
 
 /// 트랜스파일 옵션을 담는 구조체.
 /// CLI에서 파싱한 옵션들을 transpileFile / walkAndTranspile에 전달한다.
@@ -259,6 +260,11 @@ pub fn main() !void {
     var watch = false;
     var is_test262 = false;
     var is_tokenize = false;
+    var is_bundle = false;
+    var external_list: std.ArrayList([]const u8) = .empty;
+    defer external_list.deinit(allocator);
+    var platform: lib.bundler.Platform = .browser;
+    var bundle_format: lib.bundler.emitter.EmitOptions.Format = .esm;
     var test262_dir: ?[]const u8 = null;
     var project_path: ?[]const u8 = null;
 
@@ -287,8 +293,10 @@ pub fn main() !void {
             minify = true;
         } else if (std.mem.eql(u8, arg, "--format=cjs")) {
             module_format = .cjs;
+            bundle_format = .cjs;
         } else if (std.mem.eql(u8, arg, "--format=esm")) {
             module_format = .esm;
+            bundle_format = .esm;
         } else if (std.mem.eql(u8, arg, "--drop=console")) {
             drop_console = true;
         } else if (std.mem.eql(u8, arg, "--drop=debugger")) {
@@ -304,6 +312,21 @@ pub fn main() !void {
             }
         } else if (std.mem.eql(u8, arg, "--watch") or std.mem.eql(u8, arg, "-w")) {
             watch = true;
+        } else if (std.mem.eql(u8, arg, "--bundle")) {
+            is_bundle = true;
+        } else if (std.mem.eql(u8, arg, "--external")) {
+            if (i + 1 < args.len) {
+                i += 1;
+                try external_list.append(allocator, args[i]);
+            }
+        } else if (std.mem.eql(u8, arg, "--platform=node")) {
+            platform = .node;
+        } else if (std.mem.eql(u8, arg, "--platform=browser")) {
+            platform = .browser;
+        } else if (std.mem.eql(u8, arg, "--platform=neutral")) {
+            platform = .neutral;
+        } else if (std.mem.eql(u8, arg, "--format=iife")) {
+            bundle_format = .iife;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try printUsage(stdout);
             return;
@@ -351,6 +374,61 @@ pub fn main() !void {
                 scanner.tokenText(),
             });
             if (scanner.token.kind == .eof) break;
+        }
+        return;
+    }
+
+    // --bundle
+    if (is_bundle) {
+        const entry_file = input_file orelse {
+            try stderr.print("Error: --bundle requires an entry file path\n", .{});
+            return;
+        };
+        const abs_entry = std.fs.cwd().realpathAlloc(allocator, entry_file) catch |err| {
+            try stderr.print("zts: cannot resolve '{s}': {}\n", .{ entry_file, err });
+            return;
+        };
+        defer allocator.free(abs_entry);
+
+        var bundler = Bundler.init(allocator, .{
+            .entry_points = &.{abs_entry},
+            .format = bundle_format,
+            .platform = platform,
+            .external = external_list.items,
+            .minify = minify,
+        });
+        defer bundler.deinit();
+
+        const result = bundler.bundle() catch |err| {
+            try stderr.print("zts: bundle failed: {}\n", .{err});
+            return;
+        };
+        defer result.deinit(allocator);
+
+        // 진단 메시지 출력
+        for (result.getDiagnostics()) |d| {
+            const sev_str: []const u8 = switch (d.severity) {
+                .@"error" => "error",
+                .warning => "warning",
+                .info => "info",
+            };
+            try stderr.print("[{s}] {s}: {s}", .{ sev_str, d.file_path, d.message });
+            if (d.suggestion) |s| try stderr.print(" (did you mean '{s}'?)", .{s});
+            try stderr.print("\n", .{});
+        }
+
+        // 출력
+        if (output_file) |out_path| {
+            // 출력 디렉토리가 없으면 생성
+            if (std.fs.path.dirname(out_path)) |dir| {
+                std.fs.cwd().makePath(dir) catch {};
+            }
+            const file = try std.fs.cwd().createFile(out_path, .{});
+            defer file.close();
+            try file.writeAll(result.output);
+            try stdout.print("Bundled → {s} ({d} bytes)\n", .{ out_path, result.output.len });
+        } else {
+            try stdout.print("{s}", .{result.output});
         }
         return;
     }
@@ -718,25 +796,32 @@ fn printUsage(writer: anytype) !void {
         \\zts v0.1.0 - Zig TypeScript Transpiler
         \\
         \\Usage:
-        \\  zts <file.ts>                Transpile to stdout
-        \\  zts <file.ts> -o <out.js>    Transpile to file
-        \\  zts <dir/> --outdir <out/>   Transpile directory recursively
-        \\  zts - < input.ts             Read from stdin
+        \\  zts <file.ts>                    Transpile to stdout
+        \\  zts <file.ts> -o <out.js>        Transpile to file
+        \\  zts <dir/> --outdir <out/>       Transpile directory recursively
+        \\  zts --bundle <entry.ts>          Bundle to stdout
+        \\  zts --bundle <entry.ts> -o out   Bundle to file
+        \\  zts - < input.ts                 Read from stdin
         \\
         \\Options:
-        \\  -o, --out-file <path>        Output file path
-        \\  --outdir <path>              Output directory (for directory input)
-        \\  --minify                     Minify output
-        \\  --format=esm|cjs             Module format (default: esm)
-        \\  --drop=console               Remove console.* calls
-        \\  --drop=debugger              Remove debugger statements
-        \\  --sourcemap                  Generate source map (.js.map)
-        \\  --ascii-only                 Escape non-ASCII to \uXXXX
-        \\  -w, --watch                  Watch for file changes and re-transpile
-        \\  -p, --project <path>         Path to tsconfig.json directory
-        \\  --tokenize                   Print tokens instead of transpiling
-        \\  --test262 <dir>              Run Test262 tests
-        \\  -h, --help                   Show this help
+        \\  -o, --out-file <path>            Output file path
+        \\  --outdir <path>                  Output directory (for directory input)
+        \\  --minify                         Minify output
+        \\  --format=esm|cjs|iife            Module format (default: esm)
+        \\  --drop=console                   Remove console.* calls
+        \\  --drop=debugger                  Remove debugger statements
+        \\  --sourcemap                      Generate source map (.js.map)
+        \\  --ascii-only                     Escape non-ASCII to \uXXXX
+        \\  -w, --watch                      Watch for file changes
+        \\  -p, --project <path>             Path to tsconfig.json directory
+        \\  --tokenize                       Print tokens instead of transpiling
+        \\  --test262 <dir>                  Run Test262 tests
+        \\  -h, --help                       Show this help
+        \\
+        \\Bundle options:
+        \\  --bundle                         Enable bundle mode
+        \\  --external <pkg>                 Exclude package (repeatable)
+        \\  --platform=browser|node|neutral  Target platform (default: browser)
         \\
     , .{});
 }
