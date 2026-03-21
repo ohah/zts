@@ -25,7 +25,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.14.0
+          version: 0.15.2
 
       - name: Run Test262 runner unit tests
         run: zig build test262
@@ -44,7 +44,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.14.0
+          version: 0.15.2
 
       - name: Build (ReleaseFast)
         run: zig build -Doptimize=ReleaseFast
@@ -105,7 +105,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.14.0
+          version: 0.15.2
 
       - name: Build (ReleaseFast)
         run: zig build -Doptimize=ReleaseFast
