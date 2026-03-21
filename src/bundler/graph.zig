@@ -28,6 +28,8 @@ const ResolveCache = @import("resolve_cache.zig").ResolveCache;
 const import_scanner = @import("import_scanner.zig");
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
+const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+const ModuleSemanticData = @import("module.zig").ModuleSemanticData;
 const Span = @import("../lexer/token.zig").Span;
 
 pub const ModuleGraph = struct {
@@ -167,13 +169,32 @@ pub const ModuleGraph = struct {
             self.addDiag(.parse_error, .warning, module.path, Span.EMPTY, .parse, "Parse completed with errors", null);
         }
 
+        // Semantic analysis — linker에 필요한 스코프/심볼/export 정보.
+        // arena_alloc으로 실행: SemanticAnalyzer의 모든 데이터가 parse_arena에 할당.
+        // analyzer.deinit()을 의도적으로 호출하지 않음 — arena가 일괄 해제.
+        // 주의: 이후에 defer analyzer.deinit()을 추가하면 double-free 발생.
+        var analyzer = SemanticAnalyzer.init(arena_alloc, &parser.ast);
+        analyzer.is_strict_mode = parser.is_strict_mode;
+        analyzer.is_module = parser.is_module;
+        const analyze_ok = if (analyzer.analyze()) |_| true else |_| false;
+
+        // OOM 시 semantic = null로 유지 (부분 데이터로 linker가 오동작하는 것 방지)
+        if (analyze_ok) {
+            module.semantic = .{
+                .symbols = analyzer.symbols.items,
+                .scopes = analyzer.scopes.items,
+                .scope_maps = analyzer.scope_maps.items,
+                .exported_names = analyzer.exported_names,
+            };
+        }
+
         // Import 추출 (D079) — graph allocator로 할당
         const records = import_scanner.extractImports(self.allocator, &parser.ast) catch {
             module.state = .ready;
             return;
         };
         module.import_records = records;
-        module.ast = parser.ast; // AST 보존 (arena가 소유, emitter에서 사용)
+        module.ast = parser.ast;
         module.state = .ready;
     }
 
@@ -636,4 +657,79 @@ test "graph: JSON module — no AST, in graph" {
     const json_mod = graph.modules.items[1];
     try std.testing.expect(json_mod.ast == null);
     try std.testing.expectEqual(types.ModuleType.json, json_mod.module_type);
+}
+
+test "graph: semantic data preserved after build" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "export const x = 1;\nexport function greet() { return 'hi'; }");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+
+    try graph.build(&.{entry});
+
+    const m = graph.modules.items[0];
+    // semantic 데이터가 보존되어야 함
+    try std.testing.expect(m.semantic != null);
+    const sem = m.semantic.?;
+    // exported_names에 x와 greet이 있어야 함
+    try std.testing.expect(sem.exported_names.get("x") != null);
+    try std.testing.expect(sem.exported_names.get("greet") != null);
+    // symbols 배열이 비어있지 않아야 함
+    try std.testing.expect(sem.symbols.len > 0);
+    // scopes 배열이 비어있지 않아야 함
+    try std.testing.expect(sem.scopes.len > 0);
+}
+
+test "graph: semantic data null for non-JS modules" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import './data.json';");
+    try writeFile(tmp.dir, "data.json", "{\"key\":\"value\"}");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+
+    try graph.build(&.{entry});
+
+    // a.ts는 semantic 있음
+    try std.testing.expect(graph.modules.items[0].semantic != null);
+    // data.json은 semantic 없음
+    try std.testing.expect(graph.modules.items[1].semantic == null);
+}
+
+test "graph: semantic exported_names tracks default export" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "export default function main() { return 42; }");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+
+    try graph.build(&.{entry});
+
+    const sem = graph.modules.items[0].semantic.?;
+    try std.testing.expect(sem.exported_names.get("default") != null);
 }
