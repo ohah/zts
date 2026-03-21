@@ -70,6 +70,11 @@ pub const Transformer = struct {
     /// visitExtraList가 각 자식 방문 후 이 버퍼를 드레인하여 리스트에 삽입한다.
     pending_nodes: std.ArrayList(NodeIndex),
 
+    /// 원본 AST의 symbol_ids (semantic analyzer가 생성). null이면 전파 안 함.
+    old_symbol_ids: []const ?u32 = &.{},
+    /// 새 AST 기준 symbol_ids. new_ast에 노드 추가 시 자동 전파.
+    new_symbol_ids: std.ArrayList(?u32) = .empty,
+
     pub fn init(allocator: std.mem.Allocator, old_ast: *const Ast, options: TransformOptions) Transformer {
         return .{
             .old_ast = old_ast,
@@ -116,7 +121,13 @@ pub const Transformer = struct {
 
     fn visitNode(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         if (idx.isNone()) return .none;
+        const new_idx = try self.visitNodeInner(idx);
+        // symbol_id 전파: 원본 node_idx → 새 node_idx
+        self.propagateSymbolId(idx, new_idx);
+        return new_idx;
+    }
 
+    fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         const node = self.old_ast.getNode(idx);
 
         // --------------------------------------------------------
@@ -331,6 +342,31 @@ pub const Transformer = struct {
     /// 노드를 그대로 새 AST에 복사한다 (자식 없는 리프 노드용).
     fn copyNodeDirect(self: *Transformer, node: Node) Error!NodeIndex {
         return self.new_ast.addNode(node);
+    }
+
+    /// visitNode의 래퍼: 원본 node_idx의 symbol_id를 새 node_idx로 전파.
+    fn visitNodeWithSymbol(self: *Transformer, old_idx: NodeIndex) Error!NodeIndex {
+        const new_idx = try self.visitNode(old_idx);
+        self.propagateSymbolId(old_idx, new_idx);
+        return new_idx;
+    }
+
+    /// 원본 → 새 노드의 symbol_id 전파.
+    fn propagateSymbolId(self: *Transformer, old_idx: NodeIndex, new_idx: NodeIndex) void {
+        if (self.old_symbol_ids.len == 0) return; // 전파 비활성
+        if (new_idx.isNone()) return;
+
+        const old_i = @intFromEnum(old_idx);
+        const new_i = @intFromEnum(new_idx);
+
+        // new_symbol_ids를 new_ast 노드 수만큼 확장
+        while (self.new_symbol_ids.items.len <= new_i) {
+            self.new_symbol_ids.append(self.allocator, null) catch return;
+        }
+
+        if (old_i < self.old_symbol_ids.len) {
+            self.new_symbol_ids.items[new_i] = self.old_symbol_ids[old_i];
+        }
     }
 
     /// 단항 노드: operand를 재귀 방문 후 복사.
