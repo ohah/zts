@@ -20,6 +20,7 @@ pub const resolver = @import("resolver.zig");
 pub const package_json = @import("package_json.zig");
 pub const resolve_cache = @import("resolve_cache.zig");
 pub const module = @import("module.zig");
+pub const graph = @import("graph.zig");
 
 // 공개 타입 re-export
 pub const ModuleIndex = types.ModuleIndex;
@@ -33,6 +34,7 @@ pub const ResolveResult = resolver.ResolveResult;
 pub const ResolveCache = resolve_cache.ResolveCache;
 pub const Platform = resolve_cache.Platform;
 pub const Module = module.Module;
+pub const ModuleGraph = graph.ModuleGraph;
 
 test {
     _ = types;
@@ -41,4 +43,5 @@ test {
     _ = package_json;
     _ = resolve_cache;
     _ = module;
+    _ = graph;
 }
