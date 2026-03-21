@@ -193,11 +193,15 @@ pub fn parseObjectMethodBody(self: *Parser, start: u32, key: NodeIndex, flags: u
     const param_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
 
+    // method_definition: extra = [key, params_start, params_len, body, flags, deco_start, deco_len]
+    // 클래스 메서드와 동일한 7개 필드 (객체 메서드는 decorator 없으므로 0, 0)
     const extra_start = try self.ast.addExtra(@intFromEnum(key));
     _ = try self.ast.addExtra(param_list.start);
     _ = try self.ast.addExtra(param_list.len);
     _ = try self.ast.addExtra(@intFromEnum(body));
     _ = try self.ast.addExtra(flags);
+    _ = try self.ast.addExtra(0); // deco_start (no decorators)
+    _ = try self.ast.addExtra(0); // deco_len  (no decorators)
 
     return try self.ast.addNode(.{
         .tag = .method_definition,
