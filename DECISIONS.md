@@ -323,6 +323,7 @@
 | **D077** | 병렬 파싱 | 싱글 MVP → Rolldown 슬롯 예약 | Rolldown | 처음부터 병렬 (동기화 버그 디버깅 고통) |
 | **D078** | 그래프 저장 | 양방향 인접 리스트 | — (HMR 고려) | 순방향만 (HMR 역추적 비효율), 엣지 배열 (O(1) 접근 불가) |
 | **D079** | Import 추출 | 파싱 후 AST 순회 | Rollup, Rolldown | 파서에서 수집 (완성된 파서 수정 리스크) |
+| **D080** | 옵션 스펙 + 플러그인 | Rollup 수준 옵션 + 함수 포인터 PluginDriver | Rolldown (pre-sort) | 문자열 라우팅 (오타), 매크로 (Zig 불가), trait (장황) |
 
 ---
 
@@ -647,23 +648,50 @@
 
 **안 할 것**: webpack `module.rules` (D073 ParserAndGenerator로 대체), `optimization.splitChunks` (자동 code splitting), `resolve.fallback` (플러그인으로), `externalsType` (후순위), `stats` (기본 출력 충분)
 
-**처음부터 설계에 포함해야 하는 B3 항목**:
-- **PluginDriver 추상화**: Rollup 패턴 — 중앙 PluginDriver가 모든 훅을 이름으로 라우팅. esbuild처럼 훅마다 별도 함수를 산재시키면 나중에 새 훅 추가 시 호출 지점 누락 위험.
+**플러그인 디스패치 방식**:
+- **결정**: 함수 포인터 구조체 + Rolldown pre-sort (방식 E)
+- **비교**: 문자열 라우팅(A, Rollup) vs trait vtable(B, Rolldown) vs 매크로 코드 생성(C, rspack) vs enum+comptime(D, Zig 전용) vs 함수 포인터 구조체(E)
+- **이유**: Zig에서 가장 자연스러움. optional 함수 포인터로 미구현 훅은 null → O(1) 스킵. Rolldown처럼 초기화 시 훅별 플러그인 순서 미리 계산 → 매 호출 정렬 없음.
+- **배제 이유**:
+  - A (문자열): 런타임 문자열 비교, 오타 컴파일 타임에 못 잡음
+  - B (trait): Zig에 trait 없음. 인터페이스로 대체 시 20개+ 메서드가 장황
+  - C (매크로): Zig에 proc macro 없음
+  - D (enum+comptime): `@field(plugin, @tagName(kind))`는 읽기 어렵고 디버깅 불편
+- **설계**:
   ```
-  // Rollup 패턴 (추천): 어떤 훅이든 한 줄로 호출
-  resolved = plugin_driver.call("resolveId", .{specifier}) orelse defaultResolve(specifier)
-  loaded = plugin_driver.call("load", .{resolved}) orelse defaultLoad(resolved)
-  transformed = plugin_driver.call("transform", .{code}) orelse code
+  Plugin = struct {
+      name: []const u8,
+      resolve_id: ?*const fn(*Context, ResolveIdArgs) Error!?ResolveResult = null,
+      load: ?*const fn(*Context, LoadArgs) Error!?LoadResult = null,
+      transform: ?*const fn(*Context, TransformArgs) Error!?TransformResult = null,
+  }
 
-  // esbuild 패턴 (배제): 훅마다 별도 함수 — 확장 어려움
-  RunOnResolvePlugins(plugins, ...)  // 호출 지점이 코드 곳곳에 산재
+  PluginDriver = struct {
+      plugins: []const *const Plugin,
+      resolve_order: []const usize,   // pre-sorted (Rolldown 패턴)
+      load_order: []const usize,
+      transform_order: []const usize,
+
+      fn resolveId(self, ctx, args) !?ResolveResult {
+          for (self.resolve_order) |idx| {
+              if (self.plugins[idx].resolve_id) |hook| {
+                  if (try hook(ctx, args)) |result| return result;  // bail
+              }
+          }
+          return null;
+      }
+  }
   ```
-  MVP에서는 PluginDriver 구조체만 두고 내부는 비어 있어도 됨. 플러그인이 없으면 기본 동작.
-  검증: Rollup `src/utils/PluginDriver.ts`, Rolldown `crates/rolldown_plugin/src/plugin_driver/`
-- **output.globals**: linker에서 external → 글로벌 변수 교체 로직. IIFE 포맷과 엮임.
+  - MVP: PluginDriver 구조체만 두고 plugins 비어 있음. 플러그인 없으면 기본 동작
+  - 새 훅 추가: Plugin 필드 1줄 + PluginDriver dispatch 함수 1개
+- **참고**: `references/rolldown/crates/rolldown_plugin/src/plugin_driver/build_hooks.rs` (pre-sort), `references/rspack/crates/rspack_hook/` (실행 전략)
+
+**처음부터 설계에 포함해야 하는 B3 항목**:
+- **PluginDriver 구조체**: 위 설계대로 처음부터 배치. 플러그인이 없으면 모든 훅이 null → 오버헤드 0.
 
 **나중에 끼워넣어도 되는 B3 항목** (아키텍처 변경 없음):
 - `plugins` 실제 구현 (PluginDriver에 플러그인 등록 + N-API 바인딩)
+- `output.globals`: emitter에서 external → 글로벌 변수 치환. IIFE 포맷 구현 시점에 추가
 - `output.intro/outro`: codegen 앞뒤 문자열 추가 (1줄 변경)
 - `css.*`: Lightning CSS C ABI 호출 (독립적)
 - `server.*`: 번들러 위 레이어
