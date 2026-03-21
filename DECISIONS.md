@@ -324,6 +324,7 @@
 | **D078** | 그래프 저장 | 양방향 인접 리스트 | — (HMR 고려) | 순방향만 (HMR 역추적 비효율), 엣지 배열 (O(1) 접근 불가) |
 | **D079** | Import 추출 | 파싱 후 AST 순회 | Rollup, Rolldown | 파서에서 수집 (완성된 파서 수정 리스크) |
 | **D080** | 옵션 스펙 + 플러그인 | Rollup 수준 옵션 + 함수 포인터 PluginDriver | Rolldown (pre-sort) | 문자열 라우팅 (오타), 매크로 (Zig 불가), trait (장황) |
+| **D081** | Resolver 구조 | 3계층 (resolver + cache + plugin) | Rolldown/oxc | 단일 파일 (커지면 가독성↓), 기능별 5개+ (오버엔지니어링) |
 
 ---
 
@@ -697,6 +698,22 @@
 - `server.*`: 번들러 위 레이어
 - `worker`: code splitting 위에 올림
 - `experimental.reactRefresh`: transformer visitor 추가 (독립적)
+
+### D081: Resolver 코드 구조
+- **결정**: Rolldown 3계층 (A 방식)
+- **비교**: 3계층(A, Rolldown/oxc — resolver + cache + plugin) vs 단일 파일(B, esbuild/Bun — 한 파일에 전부) vs 기능별 분리(C, webpack — 5개+ 파일)
+- **이유**: ZTS 코드베이스가 이미 모듈별 분리 패턴. Zig에서 파일=모듈이라 분리가 자연스러움. 각 계층이 독립 테스트 가능.
+- **배제 이유**:
+  - 단일 파일 (esbuild): Go는 패키지 내 큰 파일이 문화적으로 허용되지만, Zig에서는 파일 분리가 관용구. 3000줄 단일 파일은 가독성 나쁨
+  - 기능별 5개+ (webpack): package.json exports 복잡도를 아직 모르는 상태에서 미리 나누면 오버엔지니어링
+- **설계**:
+  ```
+  src/bundler/
+    resolver.zig        — 순수 경로 해석 (node_modules, package.json exports, 확장자)
+    resolve_cache.zig   — import kind별 조건 세트 관리 + 결과 캐시 (D064)
+    (B3) PluginDriver를 통해 resolve 훅 확장
+  ```
+- **참고**: `references/rolldown/crates/rolldown_resolver/`, `references/rolldown/crates/rolldown_plugin_vite_resolve/`
 
 ### Phase 6 (Advanced) 미결정 사항
 - 개발 서버 고급 기능 (증분 재빌드, 프레임워크 통합)
