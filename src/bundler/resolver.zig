@@ -37,7 +37,8 @@ pub const ResolveError = error{
 
 /// 기본 확장자 탐색 순서.
 /// TypeScript 확장자가 먼저 (TS 프로젝트에서 .ts가 .js보다 우선).
-const default_extensions: []const []const u8 = &.{ ".ts", ".tsx", ".js", ".jsx", ".json" };
+/// .mts/.cts는 ESM/CJS 모듈 전용 TypeScript 확장자.
+const default_extensions: []const []const u8 = &.{ ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json" };
 
 /// TS 확장자 매핑 (D064).
 /// import './foo.js'가 실제로 ./foo.ts를 가리킬 수 있음.
