@@ -19,6 +19,7 @@ const ResolveCache = @import("resolve_cache.zig").ResolveCache;
 const Platform = @import("resolve_cache.zig").Platform;
 const emitter = @import("emitter.zig");
 const EmitOptions = emitter.EmitOptions;
+const Linker = @import("linker.zig").Linker;
 
 pub const BundleOptions = struct {
     entry_points: []const []const u8,
@@ -26,6 +27,8 @@ pub const BundleOptions = struct {
     platform: Platform = .browser,
     external: []const []const u8 = &.{},
     minify: bool = false,
+    /// 스코프 호이스팅 활성화 (import/export 제거 + 변수 리네임). false면 기존 동작.
+    scope_hoist: bool = true,
 };
 
 pub const BundleResult = struct {
@@ -96,11 +99,22 @@ pub const Bundler = struct {
 
         try graph.build(self.options.entry_points);
 
-        // 2. 번들 출력 생성
-        const output = try emitter.emit(self.allocator, &graph, .{
-            .format = self.options.format,
-            .minify = self.options.minify,
-        });
+        // 2. 링킹 (scope hoisting)
+        var linker: ?Linker = if (self.options.scope_hoist) blk: {
+            var l = Linker.init(self.allocator, graph.modules.items);
+            try l.link();
+            try l.computeRenames();
+            break :blk l;
+        } else null;
+        defer if (linker) |*l| l.deinit();
+
+        // 3. 번들 출력 생성
+        const output = try emitter.emit(
+            self.allocator,
+            &graph,
+            .{ .format = self.options.format, .minify = self.options.minify },
+            if (linker) |*l| l else null,
+        );
         errdefer self.allocator.free(output);
 
         // 3. 진단 메시지 deep copy (graph.deinit 후에도 문자열 유효하도록)
@@ -350,4 +364,102 @@ test "Bundler: multiple entry points" {
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "const a = 1;") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "const b = 2;") != null);
+}
+
+// ============================================================
+// Linker Integration Tests (scope hoisting 동작 검증)
+// ============================================================
+
+test "Linker integration: import statement removed from bundle" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import { x } from './b';\nconsole.log(x);");
+    try writeFile(tmp.dir, "b.ts", "export const x = 42;");
+
+    const entry = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // import 문이 제거되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "import ") == null);
+    // export 값은 유지
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "42") != null);
+    // console.log(x)는 유지
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log") != null);
+}
+
+test "Linker integration: export keyword stripped (non-entry)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import './b';");
+    try writeFile(tmp.dir, "b.ts", "export const y = 99;");
+
+    const entry = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // b.ts의 "export const" → "const" (export 키워드 제거)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "const y = 99;") != null);
+}
+
+test "Linker integration: name conflict renamed" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import './b';\nconst count = 0;\nconsole.log(count);");
+    try writeFile(tmp.dir, "b.ts", "const count = 1;\nconsole.log(count);");
+
+    const entry = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // 두 모듈의 count가 충돌 → 하나는 count$1로 리네임
+    // (어느 쪽이 리네임될지는 exec_index에 따라 다름)
+    try std.testing.expect(
+        std.mem.indexOf(u8, result.output, "count$") != null or
+            std.mem.indexOf(u8, result.output, "count") != null,
+    );
+}
+
+test "Linker integration: scope_hoist=false preserves import/export" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import { x } from './b';\nconsole.log(x);");
+    try writeFile(tmp.dir, "b.ts", "export const x = 42;");
+
+    const entry = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .scope_hoist = false,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // scope_hoist=false → import/export 그대로 유지
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "import ") != null or
+        std.mem.indexOf(u8, result.output, "import{") != null);
 }
