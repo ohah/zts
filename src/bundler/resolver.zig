@@ -200,21 +200,18 @@ pub const Resolver = struct {
 
         // 1. exports 필드 (D064)
         // subpath: "." 또는 "/sub" → exports 매칭용 "." 또는 "./sub"
-        const exports_subpath = if (std.mem.eql(u8, subpath, "."))
-            subpath
+        // subpath: "." → 그대로, "/sub" → "./sub"
+        const allocated_subpath: ?[]const u8 = if (std.mem.eql(u8, subpath, "."))
+            null
         else
-            // "/sub" → "./sub" (앞에 "." 붙임)
-            blk: {
-                const buf = std.mem.concat(self.allocator, u8, &.{ ".", subpath }) catch
-                    return error.OutOfMemory;
-                break :blk buf;
-            };
-        const should_free_subpath = !std.mem.eql(u8, subpath, ".");
-        defer if (should_free_subpath) self.allocator.free(exports_subpath);
+            std.mem.concat(self.allocator, u8, &.{ ".", subpath }) catch return error.OutOfMemory;
+        defer if (allocated_subpath) |buf| self.allocator.free(buf);
+        const exports_subpath = allocated_subpath orelse subpath;
 
         if (pkg.exports) |exports| {
-            if (pkg_json.resolveExports(exports, exports_subpath, self.conditions)) |rel_path| {
-                const abs_path = std.fs.path.resolve(self.allocator, &.{ pkg_dir_path, rel_path }) catch
+            if (pkg_json.resolveExports(self.allocator, exports, exports_subpath, self.conditions)) |exports_result| {
+                defer if (exports_result.allocated) self.allocator.free(exports_result.path);
+                const abs_path = std.fs.path.resolve(self.allocator, &.{ pkg_dir_path, exports_result.path }) catch
                     return error.OutOfMemory;
                 defer self.allocator.free(abs_path);
 
@@ -287,7 +284,13 @@ pub const Resolver = struct {
 pub fn isRelativeOrAbsolute(specifier: []const u8) bool {
     if (specifier.len == 0) return false;
     if (specifier[0] == '/') return true;
-    if (specifier.len >= 2 and specifier[0] == '.' and (specifier[1] == '/' or specifier[1] == '.')) return true;
+    // "./" — 현재 디렉토리 상대
+    if (specifier.len >= 2 and specifier[0] == '.' and specifier[1] == '/') return true;
+    // "../" — 상위 디렉토리 상대. ".." 뒤에 / 또는 끝이어야 함 ("..foo"는 bare specifier)
+    if (specifier.len >= 2 and specifier[0] == '.' and specifier[1] == '.') {
+        if (specifier.len == 2) return true; // ".." 그 자체
+        if (specifier[2] == '/') return true; // "../..."
+    }
     return false;
 }
 

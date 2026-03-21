@@ -94,8 +94,9 @@ pub const ResolveCache = struct {
 
         if (self.cache.get(cache_key)) |cached| {
             return switch (cached) {
+                // 캐시 히트: caller 소유 복사본 반환 (Critical #2 수정)
                 .resolved => |r| ResolveResult{
-                    .path = r.path,
+                    .path = self.allocator.dupe(u8, r.path) catch return error.OutOfMemory,
                     .module_type = r.module_type,
                 },
                 .external => null,
@@ -106,29 +107,35 @@ pub const ResolveCache = struct {
         // 3. 실제 resolve
         const result = self.resolver.resolve(source_dir, specifier) catch |err| switch (err) {
             error.ModuleNotFound => {
-                // 캐시에 not_found 저장
-                const key_owned = self.allocator.dupe(u8, cache_key) catch return error.OutOfMemory;
-                self.cache.put(key_owned, .not_found) catch return error.OutOfMemory;
+                try self.putCache(cache_key, .not_found);
                 return error.ModuleNotFound;
             },
             else => return err,
         };
 
-        // 4. 캐시에 저장
+        // 4. 캐시에 저장 (캐시가 path를 소유, caller에게는 별도 복사본)
+        const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
+        try self.putCache(cache_key, .{ .resolved = .{
+            .path = cache_path,
+            .module_type = result.module_type,
+        } });
+
+        // result.path는 resolver가 할당한 것 — caller 소유로 그대로 반환
+        return result;
+    }
+
+    /// 캐시에 엔트리 저장. 기존 키가 있으면 이전 키/값 해제 (Critical #1 수정).
+    fn putCache(self: *ResolveCache, cache_key: []const u8, value: CachedResult) !void {
+        // 기존 엔트리가 있으면 해제
+        if (self.cache.fetchRemove(cache_key)) |old| {
+            self.allocator.free(old.key);
+            switch (old.value) {
+                .resolved => |r| self.allocator.free(r.path),
+                else => {},
+            }
+        }
         const key_owned = self.allocator.dupe(u8, cache_key) catch return error.OutOfMemory;
-        const path_owned = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
-        // resolve가 반환한 원본 path는 해제
-        self.allocator.free(result.path);
-
-        self.cache.put(key_owned, .{ .resolved = .{
-            .path = path_owned,
-            .module_type = result.module_type,
-        } }) catch return error.OutOfMemory;
-
-        return ResolveResult{
-            .path = path_owned,
-            .module_type = result.module_type,
-        };
+        self.cache.put(key_owned, value) catch return error.OutOfMemory;
     }
 
     /// specifier가 external인지 판별.
@@ -262,18 +269,21 @@ test "resolve: cache hit" {
     var cache = ResolveCache.init(std.testing.allocator, .browser, &.{});
     defer cache.deinit();
 
-    // 첫 번째 호출 (캐시 미스)
+    // 첫 번째 호출 (캐시 미스) — caller 소유
     const result1 = try cache.resolve(dir_path, "./foo", .static_import);
     try std.testing.expect(result1 != null);
+    defer std.testing.allocator.free(result1.?.path);
     try std.testing.expect(std.mem.endsWith(u8, result1.?.path, "foo.ts"));
 
-    // 두 번째 호출 (캐시 히트)
+    // 두 번째 호출 (캐시 히트) — 별도 할당, caller 소유
     const result2 = try cache.resolve(dir_path, "./foo", .static_import);
     try std.testing.expect(result2 != null);
+    defer std.testing.allocator.free(result2.?.path);
     try std.testing.expect(std.mem.endsWith(u8, result2.?.path, "foo.ts"));
 
-    // 같은 포인터 (캐시에서 반환)
-    try std.testing.expectEqual(result1.?.path.ptr, result2.?.path.ptr);
+    // 내용은 같지만 포인터는 다름 (각각 독립 할당)
+    try std.testing.expectEqualStrings(result1.?.path, result2.?.path);
+    try std.testing.expect(result1.?.path.ptr != result2.?.path.ptr);
 }
 
 test "resolve: not found cached" {

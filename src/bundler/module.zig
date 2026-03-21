@@ -17,9 +17,12 @@ const Ast = @import("../parser/ast.zig").Ast;
 
 pub const Module = struct {
     index: ModuleIndex,
+    /// 절대 파일 경로. graph의 path_to_module 키와 동일한 메모리를 참조 (빌림, Module이 해제하지 않음).
     path: []const u8,
+    /// 소스 코드. graph의 arena에서 할당 (빌림, Module이 해제하지 않음).
     source: []const u8,
     ast: ?Ast,
+    /// import_scanner가 추출한 레코드. graph의 arena에서 할당 (빌림).
     import_records: []ImportRecord,
 
     /// 내가 import하는 모듈들 (순방향)
@@ -72,8 +75,12 @@ pub const Module = struct {
         dep_index: ModuleIndex,
         all_modules: []Module,
     ) !void {
+        if (dep_index.isNone()) return;
+        const idx = @intFromEnum(dep_index);
+        if (idx >= all_modules.len) return;
+
         try self.dependencies.append(allocator, dep_index);
-        var dep = &all_modules[@intFromEnum(dep_index)];
+        var dep = &all_modules[idx];
         try dep.importers.append(allocator, self.index);
     }
 
