@@ -13,6 +13,7 @@ Thumbs.db
 
 # Build artifacts
 *.o
+check_inferred
 *.so
 *.dylib
 *.dll
