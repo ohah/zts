@@ -37,7 +37,8 @@ pub const Module = struct {
 
     module_type: ModuleType,
     side_effects: bool,
-    /// DFS 후위 순서 = ESM 실행 순서 (D058, D076)
+    /// DFS 후위 순서 = ESM 실행 순서 (D058, D076).
+    /// maxInt = 미방문 (DFS에서 할당되지 않음).
     exec_index: u32,
     /// 순환 참조 그룹 ID. 0 = 순환 없음 (D065)
     cycle_group: u32,
@@ -65,7 +66,7 @@ pub const Module = struct {
             .dynamic_imports = .empty,
             .module_type = .unknown,
             .side_effects = true,
-            .exec_index = 0,
+            .exec_index = std.math.maxInt(u32),
             .cycle_group = 0,
             .state = .reserved,
         };
@@ -114,7 +115,7 @@ pub const Module = struct {
 test "Module: init defaults" {
     const m = Module.init(@enumFromInt(0), "src/index.ts");
     try std.testing.expectEqual(Module.State.reserved, m.state);
-    try std.testing.expectEqual(@as(u32, 0), m.exec_index);
+    try std.testing.expectEqual(std.math.maxInt(u32), m.exec_index);
     try std.testing.expectEqual(@as(u32, 0), m.cycle_group);
     try std.testing.expect(m.side_effects);
     try std.testing.expect(m.ast == null);
