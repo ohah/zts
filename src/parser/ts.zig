@@ -165,7 +165,24 @@ pub fn parseTsModuleDeclaration(self: *Parser) ParseError2!NodeIndex {
 }
 
 /// namespace body (재귀: A.B.C 중첩 처리). keyword는 이미 소비된 상태.
+/// `declare module "*.css" { ... }` 처럼 문자열 리터럴 모듈 이름도 지원.
 fn parseTsModuleBody(self: *Parser, start: u32) ParseError2!NodeIndex {
+    // declare module "name" { ... } — 문자열 리터럴 모듈 이름 (ambient module declaration)
+    if (self.current() == .string_literal) {
+        const str_node = try self.ast.addNode(.{
+            .tag = .string_literal,
+            .span = self.currentSpan(),
+            .data = .{ .none = 0 },
+        });
+        try self.advance();
+        // 문자열 모듈 이름은 flags=1로 표시하여 ambient임을 알림
+        const body = try self.parseBlockStatement();
+        return try self.ast.addNode(.{
+            .tag = .ts_module_declaration,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .binary = .{ .left = str_node, .right = body, .flags = 1 } },
+        });
+    }
     const name = try self.parseSimpleIdentifier();
 
     // 중첩: namespace A.B.C { }

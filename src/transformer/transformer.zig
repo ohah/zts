@@ -560,9 +560,12 @@ pub const Transformer = struct {
     // TS namespace 변환
     // ================================================================
 
-    /// ts_module_declaration: binary = { left=name, right=body_or_inner }
-    /// namespace를 새 AST에 복사. codegen에서 IIFE로 출력.
+    /// ts_module_declaration: binary = { left=name, right=body_or_inner, flags }
+    /// flags=1: ambient module declaration (`declare module "*.css" { ... }`) → strip.
+    /// flags=0: 일반 namespace → 새 AST에 복사. codegen에서 IIFE로 출력.
     fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
+        // declare module "*.css" { ... } 같은 ambient module은 런타임 코드 없음 → strip
+        if (node.data.binary.flags == 1) return .none;
         const new_name = try self.visitNode(node.data.binary.left);
         const new_body = try self.visitNode(node.data.binary.right);
         return self.new_ast.addNode(.{
@@ -877,11 +880,49 @@ pub const Transformer = struct {
     }
 
     // method_definition: extra = [key, params_start, params_len, body, flags, deco_start, deco_len]
+    // constructor의 parameter property (public x: number) 변환도 처리.
     fn visitMethodDefinition(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
         const new_key = try self.visitNode(self.readNodeIdx(e, 0));
-        const new_params = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
-        const new_body = try self.visitNode(self.readNodeIdx(e, 3));
+
+        // 파라미터 방문 — parameter property 감지 (visitFunction과 동일 로직)
+        const params_start = self.readU32(e, 1);
+        const params_len = self.readU32(e, 2);
+        const old_params = self.old_ast.extra_data.items[params_start .. params_start + params_len];
+
+        const scratch_top = self.scratch.items.len;
+        defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+        var prop_names: [32]NodeIndex = undefined;
+        var prop_count: usize = 0;
+
+        for (old_params) |raw_idx| {
+            const param_node = self.old_ast.getNode(@enumFromInt(raw_idx));
+            // formal_parameter가 unary + flags!=0 → parameter property
+            if (param_node.tag == .formal_parameter and param_node.data.unary.flags != 0) {
+                const inner = try self.visitNode(param_node.data.unary.operand);
+                try self.scratch.append(self.allocator, inner);
+                if (prop_count < prop_names.len) {
+                    prop_names[prop_count] = inner;
+                    prop_count += 1;
+                }
+            } else {
+                const new_param = try self.visitNode(@enumFromInt(raw_idx));
+                if (!new_param.isNone()) {
+                    try self.scratch.append(self.allocator, new_param);
+                }
+            }
+        }
+
+        const new_params = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+
+        var new_body = try self.visitNode(self.readNodeIdx(e, 3));
+
+        // parameter property가 있으면 바디 앞에 this.x = x 문 삽입
+        if (prop_count > 0 and !new_body.isNone()) {
+            new_body = try self.insertParameterPropertyAssignments(new_body, prop_names[0..prop_count]);
+        }
+
         const new_decos = try self.visitExtraList(self.readU32(e, 5), self.readU32(e, 6));
         return self.addExtraNode(.method_definition, node.span, &.{
             @intFromEnum(new_key), new_params.start, new_params.len, @intFromEnum(new_body),
@@ -928,8 +969,16 @@ pub const Transformer = struct {
         });
     }
 
-    /// formal_parameter: extra_data = [pattern, type_ann, default_value, decorators_start, decorators_len]
+    /// formal_parameter:
+    ///   - extra_data = [pattern, type_ann, default_value, decorators_start, decorators_len]
+    ///   - 또는 unary = { operand=inner, flags=modifier_flags } (parameter property)
+    /// parameter property (unary)는 visitFunction/visitMethodDefinition에서 직접 처리하지만,
+    /// 다른 경로에서 도달할 수 있으므로 방어적으로 처리.
     fn visitFormalParameter(self: *Transformer, node: Node) Error!NodeIndex {
+        // parameter property (unary 레이아웃): modifier 제거하고 내부 패턴만 반환
+        if (node.data.unary.flags != 0) {
+            return self.visitNode(node.data.unary.operand);
+        }
         const e = node.data.extra;
         const new_pattern = try self.visitNode(self.readNodeIdx(e, 0));
         const new_default = try self.visitNode(self.readNodeIdx(e, 2));
