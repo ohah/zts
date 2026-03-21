@@ -344,13 +344,6 @@ pub const Transformer = struct {
         return self.new_ast.addNode(node);
     }
 
-    /// visitNode의 래퍼: 원본 node_idx의 symbol_id를 새 node_idx로 전파.
-    fn visitNodeWithSymbol(self: *Transformer, old_idx: NodeIndex) Error!NodeIndex {
-        const new_idx = try self.visitNode(old_idx);
-        self.propagateSymbolId(old_idx, new_idx);
-        return new_idx;
-    }
-
     /// 원본 → 새 노드의 symbol_id 전파.
     fn propagateSymbolId(self: *Transformer, old_idx: NodeIndex, new_idx: NodeIndex) void {
         if (self.old_symbol_ids.len == 0) return; // 전파 비활성

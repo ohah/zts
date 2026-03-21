@@ -32,7 +32,8 @@ pub const LinkingMetadata = struct {
     renames: std.AutoHashMap(u32, []const u8),
     /// 엔트리 포인트의 최종 export 문 (e.g. "export { x, y$1 as y };\n")
     final_exports: ?[]const u8,
-    /// 노드 인덱스 → 심볼 인덱스 매핑 (semantic analyzer가 생성)
+    /// 노드 인덱스 → 심볼 인덱스 매핑. 빌림 — deinit에서 해제하지 않음.
+    /// module.parse_arena 또는 transformer.new_symbol_ids(emit_arena)가 소유.
     symbol_ids: []const ?u32,
     allocator: std.mem.Allocator,
 
@@ -169,7 +170,7 @@ pub const Linker = struct {
             if (owners.len <= 1) continue; // 충돌 없음
 
             // exec_index 순으로 정렬 — 가장 낮은 게 원본 유지
-            std.mem.sort(NameOwner, @constCast(owners), {}, struct {
+            std.mem.sort(NameOwner, entry.value_ptr.items, {}, struct {
                 fn lessThan(_: void, a: NameOwner, b: NameOwner) bool {
                     return a.exec_index < b.exec_index;
                 }
@@ -279,7 +280,9 @@ pub const Linker = struct {
         const m = self.modules[module_index];
         const node_count = new_ast.nodes.items.len;
         var skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, node_count);
+        errdefer skip_nodes.deinit();
         var renames = std.AutoHashMap(u32, []const u8).init(self.allocator);
+        errdefer renames.deinit();
 
         // 1. new_ast에서 import/export 노드 스킵
         for (new_ast.nodes.items, 0..) |node, node_idx| {
