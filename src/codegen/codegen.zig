@@ -1117,25 +1117,9 @@ pub const Codegen = struct {
     // ================================================================
 
     /// import_declaration:
-    ///   side-effect: unary = { operand=source_node }
-    ///   with specs:  extra = [specs.start, specs.len, source_node]
+    ///   모든 import는 extra = [specs_start, specs_len, source_node] 형식.
+    ///   side-effect import (import "module")은 specs_len=0.
     fn emitImport(self: *Codegen, node: Node) !void {
-        // side-effect import: flags=1 (import "module")
-        if (node.data.unary.flags == 1) {
-            const source = node.data.unary.operand;
-            if (self.options.module_format == .cjs) {
-                try self.write("require(");
-                try self.emitNode(source);
-                try self.write(");");
-            } else {
-                try self.write("import ");
-                try self.emitNode(source);
-                try self.writeByte(';');
-            }
-            return;
-        }
-
-        // extra: [specs.start, specs.len, source_node]
         const e = node.data.extra;
         const extras = self.ast.extra_data.items[e .. e + 3];
         const specs_start = extras[0];

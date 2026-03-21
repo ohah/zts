@@ -64,16 +64,22 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     }
 
     // import "module" — side-effect import
+    // specs_len=0으로 저장하여 specifier가 있는 import와 같은 extra 형식 사용.
+    // unary를 쓰면 extern union의 나머지 바이트가 초기화되지 않아
+    // codegen에서 .unary.flags를 읽을 때 플랫폼별 UB 발생 (Linux에서 실패).
     if (self.current() == .string_literal) {
         if (has_phase_modifier) {
             try self.addError(self.currentSpan(), "'import defer/source' requires a binding");
         }
         const source_node = try parseModuleSource(self);
         _ = try self.eat(.semicolon);
+        const extra_start = try self.ast.addExtra(0); // specs_start (unused)
+        _ = try self.ast.addExtra(0); // specs_len = 0 (side-effect)
+        _ = try self.ast.addExtra(@intFromEnum(source_node));
         return try self.ast.addNode(.{
             .tag = .import_declaration,
             .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .unary = .{ .operand = source_node, .flags = 1 } }, // flags=1: side-effect import
+            .data = .{ .extra = extra_start },
         });
     }
 

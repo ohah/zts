@@ -903,20 +903,9 @@ pub const Transformer = struct {
     }
 
     /// import_declaration:
-    ///   side-effect: unary = { operand=source_node }
-    ///   with specs:  extra = [specs.start, specs.len, source_node]
+    ///   모든 import는 extra = [specs_start, specs_len, source_node] 형식.
+    ///   side-effect import (import "module")은 specs_len=0.
     fn visitImportDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
-        // side-effect import 감지: flags=1이면 unary 형태 (import "module")
-        if (node.data.unary.flags == 1) {
-            const new_source = try self.visitNode(node.data.unary.operand);
-            return self.new_ast.addNode(.{
-                .tag = .import_declaration,
-                .span = node.span,
-                .data = .{ .unary = .{ .operand = new_source, .flags = 1 } },
-            });
-        }
-
-        // extra 형태: [specs.start, specs.len, source_node]
         const e = node.data.extra;
         const new_specs = try self.visitExtraList(self.readU32(e, 0), self.readU32(e, 1));
         const new_source = try self.visitNode(self.readNodeIdx(e, 2));
