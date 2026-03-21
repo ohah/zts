@@ -119,7 +119,9 @@ pub fn extractImportBindings(
                     });
                 },
                 .import_specifier => {
-                    // binary { left=imported, right=local }
+                    // binary { left=imported, right=local, flags }
+                    // flags & 1 → inline type import (import { type X }) → 런타임 바인딩 불필요
+                    if (spec_node.data.binary.flags & 1 != 0) continue;
                     const imported_idx = spec_node.data.binary.left;
                     const local_idx = spec_node.data.binary.right;
                     if (imported_idx.isNone()) continue;

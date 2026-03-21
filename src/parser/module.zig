@@ -191,6 +191,27 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
 fn parseImportSpecifier(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
 
+    // inline type import: import { type Config } from './config'
+    // 주의: import { type } from ... → 'type'이라는 값을 import (modifier 아님)
+    // 주의: import { type as alias } from ... → 'type'을 alias로 import (modifier 아님)
+    var is_type_only: u16 = 0;
+    if (self.current() == .kw_type) {
+        const next = try self.peekNextKind();
+        // 다음이 식별자/키워드이고 '}' 이나 ',' 이나 'as'가 아니면 type modifier
+        if (next != .r_curly and next != .comma and next != .kw_as and
+            (next == .identifier or next == .kw_type or next == .kw_default or
+            next == .kw_class or next == .kw_function or next == .kw_const or
+            next == .kw_enum or next == .kw_interface or next == .kw_let or
+            next == .kw_var or next == .kw_void or next == .kw_null or
+            next == .kw_true or next == .kw_false or next == .kw_new or
+            next == .kw_return or next == .kw_typeof or next == .kw_delete or
+            next == .kw_throw or next == .kw_in or next == .kw_instanceof))
+        {
+            is_type_only = 1;
+            try self.advance(); // skip 'type' modifier
+        }
+    }
+
     // imported name — ModuleExportName (identifier or string literal)
     const imported = try self.parseModuleExportName();
 
@@ -211,7 +232,7 @@ fn parseImportSpecifier(self: *Parser) ParseError2!NodeIndex {
     return try self.ast.addNode(.{
         .tag = .import_specifier,
         .span = .{ .start = start, .end = self.currentSpan().start },
-        .data = .{ .binary = .{ .left = imported, .right = local, .flags = 0 } },
+        .data = .{ .binary = .{ .left = imported, .right = local, .flags = is_type_only } },
     });
 }
 
