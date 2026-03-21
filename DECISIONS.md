@@ -625,5 +625,50 @@
   }
   ```
 
+### D080: 번들러 옵션 스펙 + 플러그인 훅 포인트
+- **결정**: Rollup/Rolldown 수준 옵션 세트. 플러그인 훅 포인트는 처음부터 설계에 포함.
+- **비교**: webpack/rspack(수백 개, 과도) vs Rollup/Rolldown(~50개, 합리적) vs esbuild(~30개, 너무 적음)
+- **이유**: webpack처럼 모든 걸 옵션으로 열면 유지보수 지옥. esbuild처럼 너무 적으면 유연성 부족. Rollup 수준이 실무 균형점.
+
+**MVP (B1) 옵션**:
+- `entry`, `output.dir`, `output.format` (esm/cjs/iife), `output.entryFileNames`
+- `external`, `platform` (browser/node/neutral), `target` (es2020 등)
+- `minify`, `sourcemap` (true/false/inline/hidden), `define`, `drop`
+
+**B2 옵션**:
+- `resolve.alias`, `resolve.extensions`, `resolve.conditionNames`, `resolve.mainFields`, `resolve.preserveSymlinks`
+- `output.chunkFileNames`, `output.assetFileNames`, `output.banner`/`footer`
+- `treeshake`, `treeshake.moduleSideEffects`, `jsx`, `tsconfig`
+
+**B3 옵션**:
+- `plugins`, `output.globals`, `output.intro`/`outro`
+- `css.modules`, `css.minify`, `server.port`/`host`/`hmr`
+- `worker`, `experimental.reactRefresh`
+
+**안 할 것**: webpack `module.rules` (D073 ParserAndGenerator로 대체), `optimization.splitChunks` (자동 code splitting), `resolve.fallback` (플러그인으로), `externalsType` (후순위), `stats` (기본 출력 충분)
+
+**처음부터 설계에 포함해야 하는 B3 항목**:
+- **PluginDriver 추상화**: Rollup 패턴 — 중앙 PluginDriver가 모든 훅을 이름으로 라우팅. esbuild처럼 훅마다 별도 함수를 산재시키면 나중에 새 훅 추가 시 호출 지점 누락 위험.
+  ```
+  // Rollup 패턴 (추천): 어떤 훅이든 한 줄로 호출
+  resolved = plugin_driver.call("resolveId", .{specifier}) orelse defaultResolve(specifier)
+  loaded = plugin_driver.call("load", .{resolved}) orelse defaultLoad(resolved)
+  transformed = plugin_driver.call("transform", .{code}) orelse code
+
+  // esbuild 패턴 (배제): 훅마다 별도 함수 — 확장 어려움
+  RunOnResolvePlugins(plugins, ...)  // 호출 지점이 코드 곳곳에 산재
+  ```
+  MVP에서는 PluginDriver 구조체만 두고 내부는 비어 있어도 됨. 플러그인이 없으면 기본 동작.
+  검증: Rollup `src/utils/PluginDriver.ts`, Rolldown `crates/rolldown_plugin/src/plugin_driver/`
+- **output.globals**: linker에서 external → 글로벌 변수 교체 로직. IIFE 포맷과 엮임.
+
+**나중에 끼워넣어도 되는 B3 항목** (아키텍처 변경 없음):
+- `plugins` 실제 구현 (PluginDriver에 플러그인 등록 + N-API 바인딩)
+- `output.intro/outro`: codegen 앞뒤 문자열 추가 (1줄 변경)
+- `css.*`: Lightning CSS C ABI 호출 (독립적)
+- `server.*`: 번들러 위 레이어
+- `worker`: code splitting 위에 올림
+- `experimental.reactRefresh`: transformer visitor 추가 (독립적)
+
 ### Phase 6 (Advanced) 미결정 사항
 - 개발 서버 고급 기능 (증분 재빌드, 프레임워크 통합)
