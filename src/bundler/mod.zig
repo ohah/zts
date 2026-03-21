@@ -17,6 +17,7 @@
 pub const types = @import("types.zig");
 pub const import_scanner = @import("import_scanner.zig");
 pub const resolver = @import("resolver.zig");
+pub const package_json = @import("package_json.zig");
 
 // 공개 타입 re-export
 pub const ModuleIndex = types.ModuleIndex;
@@ -32,4 +33,5 @@ test {
     _ = types;
     _ = import_scanner;
     _ = resolver;
+    _ = package_json;
 }
