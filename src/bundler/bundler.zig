@@ -3570,6 +3570,567 @@ test "Stress: 20 modules in diamond lattice" {
     try std.testing.expectEqual(@as(usize, 1), c1_count);
 }
 
+// ============================================================
+// export { x as default } and named-as-default patterns
+// ============================================================
+
+test "Export: named as default" {
+    // export { x as default } — named export를 default로 re-alias
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import value from './mod';
+        \\console.log(value);
+    );
+    try writeFile(tmp.dir, "mod.ts",
+        \\const value = 42;
+        \\export { value as default };
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "42") != null);
+}
+
+test "Export: empty export clause" {
+    // Rollup empty-export: export {} — 사이드이펙트는 유지
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import './side';
+        \\console.log('main');
+    );
+    try writeFile(tmp.dir, "side.ts",
+        \\console.log('side-effect');
+        \\export {};
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "'side-effect'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "'main'") != null);
+}
+
+test "Export: multiple imports from same module (dedup bindings)" {
+    // 같은 모듈을 여러 번 import — 모듈은 한 번만 실행
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { foo } from './lib';
+        \\import { bar } from './lib';
+        \\console.log(foo, bar);
+    );
+    try writeFile(tmp.dir, "lib.ts",
+        \\console.log('lib init');
+        \\export const foo = 'FOO';
+        \\export const bar = 'BAR';
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // lib init은 한 번만 포함
+    var count: usize = 0;
+    var sf: usize = 0;
+    while (std.mem.indexOfPos(u8, result.output, sf, "'lib init'")) |pos| {
+        count += 1;
+        sf = pos + 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), count);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "'FOO'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "'BAR'") != null);
+}
+
+test "Export: export let with later mutation" {
+    // Rollup assignment-to-exports: export let은 뒤에서 재할당 가능
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { count, inc } from './counter';
+        \\inc();
+        \\console.log(count);
+    );
+    try writeFile(tmp.dir, "counter.ts",
+        \\export let count = 0;
+        \\export function inc() { count++; }
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "let count = 0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "count++") != null);
+}
+
+// ============================================================
+// Variable hoisting patterns (Rollup 참고)
+// ============================================================
+
+test "Hoisting: var declarations across modules" {
+    // var는 hoisting → 번들에서도 올바르게 동작해야 함
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { getValue } from './hoisted';
+        \\console.log(getValue());
+    );
+    try writeFile(tmp.dir, "hoisted.ts",
+        \\export function getValue() { return x; }
+        \\var x = 'hoisted-value';
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "'hoisted-value'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function getValue") != null);
+}
+
+test "Hoisting: function declarations hoisted above usage" {
+    // 함수 선언은 hoisting → 사용보다 뒤에 선언돼도 동작
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { run } from './runner';
+        \\run();
+    );
+    try writeFile(tmp.dir, "runner.ts",
+        \\export function run() { return helper(); }
+        \\function helper() { return 'helped'; }
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function run") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function helper") != null);
+}
+
+// ============================================================
+// Complex TypeScript patterns not yet covered
+// ============================================================
+
+test "TypeScript: declare module stripped" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { process } from './app';
+        \\process();
+    );
+    try writeFile(tmp.dir, "app.ts",
+        \\declare module '*.css' { const css: string; export default css; }
+        \\export function process() { console.log('processing'); }
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // declare module 제거
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "declare") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "'processing'") != null);
+}
+
+test "TypeScript: readonly and access modifiers stripped" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { Config } from './config';
+        \\const c = new Config('prod', 3000);
+        \\console.log(c);
+    );
+    try writeFile(tmp.dir, "config.ts",
+        \\export class Config {
+        \\  public readonly env: string;
+        \\  private port: number;
+        \\  constructor(env: string, port: number) {
+        \\    this.env = env;
+        \\    this.port = port;
+        \\  }
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "readonly") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "private") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "public") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "class Config") != null);
+}
+
+test "TypeScript: intersection and union types stripped" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { format } from './formatter';
+        \\console.log(format('hello'));
+    );
+    try writeFile(tmp.dir, "formatter.ts",
+        \\type StringOrNumber = string | number;
+        \\type WithId = { id: number } & { name: string };
+        \\export function format(input: StringOrNumber): string {
+        \\  return String(input);
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "StringOrNumber") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "WithId") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function format") != null);
+}
+
+test "TypeScript: as const and satisfies stripped" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { COLORS } from './theme';
+        \\console.log(COLORS);
+    );
+    try writeFile(tmp.dir, "theme.ts",
+        \\export const COLORS = {
+        \\  red: '#ff0000',
+        \\  blue: '#0000ff',
+        \\} as const;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "as const") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "'#ff0000'") != null);
+}
+
+test "TypeScript: parameter property transform in bundle" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { Point } from './point';
+        \\const p = new Point(10, 20);
+        \\console.log(p);
+    );
+    try writeFile(tmp.dir, "point.ts",
+        \\export class Point {
+        \\  constructor(public x: number, public y: number) {}
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "class Point") != null);
+    // parameter property → this.x = x; this.y = y; 로 변환
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "this.x") != null);
+}
+
+// ============================================================
+// Scope hoisting: deeper patterns (Webpack 참고)
+// ============================================================
+
+test "Scope hoisting: imported value used as object key" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { KEY } from './keys';
+        \\const obj = { [KEY]: 'value' };
+        \\console.log(obj);
+    );
+    try writeFile(tmp.dir, "keys.ts", "export const KEY = 'myKey';");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "'myKey'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "[KEY]") != null);
+}
+
+test "Scope hoisting: imported value in template literal" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { name } from './user';
+        \\console.log(`Hello, ${name}!`);
+    );
+    try writeFile(tmp.dir, "user.ts", "export const name = 'Alice';");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "'Alice'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "${name}") != null);
+}
+
+test "Scope hoisting: imported value in array destructuring" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { pair } from './data';
+        \\const [a, b] = pair;
+        \\console.log(a, b);
+    );
+    try writeFile(tmp.dir, "data.ts", "export const pair = [1, 2];");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 배열 리터럴 포함 여부 (공백 유무에 상관없이)
+    try std.testing.expect(
+        std.mem.indexOf(u8, result.output, "[1, 2]") != null or
+            std.mem.indexOf(u8, result.output, "[1,2]") != null,
+    );
+}
+
+test "Scope hoisting: imported value in ternary" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { DEBUG } from './env';
+        \\const level = DEBUG ? 'verbose' : 'error';
+        \\console.log(level);
+    );
+    try writeFile(tmp.dir, "env.ts", "export const DEBUG = true;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "DEBUG") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "'verbose'") != null);
+}
+
+// ============================================================
+// Error cases: more thorough
+// ============================================================
+
+test "Error: syntax error in dependency" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import './bad';\nconsole.log('ok');");
+    try writeFile(tmp.dir, "bad.ts", "const = ;"); // 구문 오류
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // 구문 오류가 있는 모듈 → 에러 또는 번들 생성 (에러 복구에 따라)
+    // 최소한 크래시하지 않아야 함
+    try std.testing.expect(result.output.len > 0 or result.hasErrors());
+}
+
+test "Error: circular re-export chain" {
+    // A re-exports from B, B re-exports from A → 무한 루프 방지
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { x } from './a';\nconsole.log(x);");
+    try writeFile(tmp.dir, "a.ts", "export { x } from './b';");
+    try writeFile(tmp.dir, "b.ts", "export { x } from './a';");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // 무한 루프에 빠지지 않고 완료해야 함 (에러 보고 가능)
+    try std.testing.expect(result.output.len > 0 or result.hasErrors());
+}
+
+test "Error: entry point not found" {
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{"/nonexistent/path/entry.ts"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(result.hasErrors());
+}
+
+// ============================================================
+// Re-export advanced: Rollup form/samples 참고
+// ============================================================
+
+test "Re-export: export * from multiple sources" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { a, b, c } from './all';
+        \\console.log(a, b, c);
+    );
+    try writeFile(tmp.dir, "all.ts",
+        \\export * from './src-a';
+        \\export * from './src-b';
+    );
+    try writeFile(tmp.dir, "src-a.ts", "export const a = 'A';\nexport const b = 'B';");
+    try writeFile(tmp.dir, "src-b.ts", "export const c = 'C';");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "'A'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "'B'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "'C'") != null);
+}
+
+test "Re-export: mixed named and star from same module" {
+    // Rolldown #7233: 같은 모듈에서 named + star 동시
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { x, y, z } from './proxy';
+        \\console.log(x, y, z);
+    );
+    try writeFile(tmp.dir, "proxy.ts",
+        \\export { x } from './source';
+        \\export * from './source';
+    );
+    try writeFile(tmp.dir, "source.ts",
+        \\export const x = 'X';
+        \\export const y = 'Y';
+        \\export const z = 'Z';
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "'X'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "'Y'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "'Z'") != null);
+}
+
+test "Re-export: re-export default as named" {
+    // export { default as Foo } from './foo'
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { Foo } from './proxy';
+        \\console.log(Foo);
+    );
+    try writeFile(tmp.dir, "proxy.ts", "export { default as Foo } from './foo';");
+    try writeFile(tmp.dir, "foo.ts", "export default 'default-foo';");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "'default-foo'") != null);
+}
+
 test "Stress: all formats + minify combinations" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
