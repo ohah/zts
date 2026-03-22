@@ -237,11 +237,21 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
      - content hash 파일명 (`chunk-{8자 hex}.js`, 결정론적)
      - 동일 이름 cross-chunk import deconflict (`import { x as x$2 }`)
    - 4d. **Dev server + HMR** — 다음, watch 모드(✅) 위에 확장
-     - **선행: Bun 모노레포 셋업** (E2E 테스트에 Playwright 필요)
-     - HTTP + WebSocket 내장 서버
-     - import.meta.hot API 주입
-     - React Fast Refresh 연동
-     - 증분 재빌드 (모듈 그래프 diff)
+     - ✅ **선행: Bun 모노레포 셋업** — PR #259
+       - packages/integration (Bun test runner, CLI 통합 테스트)
+       - packages/e2e (Playwright, dev server 구현 후 활성화)
+       - oxlint + oxfmt 설정
+     - **의사결정 완료:**
+       - HTTP 서버: `std.http.Server` (Zig 표준 라이브러리). dev server 전용이라 충분, 외부 C/C++ 의존성 불필요
+       - HMR API: `import.meta.hot` 기본 (Vite 호환) + RN 타겟 시 `module.hot` 어댑터 추가
+       - 참고: 번개(bungae) oxc-bundler 방식 — Rolldown DevEngine + `import.meta.hot` + metro-runtime HMRClient 교체 플러그인
+     - **구현 순서:**
+       1. HTTP 정적 서버 (`std.http.Server`, 파일 서빙)
+       2. 번들 서빙 (요청 시 on-the-fly 번들링 → 응답)
+       3. WebSocket 서버 (HMR 채널, RFC 6455)
+       4. HMR 런타임 주입 (`import.meta.hot` API + 클라이언트 JS)
+       5. 증분 재빌드 (watch + 모듈 그래프 diff → 변경 모듈만 재빌드)
+       6. React Fast Refresh 연동 (컴포넌트 상태 유지 핫 리로드)
 5. **.d.ts 생성** (isolatedDeclarations) — 후순위. 당분간 tsc에 위임 (esbuild/SWC와 동일). 자체 구현 시 AST 순회로 export 타입 추출 (~500줄), 파일별 독립이라 번들러 불필요
 6. **프로파일링 → SIMD → 미니파이어** — 번들러 B2 완료 후 현실적 벤치마크 가능
    - 미니파이어 3단계: 1) whitespace (✅ 이미 있음, codegen minify) → 2) identifier mangling (번들 크기 70%, 스코프 분석 필수) → 3) syntax 최적화 (if→ternary, dead code 등)
@@ -299,10 +309,11 @@ Phase B1: 기반 (✅ 완료)          Phase B2: 핵심 (✅ 대부분 완료) P
 ✅ 스코프 호이스팅                  ├ 멀티 파일 emitter         └ CSS modules
   ├ 변수 이름 충돌 해결              └ CLI --splitting
   ├ ESM 실행 순서 보장             개발 서버 + HMR (다음)
-  └ CJS 호환 래핑                   ├ HTTP + WebSocket
-✅ Tree-shaking (모듈 수준)         ├ import.meta.hot
-  ├ export 사용 추적                 ├ React Fast Refresh
-  ├ @__PURE__ / @__NO_SIDE_EFFECTS__└ 증분 재빌드
+  └ CJS 호환 래핑                   ├ std.http.Server (Zig 표준)
+✅ Tree-shaking (모듈 수준)         ├ WebSocket (RFC 6455)
+  ├ export 사용 추적                 ├ import.meta.hot (웹) + module.hot (RN)
+  ├ @__PURE__ / @__NO_SIDE_EFFECTS__├ React Fast Refresh
+  ├ sideEffects 필드                 └ 증분 재빌드 (모듈 그래프 diff)
   ├ sideEffects 필드
   └ cross-module 전파
 ```
@@ -489,11 +500,71 @@ const Module = struct {
 - **증분 재빌드**: 파일 변경 → 모듈 그래프에서 영향받는 모듈만 재빌드 → HMR 전송 (번들러와 같이 구현)
 
 ##### HMR (Hot Module Replacement)
-- **단계적 구현**: 최소(바운더리 표시) → 중간(자체 서버) → 풀(프레임워크 통합)
-- 번들러가 담당: 모듈 그래프 diff, 변경 모듈 증분 재빌드, `import.meta.hot` API 주입
-- 개발 서버: HTTP + WebSocket 내장 (esbuild `--serve` 방식)
-- React Fast Refresh와 연동하여 컴포넌트 상태 유지 핫 리로드
-- watch 모드 + 증분 재빌드 + 파일 감지 전략을 기반으로 확장
+
+###### 의사결정 (D056-D058)
+
+**D056. HTTP 서버**: `std.http.Server` (Zig 표준 라이브러리)
+- Bun은 uWebSockets(C++) 사용하지만, Bun.serve()가 프로덕션 서버를 겸하기 때문
+- ZTS dev server는 로컬 개발 전용 (동시 접속 1-2개) → std.http.Server로 충분
+- 외부 C/C++ 의존성 없음, WASM 빌드 영향 없음
+- 나중에 성능 병목 시 uWebSockets로 교체 가능 (인터페이스 동일하게 설계)
+
+**D057. HMR API**: `import.meta.hot` 기본 + `module.hot` 어댑터
+- 웹 타겟: `import.meta.hot` (Vite 호환, ESM 네이티브)
+- RN 타겟: `module.hot` (Metro 호환, RN 내장 HMRClient 재사용)
+- 내부 HMR 엔진은 하나, API 표면만 다름
+- 번개(bungae) oxc-bundler가 동일 방식: `import.meta.hot` 기본 + metro-runtime HMRClient 교체 플러그인
+
+**D058. HMR 프로토콜**: Vite 호환 + Metro 어댑터
+- 웹: Vite HMR 프로토콜 (WebSocket JSON 메시지)
+- RN: Metro HMR 프로토콜 (`update-start` → `update` → `update-done`)
+- 롤리팝(rollipop)은 자체 프로토콜이지만 RN 업데이트마다 호환성 검증 필요 → Metro 호환이 유지보수 비용 낮음
+
+```
+HMR API 비교:
+┌─────────────┬─────────────────────┬─────────────────────────────┐
+│ 번들러       │ HMR API             │ 이유                         │
+├─────────────┼─────────────────────┼─────────────────────────────┤
+│ Webpack 5   │ module.hot          │ CJS 레거시                   │
+│ Rspack      │ module.hot          │ Webpack 호환                 │
+│ Turbopack   │ module.hot          │ Webpack 호환 (Next.js)       │
+│ Vite        │ import.meta.hot     │ ESM 네이티브                 │
+│ Rolldown    │ import.meta.hot     │ Vite 호환                    │
+│ Metro       │ module.hot (커스텀)  │ CJS + RN 내장 HMRClient     │
+│ 번개(oxc)   │ import.meta.hot     │ Rolldown DevEngine + 어댑터  │
+│ ZTS (결정)  │ import.meta.hot 기본 │ Vite 호환 + RN module.hot   │
+└─────────────┴─────────────────────┴─────────────────────────────┘
+```
+
+###### 구현 순서
+1. HTTP 정적 서버 (`std.http.Server`, 파일 서빙)
+2. 번들 서빙 (요청 시 on-the-fly 번들링 → 응답)
+3. WebSocket 서버 (RFC 6455, HTTP upgrade)
+4. HMR 런타임 주입 (`import.meta.hot` API + 클라이언트 JS 코드)
+5. 증분 재빌드 (watch + 모듈 그래프 diff → 변경 모듈만 재빌드)
+6. React Fast Refresh (컴포넌트 상태 유지, `$RefreshReg$`/`$RefreshSig$` 주입)
+
+###### 아키텍처
+```
+브라우저/RN 앱
+    │
+    ├─ HTTP GET /bundle.js ──→ ZTS Dev Server ──→ on-the-fly 번들링 ──→ 응답
+    │
+    └─ WebSocket /__hmr ─────→ HMR 채널
+                                  │
+         파일 변경 감지 (watch) ──→ 모듈 그래프 diff
+                                  │
+                                  ├─ 변경 모듈만 재빌드
+                                  ├─ HMR 업데이트 메시지 전송
+                                  └─ 클라이언트: accept → 모듈 재실행 → React Refresh
+```
+
+###### 참고 프로젝트
+- **번개(bungae)**: `../bungae/` — oxc-bundler HMR (Rolldown DevEngine, `import.meta.hot`)
+- **롤리팝(rollipop)**: `../bungae/reference/rollipop/` — 자체 HMR 프로토콜
+- **Metro**: `references/metro/packages/metro-runtime/` — `module.hot`, Metro HMR 프로토콜
+- **Vite**: `references/vite/packages/vite/src/client/` — `import.meta.hot`, Vite HMR 프로토콜
+- **esbuild**: `--serve` 모드 — 최소 구현 참고
 
 ##### 외부 통합 (플러그인/라이브러리)
 ZTS 코어를 외부 빌드 도구에서 사용할 수 있도록 다층 인터페이스 제공:
