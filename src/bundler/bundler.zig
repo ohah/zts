@@ -7716,3 +7716,139 @@ test "CJS: empty CJS module" {
     // .cjs 확장자이므로 CJS로 래핑됨
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require_empty") != null);
 }
+
+test "CJS: __toESM wraps default import from CJS" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import lib from './lib.cjs';\nconsole.log(lib);");
+    try writeFile(tmp.dir, "lib.cjs", "module.exports = { value: 42 };");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // default import는 __toESM으로 래핑되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_lib())") != null);
+}
+
+test "CJS: __toESM not applied to named imports" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { value } from './lib.cjs';\nconsole.log(value);");
+    try writeFile(tmp.dir, "lib.cjs", "exports.value = 42;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // named import의 preamble에는 __toESM이 적용되지 않음 (require_lib().value 형태)
+    // __toESM 런타임 헬퍼 자체는 존재하지만, preamble에서는 사용하지 않음
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_lib())") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_lib().value") != null);
+}
+
+test "CJS: ExportsKind promotion — .js required becomes CJS" {
+    // ExportsKind 승격을 그래프 테스트로 직접 검증
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // ESM 모듈이 require()로 plain .js 파일을 로드 (ESM+CJS 혼용)
+    // plain.js는 module syntax가 없으므로 exports_kind=none → require()로 소비되어 CJS로 승격
+    try writeFile(tmp.dir, "entry.ts", "import './esm_dep';\nconst lib = require('./plain');\nconsole.log(lib);");
+    try writeFile(tmp.dir, "esm_dep.ts", "export const y = 2;");
+    try writeFile(tmp.dir, "plain.js", "const x = 1;");
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(&.{entry});
+
+    // graph에서 plain.js 모듈을 찾아서 exports_kind 확인
+    var plain_found = false;
+    for (graph.modules.items) |m| {
+        if (std.mem.endsWith(u8, m.path, "plain.js")) {
+            // require()로 소비되었으므로 CJS로 승격되어야 함
+            try std.testing.expectEqual(types.ExportsKind.commonjs, m.exports_kind);
+            try std.testing.expectEqual(types.WrapKind.cjs, m.wrap_kind);
+            plain_found = true;
+            break;
+        }
+    }
+    try std.testing.expect(plain_found);
+}
+
+test "CJS: ExportsKind promotion — .js imported becomes ESM" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // ESM이 import로 plain .js 파일을 로드 → ESM으로 승격 (래핑 안 함)
+    try writeFile(tmp.dir, "entry.ts", "import './plain.js';\nconst y = 2;");
+    try writeFile(tmp.dir, "plain.js", "const x = 1;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // ESM import로 소비된 plain.js는 래핑되지 않아야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_plain") == null);
+}
+
+test "CJS: __toESM runtime helper injected with __commonJS" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import lib from './lib.cjs';\nconsole.log(lib);");
+    try writeFile(tmp.dir, "lib.cjs", "module.exports = 42;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // __commonJS와 __toESM 런타임 헬퍼가 모두 포함되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM") != null);
+}
+
+test "CJS: __toESM not injected when no CJS" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { x } from './lib';\nconsole.log(x);");
+    try writeFile(tmp.dir, "lib.ts", "export const x = 42;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 순수 ESM 번들에는 __commonJS도 __toESM도 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM") == null);
+}

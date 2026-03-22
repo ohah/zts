@@ -22,6 +22,12 @@ const WrapKind = types.WrapKind;
 /// CJS 런타임 헬퍼: __commonJS 팩토리 함수 (esbuild 호환)
 const CJS_RUNTIME = "var __commonJS = (cb, mod) => function __require() {\n\treturn mod || (0, cb[Object.keys(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;\n};\n";
 const CJS_RUNTIME_MIN = "var __commonJS=(cb,mod)=>function __require(){return mod||(0,cb[Object.keys(cb)[0]])((mod={exports:{}}).exports,mod),mod.exports};";
+
+/// __toESM 런타임 헬퍼: CJS 모듈을 ESM namespace로 변환 (esbuild 호환, 간소화 버전).
+/// __esModule 플래그가 설정되어 있으면 모듈 그대로 반환 (babel/SWC 컨벤션),
+/// 아니면 { ...mod, default: mod } 형태로 namespace 객체 생성.
+const TOESM_RUNTIME = "var __toESM = (mod) => mod && mod.__esModule ? mod : { ...mod, default: mod };\n";
+const TOESM_RUNTIME_MIN = "var __toESM=(mod)=>mod&&mod.__esModule?mod:{...mod,default:mod};";
 const Module = @import("module.zig").Module;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
 const Ast = @import("../parser/ast.zig").Ast;
@@ -109,8 +115,10 @@ pub fn emitWithTreeShaking(
     if (needs_cjs_runtime) {
         if (options.minify) {
             try output.appendSlice(allocator, CJS_RUNTIME_MIN);
+            try output.appendSlice(allocator, TOESM_RUNTIME_MIN);
         } else {
             try output.appendSlice(allocator, CJS_RUNTIME);
+            try output.appendSlice(allocator, TOESM_RUNTIME);
         }
     }
 
