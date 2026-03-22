@@ -612,6 +612,56 @@ pub const SemanticAnalyzer = struct {
     /// 노드가 식별자 참조이면 resolveIdentifier를 호출하고 true를 반환한다.
     /// assignment_expression, update_expression 등에서 공통 사용.
     /// 식별자가 아니면 false를 반환하여 호출자가 일반 순회를 수행하도록 한다.
+    /// 현재 스코프에서 이름으로 symbol을 찾아 no_side_effects 플래그를 설정.
+    fn markSymbolNoSideEffects(self: *SemanticAnalyzer, name_span: Span) void {
+        const name = self.ast.source[name_span.start..name_span.end];
+        const scope_idx = self.current_scope.toIndex();
+        if (scope_idx >= self.scope_maps.items.len) return;
+        const sym_idx = self.scope_maps.items[scope_idx].get(name) orelse return;
+        if (sym_idx < self.symbols.items.len) {
+            self.symbols.items[sym_idx].decl_flags.no_side_effects = true;
+        }
+    }
+
+    /// 스코프 체인에서 이름을 찾아 no_side_effects 여부 확인.
+    fn lookupNoSideEffects(self: *SemanticAnalyzer, name: []const u8) bool {
+        var scope_id = self.current_scope;
+        while (!scope_id.isNone()) {
+            const s_idx = scope_id.toIndex();
+            if (s_idx >= self.scope_maps.items.len) break;
+            if (self.scope_maps.items[s_idx].get(name)) |sym_idx| {
+                return sym_idx < self.symbols.items.len and self.symbols.items[sym_idx].decl_flags.no_side_effects;
+            }
+            scope_id = self.scopes.items[s_idx].parent;
+        }
+        return false;
+    }
+
+    /// 노드가 @__NO_SIDE_EFFECTS__ 함수/arrow인지 확인.
+    fn isFunctionWithNoSideEffects(self: *const SemanticAnalyzer, node: Node) bool {
+        const FnFlags = ast_mod.FunctionFlags;
+        const ArrowFlags = ast_mod.ArrowFlags;
+        return switch (node.tag) {
+            .function_expression, .function_declaration => blk: {
+                // extra: [name, params_start, params_len, body, flags, ...]
+                const flags = node.data.extra;
+                break :blk if (node.data.extra + 4 < self.ast.extra_data.items.len)
+                    (self.ast.extra_data.items[flags + 4] & FnFlags.no_side_effects) != 0
+                else
+                    false;
+            },
+            .arrow_function_expression => blk: {
+                // extra: [params, body, flags]
+                const flags = node.data.extra;
+                break :blk if (node.data.extra + 2 < self.ast.extra_data.items.len)
+                    (self.ast.extra_data.items[flags + 2] & ArrowFlags.no_side_effects) != 0
+                else
+                    false;
+            },
+            else => false,
+        };
+    }
+
     fn tryResolveNodeAsRef(self: *SemanticAnalyzer, node_idx: NodeIndex) bool {
         if (node_idx.isNone() or @intFromEnum(node_idx) >= self.ast.nodes.items.len) return false;
         const node = self.ast.getNode(node_idx);
@@ -832,11 +882,27 @@ pub const SemanticAnalyzer = struct {
                 // extra: [callee, args_start, args_len, flags]
                 const e = node.data.extra;
                 if (self.ast.hasExtra(e, 2)) {
-                    try self.visitNode(self.ast.readExtraNode(e, 0));
+                    const callee_idx = self.ast.readExtraNode(e, 0);
+                    try self.visitNode(callee_idx);
                     try self.visitNodeList(.{
                         .start = self.ast.readExtra(e, 1),
                         .len = self.ast.readExtra(e, 2),
                     });
+
+                    // @__NO_SIDE_EFFECTS__ 자동 전파: callee가 no_side_effects 함수이면
+                    // CallFlags.is_pure 자동 설정. tree-shaker/codegen이 is_pure만 보면 됨.
+                    if (self.ast.hasExtra(e, 3) and !callee_idx.isNone() and
+                        @intFromEnum(callee_idx) < self.ast.nodes.items.len)
+                    {
+                        const callee_node = self.ast.getNode(callee_idx);
+                        if (callee_node.tag == .identifier_reference) {
+                            const callee_name = self.ast.source[callee_node.span.start..callee_node.span.end];
+                            if (self.lookupNoSideEffects(callee_name)) {
+                                const mutable_extra: [*]u32 = @constCast(self.ast.extra_data.items.ptr);
+                                mutable_extra[e + 3] |= ast_mod.CallFlags.is_pure;
+                            }
+                        }
+                    }
                 }
             },
             .tagged_template_expression => {
@@ -964,10 +1030,17 @@ pub const SemanticAnalyzer = struct {
         else
             .function_decl;
 
+        const has_no_side_effects = (flags & FnFlags.no_side_effects) != 0;
+
         // 함수 이름을 현재 스코프(외부)에 등록
         if (!name_idx.isNone()) {
             const name_node = self.ast.getNode(name_idx);
             try self.declareSymbolWithNode(name_node.span, symbol_kind, node.span, @intFromEnum(name_idx));
+
+            // @__NO_SIDE_EFFECTS__ → symbol에 전파
+            if (has_no_side_effects) {
+                self.markSymbolNoSideEffects(name_node.span);
+            }
         }
 
         // 함수 본문 — 새 function 스코프 (부모의 strict mode 상속)
@@ -1531,6 +1604,18 @@ pub const SemanticAnalyzer = struct {
                 try self.registerBinding(binding_idx, sym_kind);
                 // init 표현식도 순회 (내부에 함수 표현식 등이 있을 수 있음)
                 try self.visitNode(init_idx);
+
+                // @__NO_SIDE_EFFECTS__ 전파: init가 function/arrow이고 no_side_effects이면
+                // 변수 symbol에도 마킹 → 이 변수를 호출하면 자동 pure
+                if (!init_idx.isNone() and @intFromEnum(init_idx) < self.ast.nodes.items.len) {
+                    const init_node = self.ast.getNode(init_idx);
+                    if (self.isFunctionWithNoSideEffects(init_node)) {
+                        if (!binding_idx.isNone() and @intFromEnum(binding_idx) < self.ast.nodes.items.len) {
+                            const binding_node = self.ast.getNode(binding_idx);
+                            self.markSymbolNoSideEffects(binding_node.span);
+                        }
+                    }
+                }
             }
         }
     }

@@ -123,8 +123,10 @@ pub const DeclFlags = packed struct(u16) {
     is_exported: bool = false,
     /// export default
     is_default_export: bool = false,
+    /// @__NO_SIDE_EFFECTS__ 어노테이션 — 이 함수의 모든 호출이 pure
+    no_side_effects: bool = false,
     /// 나머지 패딩
-    _padding: u4 = 0,
+    _padding: u3 = 0,
 
     /// 모든 "값(value)" 비트. 재선언 체크에 사용할 전체 마스크.
     pub const all_values: DeclFlags = .{
