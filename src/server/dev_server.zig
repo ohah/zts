@@ -2,7 +2,9 @@ const std = @import("std");
 const http = std.http;
 const mime = @import("mime.zig");
 
-const log = std.fs.File.stderr().deprecatedWriter();
+fn getLog() std.fs.File.DeprecatedWriter {
+    return std.fs.File.stderr().deprecatedWriter();
+}
 
 pub const DevServer = struct {
     allocator: std.mem.Allocator,
@@ -20,7 +22,7 @@ pub const DevServer = struct {
 
     pub fn init(allocator: std.mem.Allocator, options: Options) !DevServer {
         const root_dir = std.fs.cwd().openDir(options.root_dir, .{}) catch |err| {
-            log.print("zts: cannot open directory '{s}': {}\n", .{ options.root_dir, err }) catch {};
+            getLog().print("zts: cannot open directory '{s}': {}\n", .{ options.root_dir, err }) catch {};
             return err;
         };
 
@@ -43,11 +45,11 @@ pub const DevServer = struct {
         self.tcp_server = address.listen(.{
             .reuse_address = true,
         }) catch |err| {
-            log.print("zts: failed to listen on port {d}: {}\n", .{ self.port, err }) catch {};
+            getLog().print("zts: failed to listen on port {d}: {}\n", .{ self.port, err }) catch {};
             return err;
         };
 
-        log.print("\n  zts dev server\n\n  Local: http://localhost:{d}/\n  Root:  {s}\n\n", .{
+        getLog().print("\n  zts dev server\n\n  Local: http://localhost:{d}/\n  Root:  {s}\n\n", .{
             self.port,
             self.root_path,
         }) catch {};
@@ -58,7 +60,7 @@ pub const DevServer = struct {
     fn acceptLoop(self: *DevServer) void {
         while (true) {
             const connection = self.tcp_server.?.accept() catch |err| {
-                log.print("zts: accept failed: {}\n", .{err}) catch {};
+                getLog().print("zts: accept failed: {}\n", .{err}) catch {};
                 continue;
             };
             self.handleConnection(connection);
@@ -78,13 +80,13 @@ pub const DevServer = struct {
             var request = server.receiveHead() catch |err| switch (err) {
                 error.HttpConnectionClosing => return,
                 else => {
-                    log.print("zts: receiveHead failed: {}\n", .{err}) catch {};
+                    getLog().print("zts: receiveHead failed: {}\n", .{err}) catch {};
                     return;
                 },
             };
 
             self.handleRequest(&request) catch |err| {
-                log.print("zts: request '{s}' failed: {}\n", .{ request.head.target, err }) catch {};
+                getLog().print("zts: request '{s}' failed: {}\n", .{ request.head.target, err }) catch {};
                 return;
             };
         }
@@ -155,7 +157,7 @@ pub const DevServer = struct {
             .extra_headers = &headers,
         });
 
-        log.print("  200 {s}\n", .{rel_path}) catch {};
+        getLog().print("  200 {s}\n", .{rel_path}) catch {};
     }
 
     const cors_headers = [_]http.Header{
