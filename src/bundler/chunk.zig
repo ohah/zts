@@ -25,7 +25,8 @@ const ChunkIndex = types.ChunkIndex;
 // ============================================================
 
 /// 고정 크기 비트 집합. 진입점 도달 가능성을 추적하는 데 사용.
-/// `[]u8` 슬라이스 기반이라 HashMap 키로 사용 가능 (hash/eql 구현).
+/// `[]u8` 기반 — `std.DynamicBitSet`(`[]usize`)와 달리 hash/eql이 바이트 단위로 동작하여
+/// 엔디안/패딩 영향 없이 HashMap 키로 안전하게 사용 가능.
 pub const BitSet = struct {
     entries: []u8,
 
@@ -94,7 +95,7 @@ pub const BitSet = struct {
         }
     }
 
-    /// 두 BitSet이 동일한지 비교한다.
+    /// 두 BitSet이 동일한지 비교한다. 같은 max_bits로 생성된 BitSet끼리 비교해야 정확.
     pub fn eql(self: BitSet, other: BitSet) bool {
         return std.mem.eql(u8, self.entries, other.entries);
     }
@@ -149,9 +150,9 @@ pub const Chunk = struct {
     bits: BitSet,
     /// 이 청크에 포함된 모듈 목록
     modules: std.ArrayListUnmanaged(ModuleIndex),
-    /// 출력 파일명 (stem, 예: "index")
+    /// 출력 파일명 (stem, 예: "index"). 빌림 — deinit에서 해제하지 않음.
     name: ?[]const u8,
-    /// 최종 출력 경로 (예: "dist/index-abc123.js")
+    /// 최종 출력 경로 (예: "dist/index-abc123.js"). 빌림 — deinit에서 해제하지 않음.
     filename: ?[]const u8,
     /// 실행 순서 (exec_index 기준 정렬에 사용)
     exec_order: u32,
