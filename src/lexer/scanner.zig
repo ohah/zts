@@ -2245,6 +2245,46 @@ test "Scanner: @__NO_SIDE_EFFECTS__ comment sets separate flag" {
     try std.testing.expect(scanner.token.has_no_side_effects_comment);
 }
 
+test "Scanner: #__NO_SIDE_EFFECTS__ comment sets separate flag" {
+    const source = "/* #__NO_SIDE_EFFECTS__ */ function g() {}";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    try scanner.next();
+    try std.testing.expectEqual(Kind.kw_function, scanner.token.kind);
+    try std.testing.expect(!scanner.token.has_pure_comment_before);
+    try std.testing.expect(scanner.token.has_no_side_effects_comment);
+}
+
+test "Scanner: @__PURE__ and @__NO_SIDE_EFFECTS__ are independent" {
+    // @__PURE__만 있으면 has_pure_comment_before만 true
+    const source1 = "/* @__PURE__ */ foo()";
+    var s1 = try Scanner.init(std.testing.allocator, source1);
+    defer s1.deinit();
+    try s1.next();
+    try std.testing.expect(s1.token.has_pure_comment_before);
+    try std.testing.expect(!s1.token.has_no_side_effects_comment);
+}
+
+test "Scanner: both @__PURE__ and @__NO_SIDE_EFFECTS__ in same comment" {
+    const source = "/* @__PURE__ @__NO_SIDE_EFFECTS__ */ function f() {}";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    try scanner.next();
+    try std.testing.expect(scanner.token.has_pure_comment_before);
+    try std.testing.expect(scanner.token.has_no_side_effects_comment);
+}
+
+test "Scanner: @__NO_SIDE_EFFECTS__ resets on next token" {
+    const source = "/* @__NO_SIDE_EFFECTS__ */ function f() {} x";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    try scanner.next(); // function — has flag
+    try std.testing.expect(scanner.token.has_no_side_effects_comment);
+    try scanner.next(); // f
+    try std.testing.expect(!scanner.token.has_no_side_effects_comment);
+}
+
 test "Scanner: normal comment does not set pure flag" {
     const source = "/* normal comment */ x";
     var scanner = try Scanner.init(std.testing.allocator, source);
