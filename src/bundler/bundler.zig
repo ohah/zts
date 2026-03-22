@@ -5288,6 +5288,118 @@ test "JSX: fragment syntax" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "function Item") != null);
 }
 
+test "JSX: three self-closing siblings" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "app.tsx",
+        \\import { A } from './A';
+        \\import { B } from './B';
+        \\import { C } from './C';
+        \\function App() { return <div><A /><B /><C /></div>; }
+        \\console.log(App);
+    );
+    try writeFile(tmp.dir, "A.tsx", "export function A() { return <span>a</span>; }");
+    try writeFile(tmp.dir, "B.tsx", "export function B() { return <span>b</span>; }");
+    try writeFile(tmp.dir, "C.tsx", "export function C() { return <span>c</span>; }");
+
+    const entry = try absPath(&tmp, "app.tsx");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function A") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function B") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function C") != null);
+}
+
+test "JSX: nested self-closing inside open/close element" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "app.tsx",
+        \\function App() { return <div><span><img /></span></div>; }
+        \\console.log(App);
+    );
+
+    const entry = try absPath(&tmp, "app.tsx");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "createElement") != null);
+}
+
+test "JSX: mixed self-closing and open/close siblings" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "app.tsx",
+        \\function App() { return <div><br /><p>text</p><hr /></div>; }
+        \\console.log(App);
+    );
+
+    const entry = try absPath(&tmp, "app.tsx");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // br, p, hr 모두 createElement 호출로 변환
+    const output = result.output;
+    var count: usize = 0;
+    var pos: usize = 0;
+    while (std.mem.indexOfPos(u8, output, pos, "createElement")) |p| {
+        count += 1;
+        pos = p + 1;
+    }
+    // div + br + p + hr = 최소 4개 createElement
+    try std.testing.expect(count >= 4);
+}
+
+test "JSX: expression container between self-closing siblings" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "app.tsx",
+        \\function App() { return <div><br />{42}<hr /></div>; }
+        \\console.log(App);
+    );
+
+    const entry = try absPath(&tmp, "app.tsx");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "42") != null);
+}
+
+test "JSX: deeply nested components" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "app.tsx",
+        \\function App() { return <div><section><article><p>deep</p></article></section></div>; }
+        \\console.log(App);
+    );
+
+    const entry = try absPath(&tmp, "app.tsx");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"deep\"") != null);
+}
+
 // ============================================================
 // Complex TypeScript: type guards, mapped types, overloads, tuples
 // ============================================================
