@@ -395,7 +395,7 @@ pub const DevServer = struct {
         const paths = result.module_paths;
         result.module_paths = null;
         result.deinit(allocator);
-        return .{ .success = paths orelse &.{} };
+        return if (paths) |p| .{ .success = p } else .fatal;
     }
 
     fn collectModulePaths(allocator: std.mem.Allocator, abs_entry: []const u8) ?[]const []const u8 {
@@ -539,16 +539,26 @@ pub const DevServer = struct {
             \\    overlay = document.createElement('div');
             \\    overlay.id = 'zts-error-overlay';
             \\    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);color:#ff5555;font-family:monospace;font-size:14px;padding:32px;box-sizing:border-box;z-index:99999;overflow:auto;white-space:pre-wrap;';
-            \\    var html = '<div style="max-width:800px;margin:0 auto">';
-            \\    html += '<h2 style="color:#ff5555;margin:0 0 16px">Build Error</h2>';
+            \\    var wrap = document.createElement('div');
+            \\    wrap.style.cssText = 'max-width:800px;margin:0 auto';
+            \\    var h = document.createElement('h2');
+            \\    h.style.cssText = 'color:#ff5555;margin:0 0 16px';
+            \\    h.textContent = 'Build Error';
+            \\    wrap.appendChild(h);
             \\    for (var i = 0; i < errors.length; i++) {
-            \\      html += '<div style="background:#1a1a1a;border:1px solid #ff5555;border-radius:4px;padding:16px;margin-bottom:12px">';
-            \\      html += '<div style="color:#888;margin-bottom:8px">' + errors[i].file + '</div>';
-            \\      html += '<div style="color:#fff">' + errors[i].message + '</div>';
-            \\      html += '</div>';
+            \\      var card = document.createElement('div');
+            \\      card.style.cssText = 'background:#1a1a1a;border:1px solid #ff5555;border-radius:4px;padding:16px;margin-bottom:12px';
+            \\      var file = document.createElement('div');
+            \\      file.style.cssText = 'color:#888;margin-bottom:8px';
+            \\      file.textContent = errors[i].file;
+            \\      var msg = document.createElement('div');
+            \\      msg.style.cssText = 'color:#fff';
+            \\      msg.textContent = errors[i].message;
+            \\      card.appendChild(file);
+            \\      card.appendChild(msg);
+            \\      wrap.appendChild(card);
             \\    }
-            \\    html += '</div>';
-            \\    overlay.innerHTML = html;
+            \\    overlay.appendChild(wrap);
             \\    overlay.onclick = function() { hideOverlay(); };
             \\    document.body.appendChild(overlay);
             \\  }
