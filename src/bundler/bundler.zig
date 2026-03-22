@@ -8425,3 +8425,69 @@ test "CodeSplitting: cross-chunk import statement" {
     }
     try std.testing.expect(has_cross_import);
 }
+
+test "CodeSplitting: multiple common chunks have unique filenames" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // 3 엔트리, 각 쌍이 다른 모듈을 공유 → 2+ 공통 청크
+    try writeFile(tmp.dir, "a.ts",
+        \\import './ab-shared';
+        \\console.log('a');
+    );
+    try writeFile(tmp.dir, "b.ts",
+        \\import './ab-shared';
+        \\import './bc-shared';
+        \\console.log('b');
+    );
+    try writeFile(tmp.dir, "c.ts",
+        \\import './bc-shared';
+        \\console.log('c');
+    );
+    try writeFile(tmp.dir, "ab-shared.ts", "export const ab = 'shared-ab';");
+    try writeFile(tmp.dir, "bc-shared.ts", "export const bc = 'shared-bc';");
+
+    const a_path = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(a_path);
+    const b_path = try absPath(&tmp, "b.ts");
+    defer std.testing.allocator.free(b_path);
+    const c_path = try absPath(&tmp, "c.ts");
+    defer std.testing.allocator.free(c_path);
+
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{ a_path, b_path, c_path },
+        .code_splitting = true,
+    });
+    defer bnd.deinit();
+    const result = try bnd.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outputs = result.outputs orelse return error.TestUnexpectedResult;
+
+    // 모든 파일명이 고유해야 함
+    for (outputs, 0..) |o, i| {
+        for (outputs[i + 1 ..]) |other| {
+            try std.testing.expect(!std.mem.eql(u8, o.path, other.path));
+        }
+    }
+}
+
+test "CodeSplitting: CJS format returns error" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const x = import('./lazy');\nconsole.log(x);");
+    try writeFile(tmp.dir, "lazy.ts", "export const lazy = 1;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+        .format = .cjs,
+    });
+    defer bnd.deinit();
+    // CJS + code_splitting은 에러
+    const result = bnd.bundle();
+    try std.testing.expect(result == error.CodeSplittingRequiresESM);
+}
