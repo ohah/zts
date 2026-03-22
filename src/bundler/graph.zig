@@ -395,8 +395,8 @@ pub const ModuleGraph = struct {
                 var target = &self.modules.items[target_idx];
 
                 if (rec.kind == .require) {
-                    // require()로 소비 → CJS로 승격 (none 또는 이전에 esm으로 승격된 것도 덮어씀)
-                    if (target.exports_kind == .none) {
+                    // require()로 소비 → CJS로 승격 (이미 ESM으로 승격된 것도 덮어씀, esbuild 동작)
+                    if (target.exports_kind == .none or target.exports_kind == .esm) {
                         target.exports_kind = .commonjs;
                         target.wrap_kind = .cjs;
                     }
