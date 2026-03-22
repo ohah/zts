@@ -349,6 +349,14 @@ pub const Linker = struct {
         var cjs_preamble_buf: std.ArrayList(u8) = .empty;
         defer cjs_preamble_buf.deinit(self.allocator);
 
+        // CJS 모듈별 require_xxx 변수명 캐시 (같은 모듈에서 여러 named import 시 중복 생성 방지)
+        var cjs_var_cache = std.AutoHashMap(u32, []const u8).init(self.allocator);
+        defer {
+            var vit = cjs_var_cache.valueIterator();
+            while (vit.next()) |v| self.allocator.free(v.*);
+            cjs_var_cache.deinit();
+        }
+
         if (sem.scope_maps.len > 0) {
             const module_scope = sem.scope_maps[0];
             // import 바인딩 → canonical 이름
@@ -361,9 +369,14 @@ pub const Linker = struct {
 
                 // CJS 모듈에서 import하는 경우: preamble에서 require_xxx() 호출 생성
                 if (canonical_mod < self.modules.len and self.modules[canonical_mod].wrap_kind == .cjs) {
-                    const target_path = self.modules[canonical_mod].path;
-                    const req_var = try types.makeRequireVarName(self.allocator, target_path);
-                    defer self.allocator.free(req_var);
+                    const req_var = if (cjs_var_cache.get(@intCast(canonical_mod))) |cached|
+                        cached
+                    else blk: {
+                        const target_path = self.modules[canonical_mod].path;
+                        const name = try types.makeRequireVarName(self.allocator, target_path);
+                        try cjs_var_cache.put(@intCast(canonical_mod), name);
+                        break :blk name;
+                    };
 
                     if (ib.kind == .namespace or std.mem.eql(u8, ib.imported_name, "default")) {
                         // default/namespace import: var <local> = require_xxx();
