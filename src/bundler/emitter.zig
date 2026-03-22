@@ -330,7 +330,11 @@ pub fn emitChunks(
             const m = &modules[mi];
 
             const is_entry = if (entry_mod_idx) |ei| mi == ei else false;
-            const code = try emitModule(allocator, m, options, linker, is_entry) orelse continue;
+            const raw_code = try emitModule(allocator, m, options, linker, is_entry) orelse continue;
+            defer allocator.free(raw_code);
+
+            // 동적 import 경로 리라이트: import('./page') → import('./page.js')
+            const code = try rewriteDynamicImports(allocator, raw_code, m, chunk_graph);
             defer allocator.free(code);
 
             if (!options.minify) {
@@ -397,6 +401,75 @@ pub fn emitChunks(
     }
 
     return outputs.toOwnedSlice(allocator);
+}
+
+/// 동적 import 경로를 청크 파일명으로 리라이트한다.
+///
+/// code splitting 시 `import('./page')` → `import('./page.js')` 변환.
+/// 모듈의 import_records에서 dynamic_import 레코드를 찾아,
+/// resolve된 대상 모듈이 속한 청크의 파일명으로 specifier를 교체한다.
+///
+/// 반환값은 항상 allocator 소유 — 리라이트 여부와 무관하게 caller가 free해야 한다.
+fn rewriteDynamicImports(
+    allocator: std.mem.Allocator,
+    code: []const u8,
+    module: *const Module,
+    chunk_graph: *const ChunkGraph,
+) ![]const u8 {
+    // dynamic import가 없으면 그대로 복사해서 반환
+    if (module.import_records.len == 0) {
+        return try allocator.dupe(u8, code);
+    }
+
+    // 리라이트할 레코드가 있는지 먼저 확인 (불필요한 할당 방지)
+    var has_dynamic = false;
+    for (module.import_records) |rec| {
+        if (rec.kind == .dynamic_import and rec.resolved != .none) {
+            const target_chunk = chunk_graph.getModuleChunk(rec.resolved);
+            if (target_chunk != .none) {
+                has_dynamic = true;
+                break;
+            }
+        }
+    }
+    if (!has_dynamic) {
+        return try allocator.dupe(u8, code);
+    }
+
+    // 리라이트 수행: 각 dynamic import specifier를 청크 파일명으로 교체.
+    // import_records를 순회하면서 코드 내의 specifier 문자열을 찾아 교체한다.
+    // codegen이 specifier를 원본 그대로 출력하므로 정확한 문자열 매칭이 가능.
+    var result = try allocator.dupe(u8, code);
+    errdefer allocator.free(result);
+
+    for (module.import_records) |rec| {
+        if (rec.kind != .dynamic_import) continue;
+        if (rec.resolved == .none) continue;
+
+        const target_chunk_idx = chunk_graph.getModuleChunk(rec.resolved);
+        if (target_chunk_idx == .none) continue;
+
+        const target_chunk = chunk_graph.getChunk(target_chunk_idx);
+
+        // 청크 파일명 생성: "./{stem}.js"
+        var stem_buf: [64]u8 = undefined;
+        const stem = chunkStem(target_chunk, &stem_buf);
+        const replacement = try std.fmt.allocPrint(allocator, "./{s}.js", .{stem});
+        defer allocator.free(replacement);
+
+        // 코드에서 원본 specifier를 찾아 교체
+        if (std.mem.indexOf(u8, result, rec.specifier)) |pos| {
+            const new_result = try std.mem.concat(allocator, u8, &.{
+                result[0..pos],
+                replacement,
+                result[pos + rec.specifier.len ..],
+            });
+            allocator.free(result);
+            result = new_result;
+        }
+    }
+
+    return result;
 }
 
 /// 청크의 출력 파일 stem을 반환한다 (확장자 없음).
@@ -877,4 +950,145 @@ test "emitChunks: two entries with shared module — 3 OutputFiles" {
         if (std.mem.indexOf(u8, o.contents, "'shared'") != null) shared_count += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), shared_count);
+}
+
+// ============================================================
+// rewriteDynamicImports Tests
+// ============================================================
+
+test "CodeSplitting: dynamic import path rewritten to chunk filename" {
+    // 설정: index.ts가 import('./lazy')로 lazy.ts를 동적 import.
+    // lazy.ts가 별도 청크에 속할 때, import('./lazy') → import('./lazy.js')로 리라이트 확인.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const load = () => import('./lazy');");
+    try writeFile(tmp.dir, "lazy.ts", "export const x = 42;");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
+    defer std.testing.allocator.free(entry_path);
+
+    // lazy.ts를 별도 엔트리로도 추가하여 별도 청크가 생성되도록 함
+    const lazy_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "lazy.ts" });
+    defer std.testing.allocator.free(lazy_path);
+
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, result.graph.modules.items, &.{ entry_path, lazy_path }, null);
+    defer cg.deinit();
+
+    const outputs = try emitChunks(std.testing.allocator, result.graph.modules.items, &cg, .{}, null);
+    defer {
+        for (outputs) |o| {
+            std.testing.allocator.free(o.path);
+            std.testing.allocator.free(o.contents);
+        }
+        std.testing.allocator.free(outputs);
+    }
+
+    // index.js 출력에서 import 경로가 리라이트되었는지 확인
+    var found_rewrite = false;
+    for (outputs) |o| {
+        if (std.mem.indexOf(u8, o.path, "index") != null) {
+            // 리라이트 후: import('./lazy.js') 또는 import("./lazy.js")
+            if (std.mem.indexOf(u8, o.contents, "./lazy.js") != null) {
+                found_rewrite = true;
+            }
+            // 원본 specifier('./lazy')가 그대로 남아있으면 안 됨
+            // (단, './lazy.js'에 './lazy'가 부분 매칭되므로 정확히 확인)
+            if (std.mem.indexOf(u8, o.contents, "'./lazy'") != null or
+                std.mem.indexOf(u8, o.contents, "\"./lazy\"") != null)
+            {
+                // 원본이 리라이트 없이 남아있음 — 실패
+                try std.testing.expect(false);
+            }
+            break;
+        }
+    }
+    try std.testing.expect(found_rewrite);
+}
+
+test "CodeSplitting: multiple dynamic imports rewritten" {
+    // 설정: index.ts가 두 개의 동적 import를 가짐.
+    // 둘 다 별도 청크에 속할 때, 양쪽 모두 리라이트 확인.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts",
+        \\const a = () => import('./pageA');
+        \\const b = () => import('./pageB');
+    );
+    try writeFile(tmp.dir, "pageA.ts", "export const a = 1;");
+    try writeFile(tmp.dir, "pageB.ts", "export const b = 2;");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
+    defer std.testing.allocator.free(entry_path);
+    const pageA_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "pageA.ts" });
+    defer std.testing.allocator.free(pageA_path);
+    const pageB_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "pageB.ts" });
+    defer std.testing.allocator.free(pageB_path);
+
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, result.graph.modules.items, &.{ entry_path, pageA_path, pageB_path }, null);
+    defer cg.deinit();
+
+    const outputs = try emitChunks(std.testing.allocator, result.graph.modules.items, &cg, .{}, null);
+    defer {
+        for (outputs) |o| {
+            std.testing.allocator.free(o.path);
+            std.testing.allocator.free(o.contents);
+        }
+        std.testing.allocator.free(outputs);
+    }
+
+    // index.js에서 두 경로 모두 리라이트 확인
+    for (outputs) |o| {
+        if (std.mem.indexOf(u8, o.path, "index") != null) {
+            try std.testing.expect(std.mem.indexOf(u8, o.contents, "./pageA.js") != null);
+            try std.testing.expect(std.mem.indexOf(u8, o.contents, "./pageB.js") != null);
+            break;
+        }
+    }
+}
+
+test "CodeSplitting: static import not rewritten" {
+    // 설정: index.ts가 static import만 사용 — 경로 리라이트 없어야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "import { x } from './lib';\nconsole.log(x);");
+    try writeFile(tmp.dir, "lib.ts", "export const x = 1;");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
+    defer std.testing.allocator.free(entry_path);
+
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, result.graph.modules.items, &.{entry_path}, null);
+    defer cg.deinit();
+
+    const outputs = try emitChunks(std.testing.allocator, result.graph.modules.items, &cg, .{}, null);
+    defer {
+        for (outputs) |o| {
+            std.testing.allocator.free(o.path);
+            std.testing.allocator.free(o.contents);
+        }
+        std.testing.allocator.free(outputs);
+    }
+
+    // 단일 청크 — static import는 linker가 제거하므로 경로가 출력에 없음
+    try std.testing.expectEqual(@as(usize, 1), outputs.len);
+    // import('./lib.js') 같은 동적 import 경로가 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "import('./") == null);
+    try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "import(\"./") == null);
 }
