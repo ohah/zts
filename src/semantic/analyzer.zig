@@ -40,8 +40,8 @@ const AllocError = std.mem.Allocator.Error;
 /// // analyzer.errors에 에러가 있으면 출력
 /// ```
 pub const SemanticAnalyzer = struct {
-    /// 분석 대상 AST (읽기 전용)
-    ast: *const Ast,
+    /// 분석 대상 AST. @__NO_SIDE_EFFECTS__ 자동 전파에서 CallFlags 수정이 필요하므로 mutable.
+    ast: *Ast,
 
     /// 스코프 배열 (플랫, D052)
     scopes: std.ArrayList(Scope),
@@ -120,7 +120,7 @@ pub const SemanticAnalyzer = struct {
         is_loop: bool,
     };
 
-    pub fn init(allocator: std.mem.Allocator, ast: *const Ast) SemanticAnalyzer {
+    pub fn init(allocator: std.mem.Allocator, ast: *Ast) SemanticAnalyzer {
         return .{
             .ast = ast,
             .scopes = .empty,
@@ -869,8 +869,7 @@ pub const SemanticAnalyzer = struct {
                                 if (sym_idx < self.symbols.items.len and
                                     self.symbols.items[sym_idx].decl_flags.no_side_effects)
                                 {
-                                    const mutable_extra: [*]u32 = @constCast(self.ast.extra_data.items.ptr);
-                                    mutable_extra[e + 3] |= ast_mod.CallFlags.is_pure;
+                                    self.ast.extra_data.items[e + 3] |= ast_mod.CallFlags.is_pure;
                                 }
                             }
                         }
