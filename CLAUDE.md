@@ -246,12 +246,21 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
        - HMR API: `import.meta.hot` 기본 (Vite 호환) + RN 타겟 시 `module.hot` 어댑터 추가
        - 참고: 번개(bungae) oxc-bundler 방식 — Rolldown DevEngine + `import.meta.hot` + metro-runtime HMRClient 교체 플러그인
      - **구현 순서:**
-       1. HTTP 정적 서버 (`std.http.Server`, 파일 서빙)
-       2. 번들 서빙 (요청 시 on-the-fly 번들링 → 응답)
-       3. WebSocket 서버 (HMR 채널, RFC 6455)
-       4. HMR 런타임 주입 (`import.meta.hot` API + 클라이언트 JS)
-       5. 증분 재빌드 (watch + 모듈 그래프 diff → 변경 모듈만 재빌드)
-       6. React Fast Refresh 연동 (컴포넌트 상태 유지 핫 리로드)
+       1. ✅ HTTP 정적 서버 — PR #260
+       2. ✅ 번들 서빙 (on-the-fly) — PR #261
+       3. ✅ WebSocket 서버 — PR #262
+       4. ✅ Live Reload (thread-per-connection + watch) — PR #263
+       5. ✅ 모듈 그래프 전체 파일 감시 — PR #266
+       6. 에러 오버레이 (브라우저 화면에 빌드 에러 표시)
+       7. 소스맵 서빙 (dev 모드 디버깅)
+       8. SPA 폴백 (historyApiFallback)
+       9. import.meta.hot API (모듈 단위 교체)
+       10. React Fast Refresh ($RefreshReg$/$RefreshSig$ 주입)
+       11. CSS 핫 리로드 (link tag swap, 페이지 새로고침 없이)
+     - **추가 의사결정 (D059):**
+       - 동시성: `std.Thread.spawn` per-connection (esbuild goroutine과 유사)
+       - dev server 전용이라 OS 스레드 10-20개면 충분
+       - WS 클라이언트 목록: mutex 보호 고정 배열 (Metro와 동일 패턴)
 5. **.d.ts 생성** (isolatedDeclarations) — 후순위. 당분간 tsc에 위임 (esbuild/SWC와 동일). 자체 구현 시 AST 순회로 export 타입 추출 (~500줄), 파일별 독립이라 번들러 불필요
 6. **프로파일링 → SIMD → 미니파이어** — 번들러 B2 완료 후 현실적 벤치마크 가능
    - 미니파이어 3단계: 1) whitespace (✅ 이미 있음, codegen minify) → 2) identifier mangling (번들 크기 70%, 스코프 분석 필수) → 3) syntax 최적화 (if→ternary, dead code 등)
@@ -308,12 +317,12 @@ Phase B1: 기반 (✅ 완료)          Phase B2: 핵심 (✅ 대부분 완료) P
   └ 진입점 → 단일 출력               ├ 공통 청크 자동 추출       ├ 별도 파서
 ✅ 스코프 호이스팅                  ├ 멀티 파일 emitter         └ CSS modules
   ├ 변수 이름 충돌 해결              └ CLI --splitting
-  ├ ESM 실행 순서 보장             개발 서버 + HMR (다음)
-  └ CJS 호환 래핑                   ├ std.http.Server (Zig 표준)
-✅ Tree-shaking (모듈 수준)         ├ WebSocket (RFC 6455)
-  ├ export 사용 추적                 ├ import.meta.hot (웹) + module.hot (RN)
-  ├ @__PURE__ / @__NO_SIDE_EFFECTS__├ React Fast Refresh
-  ├ sideEffects 필드                 └ 증분 재빌드 (모듈 그래프 diff)
+  ├ ESM 실행 순서 보장             개발 서버 + HMR
+  └ CJS 호환 래핑                   ├ ✅ HTTP + WS + Live Reload
+✅ Tree-shaking (모듈 수준)         ├ ✅ 모듈 그래프 파일 감시
+  ├ export 사용 추적                 ├ 에러 오버레이 + 소스맵
+  ├ @__PURE__ / @__NO_SIDE_EFFECTS__├ import.meta.hot + Fast Refresh
+  ├ sideEffects 필드                 └ CSS 핫 리로드
   ├ sideEffects 필드
   └ cross-module 전파
 ```
@@ -537,12 +546,26 @@ HMR API 비교:
 ```
 
 ###### 구현 순서
-1. HTTP 정적 서버 (`std.http.Server`, 파일 서빙)
-2. 번들 서빙 (요청 시 on-the-fly 번들링 → 응답)
-3. WebSocket 서버 (RFC 6455, HTTP upgrade)
-4. HMR 런타임 주입 (`import.meta.hot` API + 클라이언트 JS 코드)
-5. 증분 재빌드 (watch + 모듈 그래프 diff → 변경 모듈만 재빌드)
-6. React Fast Refresh (컴포넌트 상태 유지, `$RefreshReg$`/`$RefreshSig$` 주입)
+```
+기반 인프라 (✅ 완료):
+  1. ✅ HTTP 정적 서버 (std.http.Server) — PR #260
+  2. ✅ 번들 서빙 (on-the-fly 번들링) — PR #261
+  3. ✅ WebSocket 서버 (RFC 6455) — PR #262
+  4. ✅ Live Reload (thread-per-connection + watch → full-reload) — PR #263
+  5. ✅ 모듈 그래프 전체 파일 감시 — PR #266
+  ✅ TS non-null assertion 체이닝 수정 — PR #265
+  ✅ E2E 테스트 활성화 (Playwright 4개) — PR #264
+
+즉시 가치 (작은 작업):
+  6. 에러 오버레이 — 빌드 에러를 브라우저 화면에 표시 (Vite/Bun 방식)
+  7. 소스맵 서빙 — dev 모드 디버깅. 이미 소스맵 생성 기능 있음 (PR #53)
+  8. SPA 폴백 — / 이외 경로에서 index.html 반환 (React Router 등)
+
+핵심 HMR (큰 작업):
+  9. import.meta.hot API — 모듈 래핑 + accept/dispose API + 모듈 단위 교체
+  10. React Fast Refresh — 컴포넌트 감지 + $RefreshReg$/$RefreshSig$ 주입
+  11. CSS 핫 리로드 — link tag swap (페이지 새로고침 없이)
+```
 
 ###### 아키텍처
 ```
