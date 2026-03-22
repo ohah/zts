@@ -715,5 +715,22 @@
   ```
 - **참고**: `references/rolldown/crates/rolldown_resolver/`, `references/rolldown/crates/rolldown_plugin_vite_resolve/`
 
+### D082: Per-Node 플래그 저장 전략 (@__PURE__ 등)
+- **결정**: extra_data 슬롯 확장 (기존 패턴 재사용)
+- **배경**: tree-shaking에서 `@__PURE__`, `@__NO_SIDE_EFFECTS__` 등 per-node 플래그가 필요. 24B 고정 노드(D037) 안에 공간 없음.
+- **비교**:
+  - flags 비트 빌리기: call_expression의 u16 flags에서 1비트씩 사용. 단순하지만 arg_count 범위 축소 (32767→16383). 플래그 추가마다 범위 계속 축소.
+  - node_flags 사이드 테이블 ([]u8/u16/u32): 노드당 별도 플래그 배열. 모든 노드에 +N 바이트 낭비 (리터럴/식별자 등 플래그 불필요한 노드 포함). 새로운 패턴 도입 필요.
+  - **extra_data 슬롯 확장**: call_expression을 data.binary → data.extra로 변경. extra_data에 [callee, args_start, args_len, flags] 저장. flags가 u32이므로 32개 플래그 가능, 슬롯 추가하면 무제한.
+  - 노드 크기 확장 (24B→32B): 캐시 효율 33% 감소, WASM 직접 접근 포맷 변경. 모든 노드에 영향.
+  - 가변 크기 노드 (Bun/esbuild 방식): 프로젝트 전체 재작성. WASM 직접 접근(D037 차별점) 포기.
+- **이유**: extra_data는 이미 function/class 등 복잡한 노드가 사용하는 검증된 패턴. 필요한 노드만 필요한 만큼 슬롯 추가 (메모리 효율). 새 배열 불필요. WASM 호환 유지 (extra_data 배열 하나로 통합). call_expression도 이미 args를 extra_data를 통해 접근하므로 성능 영향 미미.
+- **배제 이유**:
+  - flags 비트: 플래그 추가될 때마다 arg_count 범위 축소. 다른 번들러(esbuild/oxc/Bun)는 인자 수 제한 없음 — ZTS만 제한 생기는 건 비대칭
+  - node_flags 배열: 10만 노드 × 4B = 400KB 추가인데, 대부분의 노드는 플래그 불필요. 메모리 낭비
+  - 노드 크기 확장: 모든 AST 순회 성능에 영향. 캐시 라인당 노드 수 감소 (2.6 → 2개)
+  - 가변 크기: WASM 직접 접근 포기 + 프로젝트 전체 재작성 비용
+- **참고**: esbuild(`ECall.CanBeUnwrappedIfUnused: bool`), oxc(`CallExpression.pure: bool`), Bun(`E.Call.can_be_unwrapped_if_unused: CallUnwrap(u2)`) — 모두 가변 크기 노드라 필드 추가로 해결. ZTS는 24B 고정이므로 extra_data로 동등한 확장성 확보.
+
 ### Phase 6 (Advanced) 미결정 사항
 - 개발 서버 고급 기능 (증분 재빌드, 프레임워크 통합)
