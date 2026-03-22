@@ -9507,4 +9507,10 @@ test "Bundler: dev mode react fast refresh" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"Helper\"") != null);
     // _c 핸들 변수 선언
     try std.testing.expect(std.mem.indexOf(u8, result.output, "_c") != null);
+    // react-refresh 런타임 바인딩
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$RefreshReg$") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$RefreshSig$") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "react-refresh/runtime") != null);
+    // hot.accept() 자동 삽입
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_module.hot.accept()") != null);
 }
