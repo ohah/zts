@@ -7852,3 +7852,105 @@ test "CJS: __toESM not injected when no CJS" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM") == null);
 }
+
+test "CJS: require overrides ESM promotion (both import and require same module)" {
+    // 같은 .js 파일을 한쪽에서 import, 다른쪽에서 require() → require가 우선 (esbuild 동작)
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import './importer';
+        \\import './requirer';
+    );
+    try writeFile(tmp.dir, "importer.ts", "import './shared.js';");
+    try writeFile(tmp.dir, "requirer.ts", "const s = require('./shared.js');\nconsole.log(s);");
+    try writeFile(tmp.dir, "shared.js", "const x = 1;");
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(&.{entry});
+
+    // shared.js는 import와 require 모두로 소비됨 → require가 우선이므로 CJS
+    var shared_found = false;
+    for (graph.modules.items) |m| {
+        if (std.mem.endsWith(u8, m.path, "shared.js")) {
+            try std.testing.expectEqual(types.ExportsKind.commonjs, m.exports_kind);
+            try std.testing.expectEqual(types.WrapKind.cjs, m.wrap_kind);
+            shared_found = true;
+            break;
+        }
+    }
+    try std.testing.expect(shared_found);
+}
+
+test "CJS: CJS module with both module.exports and exports.x" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import lib from './lib.cjs';\nconsole.log(lib);");
+    try writeFile(tmp.dir, "lib.cjs",
+        \\exports.name = 'test';
+        \\module.exports = { value: 42 };
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM") != null);
+}
+
+test "CJS: namespace import from CJS uses __toESM" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import * as lib from './lib.cjs';\nconsole.log(lib.default, lib.value);");
+    try writeFile(tmp.dir, "lib.cjs", "exports.value = 42;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // namespace import도 __toESM으로 래핑
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_lib())") != null);
+}
+
+test "CJS: multiple ESM modules importing same CJS module" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import './a';
+        \\import './b';
+    );
+    try writeFile(tmp.dir, "a.ts", "import lib from './shared.cjs';\nconsole.log(lib);");
+    try writeFile(tmp.dir, "b.ts", "import { value } from './shared.cjs';\nconsole.log(value);");
+    try writeFile(tmp.dir, "shared.cjs", "exports.value = 42;\nmodule.exports.default = exports;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // shared.cjs는 한 번만 래핑
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_shared") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") != null);
+}
