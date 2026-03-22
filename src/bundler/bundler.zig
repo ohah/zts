@@ -19,6 +19,8 @@ const ResolveCache = @import("resolve_cache.zig").ResolveCache;
 const Platform = @import("resolve_cache.zig").Platform;
 const emitter = @import("emitter.zig");
 const EmitOptions = emitter.EmitOptions;
+const OutputFile = emitter.OutputFile;
+const chunk_mod = @import("chunk.zig");
 const Linker = @import("linker.zig").Linker;
 const TreeShaker = @import("tree_shaker.zig").TreeShaker;
 
@@ -32,11 +34,17 @@ pub const BundleOptions = struct {
     scope_hoist: bool = true,
     /// tree-shaking 활성화 (미사용 export/모듈 제거). scope_hoist가 true일 때만 동작.
     tree_shaking: bool = true,
+    /// code splitting 활성화. true이면 dynamic import 경계에서 청크를 분리하고
+    /// 공유 모듈을 공통 청크로 추출한다. 결과는 BundleResult.outputs에 다중 파일로 반환.
+    code_splitting: bool = false,
 };
 
 pub const BundleResult = struct {
-    /// 번들 출력 내용 (단일 파일). allocator 소유.
+    /// 번들 출력 내용 (단일 파일). code_splitting=false일 때 사용. allocator 소유.
     output: []const u8,
+    /// 다중 출력 파일. code_splitting=true일 때 사용. allocator 소유.
+    /// null이면 단일 파일 모드 (output 필드 사용).
+    outputs: ?[]OutputFile = null,
     /// 빌드 중 발생한 진단 메시지들. deep copy — 내부 문자열도 allocator 소유.
     diagnostics: ?[]OwnedDiagnostic,
 
@@ -52,6 +60,13 @@ pub const BundleResult = struct {
 
     pub fn deinit(self: *const BundleResult, allocator: std.mem.Allocator) void {
         allocator.free(self.output);
+        if (self.outputs) |outs| {
+            for (outs) |o| {
+                allocator.free(o.path);
+                allocator.free(o.contents);
+            }
+            allocator.free(outs);
+        }
         if (self.diagnostics) |diags| {
             for (diags) |d| {
                 allocator.free(d.message);
@@ -120,16 +135,51 @@ pub const Bundler = struct {
         defer if (shaker) |*s| s.deinit();
 
         // 3. 번들 출력 생성
-        const output = try emitter.emitWithTreeShaking(
-            self.allocator,
-            &graph,
-            .{ .format = self.options.format, .minify = self.options.minify },
-            if (linker) |*l| l else null,
-            if (shaker) |*s| s else null,
-        );
+        var output: []const u8 = "";
+        var outputs: ?[]OutputFile = null;
+
+        if (self.options.code_splitting) {
+            // Code splitting 경로: 청크 그래프 생성 → 다중 파일 출력
+            var chunk_graph = try chunk_mod.generateChunks(
+                self.allocator,
+                graph.modules.items,
+                self.options.entry_points,
+                if (shaker) |*s| s else null,
+            );
+            defer chunk_graph.deinit();
+
+            try chunk_mod.computeCrossChunkLinks(&chunk_graph, graph.modules.items, self.allocator);
+
+            outputs = try emitter.emitChunks(
+                self.allocator,
+                graph.modules.items,
+                &chunk_graph,
+                .{ .format = self.options.format, .minify = self.options.minify },
+                if (linker) |*l| l else null,
+            );
+            errdefer if (outputs) |outs| {
+                for (outs) |o| {
+                    self.allocator.free(o.path);
+                    self.allocator.free(o.contents);
+                }
+                self.allocator.free(outs);
+            };
+
+            // output은 빈 문자열 — code splitting 시 outputs를 사용
+            output = try self.allocator.dupe(u8, "");
+        } else {
+            // 기존 단일 파일 경로 (변경 없음)
+            output = try emitter.emitWithTreeShaking(
+                self.allocator,
+                &graph,
+                .{ .format = self.options.format, .minify = self.options.minify },
+                if (linker) |*l| l else null,
+                if (shaker) |*s| s else null,
+            );
+        }
         errdefer self.allocator.free(output);
 
-        // 3. 진단 메시지 deep copy (graph.deinit 후에도 문자열 유효하도록)
+        // 4. 진단 메시지 deep copy (graph.deinit 후에도 문자열 유효하도록)
         const diagnostics: ?[]BundleResult.OwnedDiagnostic = if (graph.diagnostics.items.len > 0) blk: {
             const diags = try self.allocator.alloc(BundleResult.OwnedDiagnostic, graph.diagnostics.items.len);
             errdefer self.allocator.free(diags);
@@ -156,6 +206,7 @@ pub const Bundler = struct {
 
         return .{
             .output = output,
+            .outputs = outputs,
             .diagnostics = diagnostics,
         };
     }
@@ -8206,4 +8257,171 @@ test "TLA: for_await_of_statement detected via AST tag" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "ZTS WARNING") != null);
     // codegen이 for await of를 올바르게 출력
     try std.testing.expect(std.mem.indexOf(u8, result.output, "await of") != null);
+}
+
+// ============================================================
+// Code Splitting Tests
+// ============================================================
+
+test "CodeSplitting: code_splitting=false unchanged — 기존 동작 보존" {
+    // code_splitting=false(기본값)일 때 기존 단일 파일 출력이 그대로 동작하는지 확인.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x: number = 42;");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // 단일 파일 모드: output에 결과, outputs는 null
+    try std.testing.expect(result.outputs == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "const x = 42;") != null);
+    try std.testing.expect(!result.hasErrors());
+}
+
+test "CodeSplitting: single entry no split — 동적 import 없으면 청크 1개" {
+    // code_splitting=true이지만 dynamic import가 없으면 단일 청크만 생성됨.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "import './lib';\nconst x = 1;\nconsole.log(x);");
+    try writeFile(tmp.dir, "lib.ts", "const y = 2;\nconsole.log(y);");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // outputs가 생성됨 (code_splitting=true)
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+    // 단일 청크 — 동적 import 없으므로 분리 없음
+    try std.testing.expectEqual(@as(usize, 1), outs.len);
+    // 엔트리 파일명
+    try std.testing.expectEqualStrings("index.js", outs[0].path);
+    // 두 모듈의 코드 포함
+    try std.testing.expect(std.mem.indexOf(u8, outs[0].contents, "const x = 1;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, outs[0].contents, "const y = 2;") != null);
+}
+
+test "CodeSplitting: dynamic import produces two output files" {
+    // entry.ts가 lazy.ts를 dynamic import → 2개의 OutputFile 생성.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const mod = import('./lazy');\nconsole.log(mod);");
+    try writeFile(tmp.dir, "lazy.ts", "export const value = 42;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+    // 2개 청크: entry + lazy
+    try std.testing.expectEqual(@as(usize, 2), outs.len);
+
+    // 각 청크에 해당 모듈의 코드가 포함
+    var has_entry = false;
+    var has_lazy = false;
+    for (outs) |o| {
+        if (std.mem.indexOf(u8, o.contents, "console.log") != null) has_entry = true;
+        if (std.mem.indexOf(u8, o.contents, "42") != null) has_lazy = true;
+    }
+    try std.testing.expect(has_entry);
+    try std.testing.expect(has_lazy);
+}
+
+test "CodeSplitting: shared module produces common chunk" {
+    // 2개 엔트리가 같은 모듈을 공유 → 공통 청크로 추출.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import { shared } from './shared';\nconsole.log('a', shared);");
+    try writeFile(tmp.dir, "b.ts", "import { shared } from './shared';\nconsole.log('b', shared);");
+    try writeFile(tmp.dir, "shared.ts", "export const shared = 'common';");
+
+    const entry_a = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(entry_a);
+    const entry_b = try absPath(&tmp, "b.ts");
+    defer std.testing.allocator.free(entry_b);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{ entry_a, entry_b },
+        .code_splitting = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+    // 2 엔트리 + 1 공통 = 3 청크
+    try std.testing.expectEqual(@as(usize, 3), outs.len);
+
+    // shared 모듈의 코드는 정확히 하나의 청크에만 포함 (중복 없음)
+    var shared_count: usize = 0;
+    for (outs) |o| {
+        if (std.mem.indexOf(u8, o.contents, "'common'") != null) shared_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), shared_count);
+}
+
+test "CodeSplitting: cross-chunk import statement" {
+    // 엔트리 A가 정적 import하는 모듈이 다른 청크에 있을 때
+    // cross-chunk import './dep.js' 문이 삽입되는지 확인.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // A → shared (static), B → shared (static)
+    // shared는 공통 청크로 추출 → A, B 청크에 cross-chunk import 삽입
+    try writeFile(tmp.dir, "a.ts", "import { x } from './shared';\nconsole.log('a', x);");
+    try writeFile(tmp.dir, "b.ts", "import { x } from './shared';\nconsole.log('b', x);");
+    try writeFile(tmp.dir, "shared.ts", "export const x = 'shared_val';");
+
+    const entry_a = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(entry_a);
+    const entry_b = try absPath(&tmp, "b.ts");
+    defer std.testing.allocator.free(entry_b);
+
+    var bundler = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{ entry_a, entry_b },
+        .code_splitting = true,
+    });
+    defer bundler.deinit();
+
+    const result = try bundler.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+
+    // 엔트리 청크 중 하나 이상에 import './chunk.js' 또는 import './shared.js'가 포함되어야 함
+    var has_cross_import = false;
+    for (outs) |o| {
+        if (std.mem.indexOf(u8, o.contents, "import './") != null) {
+            has_cross_import = true;
+            break;
+        }
+    }
+    try std.testing.expect(has_cross_import);
 }
