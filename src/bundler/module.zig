@@ -61,6 +61,8 @@ pub const Module = struct {
     dynamic_imports: std.ArrayList(ModuleIndex),
 
     module_type: ModuleType,
+    /// 모듈의 export 방식 (CJS/ESM 판별)
+    exports_kind: types.ExportsKind = .none,
     side_effects: bool,
     /// DFS 후위 순서 = ESM 실행 순서 (D058, D076).
     /// maxInt = 미방문 (DFS에서 할당되지 않음).

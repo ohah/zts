@@ -199,16 +199,19 @@ pub const ModuleGraph = struct {
             };
         }
 
-        // Import 추출 (D079) — graph allocator로 할당
-        const records = import_scanner.extractImports(self.allocator, &parser.ast) catch {
+        // Import 추출 + CJS 감지 (D079) — graph allocator로 할당
+        const scan_result = import_scanner.extractImportsWithCjsDetection(self.allocator, &parser.ast) catch {
             module.state = .ready;
             return;
         };
-        module.import_records = records;
+        module.import_records = scan_result.records;
+
+        // CJS/ESM 판별 — 스캔 결과 + 확장자 + package.json type 필드
+        module.exports_kind = determineExportsKind(scan_result, module.path);
 
         // Import/Export 바인딩 상세 추출 — linker에서 사용
-        module.import_bindings = binding_scanner_mod.extractImportBindings(self.allocator, &parser.ast, records) catch &.{};
-        module.export_bindings = binding_scanner_mod.extractExportBindings(self.allocator, &parser.ast, records) catch &.{};
+        module.import_bindings = binding_scanner_mod.extractImportBindings(self.allocator, &parser.ast, scan_result.records) catch &.{};
+        module.export_bindings = binding_scanner_mod.extractExportBindings(self.allocator, &parser.ast, scan_result.records) catch &.{};
 
         module.ast = parser.ast;
 
@@ -393,6 +396,35 @@ pub const ModuleGraph = struct {
         }) catch {};
     }
 };
+
+/// 스캔 결과와 파일 확장자로 모듈의 export 방식을 결정한다.
+/// 우선순위: 1) ESM+CJS 혼용 → esm_with_dynamic_fallback
+///          2) ESM만 → esm
+///          3) CJS 신호 → commonjs
+///          4) 확장자 (.cjs/.mjs 등) → commonjs/esm
+///          5) 판별 불가 → none
+fn determineExportsKind(
+    scan: import_scanner.ScanResult,
+    path: []const u8,
+) types.ExportsKind {
+    const has_cjs = scan.has_cjs_require or scan.has_module_exports or scan.has_exports_dot;
+
+    // ESM + CJS 혼용
+    if (scan.has_esm_syntax and has_cjs) return .esm_with_dynamic_fallback;
+
+    // ESM만
+    if (scan.has_esm_syntax) return .esm;
+
+    // CJS 신호
+    if (has_cjs) return .commonjs;
+
+    // 확장자로 판별
+    const ext = std.fs.path.extension(path);
+    if (std.mem.eql(u8, ext, ".cjs") or std.mem.eql(u8, ext, ".cts")) return .commonjs;
+    if (std.mem.eql(u8, ext, ".mjs") or std.mem.eql(u8, ext, ".mts")) return .esm;
+
+    return .none;
+}
 
 // ============================================================
 // Tests
@@ -833,4 +865,103 @@ test "graph: import/export bindings preserved after build" {
     const b = graph.modules.items[1];
     try std.testing.expect(b.export_bindings.len > 0);
     try std.testing.expectEqualStrings("x", b.export_bindings[0].exported_name);
+}
+
+test "determineExportsKind: ESM only" {
+    const scan = import_scanner.ScanResult{
+        .records = &.{},
+        .has_esm_syntax = true,
+        .has_cjs_require = false,
+        .has_module_exports = false,
+        .has_exports_dot = false,
+    };
+    try std.testing.expectEqual(types.ExportsKind.esm, determineExportsKind(scan, "index.ts"));
+}
+
+test "determineExportsKind: CJS require" {
+    const scan = import_scanner.ScanResult{
+        .records = &.{},
+        .has_esm_syntax = false,
+        .has_cjs_require = true,
+        .has_module_exports = false,
+        .has_exports_dot = false,
+    };
+    try std.testing.expectEqual(types.ExportsKind.commonjs, determineExportsKind(scan, "index.js"));
+}
+
+test "determineExportsKind: ESM + CJS mixed" {
+    const scan = import_scanner.ScanResult{
+        .records = &.{},
+        .has_esm_syntax = true,
+        .has_cjs_require = true,
+        .has_module_exports = false,
+        .has_exports_dot = false,
+    };
+    try std.testing.expectEqual(types.ExportsKind.esm_with_dynamic_fallback, determineExportsKind(scan, "index.js"));
+}
+
+test "determineExportsKind: .cjs extension" {
+    const scan = import_scanner.ScanResult{
+        .records = &.{},
+        .has_esm_syntax = false,
+        .has_cjs_require = false,
+        .has_module_exports = false,
+        .has_exports_dot = false,
+    };
+    try std.testing.expectEqual(types.ExportsKind.commonjs, determineExportsKind(scan, "lib.cjs"));
+}
+
+test "determineExportsKind: .mjs extension" {
+    const scan = import_scanner.ScanResult{
+        .records = &.{},
+        .has_esm_syntax = false,
+        .has_cjs_require = false,
+        .has_module_exports = false,
+        .has_exports_dot = false,
+    };
+    try std.testing.expectEqual(types.ExportsKind.esm, determineExportsKind(scan, "lib.mjs"));
+}
+
+test "determineExportsKind: no signals" {
+    const scan = import_scanner.ScanResult{
+        .records = &.{},
+        .has_esm_syntax = false,
+        .has_cjs_require = false,
+        .has_module_exports = false,
+        .has_exports_dot = false,
+    };
+    try std.testing.expectEqual(types.ExportsKind.none, determineExportsKind(scan, "script.js"));
+}
+
+test "determineExportsKind: exports_dot is CJS" {
+    const scan = import_scanner.ScanResult{
+        .records = &.{},
+        .has_esm_syntax = false,
+        .has_cjs_require = false,
+        .has_module_exports = false,
+        .has_exports_dot = true,
+    };
+    try std.testing.expectEqual(types.ExportsKind.commonjs, determineExportsKind(scan, "index.js"));
+}
+
+test "determineExportsKind: .cts extension" {
+    const scan = import_scanner.ScanResult{
+        .records = &.{},
+        .has_esm_syntax = false,
+        .has_cjs_require = false,
+        .has_module_exports = false,
+        .has_exports_dot = false,
+    };
+    try std.testing.expectEqual(types.ExportsKind.commonjs, determineExportsKind(scan, "lib.cts"));
+}
+
+test "determineExportsKind: .mts extension" {
+    const scan = import_scanner.ScanResult{
+        .records = &.{},
+        .has_esm_syntax = false,
+        .has_cjs_require = false,
+        .has_module_exports = false,
+        .has_exports_dot = false,
+    };
+    try std.testing.expectEqual(types.ExportsKind.esm, determineExportsKind(scan, "lib.mts"));
 }

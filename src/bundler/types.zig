@@ -40,6 +40,22 @@ pub const ImportKind = enum {
 };
 
 // ============================================================
+// Export 방식 (CJS/ESM 판별)
+// ============================================================
+
+/// 모듈의 export 방식. CJS/ESM 판별에 사용 (esbuild ExportsKind).
+pub const ExportsKind = enum {
+    /// 아직 결정되지 않음 (script, no module system)
+    none,
+    /// CommonJS (require, module.exports, exports.x)
+    commonjs,
+    /// ESM (import/export)
+    esm,
+    /// ESM + CJS 혼용 (export * from cjs 등)
+    esm_with_dynamic_fallback,
+};
+
+// ============================================================
 // 모듈 타입 (D073)
 // ============================================================
 
