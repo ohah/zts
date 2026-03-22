@@ -515,7 +515,8 @@ pub fn computeCrossChunkLinks(
 
         for (chunk.modules.items) |mod_idx| {
             const mi = @intFromEnum(mod_idx);
-            if (mi >= modules.len) continue;
+            // 청크에 포함된 모듈은 반드시 modules 배열 내에 있어야 함
+            std.debug.assert(mi < modules.len);
             const m = &modules[mi];
 
             // 정적 의존성 → cross_chunk_imports
