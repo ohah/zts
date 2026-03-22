@@ -86,11 +86,8 @@ const HMR_RUNTIME =
     \\  }
     \\  if (typeof __zts_RefreshRuntime !== "undefined") __zts_RefreshRuntime.performReactRefresh();
     \\}
-    \\var __zts_RefreshRuntime;
-    \\try {
-    \\  __zts_RefreshRuntime = require("react-refresh/runtime");
-    \\  __zts_RefreshRuntime.injectIntoGlobalHook(window);
-    \\} catch(e) {}
+    \\var __zts_RefreshRuntime = window.__REACT_REFRESH_RUNTIME__;
+    \\if (__zts_RefreshRuntime) __zts_RefreshRuntime.injectIntoGlobalHook(window);
     \\window.$RefreshReg$ = function(type, id) {
     \\  if (__zts_RefreshRuntime) __zts_RefreshRuntime.register(type, window.__zts_currentModuleId + " " + id);
     \\};
@@ -547,18 +544,19 @@ pub fn emitDevModule(
     const final_exports = if (metadata) |md| md.final_exports else null;
 
     // React Fast Refresh: 컴포넌트가 있는 모듈에 hot.accept() 자동 삽입
-    const hot_accept_suffix: []const u8 = if (options.react_refresh and
-        std.mem.indexOf(u8, code, "$RefreshReg$") != null)
-        "\n__zts_module.hot.accept();\n"
-    else
-        "";
+    const has_refresh = options.react_refresh and std.mem.indexOf(u8, code, "$RefreshReg$") != null;
+    const hot_accept_suffix: []const u8 = if (has_refresh) "\n__zts_module.hot.accept();\n" else "";
 
-    const final_code = try std.mem.concat(allocator, u8, &.{
-        preamble orelse "",
-        code,
-        final_exports orelse "",
-        hot_accept_suffix,
-    });
+    const needs_concat = preamble != null or final_exports != null or has_refresh;
+    const final_code = if (needs_concat)
+        try std.mem.concat(allocator, u8, &.{
+            preamble orelse "",
+            code,
+            final_exports orelse "",
+            hot_accept_suffix,
+        })
+    else
+        try allocator.dupe(u8, code);
 
     return .{
         .code = final_code,
