@@ -82,8 +82,8 @@ pub const Transformer = struct {
     refresh_registrations: std.ArrayList(RefreshRegistration) = .empty,
 
     const RefreshRegistration = struct {
-        /// 컴포넌트를 참조하는 새 AST의 NodeIndex (_c = Component 에서의 _c)
-        handle_node: NodeIndex,
+        /// _c / _c2 핸들 변수의 string_table Span (재사용)
+        handle_span: Span,
         /// 컴포넌트 이름 (문자열)
         name: []const u8,
     };
@@ -1185,38 +1185,10 @@ pub const Transformer = struct {
         const name = self.getFunctionName(func_node) orelse return;
         if (!isComponentName(name)) return;
 
-        // _c = ComponentName 할당문을 pending_nodes에 추가
-        // (visitExtraList가 드레인하여 함수 선언 뒤에 삽입)
-
-        // 1. _c 핸들 변수명 생성
-        const handle_name = try self.makeRefreshHandle();
-
-        // 2. _c = ComponentName 할당식
-        const handle_ref = try self.new_ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = func_node.span,
-            .data = .{ .string_ref = handle_name },
-        });
-        const comp_ref = try self.new_ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = func_node.span,
-            .data = .{ .string_ref = try self.new_ast.addString(name) },
-        });
-        const assign = try self.new_ast.addNode(.{
-            .tag = .assignment_expression,
-            .span = func_node.span,
-            .data = .{ .binary = .{ .left = handle_ref, .right = comp_ref, .flags = 0 } },
-        });
-        const assign_stmt = try self.new_ast.addNode(.{
-            .tag = .expression_statement,
-            .span = func_node.span,
-            .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
-        });
-        try self.pending_nodes.append(self.allocator, assign_stmt);
-
-        // 등록 목록에 추가 (프로그램 끝에 $RefreshReg$ 호출용)
+        // 핸들 변수명 생성 + 등록 (프로그램 끝에서 일괄 주입)
+        const handle_span = try self.makeRefreshHandle();
         try self.refresh_registrations.append(self.allocator, .{
-            .handle_node = handle_ref,
+            .handle_span = handle_span,
             .name = name,
         });
     }
@@ -1248,13 +1220,20 @@ pub const Transformer = struct {
             try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
         }
 
+        // _c = App; _c2 = Helper; 할당문 (함수 선언 뒤에 실행)
+        for (self.refresh_registrations.items) |reg| {
+            const assign_stmt = try self.buildRefreshAssignment(reg);
+            try self.scratch.append(self.allocator, assign_stmt);
+        }
+
         // var _c, _c2, ...; 선언
         const var_decl = try self.buildRefreshVarDeclaration();
         try self.scratch.append(self.allocator, var_decl);
 
         // $RefreshReg$(_c, "ComponentName"); 호출들
-        for (self.refresh_registrations.items, 0..) |_, i| {
-            const reg_stmt = try self.buildRefreshRegCall(i);
+        const refresh_reg_span = try self.new_ast.addString("$RefreshReg$");
+        for (self.refresh_registrations.items) |reg| {
+            const reg_stmt = try self.buildRefreshRegCall(reg, refresh_reg_span);
             try self.scratch.append(self.allocator, reg_stmt);
         }
 
@@ -1266,29 +1245,47 @@ pub const Transformer = struct {
         });
     }
 
+    /// _c = ComponentName; 할당문 생성
+    fn buildRefreshAssignment(self: *Transformer, reg: RefreshRegistration) Error!NodeIndex {
+        const zero_span = Span{ .start = 0, .end = 0 };
+
+        const handle_ref = try self.new_ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = reg.handle_span,
+            .data = .{ .string_ref = reg.handle_span },
+        });
+        const comp_ref = try self.new_ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = zero_span,
+            .data = .{ .string_ref = try self.new_ast.addString(reg.name) },
+        });
+        const assign = try self.new_ast.addNode(.{
+            .tag = .assignment_expression,
+            .span = zero_span,
+            .data = .{ .binary = .{ .left = handle_ref, .right = comp_ref, .flags = 0 } },
+        });
+        return self.new_ast.addNode(.{
+            .tag = .expression_statement,
+            .span = zero_span,
+            .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
+        });
+    }
+
     /// var _c, _c2, ...; 선언 노드 생성
     fn buildRefreshVarDeclaration(self: *Transformer) Error!NodeIndex {
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
         const none = @intFromEnum(NodeIndex.none);
 
-        for (self.refresh_registrations.items, 0..) |_, i| {
-            const handle_span = if (i == 0)
-                try self.new_ast.addString("_c")
-            else blk: {
-                var buf: [16]u8 = undefined;
-                const name = std.fmt.bufPrint(&buf, "_c{d}", .{i + 1}) catch return error.OutOfMemory;
-                break :blk try self.new_ast.addString(name);
-            };
-
+        for (self.refresh_registrations.items) |reg| {
             const binding = try self.new_ast.addNode(.{
                 .tag = .binding_identifier,
-                .span = handle_span, // string_table span
-                .data = .{ .string_ref = handle_span },
+                .span = reg.handle_span,
+                .data = .{ .string_ref = reg.handle_span },
             });
 
             // variable_declarator: extra = [name, type_ann(none), init(none)]
-            const declarator = try self.addExtraNode(.variable_declarator, handle_span, &.{
+            const declarator = try self.addExtraNode(.variable_declarator, reg.handle_span, &.{
                 @intFromEnum(binding),
                 none, // type annotation
                 none, // initializer
@@ -1297,39 +1294,27 @@ pub const Transformer = struct {
         }
 
         const decl_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
-        // variable_declaration: extra = [kind(0=var), list_start, list_len]
         return self.addExtraNode(.variable_declaration, .{ .start = 0, .end = 0 }, &.{
-            0, // var (not let/const)
+            0, // var
             decl_list.start,
             decl_list.len,
         });
     }
 
     /// $RefreshReg$(_c, "ComponentName"); 호출문 생성
-    fn buildRefreshRegCall(self: *Transformer, reg_idx: usize) Error!NodeIndex {
+    fn buildRefreshRegCall(self: *Transformer, reg: RefreshRegistration, refresh_reg_span: Span) Error!NodeIndex {
         const zero_span = Span{ .start = 0, .end = 0 };
-        const reg = self.refresh_registrations.items[reg_idx];
 
-        // $RefreshReg$ 식별자
         const callee = try self.new_ast.addNode(.{
             .tag = .identifier_reference,
-            .span = try self.new_ast.addString("$RefreshReg$"),
-            .data = .{ .string_ref = try self.new_ast.addString("$RefreshReg$") },
+            .span = refresh_reg_span,
+            .data = .{ .string_ref = refresh_reg_span },
         });
-
-        // _c / _c2 핸들 참조
-        const handle_span = if (reg_idx == 0)
-            try self.new_ast.addString("_c")
-        else blk: {
-            var buf: [16]u8 = undefined;
-            const name = std.fmt.bufPrint(&buf, "_c{d}", .{reg_idx + 1}) catch return error.OutOfMemory;
-            break :blk try self.new_ast.addString(name);
-        };
 
         const handle_ref = try self.new_ast.addNode(.{
             .tag = .identifier_reference,
-            .span = handle_span,
-            .data = .{ .string_ref = handle_span },
+            .span = reg.handle_span,
+            .data = .{ .string_ref = reg.handle_span },
         });
 
         // "ComponentName" 문자열 리터럴 (따옴표 포함)
@@ -1342,16 +1327,14 @@ pub const Transformer = struct {
             .data = .{ .string_ref = quoted_span },
         });
 
-        // call_expression: extra = [callee, args_start, args_len, flags]
         const args = try self.new_ast.addNodeList(&.{ handle_ref, name_str });
         const call = try self.addExtraNode(.call_expression, zero_span, &.{
             @intFromEnum(callee),
             args.start,
             args.len,
-            0, // no flags
+            0,
         });
 
-        // expression_statement
         return self.new_ast.addNode(.{
             .tag = .expression_statement,
             .span = zero_span,
