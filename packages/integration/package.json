@@ -1,0 +1,12 @@
+{
+  "name": "@zts/integration",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test": "bun test",
+    "build:zts": "cd ../.. && zig build -Doptimize=ReleaseFast"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}

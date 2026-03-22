@@ -1,0 +1,17 @@
+{
+  "private": true,
+  "name": "zts",
+  "version": "0.1.0",
+  "workspaces": [
+    "./packages/integration",
+    "./packages/e2e"
+  ],
+  "scripts": {
+    "test": "bun run test:integration",
+    "test:integration": "bun test --cwd packages/integration",
+    "test:e2e": "bun run --cwd packages/e2e test",
+    "test:all": "bun run test:integration && bun run test:e2e",
+    "build:zts": "zig build -Doptimize=ReleaseFast",
+    "playwright:install": "bunx playwright install --with-deps chromium"
+  }
+}
