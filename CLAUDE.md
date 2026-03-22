@@ -192,7 +192,7 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
 번들러 아키텍처 설계 ────┼──→ 멀티스레드
                          └──→ 미니파이어 (tree-shaking + minify 연동)
 
-번들러 선행 인프라 ✅ ───┬──→ tree-shaking (reference_count 활용)
+번들러 선행 인프라 ✅ ───┬──→ tree-shaking ✅ (reference_count 활용)
                          ├──→ Transform 분리 (string_table + pending_nodes 활용)
                          └──→ Comment 보존 (번들러 모듈 합칠 때)
 
@@ -214,6 +214,9 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
    - ✅ emitter: exec_index 순 변환+코드젠, ESM/CJS/IIFE 포맷
    - ✅ CLI: `zts --bundle entry.ts -o bundle.js --external react --platform=node`
    - ✅ linker: 스코프 호이스팅 (import 제거, export 키워드 제거, symbol_id 기반 리네임)
+   - ✅ tree-shaking (모듈 수준): 미사용 export 추적, 자동 순수 판별, package.json sideEffects, fixpoint 분석
+   - ✅ `@__PURE__` / `@__NO_SIDE_EFFECTS__`: 렉서 감지 → semantic 전파 → codegen 출력 → tree-shaker 활용
+   - ✅ cross-module `@__NO_SIDE_EFFECTS__` 전파: import한 함수의 호출에 `/* @__PURE__ */` 자동 출력 (re-export chain, default export, async function 포함)
    - 다음: 통합 테스트 강화 → ES 다운레벨링
 4. **ES 다운레벨링** (ES2024→ES2016 점진적, ES2015 이후, ES5) — 트랜스포머 visitor 추가. 독립적이라 언제든 가능하지만 AST 안정화 후가 이상적
    - 1차 ES2024→ES2020 (~200줄, 1~2일): `??`, `?.`, `??=`/`||=`/`&&=`, class public field
@@ -249,33 +252,38 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
 
 ##### 번들러 핵심 구현 순서 (의존성 순)
 ```
-1. 모듈 해석 (경로 → 파일)       ← 그래프의 노드를 찾는 법
-2. 모듈 그래프 구축               ← 모든 것의 기반 (ESM 순서 보장 여기서 설계)
-3. 단일 파일 번들 (연결만)        ← 가장 단순한 출력, 동작 검증
-4. 스코프 호이스팅                ← 번들 품질 (변수 충돌 해결)
-5. Tree-shaking                  ← 번들 크기 (미사용 export 제거)
-6. Code splitting                ← 고급 (청크 분할, 런타임 로더)
+1. ✅ 모듈 해석 (경로 → 파일)
+2. ✅ 모듈 그래프 구축 (ESM 순서 보장)
+3. ✅ 단일 파일 번들 (연결만)
+4. ✅ 스코프 호이스팅 (변수 충돌 해결)
+5. ✅ Tree-shaking (모듈 수준, @__PURE__/@__NO_SIDE_EFFECTS__, sideEffects)
+6. Code splitting                ← 다음 (청크 분할, 런타임 로더)
 ```
-모듈 그래프가 없으면 4~6 전부 불가능. 1→2가 번들러의 핵심.
 
 ##### 번들러 Phase별 기능 분류
 ```
-Phase B1: 기반                    Phase B2: 핵심           Phase B3: 고급
+Phase B1: 기반 (✅ 완료)          Phase B2: 핵심           Phase B3: 고급
 ─────────────────                 ──────────────           ──────────────
-모듈 해석 (Node/TS)               Tree-shaking             Code splitting
-  ├ node_modules 탐색              ├ export 사용 추적       ├ 동적 import 분할
-  ├ package.json exports           ├ @__PURE__              ├ 공통 청크 추출
-  ├ tsconfig paths/baseUrl         ├ sideEffects 필드       ├ 런타임 로더
-  └ 조건부 exports                 └ 깊은 분석 (점진적)     └ CSS code splitting
-모듈 그래프                       스코프 호이스팅           플러그인 시스템
-  ├ 정적 import/export             ├ 변수 이름 충돌 해결     ├ resolve/load/transform 훅
-  ├ 순환 참조 감지                 ├ ESM 실행 순서 보장      ├ Rollup 플러그인 호환
-  └ 동적 import                    └ CJS 호환 래핑          └ Vite 플러그인 호환
-단일 파일 번들 생성               개발 서버 + HMR          React Native 지원
-  └ 진입점 → 단일 출력              ├ HTTP + WebSocket       ├ Metro 호환 해석
-                                   ├ import.meta.hot         ├ 플랫폼 확장자 (.ios/.android)
-                                   ├ React Fast Refresh      ├ polyfill 주입
-                                   └ 증분 재빌드             └ Hermes 타겟 최적화
+✅ 모듈 해석 (Node/TS)            Code splitting           플러그인 시스템
+  ├ node_modules 탐색              ├ 동적 import 분할       ├ resolve/load/transform 훅
+  ├ package.json exports           ├ 공통 청크 추출         ├ Rollup 플러그인 호환
+  ├ tsconfig paths/baseUrl         ├ 런타임 로더            └ Vite 플러그인 호환
+  └ 조건부 exports                 └ CSS code splitting    React Native 지원
+✅ 모듈 그래프                    개발 서버 + HMR           ├ Metro 호환 해석
+  ├ 정적 import/export             ├ HTTP + WebSocket       ├ 플랫폼 확장자 (.ios/.android)
+  ├ 순환 참조 감지                 ├ import.meta.hot         ├ polyfill 주입
+  └ 동적 import                    ├ React Fast Refresh      └ Hermes 타겟 최적화
+✅ 단일 파일 번들 생성             └ 증분 재빌드
+  └ 진입점 → 단일 출력
+✅ 스코프 호이스팅
+  ├ 변수 이름 충돌 해결
+  ├ ESM 실행 순서 보장
+  └ CJS 호환 래핑
+✅ Tree-shaking (모듈 수준)
+  ├ export 사용 추적
+  ├ @__PURE__ / @__NO_SIDE_EFFECTS__
+  ├ sideEffects 필드
+  └ cross-module 전파
 ```
 
 ##### React Native 지원 (Rollipop/bungae 방식 — Metro 레거시 불필요)
@@ -420,10 +428,10 @@ const Module = struct {
 
 ##### 번들러 핵심 기능 (구현 난이도 순)
 ```
-1. 모듈 해석         ████░░░░░░  (paths, baseUrl, node_modules, exports 필드)
-2. 모듈 그래프 구축   ████░░░░░░  (import/export 관계, 순환 참조 감지)
-3. Tree-shaking      ████░░░░░░  (export 사용 추적, @__PURE__ 활용, 사이드 이펙트 분석)
-4. 번들 생성         █████░░░░░  (스코프 호이스팅, 네임스페이스 래핑)
+1. ✅ 모듈 해석      ████░░░░░░  (paths, baseUrl, node_modules, exports 필드)
+2. ✅ 모듈 그래프     ████░░░░░░  (import/export 관계, 순환 참조 감지)
+3. ✅ Tree-shaking   ████░░░░░░  (모듈 수준, @__PURE__, @__NO_SIDE_EFFECTS__, sideEffects)
+4. ✅ 번들 생성      █████░░░░░  (스코프 호이스팅, 네임스페이스 래핑)
 5. 플러그인 시스템    ██████░░░░  (resolve/load/transform 훅)
 6. HMR              ███████░░░  (모듈 그래프 diff, 핫 리로드 프로토콜)
 7. Code splitting    ████████░░  (청크 분할 알고리즘, 공통 청크 추출, 런타임 로더)
@@ -431,9 +439,12 @@ const Module = struct {
 ```
 
 ##### Tree-shaking 구현 전략
-- **1단계**: export 사용 추적 — 모듈 그래프에서 미사용 export 제거 (쉬움)
-- **2단계**: `@__PURE__` 활용 — 렉서가 이미 추적 중, 순수 호출 제거 (중간)
-- **3단계**: 사이드 이펙트 분석 — getter/proxy/global 변수 판단 (어려움)
+- ✅ **1단계**: export 사용 추적 — 모듈 수준 tree-shaking (미사용 모듈 제거, fixpoint 분석)
+- ✅ **2단계**: `@__PURE__` / `@__NO_SIDE_EFFECTS__` 활용 — 렉서 감지 → semantic/cross-module 전파 → 순수 호출 판별
+- ✅ **2.5단계**: sideEffects 지원 — package.json `sideEffects: false` + 자동 순수 판별
+- ⬜ **2.5b**: sideEffects 글롭 패턴 — `sideEffects: ["*.css"]` 배열 형태 (작은 작업)
+- ⬜ **3단계**: 깊은 사이드 이펙트 분석 — getter/proxy/global 변수 판단 (후순위)
+- **문장 수준 tree-shaking은 구현하지 않음** — esbuild/Bun과 동일하게 모듈 수준만 (Rollup만 문장 수준 지원)
 - ZTS 유리점: semantic analyzer의 스코프/심볼이 이미 있고, `@__PURE__` 렉서 지원, 인덱스 기반 AST로 노드 제거가 태그 변경만으로 가능
 
 ##### Code splitting 구현 전략
