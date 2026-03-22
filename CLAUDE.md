@@ -225,11 +225,15 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
    - ✅ 4b. **Top-level await** — PR #251
      - semantic analyzer 기반 감지 (스코프 체인 추적, for_await_of_statement 태그)
      - 전이적 전파 (static import 체인), 비-ESM 경고
-   - ✅ 4c. **Code splitting** — PR #252-255
+   - ✅ 4c. **Code splitting** — PR #252-257
      - BitSet 도달 가능성 알고리즘 (rolldown 패턴)
      - generateChunks (엔트리 초기화 + BFS 마킹 + 청크 할당)
-     - computeCrossChunkLinks (청크 간 의존성 추적)
+     - computeCrossChunkLinks (청크 간 의존성 + 심볼 수준 import/export)
      - 멀티 파일 emitter + CLI --splitting + --outdir
+     - 청크별 scope hoisting (per-chunk computeRenamesForModules)
+     - cross-chunk export alias (`export { x$1 as x }`)
+     - cross-chunk import/local name 충돌 방지 (occupied names)
+     - dynamic import 경로 리라이트 (`import('./page')` → `import('./page.js')`)
    - 4d. **Dev server + HMR** — 다음, watch 모드(✅) 위에 확장
      - HTTP + WebSocket 내장 서버
      - import.meta.hot API 주입
@@ -271,7 +275,7 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
 3. ✅ 단일 파일 번들 (연결만)
 4. ✅ 스코프 호이스팅 (변수 충돌 해결)
 5. ✅ Tree-shaking (모듈 수준, @__PURE__/@__NO_SIDE_EFFECTS__, sideEffects)
-6. ✅ Code splitting (BitSet 도달 가능성, 공통 청크 자동 추출, 멀티 파일 emitter)
+6. ✅ Code splitting (BitSet, 공통 청크, 심볼 cross-chunk, 청크별 scope hoisting, dynamic import 리라이트)
 ```
 
 ##### 번들러 Phase별 기능 분류
