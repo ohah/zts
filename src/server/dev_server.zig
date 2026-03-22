@@ -14,8 +14,9 @@ pub const DevServer = struct {
     root_path: []const u8,
     port: u16,
     tcp_server: ?std.net.Server,
-    /// 번들 엔트리 포인트 (절대 경로). null이면 정적 파일 서버 전용.
     entry_point: ?[]const u8,
+    /// init에서 해결한 절대 경로. entry_point가 있을 때만 유효.
+    abs_entry: ?[]const u8,
 
     pub const Options = struct {
         root_dir: []const u8 = ".",
@@ -26,11 +27,29 @@ pub const DevServer = struct {
     const max_file_size: u64 = 50 * 1024 * 1024;
     const bundle_path = "/bundle.js";
 
+    const js_headers = cors_headers ++ [_]http.Header{
+        .{ .name = "Content-Type", .value = "application/javascript; charset=utf-8" },
+    };
+
+    const html_headers = cors_headers ++ [_]http.Header{
+        .{ .name = "Content-Type", .value = "text/html; charset=utf-8" },
+    };
+
     pub fn init(allocator: std.mem.Allocator, options: Options) !DevServer {
         const root_dir = std.fs.cwd().openDir(options.root_dir, .{}) catch |err| {
             getLog().print("zts: cannot open directory '{s}': {}\n", .{ options.root_dir, err }) catch {};
             return err;
         };
+
+        var abs_entry: ?[]const u8 = null;
+        if (options.entry_point) |ep| {
+            abs_entry = std.fs.cwd().realpathAlloc(allocator, ep) catch |err| {
+                getLog().print("zts: cannot resolve entry '{s}': {}\n", .{ ep, err }) catch {};
+                var dir_copy = root_dir;
+                dir_copy.close();
+                return err;
+            };
+        }
 
         return .{
             .allocator = allocator,
@@ -39,11 +58,13 @@ pub const DevServer = struct {
             .port = options.port,
             .tcp_server = null,
             .entry_point = options.entry_point,
+            .abs_entry = abs_entry,
         };
     }
 
     pub fn deinit(self: *DevServer) void {
         if (self.tcp_server) |*s| s.deinit();
+        if (self.abs_entry) |ae| self.allocator.free(ae);
         self.root_dir.close();
     }
 
@@ -132,28 +153,28 @@ pub const DevServer = struct {
             return;
         };
 
-        // entry_point가 있을 때: /bundle.js → on-the-fly 번들링
         if (self.entry_point != null) {
             if (std.mem.eql(u8, raw_path, bundle_path)) {
                 self.serveBundle(request) catch |err| {
                     getLog().print("zts: bundle failed: {}\n", .{err}) catch {};
-                    try request.respond("500 Bundle Error", .{
+                    // best-effort 500 응답 — 클라이언트가 이미 끊었을 수 있음
+                    request.respond("500 Bundle Error", .{
                         .status = .internal_server_error,
                         .extra_headers = &cors_headers,
-                    });
+                    }) catch {};
                 };
                 return;
             }
 
-            // / → entry가 있으면 자동 HTML (index.html이 없을 때)
+            // / 요청 시 index.html이 없으면 자동 HTML 생성
             if (std.mem.eql(u8, rel_path, "index.html")) {
-                if (self.root_dir.openFile("index.html", .{})) |f| {
-                    f.close();
-                    // index.html이 있으면 정적 서빙으로 폴스루
-                } else |_| {
-                    try self.serveAutoHtml(request);
-                    return;
-                }
+                self.serveStaticFile(request, rel_path) catch |err| switch (err) {
+                    error.FileNotFound => {
+                        try self.serveAutoHtml(request);
+                    },
+                    else => return err,
+                };
+                return;
             }
         }
 
@@ -169,9 +190,7 @@ pub const DevServer = struct {
     }
 
     fn serveBundle(self: *DevServer, request: *http.Server.Request) !void {
-        const entry = self.entry_point orelse unreachable;
-        const abs_entry = try std.fs.cwd().realpathAlloc(self.allocator, entry);
-        defer self.allocator.free(abs_entry);
+        const abs_entry = self.abs_entry orelse unreachable;
 
         var bundler = Bundler.init(self.allocator, .{
             .entry_points = &.{abs_entry},
@@ -197,21 +216,15 @@ pub const DevServer = struct {
             }
             try w.print("console.error('ZTS: bundle failed, see server logs');\n", .{});
 
-            const js_headers = cors_headers ++ [_]http.Header{
-                .{ .name = "Content-Type", .value = "application/javascript; charset=utf-8" },
-            };
             try request.respond(msg.items, .{
                 .status = .internal_server_error,
                 .extra_headers = &js_headers,
             });
 
-            getLog().print("  500 {s} (bundle errors)\n", .{entry}) catch {};
+            getLog().print("  500 {s} (bundle errors)\n", .{abs_entry}) catch {};
             return;
         }
 
-        const js_headers = cors_headers ++ [_]http.Header{
-            .{ .name = "Content-Type", .value = "application/javascript; charset=utf-8" },
-        };
         try request.respond(result.output, .{
             .extra_headers = &js_headers,
         });
@@ -219,8 +232,7 @@ pub const DevServer = struct {
         getLog().print("  200 {s} (bundled)\n", .{bundle_path}) catch {};
     }
 
-    fn serveAutoHtml(self: *DevServer, request: *http.Server.Request) !void {
-        _ = self;
+    fn serveAutoHtml(_: *DevServer, request: *http.Server.Request) !void {
         const html =
             \\<!DOCTYPE html>
             \\<html>
@@ -232,11 +244,8 @@ pub const DevServer = struct {
             \\</html>
         ;
 
-        const headers = cors_headers ++ [_]http.Header{
-            .{ .name = "Content-Type", .value = "text/html; charset=utf-8" },
-        };
         try request.respond(html, .{
-            .extra_headers = &headers,
+            .extra_headers = &html_headers,
         });
 
         getLog().print("  200 / (auto html)\n", .{}) catch {};
