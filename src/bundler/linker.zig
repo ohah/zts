@@ -784,6 +784,103 @@ pub const Linker = struct {
         }) catch {};
     }
 
+    /// canonical_names를 초기화한다. 키와 값의 메모리를 해제하고 맵을 비운다.
+    /// per-chunk rename에서 이전 청크의 결과를 제거할 때 사용.
+    pub fn clearCanonicalNames(self: *Linker) void {
+        var cit = self.canonical_names.iterator();
+        while (cit.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            self.allocator.free(entry.value_ptr.*);
+        }
+        self.canonical_names.clearRetainingCapacity();
+    }
+
+    /// 특정 모듈들만 대상으로 이름 충돌을 감지하고 리네임을 계산한다.
+    /// code splitting에서 사용 — 각 청크는 독립된 네임스페이스이므로
+    /// 같은 이름이 다른 청크에 있어도 충돌하지 않는다.
+    ///
+    /// 기존 canonical_names를 초기화한 뒤, module_indices에 포함된
+    /// 모듈의 top-level 심볼만 대상으로 충돌을 감지한다.
+    pub fn computeRenamesForModules(self: *Linker, module_indices: []const ModuleIndex) !void {
+        // 이전 청크의 리네임 결과 제거
+        self.clearCanonicalNames();
+
+        // 1. 지정된 모듈의 top-level 심볼 이름 수집
+        const NameOwner = struct {
+            module_index: u32,
+            exec_index: u32,
+        };
+        var name_to_owners = std.StringHashMap(std.ArrayList(NameOwner)).init(self.allocator);
+        defer {
+            var vit = name_to_owners.valueIterator();
+            while (vit.next()) |list| list.deinit(self.allocator);
+            name_to_owners.deinit();
+        }
+
+        for (module_indices) |mod_idx| {
+            const i = @intFromEnum(mod_idx);
+            if (i >= self.modules.len) continue;
+            const m = self.modules[i];
+            const sem = m.semantic orelse continue;
+            if (sem.scope_maps.len == 0) continue;
+            const module_scope = sem.scope_maps[0];
+
+            var scope_it = module_scope.iterator();
+            while (scope_it.next()) |scope_entry| {
+                const sym_name = scope_entry.key_ptr.*;
+                if (std.mem.eql(u8, sym_name, "default")) continue;
+
+                // import binding은 다른 모듈의 심볼을 참조하므로 충돌 대상 아님
+                const sym_idx = scope_entry.value_ptr.*;
+                if (sym_idx < sem.symbols.len and sem.symbols[sym_idx].decl_flags.is_import) continue;
+
+                const entry = try name_to_owners.getOrPut(sym_name);
+                if (!entry.found_existing) {
+                    entry.value_ptr.* = .empty;
+                }
+                try entry.value_ptr.append(self.allocator, .{
+                    .module_index = @intCast(i),
+                    .exec_index = m.exec_index,
+                });
+            }
+        }
+
+        // 2. 충돌하는 이름에 대해 리네임 계산
+        var nit = name_to_owners.iterator();
+        while (nit.next()) |entry| {
+            const name = entry.key_ptr.*;
+            const owners = entry.value_ptr.items;
+            if (owners.len <= 1) continue; // 충돌 없음
+
+            // exec_index 순으로 정렬 — 가장 낮은 게 원본 유지
+            std.mem.sort(NameOwner, entry.value_ptr.items, {}, struct {
+                fn lessThan(_: void, a: NameOwner, b: NameOwner) bool {
+                    return a.exec_index < b.exec_index;
+                }
+            }.lessThan);
+
+            // 첫 번째는 원본 유지, 나머지는 $1, $2, ...
+            var suffix: u32 = 1;
+            for (owners[1..]) |owner| {
+                var candidate = try std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, suffix });
+
+                while (isReservedName(candidate) or self.hasNestedBinding(owner.module_index, candidate)) {
+                    self.allocator.free(candidate);
+                    suffix += 1;
+                    candidate = try std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, suffix });
+                }
+
+                const key = try makeExportKey(self.allocator, owner.module_index, name);
+                if (self.canonical_names.fetchRemove(key)) |old| {
+                    self.allocator.free(old.key);
+                    self.allocator.free(old.value);
+                }
+                try self.canonical_names.put(key, candidate);
+                suffix += 1;
+            }
+        }
+    }
+
     const makeExportKey = types.makeModuleKey;
     const makeExportKeyBuf = types.makeModuleKeyBuf;
 };
@@ -1168,4 +1265,76 @@ test "isReservedName: global objects" {
     try std.testing.expect(Linker.isReservedName("require"));
     try std.testing.expect(Linker.isReservedName("module"));
     try std.testing.expect(!Linker.isReservedName("myVar"));
+}
+
+test "computeRenamesForModules: 지정된 모듈만 대상으로 충돌 감지" {
+    // 3개 모듈이 같은 이름 "x"를 가지지만,
+    // computeRenamesForModules에 2개만 전달하면 그 2개만 충돌 처리.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import './b';\nimport './c';\nconst x = 'a';");
+    try writeFile(tmp.dir, "b.ts", "const x = 'b';");
+    try writeFile(tmp.dir, "c.ts", "const x = 'c';");
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(&.{entry});
+
+    var linker = Linker.init(std.testing.allocator, graph.modules.items);
+    defer linker.deinit();
+    try linker.link();
+
+    // 전체 3개 모듈을 글로벌 rename — 2개가 rename됨
+    try linker.computeRenames();
+    var global_rename_count: usize = 0;
+    for (graph.modules.items, 0..) |_, i| {
+        if (linker.getCanonicalName(@intCast(i), "x") != null) global_rename_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), global_rename_count);
+
+    // per-module rename: 모듈 0, 1만 대상 → 1개만 rename됨
+    const subset = &[_]ModuleIndex{ @enumFromInt(0), @enumFromInt(1) };
+    try linker.computeRenamesForModules(subset);
+    var subset_rename_count: usize = 0;
+    for (graph.modules.items, 0..) |_, i| {
+        if (linker.getCanonicalName(@intCast(i), "x") != null) subset_rename_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), subset_rename_count);
+}
+
+test "clearCanonicalNames: 초기화 후 비어있음" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import './b';\nconst x = 1;");
+    try writeFile(tmp.dir, "b.ts", "const x = 2;");
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(&.{entry});
+
+    var linker = Linker.init(std.testing.allocator, graph.modules.items);
+    defer linker.deinit();
+    try linker.link();
+    try linker.computeRenames();
+
+    // rename 결과가 있어야 함
+    try std.testing.expect(linker.canonical_names.count() > 0);
+
+    // 초기화 후 비어있어야 함
+    linker.clearCanonicalNames();
+    try std.testing.expectEqual(@as(usize, 0), linker.canonical_names.count());
 }
