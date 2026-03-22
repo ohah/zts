@@ -9514,3 +9514,41 @@ test "Bundler: dev mode react fast refresh" {
     // hot.accept() 자동 삽입
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_module.hot.accept()") != null);
 }
+
+test "Bundler: dev mode refresh signature" {
+    // Hook 시그니처($RefreshSig$)가 주입되는지 확인
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "App.ts",
+        \\function App() {
+        \\  const x = useState(0);
+        \\  useEffect(function() {});
+        \\  return x;
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "App.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .react_refresh = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const output = result.output;
+    // var _s = $RefreshSig$(); 선언
+    try std.testing.expect(std.mem.indexOf(u8, output, "$RefreshSig$") != null);
+    // _s(); boundary marker 호출 (함수 body 시작)
+    try std.testing.expect(std.mem.indexOf(u8, output, "_s()") != null);
+    // _s(App, "signature"); 시그니처 연결
+    try std.testing.expect(std.mem.indexOf(u8, output, "_s(App") != null);
+    // 시그니처에 useState와 useEffect가 포함
+    try std.testing.expect(std.mem.indexOf(u8, output, "useState") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "useEffect") != null);
+}
