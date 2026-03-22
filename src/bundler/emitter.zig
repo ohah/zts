@@ -185,7 +185,7 @@ pub fn emitChunks(
     modules: []const Module,
     chunk_graph: *const ChunkGraph,
     options: EmitOptions,
-    linker: ?*const Linker,
+    linker: ?*Linker,
 ) ![]OutputFile {
     // Code splitting은 ESM 출력만 지원 — CJS/IIFE에서는 네이티브 import()가 없음
     if (options.format != .esm) return error.CodeSplittingRequiresESM;
@@ -318,6 +318,12 @@ pub fn emitChunks(
         };
         std.mem.sort(ModuleIndex, sorted_mods, ModSortCtx{ .mods = modules }, ModSortCtx.lessThan);
 
+        // per-chunk 리네임 계산: 각 청크는 독립된 네임스페이스이므로
+        // 청크 내 모듈들만 대상으로 이름 충돌을 감지한다.
+        if (linker) |l| {
+            try l.computeRenamesForModules(sorted_mods);
+        }
+
         // 엔트리 모듈 인덱스 (final exports용)
         const entry_mod_idx: ?u32 = switch (chunk.kind) {
             .entry_point => |info| @intFromEnum(info.module),
@@ -350,8 +356,7 @@ pub fn emitChunks(
 
         // 크로스 청크 export: exports_to에 심볼이 있으면 export 문 생성.
         // 다른 청크가 이 청크에서 심볼을 가져가는 경우에만 출력.
-        // TODO: linker가 심볼을 rename한 경우 (이름 충돌 해결) export { x$1 as x } 형태 필요.
-        //       현재는 원본 이름으로 출력 — scope hoisting이 청크별로 분리되면 해결.
+        // linker가 심볼을 rename한 경우 export { local_name as export_name } 형태로 출력.
         if (chunk.exports_to.count() > 0) {
             // 결정론적 출력을 위해 이름을 정렬
             var export_names: std.ArrayList([]const u8) = .empty;
@@ -372,7 +377,37 @@ pub fn emitChunks(
                 try chunk_output.appendSlice(allocator, "export{");
             }
             for (export_names.items, 0..) |name, ni| {
-                try chunk_output.appendSlice(allocator, name);
+                // export_name의 원본 심볼이 이 청크에서 rename되었는지 확인.
+                // rename된 경우: export { local_name as export_name }
+                // rename 안 된 경우: export { export_name }
+                const local_name = if (linker) |l| blk: {
+                    // exports_to의 이름은 canonical export name.
+                    // 이 이름을 선언한 모듈을 찾아 linker의 canonical_names를 조회한다.
+                    var found_local: ?[]const u8 = null;
+                    for (sorted_mods) |mod_idx| {
+                        const mi = @intFromEnum(mod_idx);
+                        if (mi >= modules.len) continue;
+                        if (l.getCanonicalName(@intCast(mi), name)) |renamed| {
+                            found_local = renamed;
+                            break;
+                        }
+                        // export의 local_name이 다를 수 있으므로 export_map도 확인
+                        if (l.getExportLocalName(@intCast(mi), name)) |local| {
+                            if (l.getCanonicalName(@intCast(mi), local)) |renamed| {
+                                found_local = renamed;
+                                break;
+                            }
+                        }
+                    }
+                    break :blk found_local orelse name;
+                } else name;
+
+                try chunk_output.appendSlice(allocator, local_name);
+                // local_name과 export_name이 다르면 as 절 추가
+                if (!std.mem.eql(u8, local_name, name)) {
+                    try chunk_output.appendSlice(allocator, " as ");
+                    try chunk_output.appendSlice(allocator, name);
+                }
                 if (ni + 1 < export_names.items.len) {
                     if (!options.minify) {
                         try chunk_output.appendSlice(allocator, ", ");

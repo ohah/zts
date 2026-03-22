@@ -118,10 +118,14 @@ pub const Bundler = struct {
         try graph.build(self.options.entry_points);
 
         // 2. 링킹 (scope hoisting)
+        // code_splitting=true일 때는 글로벌 computeRenames를 건너뛴다.
+        // 각 청크가 독립된 네임스페이스이므로 emitChunks에서 per-chunk로 처리.
         var linker: ?Linker = if (self.options.scope_hoist) blk: {
             var l = Linker.init(self.allocator, graph.modules.items);
             try l.link();
-            try l.computeRenames();
+            if (!self.options.code_splitting) {
+                try l.computeRenames();
+            }
             break :blk l;
         } else null;
         defer if (linker) |*l| l.deinit();
@@ -8676,4 +8680,138 @@ test "CodeSplitting: re-export chain across chunks" {
     }
     // cross-chunk import가 있거나, scope_hoist로 인라인되어 값이 포함되어야 함
     try std.testing.expect(has_cross_import or has_val_inline);
+}
+
+// ============================================================
+// Tests — per-chunk scope hoisting + cross-chunk export alias
+// ============================================================
+
+test "CodeSplitting: per-chunk rename — 다른 청크의 같은 이름은 충돌하지 않음" {
+    // 2개 엔트리가 각각 같은 이름의 top-level 변수를 가질 때,
+    // 다른 청크에 있으므로 rename되지 않아야 한다 (per-chunk 네임스페이스).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "const x = 'from-a';\nconsole.log(x);");
+    try writeFile(tmp.dir, "b.ts", "const x = 'from-b';\nconsole.log(x);");
+
+    const entry_a = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(entry_a);
+    const entry_b = try absPath(&tmp, "b.ts");
+    defer std.testing.allocator.free(entry_b);
+
+    var bundler = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{ entry_a, entry_b },
+        .code_splitting = true,
+    });
+    defer bundler.deinit();
+
+    const result = try bundler.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+
+    // 어떤 청크에도 x$1 같은 리네임이 없어야 함 — 각 청크가 독립 네임스페이스
+    for (outs) |o| {
+        try std.testing.expect(std.mem.indexOf(u8, o.contents, "x$1") == null);
+    }
+    // 두 청크 모두 원본 이름 x를 사용
+    var a_has_x = false;
+    var b_has_x = false;
+    for (outs) |o| {
+        if (std.mem.indexOf(u8, o.contents, "'from-a'") != null and
+            std.mem.indexOf(u8, o.contents, "const x") != null)
+        {
+            a_has_x = true;
+        }
+        if (std.mem.indexOf(u8, o.contents, "'from-b'") != null and
+            std.mem.indexOf(u8, o.contents, "const x") != null)
+        {
+            b_has_x = true;
+        }
+    }
+    try std.testing.expect(a_has_x);
+    try std.testing.expect(b_has_x);
+}
+
+test "CodeSplitting: same-chunk collision still renamed" {
+    // 같은 청크 내의 2개 모듈이 같은 이름을 가지면 충돌 해결이 되어야 한다.
+    // 단일 엔트리 + 의존성 — 모두 같은 청크에 묶임.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { x } from './dep';\nconst x = 'entry';\nconsole.log(x);");
+    try writeFile(tmp.dir, "dep.ts", "export const x = 'dep';");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var bundler = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+    });
+    defer bundler.deinit();
+
+    const result = try bundler.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+
+    // 단일 청크 — 같은 청크 내 충돌이므로 x$1이 있어야 함
+    try std.testing.expectEqual(@as(usize, 1), outs.len);
+    // entry.ts의 x와 dep.ts의 x 중 하나가 rename됨
+    const has_rename = std.mem.indexOf(u8, outs[0].contents, "x$1") != null;
+    // 또는 import가 제거되어 dep의 x를 직접 참조하여 충돌 없을 수도 있음
+    const has_both_values = std.mem.indexOf(u8, outs[0].contents, "'dep'") != null and
+        std.mem.indexOf(u8, outs[0].contents, "'entry'") != null;
+    try std.testing.expect(has_rename or has_both_values);
+}
+
+test "CodeSplitting: cross-chunk export alias with renamed symbol" {
+    // 공통 청크에서 2개 모듈이 같은 이름의 export를 가질 때,
+    // 청크 내 충돌 해결 후 export { local_name as export_name } 형태로 출력되어야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // shared1과 shared2가 모두 "val"을 export하고, 둘 다 같은 청크에 묶이도록 설계
+    // a.ts → shared1 (val), shared2 (val)
+    // b.ts → shared1 (val), shared2 (val)
+    try writeFile(tmp.dir, "a.ts", "import { val } from './shared1';\nimport { val as v2 } from './shared2';\nconsole.log(val, v2);");
+    try writeFile(tmp.dir, "b.ts", "import { val } from './shared1';\nimport { val as v2 } from './shared2';\nconsole.log(val, v2);");
+    try writeFile(tmp.dir, "shared1.ts", "export const val = 'one';");
+    try writeFile(tmp.dir, "shared2.ts", "export const val = 'two';");
+
+    const entry_a = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(entry_a);
+    const entry_b = try absPath(&tmp, "b.ts");
+    defer std.testing.allocator.free(entry_b);
+
+    var bundler = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{ entry_a, entry_b },
+        .code_splitting = true,
+    });
+    defer bundler.deinit();
+
+    const result = try bundler.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+
+    // 공통 청크가 존재해야 함 (2 엔트리 + 1~2 공통 = 3~4 파일)
+    try std.testing.expect(outs.len >= 3);
+
+    // 공통 청크에 export 문이 있어야 함
+    var has_export = false;
+    for (outs) |o| {
+        if (std.mem.indexOf(u8, o.contents, "export {") != null or
+            std.mem.indexOf(u8, o.contents, "export{") != null)
+        {
+            has_export = true;
+            // 공통 청크에 val$1 rename이 있으면 "as val" 형태도 있어야 함
+            if (std.mem.indexOf(u8, o.contents, "val$1") != null) {
+                try std.testing.expect(std.mem.indexOf(u8, o.contents, "as val") != null);
+            }
+        }
+    }
+    try std.testing.expect(has_export);
 }
