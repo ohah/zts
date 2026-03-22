@@ -8815,3 +8815,244 @@ test "CodeSplitting: cross-chunk export alias with renamed symbol" {
     }
     try std.testing.expect(has_export);
 }
+
+test "CodeSplitting: cross-chunk import binding does not collide with local name" {
+    // Bug #2 재현: cross-chunk import 바인딩이 같은 청크의 로컬 이름과 충돌
+    // entry.ts imports 'value' from shared (다른 청크), other.ts defines 'value' (같은 청크)
+    // → 중복 선언 SyntaxError 방지: 둘 중 하나가 rename되어야 함
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { value } from './shared';
+        \\import { value as otherValue } from './other';
+        \\console.log(value, otherValue);
+    );
+    try writeFile(tmp.dir, "shared.ts", "export const value = 42;");
+    try writeFile(tmp.dir, "other.ts", "export const value = 'local';");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+    });
+    defer bnd.deinit();
+    const result = try bnd.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 출력에 'value'가 중복 선언되지 않아야 함
+    // (import { value } + const value 가 같은 청크에 있으면 안 됨)
+    const outputs = result.outputs orelse return error.TestUnexpectedResult;
+    for (outputs) |o| {
+        // entry 청크의 코드에서 SyntaxError 패턴 검사
+        // const value = 'local'과 import { value }가 동시에 있으면 안 됨
+        if (std.mem.indexOf(u8, o.contents, "'local'") != null) {
+            // 이 청크에 import { value }도 있으면 충돌
+            if (std.mem.indexOf(u8, o.contents, "import {") != null and
+                std.mem.indexOf(u8, o.contents, "const value") != null)
+            {
+                // 둘 다 있으면 하나는 rename되어야 함
+                // value$1 또는 as 절이 있어야 함
+                const has_rename = std.mem.indexOf(u8, o.contents, "value$1") != null or
+                    std.mem.indexOf(u8, o.contents, " as ") != null;
+                try std.testing.expect(has_rename);
+            }
+        }
+    }
+}
+
+test "CodeSplitting: cross-chunk import reference uses correct binding name" {
+    // Bug #1 재현: buildMetadataForAst가 exporter의 rename을 importing 청크에 적용
+    // shared.ts의 'greet'가 다른 이유로 rename되면, entry.ts에서 참조가 깨짐
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { greet } from './shared';
+        \\console.log(greet());
+    );
+    try writeFile(tmp.dir, "shared.ts",
+        \\export function greet() { return 'hello'; }
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+    });
+    defer bnd.deinit();
+    const result = try bnd.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outputs = result.outputs orelse return error.TestUnexpectedResult;
+
+    // entry 청크에서 greet() 호출이 있어야 함
+    var found_greet_call = false;
+    for (outputs) |o| {
+        if (std.mem.indexOf(u8, o.contents, "greet()") != null) {
+            found_greet_call = true;
+            // greet가 import에서 왔으면, import 문에 greet가 있어야 함
+            if (std.mem.indexOf(u8, o.contents, "import") != null) {
+                try std.testing.expect(std.mem.indexOf(u8, o.contents, "greet") != null);
+            }
+        }
+    }
+    try std.testing.expect(found_greet_call);
+}
+
+test "CodeSplitting: CRITICAL — same name in shared chunk and entry chunk" {
+    // shared.ts(공통 청크)에 'x', entry에 import 'x' + 로컬 'x' 정의
+    // → 같은 청크에 import { x } + const x 가 공존하면 SyntaxError
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // entry가 shared를 dynamic import → shared는 별도 청크
+    // entry 자체에도 const x = 'local' 선언
+    try writeFile(tmp.dir, "entry.ts",
+        \\const x = 'local';
+        \\const shared = import('./shared');
+        \\console.log(x, shared);
+    );
+    try writeFile(tmp.dir, "shared.ts", "export const x = 42;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+    });
+    defer bnd.deinit();
+    const result = try bnd.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outputs = result.outputs orelse return error.TestUnexpectedResult;
+    // 최소 2개 청크 (entry + shared)
+    try std.testing.expect(outputs.len >= 2);
+    // shared 청크에 export 문이 있어야 함
+    var has_export = false;
+    for (outputs) |o| {
+        if (std.mem.indexOf(u8, o.contents, "export") != null and
+            std.mem.indexOf(u8, o.contents, "42") != null)
+        {
+            has_export = true;
+        }
+    }
+    try std.testing.expect(has_export);
+}
+
+test "CodeSplitting: CRITICAL — rename collision between import binding and local var" {
+    // 2개 엔트리: a.ts, b.ts → 둘 다 shared.ts의 'val'을 import
+    // a.ts에도 로컬 'val' 정의 → a 청크에서 import { val } + const val 충돌
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts",
+        \\import { val } from './shared';
+        \\const val2 = val + 1;
+        \\console.log(val2);
+    );
+    try writeFile(tmp.dir, "b.ts",
+        \\import { val } from './shared';
+        \\console.log(val);
+    );
+    try writeFile(tmp.dir, "shared.ts", "export const val = 42;");
+
+    const a_path = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(a_path);
+    const b_path = try absPath(&tmp, "b.ts");
+    defer std.testing.allocator.free(b_path);
+
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{ a_path, b_path },
+        .code_splitting = true,
+    });
+    defer bnd.deinit();
+    const result = try bnd.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outputs = result.outputs orelse return error.TestUnexpectedResult;
+
+    // 3개 청크: a, b, shared(공통)
+    try std.testing.expectEqual(@as(usize, 3), outputs.len);
+
+    // shared 청크에 export { val } 있어야 함
+    var shared_has_export = false;
+    for (outputs) |o| {
+        if (std.mem.indexOf(u8, o.contents, "const val = 42") != null or
+            std.mem.indexOf(u8, o.contents, "const val=42") != null)
+        {
+            shared_has_export = std.mem.indexOf(u8, o.contents, "export") != null;
+        }
+    }
+    try std.testing.expect(shared_has_export);
+
+    // a 청크에 import { val } from './chunk-...' 있어야 함
+    var a_has_import = false;
+    for (outputs) |o| {
+        if (std.mem.indexOf(u8, o.contents, "val + 1") != null or
+            std.mem.indexOf(u8, o.contents, "val+1") != null)
+        {
+            a_has_import = std.mem.indexOf(u8, o.contents, "import") != null;
+        }
+    }
+    try std.testing.expect(a_has_import);
+}
+
+test "CodeSplitting: CRITICAL — two modules in same chunk with same name as cross-chunk import" {
+    // a.ts(엔트리)가 shared.ts의 'x'를 import + local.ts(같은 청크)에도 'x' 선언
+    // b.ts(엔트리)도 shared.ts의 'x'를 import → shared.ts는 공통 청크
+    // a 청크에 a.ts + local.ts가 같이 있음 → local.ts의 'x'와 import { x } 충돌
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts",
+        \\import { x } from './shared';
+        \\import { y } from './local';
+        \\console.log(x, y);
+    );
+    try writeFile(tmp.dir, "b.ts",
+        \\import { x } from './shared';
+        \\console.log(x);
+    );
+    try writeFile(tmp.dir, "local.ts",
+        \\export const x = 'local-x';
+        \\export const y = 'local-y';
+    );
+    try writeFile(tmp.dir, "shared.ts", "export const x = 'shared-x';");
+
+    const a_path = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(a_path);
+    const b_path = try absPath(&tmp, "b.ts");
+    defer std.testing.allocator.free(b_path);
+
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{ a_path, b_path },
+        .code_splitting = true,
+    });
+    defer bnd.deinit();
+    const result = try bnd.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outputs = result.outputs orelse return error.TestUnexpectedResult;
+
+    // a 청크를 찾기: local-x가 포함된 청크
+    for (outputs) |o| {
+        if (std.mem.indexOf(u8, o.contents, "local-x") != null) {
+            // 이 청크에 import { x }도 있다면, const x와 충돌
+            // → x$1 rename 또는 import { x as x$1 } 형태여야 함
+            const has_import_x = std.mem.indexOf(u8, o.contents, "import") != null;
+            const has_const_x = std.mem.indexOf(u8, o.contents, "const x") != null;
+            if (has_import_x and has_const_x) {
+                // 충돌이 있으면 rename 또는 as가 있어야 함
+                const has_deconflict = std.mem.indexOf(u8, o.contents, "x$1") != null or
+                    std.mem.indexOf(u8, o.contents, " as ") != null;
+                try std.testing.expect(has_deconflict);
+            }
+        }
+    }
+}

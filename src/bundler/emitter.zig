@@ -318,10 +318,22 @@ pub fn emitChunks(
         };
         std.mem.sort(ModuleIndex, sorted_mods, ModSortCtx{ .mods = modules }, ModSortCtx.lessThan);
 
+        // cross-chunk import 이름 수집 — 점유 이름으로 등록하여 로컬과 충돌 방지
+        var occupied: std.ArrayList([]const u8) = .empty;
+        defer occupied.deinit(allocator);
+        {
+            var ifit = chunk.imports_from.iterator();
+            while (ifit.next()) |if_entry| {
+                for (if_entry.value_ptr.items) |name| {
+                    try occupied.append(allocator, name);
+                }
+            }
+        }
+
         // per-chunk 리네임 계산: 각 청크는 독립된 네임스페이스이므로
         // 청크 내 모듈들만 대상으로 이름 충돌을 감지한다.
         if (linker) |l| {
-            try l.computeRenamesForModules(sorted_mods);
+            try l.computeRenamesForModules(sorted_mods, occupied.items);
         }
 
         // 엔트리 모듈 인덱스 (final exports용)

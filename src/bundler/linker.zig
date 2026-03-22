@@ -801,7 +801,14 @@ pub const Linker = struct {
     ///
     /// 기존 canonical_names를 초기화한 뒤, module_indices에 포함된
     /// 모듈의 top-level 심볼만 대상으로 충돌을 감지한다.
-    pub fn computeRenamesForModules(self: *Linker, module_indices: []const ModuleIndex) !void {
+    /// cross-chunk import 이름을 점유로 등록하면서 이름 충돌을 해결한다.
+    /// occupied_names: cross-chunk import로 이 청크에 도입되는 이름 목록.
+    /// 이 이름들은 import 문으로 유지되므로 로컬 심볼과 충돌하면 로컬을 rename해야 함.
+    pub fn computeRenamesForModules(
+        self: *Linker,
+        module_indices: []const ModuleIndex,
+        occupied_names: []const []const u8,
+    ) !void {
         // 이전 청크의 리네임 결과 제거
         self.clearCanonicalNames();
 
@@ -815,6 +822,20 @@ pub const Linker = struct {
             var vit = name_to_owners.valueIterator();
             while (vit.next()) |list| list.deinit(self.allocator);
             name_to_owners.deinit();
+        }
+
+        // cross-chunk import 이름을 "점유"로 등록 — exec_index=0 (가장 낮음)으로
+        // 등록하여 충돌 시 로컬 심볼이 rename됨 (import 이름이 우선 유지)
+        for (occupied_names) |name| {
+            if (std.mem.eql(u8, name, "default")) continue;
+            const entry = try name_to_owners.getOrPut(name);
+            if (!entry.found_existing) {
+                entry.value_ptr.* = .empty;
+            }
+            try entry.value_ptr.append(self.allocator, .{
+                .module_index = std.math.maxInt(u32), // 특수 마커 — 실제 모듈 아님
+                .exec_index = 0, // 가장 낮은 exec_index → 원본 이름 유지
+            });
         }
 
         for (module_indices) |mod_idx| {
@@ -862,6 +883,9 @@ pub const Linker = struct {
             // 첫 번째는 원본 유지, 나머지는 $1, $2, ...
             var suffix: u32 = 1;
             for (owners[1..]) |owner| {
+                // 점유 마커 (cross-chunk import)는 rename 대상이 아님
+                if (owner.module_index == std.math.maxInt(u32)) continue;
+
                 var candidate = try std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, suffix });
 
                 while (isReservedName(candidate) or self.hasNestedBinding(owner.module_index, candidate)) {
@@ -1301,7 +1325,7 @@ test "computeRenamesForModules: 지정된 모듈만 대상으로 충돌 감지" 
 
     // per-module rename: 모듈 0, 1만 대상 → 1개만 rename됨
     const subset = &[_]ModuleIndex{ @enumFromInt(0), @enumFromInt(1) };
-    try linker.computeRenamesForModules(subset);
+    try linker.computeRenamesForModules(subset, &.{});
     var subset_rename_count: usize = 0;
     for (graph.modules.items, 0..) |_, i| {
         if (linker.getCanonicalName(@intCast(i), "x") != null) subset_rename_count += 1;
