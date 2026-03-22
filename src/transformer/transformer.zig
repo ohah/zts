@@ -39,6 +39,8 @@ pub const TransformOptions = struct {
     drop_debugger: bool = false,
     /// define 글로벌 치환 (D020). 예: process.env.NODE_ENV → "production"
     define: []const DefineEntry = &.{},
+    /// React Fast Refresh 활성화. 컴포넌트에 $RefreshReg$/$RefreshSig$ 주입.
+    react_refresh: bool = false,
 };
 
 /// AST-to-AST 변환기.
@@ -75,6 +77,17 @@ pub const Transformer = struct {
     /// 새 AST 기준 symbol_ids. new_ast에 노드 추가 시 자동 전파.
     new_symbol_ids: std.ArrayList(?u32) = .empty,
 
+    /// React Fast Refresh: 감지된 컴포넌트 등록 목록.
+    /// transform 완료 후 프로그램 끝에 $RefreshReg$ 호출로 주입.
+    refresh_registrations: std.ArrayList(RefreshRegistration) = .empty,
+
+    const RefreshRegistration = struct {
+        /// 컴포넌트를 참조하는 새 AST의 NodeIndex (_c = Component 에서의 _c)
+        handle_node: NodeIndex,
+        /// 컴포넌트 이름 (문자열)
+        name: []const u8,
+    };
+
     pub fn init(allocator: std.mem.Allocator, old_ast: *const Ast, options: TransformOptions) Transformer {
         return .{
             .old_ast = old_ast,
@@ -90,6 +103,7 @@ pub const Transformer = struct {
         self.new_ast.deinit();
         self.scratch.deinit(self.allocator);
         self.pending_nodes.deinit(self.allocator);
+        self.refresh_registrations.deinit(self.allocator);
     }
 
     // ================================================================
@@ -103,7 +117,14 @@ pub const Transformer = struct {
     pub fn transform(self: *Transformer) Error!NodeIndex {
         // 파서는 parse() 끝에 program 노드를 추가하므로 마지막 노드가 루트
         const root_idx: NodeIndex = @enumFromInt(@as(u32, @intCast(self.old_ast.nodes.items.len - 1)));
-        return self.visitNode(root_idx);
+        const root = try self.visitNode(root_idx);
+
+        // React Fast Refresh: 컴포넌트 등록 코드를 프로그램 끝에 추가
+        if (self.options.react_refresh and self.refresh_registrations.items.len > 0) {
+            return try self.appendRefreshRegistrations(root);
+        }
+
+        return root;
     }
 
     // ================================================================
@@ -735,10 +756,15 @@ pub const Transformer = struct {
         }
 
         const none = @intFromEnum(NodeIndex.none);
-        return self.addExtraNode(node.tag, node.span, &.{
+        const result = try self.addExtraNode(node.tag, node.span, &.{
             @intFromEnum(new_name), pp.new_params.start, pp.new_params.len,
             @intFromEnum(new_body), self.readU32(e, 4),  none,
         });
+
+        // React Fast Refresh: PascalCase 함수 → 컴포넌트 등록
+        try self.maybeRegisterRefreshComponent(result);
+
+        return result;
     }
 
     /// 파라미터 목록을 방문하면서 parameter property (public x 등)를 감지.
@@ -1125,6 +1151,212 @@ pub const Transformer = struct {
             => true,
             else => false,
         };
+    }
+
+    // ================================================================
+    // React Fast Refresh — 컴포넌트 등록 주입
+    // ================================================================
+
+    /// 함수 이름이 React 컴포넌트 명명 규칙(PascalCase)인지 확인.
+    fn isComponentName(name: []const u8) bool {
+        if (name.len == 0) return false;
+        return name[0] >= 'A' and name[0] <= 'Z';
+    }
+
+    /// 함수 노드에서 이름 텍스트를 추출한다.
+    /// function_declaration의 extra[0]이 binding_identifier.
+    /// new_ast의 extra_data에서 읽음 (visitFunction이 이미 new_ast에 노드를 생성했으므로).
+    fn getFunctionName(self: *Transformer, func_node: Node) ?[]const u8 {
+        const e = func_node.data.extra;
+        if (e >= self.new_ast.extra_data.items.len) return null;
+        const name_idx: NodeIndex = @enumFromInt(self.new_ast.extra_data.items[e]);
+        if (name_idx.isNone()) return null;
+        const name_node = self.new_ast.getNode(name_idx);
+        if (name_node.tag != .binding_identifier and name_node.tag != .identifier_reference) return null;
+        return self.new_ast.getText(name_node.data.string_ref);
+    }
+
+    /// 변환된 함수 노드가 React 컴포넌트이면 등록 정보를 수집한다.
+    /// visitFunction에서 호출.
+    fn maybeRegisterRefreshComponent(self: *Transformer, new_func_idx: NodeIndex) Error!void {
+        if (!self.options.react_refresh) return;
+
+        const func_node = self.new_ast.getNode(new_func_idx);
+        const name = self.getFunctionName(func_node) orelse return;
+        if (!isComponentName(name)) return;
+
+        // _c = ComponentName 할당문을 pending_nodes에 추가
+        // (visitExtraList가 드레인하여 함수 선언 뒤에 삽입)
+
+        // 1. _c 핸들 변수명 생성
+        const handle_name = try self.makeRefreshHandle();
+
+        // 2. _c = ComponentName 할당식
+        const handle_ref = try self.new_ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = func_node.span,
+            .data = .{ .string_ref = handle_name },
+        });
+        const comp_ref = try self.new_ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = func_node.span,
+            .data = .{ .string_ref = try self.new_ast.addString(name) },
+        });
+        const assign = try self.new_ast.addNode(.{
+            .tag = .assignment_expression,
+            .span = func_node.span,
+            .data = .{ .binary = .{ .left = handle_ref, .right = comp_ref, .flags = 0 } },
+        });
+        const assign_stmt = try self.new_ast.addNode(.{
+            .tag = .expression_statement,
+            .span = func_node.span,
+            .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
+        });
+        try self.pending_nodes.append(self.allocator, assign_stmt);
+
+        // 등록 목록에 추가 (프로그램 끝에 $RefreshReg$ 호출용)
+        try self.refresh_registrations.append(self.allocator, .{
+            .handle_node = handle_ref,
+            .name = name,
+        });
+    }
+
+    /// _c, _c2, _c3, ... 핸들 변수명 생성
+    fn makeRefreshHandle(self: *Transformer) Error!Span {
+        const idx = self.refresh_registrations.items.len;
+        if (idx == 0) {
+            return self.new_ast.addString("_c");
+        }
+        var buf: [16]u8 = undefined;
+        const len = std.fmt.bufPrint(&buf, "_c{d}", .{idx + 1}) catch return error.OutOfMemory;
+        return self.new_ast.addString(len);
+    }
+
+    /// 프로그램 끝에 var _c, _c2; $RefreshReg$(_c, "Name"); ... 를 추가한다.
+    fn appendRefreshRegistrations(self: *Transformer, root: NodeIndex) Error!NodeIndex {
+        const prog = self.new_ast.getNode(root);
+        if (prog.tag != .program) return root;
+
+        const old_list = prog.data.list;
+        const old_stmts = self.new_ast.extra_data.items[old_list.start .. old_list.start + old_list.len];
+
+        const scratch_top = self.scratch.items.len;
+        defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+        // 기존 문장 복사
+        for (old_stmts) |raw_idx| {
+            try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+        }
+
+        // var _c, _c2, ...; 선언
+        const var_decl = try self.buildRefreshVarDeclaration();
+        try self.scratch.append(self.allocator, var_decl);
+
+        // $RefreshReg$(_c, "ComponentName"); 호출들
+        for (self.refresh_registrations.items, 0..) |_, i| {
+            const reg_stmt = try self.buildRefreshRegCall(i);
+            try self.scratch.append(self.allocator, reg_stmt);
+        }
+
+        const new_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+        return self.new_ast.addNode(.{
+            .tag = .program,
+            .span = prog.span,
+            .data = .{ .list = new_list },
+        });
+    }
+
+    /// var _c, _c2, ...; 선언 노드 생성
+    fn buildRefreshVarDeclaration(self: *Transformer) Error!NodeIndex {
+        const scratch_top = self.scratch.items.len;
+        defer self.scratch.shrinkRetainingCapacity(scratch_top);
+        const none = @intFromEnum(NodeIndex.none);
+
+        for (self.refresh_registrations.items, 0..) |_, i| {
+            const handle_span = if (i == 0)
+                try self.new_ast.addString("_c")
+            else blk: {
+                var buf: [16]u8 = undefined;
+                const name = std.fmt.bufPrint(&buf, "_c{d}", .{i + 1}) catch return error.OutOfMemory;
+                break :blk try self.new_ast.addString(name);
+            };
+
+            const binding = try self.new_ast.addNode(.{
+                .tag = .binding_identifier,
+                .span = handle_span, // string_table span
+                .data = .{ .string_ref = handle_span },
+            });
+
+            // variable_declarator: extra = [name, type_ann(none), init(none)]
+            const declarator = try self.addExtraNode(.variable_declarator, handle_span, &.{
+                @intFromEnum(binding),
+                none, // type annotation
+                none, // initializer
+            });
+            try self.scratch.append(self.allocator, declarator);
+        }
+
+        const decl_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+        // variable_declaration: extra = [kind(0=var), list_start, list_len]
+        return self.addExtraNode(.variable_declaration, .{ .start = 0, .end = 0 }, &.{
+            0, // var (not let/const)
+            decl_list.start,
+            decl_list.len,
+        });
+    }
+
+    /// $RefreshReg$(_c, "ComponentName"); 호출문 생성
+    fn buildRefreshRegCall(self: *Transformer, reg_idx: usize) Error!NodeIndex {
+        const zero_span = Span{ .start = 0, .end = 0 };
+        const reg = self.refresh_registrations.items[reg_idx];
+
+        // $RefreshReg$ 식별자
+        const callee = try self.new_ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = try self.new_ast.addString("$RefreshReg$"),
+            .data = .{ .string_ref = try self.new_ast.addString("$RefreshReg$") },
+        });
+
+        // _c / _c2 핸들 참조
+        const handle_span = if (reg_idx == 0)
+            try self.new_ast.addString("_c")
+        else blk: {
+            var buf: [16]u8 = undefined;
+            const name = std.fmt.bufPrint(&buf, "_c{d}", .{reg_idx + 1}) catch return error.OutOfMemory;
+            break :blk try self.new_ast.addString(name);
+        };
+
+        const handle_ref = try self.new_ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = handle_span,
+            .data = .{ .string_ref = handle_span },
+        });
+
+        // "ComponentName" 문자열 리터럴 (따옴표 포함)
+        var quoted_buf: [256]u8 = undefined;
+        const quoted = std.fmt.bufPrint(&quoted_buf, "\"{s}\"", .{reg.name}) catch return error.OutOfMemory;
+        const quoted_span = try self.new_ast.addString(quoted);
+        const name_str = try self.new_ast.addNode(.{
+            .tag = .string_literal,
+            .span = quoted_span,
+            .data = .{ .string_ref = quoted_span },
+        });
+
+        // call_expression: extra = [callee, args_start, args_len, flags]
+        const args = try self.new_ast.addNodeList(&.{ handle_ref, name_str });
+        const call = try self.addExtraNode(.call_expression, zero_span, &.{
+            @intFromEnum(callee),
+            args.start,
+            args.len,
+            0, // no flags
+        });
+
+        // expression_statement
+        return self.new_ast.addNode(.{
+            .tag = .expression_statement,
+            .span = zero_span,
+            .data = .{ .unary = .{ .operand = call, .flags = 0 } },
+        });
     }
 };
 

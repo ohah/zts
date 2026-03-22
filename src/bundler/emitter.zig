@@ -117,6 +117,8 @@ pub const EmitOptions = struct {
     /// dev mode에서 모듈 ID 생성 시 기준 경로 (상대 경로 계산용).
     /// null이면 절대 경로를 그대로 사용.
     root_dir: ?[]const u8 = null,
+    /// React Fast Refresh 활성화. $RefreshReg$/$RefreshSig$ 주입.
+    react_refresh: bool = false,
 
     pub const Format = enum {
         esm,
@@ -479,7 +481,9 @@ pub fn emitDevModule(
     defer emit_arena.deinit();
     const arena_alloc = emit_arena.allocator();
 
-    var transformer = Transformer.init(arena_alloc, ast, .{});
+    var transformer = Transformer.init(arena_alloc, ast, .{
+        .react_refresh = options.react_refresh,
+    });
     if (module.semantic) |sem| {
         transformer.old_symbol_ids = sem.symbol_ids;
     }

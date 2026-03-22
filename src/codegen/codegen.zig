@@ -172,8 +172,11 @@ pub const Codegen = struct {
     }
 
     /// 소스맵 매핑 추가. 노드의 소스 span과 현재 출력 위치를 매핑.
+    /// string_table span (bit 31 설정)은 합성 노드이므로 매핑 스킵.
     fn addSourceMapping(self: *Codegen, span: Span) !void {
         if (self.sm_builder) |*sm| {
+            // 합성 노드(string_table) 또는 빈 span → 소스맵 매핑 스킵
+            if (span.start & 0x8000_0000 != 0 or (span.start == 0 and span.end == 0)) return;
             // byte offset → 줄/열 변환 (Scanner의 line_offsets 사용)
             const lc = self.getOriginalLineColumn(span.start);
             try sm.addMapping(.{
