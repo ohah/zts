@@ -341,6 +341,7 @@ pub const Codegen = struct {
             .for_statement => try self.emitFor(node),
             .for_in_statement => try self.emitForInOf(node, "in"),
             .for_of_statement => try self.emitForInOf(node, "of"),
+            .for_await_of_statement => try self.emitForInOf(node, "await of"),
             .switch_statement => try self.emitSwitch(node),
             .switch_case => try self.emitSwitchCase(node),
             .break_statement => try self.emitSimpleStmt(node, "break"),

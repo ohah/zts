@@ -144,6 +144,8 @@ pub const Node = struct {
         for_statement,
         for_in_statement,
         for_of_statement,
+        /// for await (x of iter) {} — for_of_statement와 동일한 데이터 레이아웃
+        for_await_of_statement,
         break_statement,
         continue_statement,
         return_statement,

@@ -600,7 +600,7 @@ fn parseForStatement(self: *Parser) ParseError2!NodeIndex {
             if (self.current() == .kw_in) {
                 return parseForIn(self, start, init_expr);
             }
-            return parseForOf(self, start, init_expr);
+            return parseForOf(self, start, init_expr, is_await);
         }
         try self.expect(.semicolon); // for 헤더의 첫 번째 세미콜론 (ASI 금지, 7.9.2)
         return parseForRest(self, start, init_expr);
@@ -636,7 +636,7 @@ fn parseForStatement(self: *Parser) ParseError2!NodeIndex {
             }
         }
         _ = try self.coverExpressionToAssignmentTarget(init_expr, true);
-        return parseForOf(self, start, init_expr);
+        return parseForOf(self, start, init_expr, is_await);
     }
     try self.expect(.semicolon); // for 헤더의 첫 번째 세미콜론 (ASI 금지, 7.9.2)
     return parseForRest(self, start, init_expr);
@@ -718,15 +718,15 @@ fn parseForIn(self: *Parser, start: u32, left: NodeIndex) ParseError2!NodeIndex 
     });
 }
 
-/// for(left of right) body
-fn parseForOf(self: *Parser, start: u32, left: NodeIndex) ParseError2!NodeIndex {
+/// for(left of right) body / for await(left of right) body
+fn parseForOf(self: *Parser, start: u32, left: NodeIndex, is_await: bool) ParseError2!NodeIndex {
     try self.advance(); // skip 'of'
     const right = try self.parseAssignmentExpression();
     try self.expect(.r_paren);
     const body = try self.parseLoopBody();
 
     return try self.ast.addNode(.{
-        .tag = .for_of_statement,
+        .tag = if (is_await) .for_await_of_statement else .for_of_statement,
         .span = .{ .start = start, .end = self.currentSpan().start },
         .data = .{ .ternary = .{ .a = left, .b = right, .c = body } },
     });
