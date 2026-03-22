@@ -79,10 +79,18 @@ pub const TreeShaker = struct {
             }
         }
 
-        // TODO: 자동 순수 판별 활성화 — 별도 PR에서 기존 테스트 업데이트 후 활성화
-        // isModulePure/isStatementPure/isExpressionPure 분석 함수는 준비 완료.
-        // 활성화하면 `const x = 1`만 있는 모듈이 side_effects=false → 미사용 시 제거.
-        // 기존 테스트 200개+ 중 상당수가 side_effects=true를 전제하므로 일괄 수정 필요.
+        // 자동 순수 판별: 진입점이 아닌 모듈의 top-level이 모두 순수하면 side_effects=false
+        // (rolldown/esbuild 동작: package.json sideEffects 없어도 자동 감지)
+        for (self.modules, 0..) |m, i| {
+            if (!m.side_effects) continue;
+            if (self.entry_set.isSet(i)) continue;
+            if (m.ast) |ast| {
+                if (isModulePure(&ast)) {
+                    const mutable_modules: [*]Module = @constCast(self.modules.ptr);
+                    mutable_modules[i].side_effects = false;
+                }
+            }
+        }
 
         for (self.modules, 0..) |m, i| {
             if (self.entry_set.isSet(i) or m.side_effects) {

@@ -201,8 +201,8 @@ test "Bundler: single file bundle" {
 test "Bundler: two files bundled in order" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(tmp.dir, "a.ts", "import './b';\nconst a = 1;");
-    try writeFile(tmp.dir, "b.ts", "const b = 2;");
+    try writeFile(tmp.dir, "a.ts", "import './b';\nconst a = 1;\nconsole.log(a);");
+    try writeFile(tmp.dir, "b.ts", "const b = 2;\nconsole.log(b);");
 
     const entry = try absPath(&tmp, "a.ts");
     defer std.testing.allocator.free(entry);
@@ -216,8 +216,8 @@ test "Bundler: two files bundled in order" {
     defer result.deinit(std.testing.allocator);
 
     // b.ts가 a.ts보다 먼저 (exec_index 순서)
-    const b_pos = std.mem.indexOf(u8, result.output, "const b = 2;") orelse return error.TestUnexpectedResult;
-    const a_pos = std.mem.indexOf(u8, result.output, "const a = 1;") orelse return error.TestUnexpectedResult;
+    const b_pos = std.mem.indexOf(u8, result.output, "console.log(b);") orelse return error.TestUnexpectedResult;
+    const a_pos = std.mem.indexOf(u8, result.output, "console.log(a);") orelse return error.TestUnexpectedResult;
     try std.testing.expect(b_pos < a_pos);
 }
 
@@ -411,7 +411,7 @@ test "Linker integration: export keyword stripped (non-entry)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "a.ts", "import './b';");
-    try writeFile(tmp.dir, "b.ts", "export const y = 99;");
+    try writeFile(tmp.dir, "b.ts", "export const y = 99;\nconsole.log(y);");
 
     const entry = try absPath(&tmp, "a.ts");
     defer std.testing.allocator.free(entry);
@@ -5896,7 +5896,7 @@ test "DynamicImport: static path in import()" {
         \\const lazy = import('./lazy');
         \\lazy.then(m => console.log(m));
     );
-    try writeFile(tmp.dir, "lazy.ts", "export const data = 'lazy-loaded';");
+    try writeFile(tmp.dir, "lazy.ts", "export const data = 'lazy-loaded';\nconsole.log(data);");
 
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
@@ -6358,9 +6358,8 @@ test "TreeShaking: unused side_effects=false module excluded from bundle" {
     try std.testing.expect(!result.hasErrors());
     // x는 출력에 존재
     try std.testing.expect(std.mem.indexOf(u8, result.output, "42") != null);
-    // c.ts는 side_effects=true가 기본이므로 포함됨 (side_effects 기본값)
-    // 이 테스트는 기본 동작 확인: side_effects=true면 포함
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "dead_code") != null);
+    // c.ts는 pure code만 있으므로 auto-pure 감지로 side_effects=false → 제외됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "dead_code") == null);
 }
 
 test "TreeShaking: tree_shaking=false preserves all modules" {
