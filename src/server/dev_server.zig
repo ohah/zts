@@ -15,7 +15,6 @@ pub const DevServer = struct {
     port: u16,
     tcp_server: ?std.net.Server,
     entry_point: ?[]const u8,
-    /// init에서 해결한 절대 경로. entry_point가 있을 때만 유효.
     abs_entry: ?[]const u8,
 
     pub const Options = struct {
@@ -26,6 +25,7 @@ pub const DevServer = struct {
 
     const max_file_size: u64 = 50 * 1024 * 1024;
     const bundle_path = "/bundle.js";
+    const hmr_path = "/__hmr";
 
     const js_headers = cors_headers ++ [_]http.Header{
         .{ .name = "Content-Type", .value = "application/javascript; charset=utf-8" },
@@ -117,11 +117,79 @@ pub const DevServer = struct {
                 },
             };
 
+            // WebSocket upgrade 체크
+            switch (request.upgradeRequested()) {
+                .websocket => |opt_key| {
+                    const key = opt_key orelse {
+                        getLog().print("zts: WebSocket upgrade missing key\n", .{}) catch {};
+                        return;
+                    };
+
+                    // /__hmr 경로에서만 WebSocket 허용
+                    const target = request.head.target;
+                    const path_end = std.mem.indexOfScalar(u8, target, '?') orelse target.len;
+                    if (!std.mem.eql(u8, target[0..path_end], hmr_path)) {
+                        request.respond("400 Bad Request", .{
+                            .status = .bad_request,
+                            .extra_headers = &cors_headers,
+                        }) catch {};
+                        return;
+                    }
+
+                    var ws = request.respondWebSocket(.{ .key = key }) catch {
+                        getLog().print("zts: WebSocket handshake failed\n", .{}) catch {};
+                        return;
+                    };
+                    self.handleWebSocket(&ws);
+                    return;
+                },
+                .other => {
+                    request.respond("400 Bad Request", .{
+                        .status = .bad_request,
+                        .extra_headers = &cors_headers,
+                    }) catch {};
+                    return;
+                },
+                .none => {},
+            }
+
             self.handleRequest(&request) catch |err| {
                 getLog().print("zts: request '{s}' failed: {}\n", .{ request.head.target, err }) catch {};
                 return;
             };
         }
+    }
+
+    fn handleWebSocket(self: *DevServer, ws: *http.Server.WebSocket) void {
+        _ = self;
+        getLog().print("  [ws] client connected\n", .{}) catch {};
+
+        // 연결 후 connected 메시지 전송
+        ws.writeMessage("{\"type\":\"connected\"}", .text) catch {
+            getLog().print("  [ws] failed to send connected message\n", .{}) catch {};
+            return;
+        };
+
+        // 클라이언트 메시지 수신 루프 (ping/pong은 std.http가 자동 처리)
+        while (true) {
+            const msg = ws.readSmallMessage() catch |err| {
+                switch (err) {
+                    error.ConnectionClose => {},
+                    else => getLog().print("  [ws] read error: {}\n", .{err}) catch {},
+                }
+                break;
+            };
+
+            switch (msg.opcode) {
+                .text => {
+                    getLog().print("  [ws] recv: {s}\n", .{msg.data}) catch {};
+                },
+                .connection_close => break,
+                else => {},
+            }
+        }
+
+        getLog().print("  [ws] client disconnected\n", .{}) catch {};
     }
 
     fn handleRequest(self: *DevServer, request: *http.Server.Request) !void {
@@ -157,7 +225,6 @@ pub const DevServer = struct {
             if (std.mem.eql(u8, raw_path, bundle_path)) {
                 self.serveBundle(request) catch |err| {
                     getLog().print("zts: bundle failed: {}\n", .{err}) catch {};
-                    // best-effort 500 응답 — 클라이언트가 이미 끊었을 수 있음
                     request.respond("500 Bundle Error", .{
                         .status = .internal_server_error,
                         .extra_headers = &cors_headers,
@@ -166,7 +233,6 @@ pub const DevServer = struct {
                 return;
             }
 
-            // / 요청 시 index.html이 없으면 자동 HTML 생성
             if (std.mem.eql(u8, rel_path, "index.html")) {
                 self.serveStaticFile(request, rel_path) catch |err| switch (err) {
                     error.FileNotFound => {
@@ -240,6 +306,25 @@ pub const DevServer = struct {
             \\<body>
             \\<div id="root"></div>
             \\<script type="module" src="/bundle.js"></script>
+            \\<script>
+            \\(function() {
+            \\  var ws, timer;
+            \\  function connect() {
+            \\    ws = new WebSocket('ws://' + location.host + '/__hmr');
+            \\    ws.onopen = function() { console.log('[zts] HMR connected'); };
+            \\    ws.onmessage = function(e) {
+            \\      var msg = JSON.parse(e.data);
+            \\      if (msg.type === 'full-reload') { location.reload(); }
+            \\    };
+            \\    ws.onclose = function() {
+            \\      console.log('[zts] HMR disconnected, reconnecting...');
+            \\      clearTimeout(timer);
+            \\      timer = setTimeout(connect, 1000);
+            \\    };
+            \\  }
+            \\  connect();
+            \\})();
+            \\</script>
             \\</body>
             \\</html>
         ;
