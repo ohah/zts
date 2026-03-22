@@ -29,6 +29,11 @@ const import_scanner = @import("import_scanner.zig");
 const binding_scanner_mod = @import("binding_scanner.zig");
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
+const ast_mod = @import("../parser/ast.zig");
+const Ast = ast_mod.Ast;
+const AstNode = ast_mod.Node;
+const NodeIndex = ast_mod.NodeIndex;
+const Tag = ast_mod.Node.Tag;
 const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
 const ModuleSemanticData = @import("module.zig").ModuleSemanticData;
 const Span = @import("../lexer/token.zig").Span;
@@ -111,6 +116,9 @@ pub const ModuleGraph = struct {
 
         // Phase 3: ExportsKind.none 모듈을 소비하는 쪽에 따라 승격
         self.promoteExportsKinds();
+
+        // Phase 4: TLA 전파 — TLA 모듈을 static import하는 모듈도 TLA로 표시
+        self.propagateTopLevelAwait();
     }
 
     /// 모듈을 그래프에 추가하고 파싱한다.
@@ -219,6 +227,11 @@ pub const ModuleGraph = struct {
         module.export_bindings = binding_scanner_mod.extractExportBindings(self.allocator, &parser.ast, scan_result.records) catch &.{};
 
         module.ast = parser.ast;
+
+        // Top-Level Await 감지 — ESM 모듈의 top-level 문장에 await가 있는지 확인
+        if (module.ast) |ast| {
+            module.uses_top_level_await = detectTopLevelAwait(&ast);
+        }
 
         // package.json sideEffects 필드 반영 (node_modules 패키지만)
         self.applySideEffectsFromPackageJson(module);
@@ -410,6 +423,33 @@ pub const ModuleGraph = struct {
         }
     }
 
+    /// TLA 전이적 전파: TLA 모듈을 static import하는 모듈도 TLA로 표시.
+    /// await가 포함된 모듈의 실행이 완료되기 전에 이를 import하는 모듈이
+    /// 실행될 수 없으므로, import하는 쪽도 TLA로 간주해야 한다.
+    /// 동적 import는 비동기이므로 전파하지 않는다.
+    fn propagateTopLevelAwait(self: *ModuleGraph) void {
+        var changed = true;
+        var iteration: u32 = 0;
+        while (changed and iteration < 100) : (iteration += 1) {
+            changed = false;
+            for (self.modules.items) |*m| {
+                if (m.uses_top_level_await) continue;
+                for (m.import_records) |rec| {
+                    if (rec.resolved.isNone()) continue;
+                    // 동적 import는 비동기 → TLA 전파 불필요
+                    if (rec.kind != .static_import and rec.kind != .side_effect and rec.kind != .re_export) continue;
+                    const target_idx = @intFromEnum(rec.resolved);
+                    if (target_idx >= self.modules.items.len) continue;
+                    if (self.modules.items[target_idx].uses_top_level_await) {
+                        m.uses_top_level_await = true;
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     fn addDiag(
         self: *ModuleGraph,
         code: BundlerDiagnostic.ErrorCode,
@@ -459,6 +499,228 @@ fn determineExportsKind(
     if (std.mem.eql(u8, ext, ".mjs") or std.mem.eql(u8, ext, ".mts")) return .esm;
 
     return .none;
+}
+
+// ============================================================
+// Top-Level Await Detection
+// ============================================================
+
+/// 모듈의 top-level 문장에 await 표현식이 있는지 확인한다.
+/// 함수/arrow/class 내부의 await는 TLA가 아니므로, 함수 경계에서 재귀를 멈춘다.
+/// `for await (x of iter) {}` 같은 for-await-of도 감지한다.
+fn detectTopLevelAwait(ast: *const Ast) bool {
+    if (ast.nodes.items.len == 0) return false;
+
+    // program 노드는 파서가 마지막에 추가하므로 배열의 마지막 노드
+    const root = ast.nodes.items[ast.nodes.items.len - 1];
+    if (root.tag != .program) return false;
+
+    const stmts = root.data.list;
+    if (stmts.len == 0) return false;
+    if (stmts.start + stmts.len > ast.extra_data.items.len) return false;
+
+    const stmt_indices = ast.extra_data.items[stmts.start .. stmts.start + stmts.len];
+    for (stmt_indices) |raw| {
+        const idx: NodeIndex = @enumFromInt(raw);
+        if (containsAwait(ast, idx, 0)) return true;
+    }
+    return false;
+}
+
+/// 노드 트리를 재귀적으로 탐색하여 await_expression이 있는지 확인한다.
+/// 함수/arrow/class 경계에서 멈춘다 — 내부의 await는 TLA가 아님.
+/// for-of 노드의 경우, 소스 텍스트에서 `for await`를 직접 확인한다
+/// (파서가 is_await 플래그를 AST에 저장하지 않으므로).
+fn containsAwait(ast: *const Ast, idx: NodeIndex, depth: u32) bool {
+    // 재귀 깊이 제한 — 비정상적으로 깊은 중첩 방지
+    if (depth > 128) return false;
+    if (idx.isNone()) return false;
+    const ni = @intFromEnum(idx);
+    if (ni >= ast.nodes.items.len) return false;
+
+    const node = ast.nodes.items[ni];
+
+    // await_expression 발견 → TLA!
+    if (node.tag == .await_expression) return true;
+
+    // for-await-of: 파서가 is_await 플래그를 AST에 저장하지 않으므로
+    // 소스 텍스트에서 `for` ~ `(` 사이에 "await"가 있는지 확인한다.
+    if (node.tag == .for_of_statement) {
+        if (isForAwaitOf(ast, node)) return true;
+        // body도 확인해야 함 (for-of 내부에 top-level await가 있을 수 있음)
+        if (containsAwait(ast, node.data.ternary.a, depth + 1)) return true;
+        if (containsAwait(ast, node.data.ternary.b, depth + 1)) return true;
+        return containsAwait(ast, node.data.ternary.c, depth + 1);
+    }
+
+    // 함수 경계 — 내부의 await는 async 함수의 await이므로 TLA가 아님
+    if (node.tag == .function_declaration or
+        node.tag == .function_expression or
+        node.tag == .arrow_function_expression or
+        node.tag == .class_declaration or
+        node.tag == .class_expression or
+        node.tag == .function or
+        node.tag == .method_definition or
+        node.tag == .static_block) return false;
+
+    // 자식 노드 재귀 탐색 — 노드 타입별 데이터 구조에 따라 분기
+    switch (node.tag) {
+        // unary 계열: operand 하나만 확인
+        .expression_statement,
+        .parenthesized_expression,
+        .yield_expression,
+        .spread_element,
+        .return_statement,
+        .throw_statement,
+        .export_default_declaration,
+        .unary_expression,
+        .update_expression,
+        .decorator,
+        => return containsAwait(ast, node.data.unary.operand, depth + 1),
+
+        // binary 계열: left + right
+        .binary_expression,
+        .logical_expression,
+        .assignment_expression,
+        .while_statement,
+        .do_while_statement,
+        .labeled_statement,
+        .with_statement,
+        .catch_clause,
+        .for_in_statement,
+        => {
+            if (containsAwait(ast, node.data.binary.left, depth + 1)) return true;
+            return containsAwait(ast, node.data.binary.right, depth + 1);
+        },
+
+        // ternary 계열: a + b + c
+        .if_statement,
+        .try_statement,
+        .conditional_expression,
+        => {
+            if (containsAwait(ast, node.data.ternary.a, depth + 1)) return true;
+            if (containsAwait(ast, node.data.ternary.b, depth + 1)) return true;
+            return containsAwait(ast, node.data.ternary.c, depth + 1);
+        },
+
+        // list 계열: extra_data에서 인덱스 배열 참조
+        .block_statement,
+        .array_expression,
+        .sequence_expression,
+        => {
+            const list = node.data.list;
+            if (list.start + list.len > ast.extra_data.items.len) return false;
+            for (ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+                if (containsAwait(ast, @enumFromInt(raw), depth + 1)) return true;
+            }
+            return false;
+        },
+
+        // variable_declaration: extra [kind_flags, list_start, list_len]
+        .variable_declaration => {
+            const e = node.data.extra;
+            if (!ast.hasExtra(e, 2)) return false;
+            const list_start = ast.readExtra(e, 1);
+            const list_len = ast.readExtra(e, 2);
+            if (list_start + list_len > ast.extra_data.items.len) return false;
+            for (ast.extra_data.items[list_start .. list_start + list_len]) |raw| {
+                if (containsAwait(ast, @enumFromInt(raw), depth + 1)) return true;
+            }
+            return false;
+        },
+
+        // variable_declarator: extra [name, type_ann, init]
+        .variable_declarator => {
+            return containsAwait(ast, ast.readExtraNode(node.data.extra, 2), depth + 1);
+        },
+
+        // call_expression / new_expression: extra [callee, args_start, args_len, flags]
+        .call_expression, .new_expression => {
+            const e = node.data.extra;
+            if (containsAwait(ast, ast.readExtraNode(e, 0), depth + 1)) return true;
+            if (!ast.hasExtra(e, 2)) return false;
+            const args_start = ast.readExtra(e, 1);
+            const args_len = ast.readExtra(e, 2);
+            if (args_start + args_len > ast.extra_data.items.len) return false;
+            for (ast.extra_data.items[args_start .. args_start + args_len]) |raw| {
+                if (containsAwait(ast, @enumFromInt(raw), depth + 1)) return true;
+            }
+            return false;
+        },
+
+        // for_statement: extra [init, test, update, body]
+        .for_statement => {
+            const e = node.data.extra;
+            if (containsAwait(ast, ast.readExtraNode(e, 0), depth + 1)) return true;
+            if (containsAwait(ast, ast.readExtraNode(e, 1), depth + 1)) return true;
+            if (containsAwait(ast, ast.readExtraNode(e, 2), depth + 1)) return true;
+            return containsAwait(ast, ast.readExtraNode(e, 3), depth + 1);
+        },
+
+        // switch_statement: extra [discriminant, cases_start, cases_len]
+        .switch_statement => {
+            const e = node.data.extra;
+            if (containsAwait(ast, ast.readExtraNode(e, 0), depth + 1)) return true;
+            if (!ast.hasExtra(e, 2)) return false;
+            const cases_start = ast.readExtra(e, 1);
+            const cases_len = ast.readExtra(e, 2);
+            if (cases_start + cases_len > ast.extra_data.items.len) return false;
+            for (ast.extra_data.items[cases_start .. cases_start + cases_len]) |raw| {
+                if (containsAwait(ast, @enumFromInt(raw), depth + 1)) return true;
+            }
+            return false;
+        },
+
+        // switch_case: extra [test, body_start, body_len]
+        .switch_case => {
+            const e = node.data.extra;
+            if (containsAwait(ast, ast.readExtraNode(e, 0), depth + 1)) return true;
+            if (!ast.hasExtra(e, 2)) return false;
+            const body_start = ast.readExtra(e, 1);
+            const body_len = ast.readExtra(e, 2);
+            if (body_start + body_len > ast.extra_data.items.len) return false;
+            for (ast.extra_data.items[body_start .. body_start + body_len]) |raw| {
+                if (containsAwait(ast, @enumFromInt(raw), depth + 1)) return true;
+            }
+            return false;
+        },
+
+        // export_named_declaration: extra [declaration, specs_start, specs_len, source]
+        .export_named_declaration => {
+            return containsAwait(ast, ast.readExtraNode(node.data.extra, 0), depth + 1);
+        },
+
+        // static_member_expression: extra [object, property, flags]
+        .static_member_expression => {
+            return containsAwait(ast, ast.readExtraNode(node.data.extra, 0), depth + 1);
+        },
+
+        // computed_member_expression: extra [object, property, flags]
+        .computed_member_expression => {
+            const e = node.data.extra;
+            if (containsAwait(ast, ast.readExtraNode(e, 0), depth + 1)) return true;
+            return containsAwait(ast, ast.readExtraNode(e, 1), depth + 1);
+        },
+
+        // 리터럴, 식별자, 키워드 등 — 자식 없음
+        else => return false,
+    }
+}
+
+/// for_of_statement 노드가 `for await (...of...)` 인지 소스 텍스트로 확인한다.
+/// 파서가 is_await 플래그를 AST 노드에 저장하지 않으므로,
+/// span.start ("for" 키워드 시작)부터 "(" 까지의 소스에서 "await"를 찾는다.
+fn isForAwaitOf(ast: *const Ast, node: AstNode) bool {
+    const start = node.span.start;
+    // "for await (" 최대 길이는 ~15자 정도
+    const max_len: u32 = 20;
+    const end = @min(start + max_len, @as(u32, @intCast(ast.source.len)));
+    if (start >= end) return false;
+
+    const slice = ast.source[start..end];
+    // "for" 뒤의 공백 + "await" 패턴 탐색
+    if (std.mem.indexOf(u8, slice, "await")) |_| return true;
+    return false;
 }
 
 // ============================================================
