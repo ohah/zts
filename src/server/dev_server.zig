@@ -395,6 +395,7 @@ pub const DevServer = struct {
             .entry_points = &.{abs_entry},
             .platform = .browser,
             .dev_mode = true,
+            .react_refresh = true,
         });
         defer bundler.deinit();
 
@@ -490,6 +491,7 @@ pub const DevServer = struct {
             .entry_points = &.{abs_entry},
             .platform = .browser,
             .dev_mode = true,
+            .react_refresh = true,
         });
         defer bundler.deinit();
 
@@ -590,6 +592,7 @@ pub const DevServer = struct {
             .platform = .browser,
             .dev_mode = true,
             .root_dir = self.root_path,
+            .react_refresh = true,
         });
         defer bundler.deinit();
 

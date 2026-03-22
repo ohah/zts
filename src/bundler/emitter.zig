@@ -63,6 +63,7 @@ const HMR_RUNTIME =
     \\  var prev = __zts_modules[id];
     \\  var mod = { exports: {}, hot: __zts_make_hot(id), factory: factory };
     \\  __zts_modules[id] = mod;
+    \\  window.__zts_currentModuleId = id;
     \\  factory(mod, mod.exports);
     \\  if (prev) {
     \\    var cbs = __zts_hot_cbs[id];
@@ -83,7 +84,20 @@ const HMR_RUNTIME =
     \\      if (typeof cbs.accept === "function") cbs.accept();
     \\    } catch(e) { console.error("[zts] HMR update failed:", e); location.reload(); }
     \\  }
+    \\  if (typeof __zts_RefreshRuntime !== "undefined") __zts_RefreshRuntime.performReactRefresh();
     \\}
+    \\var __zts_RefreshRuntime;
+    \\try {
+    \\  __zts_RefreshRuntime = require("react-refresh/runtime");
+    \\  __zts_RefreshRuntime.injectIntoGlobalHook(window);
+    \\} catch(e) {}
+    \\window.$RefreshReg$ = function(type, id) {
+    \\  if (__zts_RefreshRuntime) __zts_RefreshRuntime.register(type, window.__zts_currentModuleId + " " + id);
+    \\};
+    \\window.$RefreshSig$ = function() {
+    \\  if (__zts_RefreshRuntime) return __zts_RefreshRuntime.createSignatureFunctionForTransform();
+    \\  return function(type) { return type; };
+    \\};
     \\
 ;
 
@@ -532,14 +546,19 @@ pub fn emitDevModule(
     const preamble = if (metadata) |md| md.cjs_import_preamble else null;
     const final_exports = if (metadata) |md| md.final_exports else null;
 
-    const final_code = if (preamble != null or final_exports != null)
-        try std.mem.concat(allocator, u8, &.{
-            preamble orelse "",
-            code,
-            final_exports orelse "",
-        })
+    // React Fast Refresh: 컴포넌트가 있는 모듈에 hot.accept() 자동 삽입
+    const hot_accept_suffix: []const u8 = if (options.react_refresh and
+        std.mem.indexOf(u8, code, "$RefreshReg$") != null)
+        "\n__zts_module.hot.accept();\n"
     else
-        try allocator.dupe(u8, code);
+        "";
+
+    const final_code = try std.mem.concat(allocator, u8, &.{
+        preamble orelse "",
+        code,
+        final_exports orelse "",
+        hot_accept_suffix,
+    });
 
     return .{
         .code = final_code,
