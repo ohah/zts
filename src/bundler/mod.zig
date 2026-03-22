@@ -25,6 +25,7 @@ pub const emitter = @import("emitter.zig");
 pub const binding_scanner = @import("binding_scanner.zig");
 pub const linker = @import("linker.zig");
 pub const tree_shaker = @import("tree_shaker.zig");
+pub const chunk = @import("chunk.zig");
 pub const bundler_core = @import("bundler.zig");
 
 // 공개 타입 re-export
@@ -43,6 +44,11 @@ pub const ModuleGraph = graph.ModuleGraph;
 pub const Linker = linker.Linker;
 pub const LinkingMetadata = linker.LinkingMetadata;
 pub const TreeShaker = tree_shaker.TreeShaker;
+pub const ChunkIndex = types.ChunkIndex;
+pub const BitSet = chunk.BitSet;
+pub const Chunk = chunk.Chunk;
+pub const ChunkKind = chunk.ChunkKind;
+pub const ChunkGraph = chunk.ChunkGraph;
 pub const Bundler = bundler_core.Bundler;
 pub const BundleOptions = bundler_core.BundleOptions;
 pub const BundleResult = bundler_core.BundleResult;
@@ -59,5 +65,6 @@ test {
     _ = binding_scanner;
     _ = linker;
     _ = tree_shaker;
+    _ = chunk;
     _ = bundler_core;
 }
