@@ -500,13 +500,27 @@ pub fn generateChunks(
             chunk_graph.assignModuleToChunk(entry.module_idx, chunk_idx);
             try chunk_graph.getChunkMut(chunk_idx).addModule(allocator, entry.module_idx);
         } else if (current != chunk_idx) {
-            // 공통 청크에 잘못 배정됨 → 엔트리 청크로 재할당 (esbuild 동작)
+            // 공통 청크에 잘못 배정됨 → 이전 청크에서 제거 후 엔트리 청크로 이동
+            const old_chunk = chunk_graph.getChunkMut(current);
+            removeModuleFromList(&old_chunk.modules, entry.module_idx);
             chunk_graph.assignModuleToChunk(entry.module_idx, chunk_idx);
             try chunk_graph.getChunkMut(chunk_idx).addModule(allocator, entry.module_idx);
         }
     }
 
     return chunk_graph;
+}
+
+/// ArrayListUnmanaged에서 특정 ModuleIndex를 제거한다 (순서 유지).
+fn removeModuleFromList(list: *std.ArrayListUnmanaged(ModuleIndex), target: ModuleIndex) void {
+    var i: usize = 0;
+    while (i < list.items.len) {
+        if (list.items[i] == target) {
+            _ = list.orderedRemove(i);
+            return; // 중복 없으므로 첫 번째만 제거
+        }
+        i += 1;
+    }
 }
 
 // ============================================================
@@ -1496,4 +1510,38 @@ test "computeCrossChunkLinks: bidirectional — A↔B 상호 의존" {
     const b_imports = cg.getChunk(chunk_b).cross_chunk_imports.items;
     try std.testing.expectEqual(@as(usize, 1), b_imports.len);
     try std.testing.expectEqual(chunk_a, b_imports[0]);
+}
+
+test "generateChunks: entry module reassignment removes from old chunk" {
+    // 엔트리 C가 다른 엔트리 A에서 static import → C의 BitSet이 공통 패턴과 일치
+    // → Phase 3에서 공통 청크에 배정 → 후처리에서 엔트리 청크로 이동
+    // → 이전 청크의 modules에서 제거되어야 함
+    const alloc = std.testing.allocator;
+
+    var modules: [3]Module = .{
+        makeTestModule(alloc, 0, "a.ts"), // 엔트리 0
+        makeTestModule(alloc, 1, "b.ts"), // 공유 모듈
+        makeTestModule(alloc, 2, "c.ts"), // 엔트리 1 + A가 static import
+    };
+    // a → b (static), a → c (static), c → b (static)
+    try modules[0].addDependency(alloc, @enumFromInt(1), &modules);
+    try modules[0].addDependency(alloc, @enumFromInt(2), &modules);
+    try modules[2].addDependency(alloc, @enumFromInt(1), &modules);
+    defer for (&modules) |*m| m.deinit(alloc);
+
+    var cg = try generateChunks(alloc, &modules, &.{ "a.ts", "c.ts" }, null);
+    defer cg.deinit();
+
+    // c.ts는 엔트리 청크에 있어야 함 (공통 청크 아님)
+    const c_chunk = cg.getModuleChunk(@enumFromInt(2));
+    try std.testing.expect(!c_chunk.isNone());
+
+    // c.ts가 하나의 청크에만 존재하는지 확인 (중복 방지)
+    var count: u32 = 0;
+    for (cg.chunks.items) |chunk| {
+        for (chunk.modules.items) |mod_idx| {
+            if (@intFromEnum(mod_idx) == 2) count += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(u32, 1), count);
 }
