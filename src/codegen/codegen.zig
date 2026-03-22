@@ -820,14 +820,13 @@ pub const Codegen = struct {
 
     fn emitStaticMember(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
-        const extras = self.ast.extra_data.items;
-        if (e + 2 >= extras.len) return;
-        const object: NodeIndex = @enumFromInt(extras[e]);
-        const property: NodeIndex = @enumFromInt(extras[e + 1]);
-        const flags = extras[e + 2];
+        if (!self.ast.hasExtra(e, 2)) return;
+        const object = self.ast.readExtraNode(e, 0);
+        const property = self.ast.readExtraNode(e, 1);
+        const flags = self.ast.readExtra(e, 2);
+        const MemberFlags = ast_mod.MemberFlags;
         try self.emitNode(object);
-        // flags=1 → optional chaining (a?.b)
-        if (flags & 1 != 0) {
+        if (flags & MemberFlags.optional_chain != 0) {
             try self.write("?.");
         } else {
             try self.writeByte('.');
@@ -837,14 +836,13 @@ pub const Codegen = struct {
 
     fn emitComputedMember(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
-        const extras = self.ast.extra_data.items;
-        if (e + 2 >= extras.len) return;
-        const object: NodeIndex = @enumFromInt(extras[e]);
-        const property: NodeIndex = @enumFromInt(extras[e + 1]);
-        const flags = extras[e + 2];
+        if (!self.ast.hasExtra(e, 2)) return;
+        const object = self.ast.readExtraNode(e, 0);
+        const property = self.ast.readExtraNode(e, 1);
+        const flags = self.ast.readExtra(e, 2);
+        const MemberFlags = ast_mod.MemberFlags;
         try self.emitNode(object);
-        // flags=1 → optional chaining (a?.[b])
-        if (flags & 1 != 0) {
+        if (flags & MemberFlags.optional_chain != 0) {
             try self.write("?.");
         }
         try self.writeByte('[');
@@ -852,20 +850,17 @@ pub const Codegen = struct {
         try self.writeByte(']');
     }
 
-    /// call_expression: extra = [callee, args_start, args_len, flags]
     fn emitCall(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
-        const extras = self.ast.extra_data.items;
-        if (e + 3 >= extras.len) return;
-        const callee: NodeIndex = @enumFromInt(extras[e]);
-        const args_start = extras[e + 1];
-        const args_len = extras[e + 2];
-        const flags = extras[e + 3];
+        if (!self.ast.hasExtra(e, 3)) return;
+        const callee = self.ast.readExtraNode(e, 0);
+        const args_start = self.ast.readExtra(e, 1);
+        const args_len = self.ast.readExtra(e, 2);
+        const flags = self.ast.readExtra(e, 3);
         const CallFlags = ast_mod.CallFlags;
         const is_optional = (flags & CallFlags.optional_chain) != 0;
         const is_pure = (flags & CallFlags.is_pure) != 0;
 
-        // @__PURE__ 주석 재출력 (minify가 아닐 때)
         if (is_pure and !self.options.minify) try self.write("/* @__PURE__ */ ");
         try self.emitNode(callee);
         if (is_optional) try self.write("?.");
@@ -874,15 +869,13 @@ pub const Codegen = struct {
         try self.writeByte(')');
     }
 
-    /// new_expression: extra = [callee, args_start, args_len, flags]
     fn emitNew(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
-        const extras = self.ast.extra_data.items;
-        if (e + 3 >= extras.len) return;
-        const callee: NodeIndex = @enumFromInt(extras[e]);
-        const args_start = extras[e + 1];
-        const args_len = extras[e + 2];
-        const flags = extras[e + 3];
+        if (!self.ast.hasExtra(e, 3)) return;
+        const callee = self.ast.readExtraNode(e, 0);
+        const args_start = self.ast.readExtra(e, 1);
+        const args_len = self.ast.readExtra(e, 2);
+        const flags = self.ast.readExtra(e, 3);
         const CallFlags = ast_mod.CallFlags;
         const is_pure = (flags & CallFlags.is_pure) != 0;
 

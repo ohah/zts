@@ -701,9 +701,8 @@ pub const SemanticAnalyzer = struct {
             .private_field_expression, .static_member_expression => {
                 // extra: [object, property, flags]
                 const e = node.data.extra;
-                const extras = self.ast.extra_data.items;
-                if (e + 1 < extras.len) {
-                    const prop_idx: NodeIndex = @enumFromInt(extras[e + 1]);
+                if (self.ast.hasExtra(e, 1)) {
+                    const prop_idx = self.ast.readExtraNode(e, 1);
                     if (!prop_idx.isNone() and @intFromEnum(prop_idx) < self.ast.nodes.items.len) {
                         const prop_node = self.ast.getNode(prop_idx);
                         if (prop_node.tag == .private_identifier) {
@@ -713,17 +712,13 @@ pub const SemanticAnalyzer = struct {
                         }
                     }
                 }
-                if (e < extras.len) {
-                    try self.visitNode(@enumFromInt(extras[e]));
-                }
+                try self.visitNode(self.ast.readExtraNode(e, 0));
             },
             .computed_member_expression => {
                 // extra: [object, property, flags]
-                // right는 임의 expression (a[expr]) — 양쪽 모두 순회
                 const e = node.data.extra;
-                const extras = self.ast.extra_data.items;
-                if (e < extras.len) try self.visitNode(@enumFromInt(extras[e]));
-                if (e + 1 < extras.len) try self.visitNode(@enumFromInt(extras[e + 1]));
+                try self.visitNode(self.ast.readExtraNode(e, 0));
+                try self.visitNode(self.ast.readExtraNode(e, 1));
             },
 
             // ---- method_definition/property_definition 내부 순회 ----
@@ -828,20 +823,19 @@ pub const SemanticAnalyzer = struct {
             => {
                 // extra: [callee, args_start, args_len, flags]
                 const e = node.data.extra;
-                if (e + 2 < self.ast.extra_data.items.len) {
-                    try self.visitNode(@enumFromInt(self.ast.extra_data.items[e]));
+                if (self.ast.hasExtra(e, 2)) {
+                    try self.visitNode(self.ast.readExtraNode(e, 0));
                     try self.visitNodeList(.{
-                        .start = self.ast.extra_data.items[e + 1],
-                        .len = self.ast.extra_data.items[e + 2],
+                        .start = self.ast.readExtra(e, 1),
+                        .len = self.ast.readExtra(e, 2),
                     });
                 }
             },
             .tagged_template_expression => {
                 // extra: [tag, template, flags]
                 const e = node.data.extra;
-                const extras = self.ast.extra_data.items;
-                if (e < extras.len) try self.visitNode(@enumFromInt(extras[e]));
-                if (e + 1 < extras.len) try self.visitNode(@enumFromInt(extras[e + 1]));
+                try self.visitNode(self.ast.readExtraNode(e, 0));
+                try self.visitNode(self.ast.readExtraNode(e, 1));
             },
             .sequence_expression => {
                 try self.visitNodeList(node.data.list);

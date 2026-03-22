@@ -479,6 +479,23 @@ pub const Ast = struct {
         return start;
     }
 
+    /// extra_data에서 u32 값을 읽는다. 범위 밖이면 0 반환.
+    pub fn readExtra(self: *const Ast, base: u32, offset: u32) u32 {
+        const idx = base + offset;
+        if (idx >= self.extra_data.items.len) return 0;
+        return self.extra_data.items[idx];
+    }
+
+    /// extra_data에서 NodeIndex를 읽는다. 범위 밖이면 NodeIndex.none.
+    pub fn readExtraNode(self: *const Ast, base: u32, offset: u32) NodeIndex {
+        return @enumFromInt(self.readExtra(base, offset));
+    }
+
+    /// extra_data가 base+max_offset까지 유효한지 확인.
+    pub fn hasExtra(self: *const Ast, base: u32, max_offset: u32) bool {
+        return base + max_offset < self.extra_data.items.len;
+    }
+
     /// span이 가리키는 소스 텍스트를 반환한다.
     /// source와 string_table 모두 지원 (getText에 위임).
     pub fn getSourceText(self: *const Ast, span: Span) []const u8 {
