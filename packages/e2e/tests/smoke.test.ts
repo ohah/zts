@@ -45,20 +45,17 @@ test.describe("Dev Server E2E", () => {
   test("HMR WebSocket 연결이 수립된다", async ({ page }) => {
     await page.goto(`http://localhost:${TEST_PORT}/`);
 
-    const wsConnected = await page.evaluate(
-      (port: number) => {
-        return new Promise<boolean>((resolve) => {
-          const ws = new WebSocket(`ws://localhost:${port}/__hmr`);
-          ws.onopen = () => {
-            ws.close();
-            resolve(true);
-          };
-          ws.onerror = () => resolve(false);
-          setTimeout(() => resolve(false), 3000);
-        });
-      },
-      TEST_PORT,
-    );
+    const wsConnected = await page.evaluate((port: number) => {
+      return new Promise<boolean>((resolve) => {
+        const ws = new WebSocket(`ws://localhost:${port}/__hmr`);
+        ws.onopen = () => {
+          ws.close();
+          resolve(true);
+        };
+        ws.onerror = () => resolve(false);
+        setTimeout(() => resolve(false), 3000);
+      });
+    }, TEST_PORT);
 
     expect(wsConnected).toBe(true);
   });
@@ -66,20 +63,17 @@ test.describe("Dev Server E2E", () => {
   test("connected 메시지를 수신한다", async ({ page }) => {
     await page.goto(`http://localhost:${TEST_PORT}/`);
 
-    const firstMessage = await page.evaluate(
-      (port: number) => {
-        return new Promise<string>((resolve) => {
-          const ws = new WebSocket(`ws://localhost:${port}/__hmr`);
-          ws.onmessage = (e) => {
-            ws.close();
-            resolve(e.data);
-          };
-          ws.onerror = () => resolve("error");
-          setTimeout(() => resolve("timeout"), 3000);
-        });
-      },
-      TEST_PORT,
-    );
+    const firstMessage = await page.evaluate((port: number) => {
+      return new Promise<string>((resolve) => {
+        const ws = new WebSocket(`ws://localhost:${port}/__hmr`);
+        ws.onmessage = (e) => {
+          ws.close();
+          resolve(e.data);
+        };
+        ws.onerror = () => resolve("error");
+        setTimeout(() => resolve("timeout"), 3000);
+      });
+    }, TEST_PORT);
 
     const msg = JSON.parse(firstMessage);
     expect(msg.type).toBe("connected");
