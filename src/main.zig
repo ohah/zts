@@ -261,6 +261,8 @@ pub fn main() !void {
     var is_test262 = false;
     var is_tokenize = false;
     var is_bundle = false;
+    var is_serve = false;
+    var serve_port: u16 = 3000;
     var splitting = false;
     var external_list: std.ArrayList([]const u8) = .empty;
     defer external_list.deinit(allocator);
@@ -315,6 +317,16 @@ pub fn main() !void {
             watch = true;
         } else if (std.mem.eql(u8, arg, "--bundle")) {
             is_bundle = true;
+        } else if (std.mem.eql(u8, arg, "--serve")) {
+            is_serve = true;
+        } else if (std.mem.eql(u8, arg, "--port")) {
+            if (i + 1 < args.len) {
+                i += 1;
+                serve_port = std.fmt.parseInt(u16, args[i], 10) catch {
+                    try stderr.print("zts: invalid port number: {s}\n", .{args[i]});
+                    return;
+                };
+            }
         } else if (std.mem.eql(u8, arg, "--splitting")) {
             splitting = true;
         } else if (std.mem.eql(u8, arg, "--external")) {
@@ -378,6 +390,24 @@ pub fn main() !void {
             });
             if (scanner.token.kind == .eof) break;
         }
+        return;
+    }
+
+    // --serve
+    if (is_serve) {
+        const serve_dir = input_file orelse ".";
+        var dev_server = lib.server.DevServer.init(allocator, .{
+            .root_dir = serve_dir,
+            .port = serve_port,
+        }) catch |err| {
+            try stderr.print("Error: failed to start dev server: {}\n", .{err});
+            return;
+        };
+        defer dev_server.deinit();
+        dev_server.start() catch |err| {
+            try stderr.print("Error: dev server failed: {}\n", .{err});
+            return;
+        };
         return;
     }
 
@@ -841,6 +871,10 @@ fn printUsage(writer: anytype) !void {
         \\  --tokenize                       Print tokens instead of transpiling
         \\  --test262 <dir>                  Run Test262 tests
         \\  -h, --help                       Show this help
+        \\
+        \\Dev server:
+        \\  --serve [dir]                    Start static file server (default: .)
+        \\  --port <number>                  Server port (default: 3000)
         \\
         \\Bundle options:
         \\  --bundle                         Enable bundle mode

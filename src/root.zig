@@ -14,6 +14,7 @@ pub const config = @import("config.zig");
 pub const regexp = @import("regexp/mod.zig");
 pub const test262 = @import("test262/mod.zig");
 pub const bundler = @import("bundler/mod.zig");
+pub const server = @import("server/mod.zig");
 
 test {
     _ = lexer;
@@ -24,5 +25,6 @@ test {
     _ = config;
     _ = test262;
     _ = bundler;
+    _ = server;
     _ = @import("test_arena.zig");
 }
