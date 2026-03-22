@@ -622,7 +622,7 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
         const result_tag = self.ast.getNode(expr).tag;
         if (result_tag == .new_expression or result_tag == .call_expression) {
             const e = self.ast.getNode(expr).data.extra;
-            if (e + 3 < self.ast.extra_data.items.len) {
+            if (self.ast.hasExtra(e, 3)) {
                 self.ast.extra_data.items[e + 3] |= ast_mod.CallFlags.is_pure;
             }
             had_pure_comment = false;
