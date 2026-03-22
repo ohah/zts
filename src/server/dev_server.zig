@@ -537,6 +537,12 @@ pub const DevServer = struct {
         };
 
         if (self.entry_point != null) {
+            // /@react-refresh — react-refresh/runtime 가상 모듈 (Vite 방식)
+            if (std.mem.eql(u8, raw_path, "/@react-refresh")) {
+                self.serveReactRefresh(request) catch {};
+                return;
+            }
+
             // /bundle.js.map — 캐시된 소스맵 반환
             if (std.mem.eql(u8, raw_path, "/bundle.js.map")) {
                 self.serveSourceMap(request) catch {};
@@ -660,6 +666,55 @@ pub const DevServer = struct {
         }
     }
 
+    /// /@react-refresh — react-refresh/runtime 가상 모듈 서빙.
+    /// node_modules에서 react-refresh/runtime.js를 찾아 글로벌 바인딩 코드로 감싸서 반환.
+    /// 설치되어 있지 않으면 noop 폴백을 반환한다.
+    fn serveReactRefresh(self: *DevServer, request: *http.Server.Request) !void {
+        // node_modules/react-refresh/runtime.js 탐색 (root_dir 기준)
+        const runtime_code = self.root_dir.readFileAlloc(
+            self.allocator,
+            "node_modules/react-refresh/runtime.js",
+            max_file_size,
+        ) catch |err| switch (err) {
+            error.FileNotFound => {
+                // react-refresh 미설치 → noop 폴백
+                const noop =
+                    \\// react-refresh not installed — run: npm install react-refresh
+                    \\window.__REACT_REFRESH_RUNTIME__ = undefined;
+                ;
+                try request.respond(noop, .{ .extra_headers = &js_headers });
+                getLog().print("  200 /@react-refresh (noop — not installed)\n", .{}) catch {};
+                return;
+            },
+            else => return err,
+        };
+        defer self.allocator.free(runtime_code);
+
+        // react-refresh/runtime을 글로벌에 바인딩하는 래퍼 코드
+        const preamble =
+            \\(function() {
+            \\var exports = {};
+            \\var module = { exports: exports };
+            \\
+        ;
+        const epilogue =
+            \\
+            \\window.__REACT_REFRESH_RUNTIME__ = module.exports;
+            \\window.__REACT_REFRESH_RUNTIME__.injectIntoGlobalHook(window);
+            \\})();
+            \\
+        ;
+
+        var output: std.ArrayList(u8) = .empty;
+        defer output.deinit(self.allocator);
+        try output.appendSlice(self.allocator, preamble);
+        try output.appendSlice(self.allocator, runtime_code);
+        try output.appendSlice(self.allocator, epilogue);
+
+        try request.respond(output.items, .{ .extra_headers = &js_headers });
+        getLog().print("  200 /@react-refresh\n", .{}) catch {};
+    }
+
     fn serveAutoHtml(_: *DevServer, request: *http.Server.Request) !void {
         const html =
             \\<!DOCTYPE html>
@@ -667,6 +722,7 @@ pub const DevServer = struct {
             \\<head><meta charset="utf-8"><title>ZTS Dev Server</title></head>
             \\<body>
             \\<div id="root"></div>
+            \\<script src="/@react-refresh"></script>
             \\<script type="module" src="/bundle.js"></script>
             \\<script>
             \\(function() {

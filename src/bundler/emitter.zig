@@ -87,7 +87,6 @@ const HMR_RUNTIME =
     \\  if (typeof __zts_RefreshRuntime !== "undefined") __zts_RefreshRuntime.performReactRefresh();
     \\}
     \\var __zts_RefreshRuntime = window.__REACT_REFRESH_RUNTIME__;
-    \\if (__zts_RefreshRuntime) __zts_RefreshRuntime.injectIntoGlobalHook(window);
     \\window.$RefreshReg$ = function(type, id) {
     \\  if (__zts_RefreshRuntime) __zts_RefreshRuntime.register(type, window.__zts_currentModuleId + " " + id);
     \\};
