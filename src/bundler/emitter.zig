@@ -245,20 +245,53 @@ pub fn emitChunks(
             }
         }
 
-        // 크로스 청크 import: 의존 청크의 side-effect import 문을 삽입.
-        // 심볼 수준 바인딩은 아직 미구현 — 실행 순서 보장용 side-effect import만.
+        // 크로스 청크 import: 심볼 수준 바인딩이 있으면 named import, 없으면 side-effect import.
         for (chunk.cross_chunk_imports.items) |dep_chunk_idx| {
             const dep_chunk = chunk_graph.getChunk(dep_chunk_idx);
             var dep_buf: [64]u8 = undefined;
             const dep_stem = chunkStem(dep_chunk, &dep_buf);
-            if (!options.minify) {
-                try chunk_output.appendSlice(allocator, "import './");
-                try chunk_output.appendSlice(allocator, dep_stem);
-                try chunk_output.appendSlice(allocator, ".js';\n");
+            const dep_ci = @intFromEnum(dep_chunk_idx);
+
+            // imports_from에서 이 청크→dep_chunk로 가져오는 심볼 목록 조회
+            const symbols = chunk.imports_from.get(dep_ci);
+
+            if (symbols != null and symbols.?.items.len > 0) {
+                // 심볼 수준 import: import { a, b } from './chunk-N.js';
+                if (!options.minify) {
+                    try chunk_output.appendSlice(allocator, "import { ");
+                } else {
+                    try chunk_output.appendSlice(allocator, "import{");
+                }
+                for (symbols.?.items, 0..) |name, si| {
+                    try chunk_output.appendSlice(allocator, name);
+                    if (si + 1 < symbols.?.items.len) {
+                        if (!options.minify) {
+                            try chunk_output.appendSlice(allocator, ", ");
+                        } else {
+                            try chunk_output.append(allocator, ',');
+                        }
+                    }
+                }
+                if (!options.minify) {
+                    try chunk_output.appendSlice(allocator, " } from './");
+                    try chunk_output.appendSlice(allocator, dep_stem);
+                    try chunk_output.appendSlice(allocator, ".js';\n");
+                } else {
+                    try chunk_output.appendSlice(allocator, "}from'./");
+                    try chunk_output.appendSlice(allocator, dep_stem);
+                    try chunk_output.appendSlice(allocator, ".js';");
+                }
             } else {
-                try chunk_output.appendSlice(allocator, "import'./");
-                try chunk_output.appendSlice(allocator, dep_stem);
-                try chunk_output.appendSlice(allocator, ".js';");
+                // 심볼 정보 없음 → side-effect import (실행 순서 보장용)
+                if (!options.minify) {
+                    try chunk_output.appendSlice(allocator, "import './");
+                    try chunk_output.appendSlice(allocator, dep_stem);
+                    try chunk_output.appendSlice(allocator, ".js';\n");
+                } else {
+                    try chunk_output.appendSlice(allocator, "import'./");
+                    try chunk_output.appendSlice(allocator, dep_stem);
+                    try chunk_output.appendSlice(allocator, ".js';");
+                }
             }
         }
 
@@ -302,6 +335,44 @@ pub fn emitChunks(
             try chunk_output.appendSlice(allocator, code);
             if (!options.minify) {
                 try chunk_output.append(allocator, '\n');
+            }
+        }
+
+        // 크로스 청크 export: exports_to에 심볼이 있으면 export 문 생성.
+        // 다른 청크가 이 청크에서 심볼을 가져가는 경우에만 출력.
+        if (chunk.exports_to.count() > 0) {
+            // 결정론적 출력을 위해 이름을 정렬
+            var export_names: std.ArrayList([]const u8) = .empty;
+            defer export_names.deinit(allocator);
+            var eit = chunk.exports_to.iterator();
+            while (eit.next()) |entry| {
+                try export_names.append(allocator, entry.key_ptr.*);
+            }
+            std.mem.sort([]const u8, export_names.items, {}, struct {
+                fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                    return std.mem.order(u8, a, b) == .lt;
+                }
+            }.lessThan);
+
+            if (!options.minify) {
+                try chunk_output.appendSlice(allocator, "export { ");
+            } else {
+                try chunk_output.appendSlice(allocator, "export{");
+            }
+            for (export_names.items, 0..) |name, ni| {
+                try chunk_output.appendSlice(allocator, name);
+                if (ni + 1 < export_names.items.len) {
+                    if (!options.minify) {
+                        try chunk_output.appendSlice(allocator, ", ");
+                    } else {
+                        try chunk_output.append(allocator, ',');
+                    }
+                }
+            }
+            if (!options.minify) {
+                try chunk_output.appendSlice(allocator, " };\n");
+            } else {
+                try chunk_output.appendSlice(allocator, "};");
             }
         }
 
@@ -778,7 +849,7 @@ test "emitChunks: two entries with shared module — 3 OutputFiles" {
 
     var cg = try chunk_mod.generateChunks(std.testing.allocator, result.graph.modules.items, &.{ ep_a, ep_b }, null);
     defer cg.deinit();
-    try chunk_mod.computeCrossChunkLinks(&cg, result.graph.modules.items, std.testing.allocator);
+    try chunk_mod.computeCrossChunkLinks(&cg, result.graph.modules.items, std.testing.allocator, null);
 
     const outputs = try emitChunks(std.testing.allocator, result.graph.modules.items, &cg, .{}, null);
     defer {

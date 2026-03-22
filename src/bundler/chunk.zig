@@ -21,6 +21,7 @@ const ModuleIndex = types.ModuleIndex;
 const ChunkIndex = types.ChunkIndex;
 const Module = @import("module.zig").Module;
 const TreeShaker = @import("tree_shaker.zig").TreeShaker;
+const Linker = @import("linker.zig").Linker;
 
 // ============================================================
 // BitSet — 진입점 비트 마스크
@@ -159,11 +160,18 @@ pub const Chunk = struct {
     /// 실행 순서 (exec_index 기준 정렬에 사용)
     exec_order: u32,
 
-    // Cross-chunk linking (PR3에서 사용)
+    // Cross-chunk linking
     /// 이 청크가 import하는 다른 청크 목록
     cross_chunk_imports: std.ArrayListUnmanaged(ChunkIndex),
     /// 이 청크가 동적 import하는 다른 청크 목록
     cross_chunk_dynamic_imports: std.ArrayListUnmanaged(ChunkIndex),
+
+    /// 심볼 수준 크로스 청크 import: source_chunk_index → 가져올 심볼 이름 목록.
+    /// computeCrossChunkLinks에서 linker가 있을 때만 채워진다.
+    imports_from: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged([]const u8)),
+    /// 이 청크에서 다른 청크로 내보내는 심볼 이름 집합.
+    /// 공통 청크에서 export 문을 생성할 때 사용.
+    exports_to: std.StringHashMapUnmanaged(void),
 
     /// 기본값으로 Chunk를 생성한다.
     pub fn init(index: ChunkIndex, kind: ChunkKind, bits: BitSet) Chunk {
@@ -177,6 +185,8 @@ pub const Chunk = struct {
             .exec_order = std.math.maxInt(u32),
             .cross_chunk_imports = .empty,
             .cross_chunk_dynamic_imports = .empty,
+            .imports_from = .empty,
+            .exports_to = .empty,
         };
     }
 
@@ -186,6 +196,13 @@ pub const Chunk = struct {
         self.modules.deinit(allocator);
         self.cross_chunk_imports.deinit(allocator);
         self.cross_chunk_dynamic_imports.deinit(allocator);
+        // imports_from: 각 값(ArrayListUnmanaged)도 해제
+        var it = self.imports_from.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.deinit(allocator);
+        }
+        self.imports_from.deinit(allocator);
+        self.exports_to.deinit(allocator);
     }
 
     /// 청크에 모듈을 추가한다.
@@ -502,18 +519,31 @@ pub fn generateChunks(
 /// 청크 A의 모듈이 청크 B의 모듈을 동적 import하면 A.cross_chunk_dynamic_imports에 B가 추가된다.
 /// 같은 청크 내의 의존성은 무시하고, 중복 청크 인덱스도 제거한다.
 ///
+/// linker가 있으면 심볼 수준 크로스 청크 바인딩도 추적한다:
+///   - chunk.imports_from[source_chunk] = 해당 청크에서 가져올 심볼 이름 목록
+///   - source_chunk.exports_to에 해당 심볼 이름 추가
+/// linker가 null이면 청크 수준 의존성만 계산 (side-effect import).
+///
 /// 이 함수는 generateChunks 이후에 호출한다.
-/// linker가 심볼 수준 바인딩을 처리하기 전에, 청크 수준의 의존 관계를 먼저 파악하는 단계.
 pub fn computeCrossChunkLinks(
     chunk_graph: *ChunkGraph,
     modules: []const Module,
     allocator: std.mem.Allocator,
+    linker: ?*const Linker,
 ) !void {
+    // 먼저 모든 청크의 기존 데이터를 초기화 (exports_to는 다른 청크에서 기록하므로 분리)
     for (chunk_graph.chunks.items) |*chunk| {
-        // 기존 데이터 초기화
         chunk.cross_chunk_imports.clearAndFree(allocator);
         chunk.cross_chunk_dynamic_imports.clearAndFree(allocator);
+        {
+            var it = chunk.imports_from.iterator();
+            while (it.next()) |entry| entry.value_ptr.deinit(allocator);
+            chunk.imports_from.clearAndFree(allocator);
+        }
+        chunk.exports_to.clearAndFree(allocator);
+    }
 
+    for (chunk_graph.chunks.items) |*chunk| {
         // 중복 방지용 해시맵
         var seen_static: std.AutoHashMapUnmanaged(u32, void) = .empty;
         defer seen_static.deinit(allocator);
@@ -536,6 +566,44 @@ pub fn computeCrossChunkLinks(
                 const gop = try seen_static.getOrPut(allocator, dci);
                 if (!gop.found_existing) {
                     try chunk.cross_chunk_imports.append(allocator, dep_chunk);
+                }
+            }
+
+            // 심볼 수준 크로스 청크 바인딩 추적 (linker가 있을 때만)
+            if (linker) |lnk| {
+                for (m.import_bindings) |ib| {
+                    // resolved binding으로 canonical 모듈을 찾는다
+                    const rb = lnk.getResolvedBinding(@intCast(mi), ib.local_span) orelse continue;
+                    const canonical_mi = @intFromEnum(rb.canonical.module_index);
+                    if (canonical_mi >= modules.len) continue;
+
+                    const src_chunk_idx = chunk_graph.getModuleChunk(rb.canonical.module_index);
+                    if (src_chunk_idx.isNone()) continue;
+                    if (src_chunk_idx == chunk.index) continue; // 같은 청크 → 스킵
+
+                    const src_ci = @intFromEnum(src_chunk_idx);
+                    const export_name = rb.canonical.export_name;
+
+                    // imports_from에 심볼 이름 추가 (중복 방지)
+                    const ifgop = try chunk.imports_from.getOrPut(allocator, src_ci);
+                    if (!ifgop.found_existing) {
+                        ifgop.value_ptr.* = .empty;
+                    }
+                    // 이미 추가된 이름인지 확인
+                    var already = false;
+                    for (ifgop.value_ptr.items) |existing| {
+                        if (std.mem.eql(u8, existing, export_name)) {
+                            already = true;
+                            break;
+                        }
+                    }
+                    if (!already) {
+                        try ifgop.value_ptr.append(allocator, export_name);
+                    }
+
+                    // 소스 청크의 exports_to에 심볼 이름 추가
+                    const src_chunk = &chunk_graph.chunks.items[src_ci];
+                    try src_chunk.exports_to.put(allocator, export_name, {});
                 }
             }
 
@@ -1263,7 +1331,7 @@ test "computeCrossChunkLinks: no cross-chunk deps — 모든 모듈이 같은 �
     try cg.getChunkMut(ci).addModule(alloc, @enumFromInt(0));
     try cg.getChunkMut(ci).addModule(alloc, @enumFromInt(1));
 
-    try computeCrossChunkLinks(&cg, &modules, alloc);
+    try computeCrossChunkLinks(&cg, &modules, alloc, null);
 
     try std.testing.expectEqual(@as(usize, 0), cg.getChunk(ci).cross_chunk_imports.items.len);
     try std.testing.expectEqual(@as(usize, 0), cg.getChunk(ci).cross_chunk_dynamic_imports.items.len);
@@ -1298,7 +1366,7 @@ test "computeCrossChunkLinks: static cross-chunk import" {
     cg.assignModuleToChunk(@enumFromInt(1), chunk_b);
     try cg.getChunkMut(chunk_b).addModule(alloc, @enumFromInt(1));
 
-    try computeCrossChunkLinks(&cg, &modules, alloc);
+    try computeCrossChunkLinks(&cg, &modules, alloc, null);
 
     // A → B 정적 import
     const a_imports = cg.getChunk(chunk_a).cross_chunk_imports.items;
@@ -1336,7 +1404,7 @@ test "computeCrossChunkLinks: dynamic cross-chunk import" {
     cg.assignModuleToChunk(@enumFromInt(1), chunk_b);
     try cg.getChunkMut(chunk_b).addModule(alloc, @enumFromInt(1));
 
-    try computeCrossChunkLinks(&cg, &modules, alloc);
+    try computeCrossChunkLinks(&cg, &modules, alloc, null);
 
     // A의 동적 import에 B가 있어야 함
     const a_dyn = cg.getChunk(chunk_a).cross_chunk_dynamic_imports.items;
@@ -1381,7 +1449,7 @@ test "computeCrossChunkLinks: deduplication — 여러 모듈이 같은 청크�
     cg.assignModuleToChunk(@enumFromInt(2), chunk_b);
     try cg.getChunkMut(chunk_b).addModule(alloc, @enumFromInt(2));
 
-    try computeCrossChunkLinks(&cg, &modules, alloc);
+    try computeCrossChunkLinks(&cg, &modules, alloc, null);
 
     // B가 정확히 1번만 나와야 함 (중복 제거)
     const a_imports = cg.getChunk(chunk_a).cross_chunk_imports.items;
@@ -1417,7 +1485,7 @@ test "computeCrossChunkLinks: bidirectional — A↔B 상호 의존" {
     cg.assignModuleToChunk(@enumFromInt(1), chunk_b);
     try cg.getChunkMut(chunk_b).addModule(alloc, @enumFromInt(1));
 
-    try computeCrossChunkLinks(&cg, &modules, alloc);
+    try computeCrossChunkLinks(&cg, &modules, alloc, null);
 
     // A → B
     const a_imports = cg.getChunk(chunk_a).cross_chunk_imports.items;
