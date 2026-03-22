@@ -699,23 +699,31 @@ pub const SemanticAnalyzer = struct {
 
             // ---- private name 참조 ----
             .private_field_expression, .static_member_expression => {
-                // binary: { left = object, right = identifier/private_identifier }
-                const prop_idx = node.data.binary.right;
-                if (!prop_idx.isNone() and @intFromEnum(prop_idx) < self.ast.nodes.items.len) {
-                    const prop_node = self.ast.getNode(prop_idx);
-                    if (prop_node.tag == .private_identifier) {
-                        const raw = self.ast.source[prop_node.span.start..prop_node.span.end];
-                        const name = try self.resolvePrivateName(raw);
-                        try self.usePrivateName(name, prop_node.span);
+                // extra: [object, property, flags]
+                const e = node.data.extra;
+                const extras = self.ast.extra_data.items;
+                if (e + 1 < extras.len) {
+                    const prop_idx: NodeIndex = @enumFromInt(extras[e + 1]);
+                    if (!prop_idx.isNone() and @intFromEnum(prop_idx) < self.ast.nodes.items.len) {
+                        const prop_node = self.ast.getNode(prop_idx);
+                        if (prop_node.tag == .private_identifier) {
+                            const raw = self.ast.source[prop_node.span.start..prop_node.span.end];
+                            const name = try self.resolvePrivateName(raw);
+                            try self.usePrivateName(name, prop_node.span);
+                        }
                     }
                 }
-                try self.visitNode(node.data.binary.left);
+                if (e < extras.len) {
+                    try self.visitNode(@enumFromInt(extras[e]));
+                }
             },
             .computed_member_expression => {
-                // binary: { left = object, right = expression }
+                // extra: [object, property, flags]
                 // right는 임의 expression (a[expr]) — 양쪽 모두 순회
-                try self.visitNode(node.data.binary.left);
-                try self.visitNode(node.data.binary.right);
+                const e = node.data.extra;
+                const extras = self.ast.extra_data.items;
+                if (e < extras.len) try self.visitNode(@enumFromInt(extras[e]));
+                if (e + 1 < extras.len) try self.visitNode(@enumFromInt(extras[e + 1]));
             },
 
             // ---- method_definition/property_definition 내부 순회 ----
@@ -791,13 +799,23 @@ pub const SemanticAnalyzer = struct {
                 try self.visitNode(node.data.ternary.c);
             },
             .update_expression => {
-                // ++x, x++ — 읽고 쓰기 모두 수행
-                const operand_idx = node.data.unary.operand;
-                if (!self.tryResolveNodeAsRef(operand_idx)) {
-                    try self.visitNode(operand_idx);
+                // ++x, x++ — extra: [operand, operator_and_flags]
+                const e = node.data.extra;
+                const extras = self.ast.extra_data.items;
+                if (e < extras.len) {
+                    const operand_idx: NodeIndex = @enumFromInt(extras[e]);
+                    if (!self.tryResolveNodeAsRef(operand_idx)) {
+                        try self.visitNode(operand_idx);
+                    }
                 }
             },
-            .unary_expression,
+            .unary_expression => {
+                // extra: [operand, operator_and_flags]
+                const e = node.data.extra;
+                if (e < self.ast.extra_data.items.len) {
+                    try self.visitNode(@enumFromInt(self.ast.extra_data.items[e]));
+                }
+            },
             .yield_expression,
             .await_expression,
             .parenthesized_expression,
@@ -819,9 +837,11 @@ pub const SemanticAnalyzer = struct {
                 }
             },
             .tagged_template_expression => {
-                // binary: { left = tag, right = template, flags = 0 }
-                try self.visitNode(node.data.binary.left);
-                try self.visitNode(node.data.binary.right);
+                // extra: [tag, template, flags]
+                const e = node.data.extra;
+                const extras = self.ast.extra_data.items;
+                if (e < extras.len) try self.visitNode(@enumFromInt(extras[e]));
+                if (e + 1 < extras.len) try self.visitNode(@enumFromInt(extras[e + 1]));
             },
             .sequence_expression => {
                 try self.visitNodeList(node.data.list);
@@ -979,13 +999,16 @@ pub const SemanticAnalyzer = struct {
     }
 
     fn visitArrowFunction(self: *SemanticAnalyzer, node: Node) AllocError!void {
-        // binary: { left = param/params, right = body, flags }
+        // extra: [params, body, flags]
+        const e = node.data.extra;
+        const extras = self.ast.extra_data.items;
+        if (e + 2 >= extras.len) return;
         const saved = try self.enterScope(.function, self.is_strict_mode);
         const saved_labels = self.saveLabelLen();
-        const body_idx = node.data.binary.right;
+        const body_idx: NodeIndex = @enumFromInt(extras[e + 1]);
 
         // left가 단일 파라미터(binding_identifier) 또는 파라미터 리스트일 수 있음
-        const param_idx = node.data.binary.left;
+        const param_idx: NodeIndex = @enumFromInt(extras[e]);
         if (!param_idx.isNone()) {
             try self.declareArrowParams(param_idx);
 

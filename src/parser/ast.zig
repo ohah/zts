@@ -536,6 +536,31 @@ pub const CallFlags = struct {
     pub const optional_chain: u32 = 0x02; // a?.()
 };
 
+/// static_member_expression / computed_member_expression / private_field_expression의 flags (D082).
+/// extra: [object, property, flags]
+pub const MemberFlags = struct {
+    pub const optional_chain: u32 = 0x01; // a?.b, a?.[b]
+};
+
+/// unary_expression의 flags (D082).
+/// extra: [operand, operator_and_flags]
+/// operator_and_flags: bits [0-7] = operator Kind, bit 8 = postfix, bits [16-31] = 확장 플래그
+pub const UnaryFlags = struct {
+    pub const postfix: u32 = 0x100; // x++ / x--
+};
+
+/// arrow_function_expression의 flags (D082).
+/// extra: [params, body, flags]
+pub const ArrowFlags = struct {
+    pub const is_async: u32 = 0x01;
+};
+
+/// tagged_template_expression의 flags (D082).
+/// extra: [tag, template, flags]
+pub const TaggedTemplateFlags = struct {
+    pub const is_pure: u32 = 0x01; // @__PURE__
+};
+
 // ============================================================
 // Tests
 // ============================================================

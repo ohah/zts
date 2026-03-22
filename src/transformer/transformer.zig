@@ -194,8 +194,6 @@ pub const Transformer = struct {
             .parenthesized_expression,
             .await_expression,
             .yield_expression,
-            .unary_expression,
-            .update_expression,
             .rest_element,
             .decorator,
             // JSX
@@ -214,18 +212,26 @@ pub const Transformer = struct {
             .binary_expression,
             .logical_expression,
             .assignment_expression,
-            .computed_member_expression,
             .while_statement,
             .do_while_statement,
             .labeled_statement,
             .with_statement,
-            .static_member_expression,
-            .private_field_expression,
             // JSX
             .jsx_attribute,
             .jsx_namespaced_name,
             .jsx_member_expression,
             => self.visitBinaryNode(node),
+
+            // === member expression: extra = [object, property, flags] ===
+            .static_member_expression,
+            .computed_member_expression,
+            .private_field_expression,
+            => self.visitMemberExpression(node),
+
+            // === unary/update expression: extra = [operand, operator_and_flags] ===
+            .unary_expression,
+            .update_expression,
+            => self.visitUnaryExtra(node),
 
             // === 삼항 노드: 자식 3개 재귀 방문 ===
             .if_statement,
@@ -251,7 +257,7 @@ pub const Transformer = struct {
             .switch_case => self.visitSwitchCase(node),
             .call_expression => self.visitCallExpression(node),
             .new_expression => self.visitNewExpression(node),
-            .tagged_template_expression => self.visitBinaryNode(node),
+            .tagged_template_expression => self.visitTaggedTemplate(node),
             .method_definition => self.visitMethodDefinition(node),
             .property_definition => self.visitPropertyDefinition(node),
             .object_property => self.visitObjectProperty(node),
@@ -387,6 +393,38 @@ pub const Transformer = struct {
         });
     }
 
+    /// unary/update expression: extra = [operand, operator_and_flags]
+    fn visitUnaryExtra(self: *Transformer, node: Node) Error!NodeIndex {
+        const e = node.data.extra;
+        const extras = self.old_ast.extra_data.items;
+        if (e + 1 >= extras.len) return NodeIndex.none;
+        const new_operand = try self.visitNode(@enumFromInt(extras[e]));
+        const new_extra = try self.new_ast.addExtras(&.{ @intFromEnum(new_operand), extras[e + 1] });
+        return self.new_ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
+    }
+
+    /// tagged_template_expression: extra = [tag, template, flags]
+    fn visitTaggedTemplate(self: *Transformer, node: Node) Error!NodeIndex {
+        const e = node.data.extra;
+        const extras = self.old_ast.extra_data.items;
+        if (e + 2 >= extras.len) return NodeIndex.none;
+        const new_tag = try self.visitNode(@enumFromInt(extras[e]));
+        const new_tmpl = try self.visitNode(@enumFromInt(extras[e + 1]));
+        const new_extra = try self.new_ast.addExtras(&.{ @intFromEnum(new_tag), @intFromEnum(new_tmpl), extras[e + 2] });
+        return self.new_ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
+    }
+
+    /// member expression: extra = [object, property, flags]
+    fn visitMemberExpression(self: *Transformer, node: Node) Error!NodeIndex {
+        const e = node.data.extra;
+        const extras = self.old_ast.extra_data.items;
+        if (e + 2 >= extras.len) return NodeIndex.none;
+        const new_left = try self.visitNode(@enumFromInt(extras[e]));
+        const new_right = try self.visitNode(@enumFromInt(extras[e + 1]));
+        const new_extra = try self.new_ast.addExtras(&.{ @intFromEnum(new_left), @intFromEnum(new_right), extras[e + 2] });
+        return self.new_ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
+    }
+
     /// 삼항 노드: a, b, c를 재귀 방문 후 복사.
     fn visitTernaryNode(self: *Transformer, node: Node) Error!NodeIndex {
         const new_a = try self.visitNode(node.data.ternary.a);
@@ -490,8 +528,10 @@ pub const Transformer = struct {
         // callee가 static_member_expression (console.log)이어야 함
         if (callee.tag != .static_member_expression) return false;
 
-        // left가 identifier "console"
-        const obj_idx = callee.data.binary.left;
+        // left가 identifier "console" — extra = [object, property, flags]
+        const me = callee.data.extra;
+        if (me >= self.old_ast.extra_data.items.len) return false;
+        const obj_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[me]);
         if (obj_idx.isNone()) return false;
         const obj = self.old_ast.getNode(obj_idx);
         if (obj.tag != .identifier_reference) return false;
@@ -756,11 +796,12 @@ pub const Transformer = struct {
                 .span = name_node.span,
                 .data = .{ .none = 0 },
             });
-            // this.x (static member)
+            // this.x (static member) — extra = [object, property, flags]
+            const member_extra = try self.new_ast.addExtras(&.{ @intFromEnum(this_node), @intFromEnum(name_idx), 0 });
             const member = try self.new_ast.addNode(.{
                 .tag = .static_member_expression,
                 .span = name_node.span,
-                .data = .{ .binary = .{ .left = this_node, .right = name_idx, .flags = 0 } },
+                .data = .{ .extra = member_extra },
             });
             // this.x = x (assignment)
             const assign = try self.new_ast.addNode(.{
@@ -791,20 +832,16 @@ pub const Transformer = struct {
         });
     }
 
-    /// arrow_function_expression: binary = { left=params, right=body, flags }
+    /// arrow_function_expression: extra = [params, body, flags]
     /// flags: 0x01 = async
     fn visitArrowFunction(self: *Transformer, node: Node) Error!NodeIndex {
-        const new_params = try self.visitNode(node.data.binary.left);
-        const new_body = try self.visitNode(node.data.binary.right);
-        return self.new_ast.addNode(.{
-            .tag = .arrow_function_expression,
-            .span = node.span,
-            .data = .{ .binary = .{
-                .left = new_params,
-                .right = new_body,
-                .flags = node.data.binary.flags,
-            } },
-        });
+        const e = node.data.extra;
+        const extras = self.old_ast.extra_data.items;
+        if (e + 2 >= extras.len) return NodeIndex.none;
+        const new_params = try self.visitNode(@enumFromInt(extras[e]));
+        const new_body = try self.visitNode(@enumFromInt(extras[e + 1]));
+        const new_extra = try self.new_ast.addExtras(&.{ @intFromEnum(new_params), @intFromEnum(new_body), extras[e + 2] });
+        return self.new_ast.addNode(.{ .tag = .arrow_function_expression, .span = node.span, .data = .{ .extra = new_extra } });
     }
 
     /// class_declaration / class_expression
