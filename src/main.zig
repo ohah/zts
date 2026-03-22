@@ -261,6 +261,7 @@ pub fn main() !void {
     var is_test262 = false;
     var is_tokenize = false;
     var is_bundle = false;
+    var splitting = false;
     var external_list: std.ArrayList([]const u8) = .empty;
     defer external_list.deinit(allocator);
     var platform: lib.bundler.Platform = .browser;
@@ -314,6 +315,8 @@ pub fn main() !void {
             watch = true;
         } else if (std.mem.eql(u8, arg, "--bundle")) {
             is_bundle = true;
+        } else if (std.mem.eql(u8, arg, "--splitting")) {
+            splitting = true;
         } else if (std.mem.eql(u8, arg, "--external")) {
             if (i + 1 < args.len) {
                 i += 1;
@@ -390,12 +393,19 @@ pub fn main() !void {
         };
         defer allocator.free(abs_entry);
 
+        // --splitting은 --outdir 필수
+        if (splitting and output_dir == null) {
+            try stderr.print("Error: --splitting requires --outdir\n", .{});
+            return;
+        }
+
         var bundler = Bundler.init(allocator, .{
             .entry_points = &.{abs_entry},
             .format = bundle_format,
             .platform = platform,
             .external = external_list.items,
             .minify = minify,
+            .code_splitting = splitting,
         });
         defer bundler.deinit();
 
@@ -418,8 +428,21 @@ pub fn main() !void {
         }
 
         // 출력
-        if (output_file) |out_path| {
-            // 출력 디렉토리가 없으면 생성
+        if (result.outputs) |outputs| {
+            // Code splitting: 다중 파일 출력 → --outdir 필수
+            const out_dir = output_dir orelse ".";
+            std.fs.cwd().makePath(out_dir) catch {};
+            for (outputs) |o| {
+                const full_path = try std.fs.path.join(allocator, &.{ out_dir, o.path });
+                defer allocator.free(full_path);
+                const file = try std.fs.cwd().createFile(full_path, .{});
+                defer file.close();
+                try file.writeAll(o.contents);
+                try stdout.print("  {s} ({d} bytes)\n", .{ full_path, o.contents.len });
+            }
+            try stdout.print("Bundled → {d} chunks in {s}/\n", .{ outputs.len, out_dir });
+        } else if (output_file) |out_path| {
+            // 단일 파일 출력
             if (std.fs.path.dirname(out_path)) |dir| {
                 std.fs.cwd().makePath(dir) catch {};
             }
@@ -801,6 +824,7 @@ fn printUsage(writer: anytype) !void {
         \\  zts <dir/> --outdir <out/>       Transpile directory recursively
         \\  zts --bundle <entry.ts>          Bundle to stdout
         \\  zts --bundle <entry.ts> -o out   Bundle to file
+        \\  zts --bundle <entry.ts> --splitting --outdir dist  Code splitting
         \\  zts - < input.ts                 Read from stdin
         \\
         \\Options:
@@ -820,6 +844,7 @@ fn printUsage(writer: anytype) !void {
         \\
         \\Bundle options:
         \\  --bundle                         Enable bundle mode
+        \\  --splitting                      Enable code splitting (requires --outdir)
         \\  --external <pkg>                 Exclude package (repeatable)
         \\  --platform=browser|node|neutral  Target platform (default: browser)
         \\
