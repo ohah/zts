@@ -568,14 +568,21 @@ fn rewriteDynamicImports(
 
 /// 청크의 출력 파일 stem을 반환한다 (확장자 없음).
 /// 엔트리 청크: 모듈 파일의 stem (예: "index", "lazy")
-/// 공통 청크: "chunk-{hash}" — 모듈 경로들의 Wyhash로 결정론적 content-addressable 파일명 생성.
-/// 같은 모듈 조합이면 항상 같은 파일명이 나오므로 캐시 무효화에 유리하다.
+/// 공통 청크: "chunk-{hash}" — 모듈 인덱스의 정렬된 Wyhash로 결정론적 파일명 생성.
+/// 같은 모듈 조합이면 삽입 순서와 무관하게 항상 같은 해시.
 fn chunkStem(chunk: *const Chunk, buf: []u8) []const u8 {
     if (chunk.name) |name| return name;
-    // Content-addressable: 모듈 경로들의 해시로 결정론적 파일명 생성
+    // 모듈 인덱스를 정렬하여 삽입 순서 무관하게 결정론적 해시 생성
     var hasher = std.hash.Wyhash.init(0);
-    for (chunk.modules.items) |mod_idx| {
-        hasher.update(std.mem.asBytes(&@intFromEnum(mod_idx)));
+    // 임시 정렬: 스택 버퍼 사용 (모듈 수가 256 이하인 일반적 경우)
+    var sort_buf: [256]u32 = undefined;
+    const mod_count = @min(chunk.modules.items.len, 256);
+    for (chunk.modules.items[0..mod_count], sort_buf[0..mod_count]) |mod_idx, *sb| {
+        sb.* = @intFromEnum(mod_idx);
+    }
+    std.mem.sort(u32, sort_buf[0..mod_count], {}, std.sort.asc(u32));
+    for (sort_buf[0..mod_count]) |idx| {
+        hasher.update(std.mem.asBytes(&idx));
     }
     const h = hasher.final();
     return std.fmt.bufPrint(buf, "chunk-{x:0>8}", .{@as(u32, @truncate(h))}) catch "chunk";
