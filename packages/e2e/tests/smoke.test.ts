@@ -85,6 +85,27 @@ test.describe("Dev Server E2E", () => {
     expect(body).not.toContain(": string");
   });
 
+  test("소스맵이 서빙된다", async ({ page }) => {
+    // bundle.js에 sourceMappingURL 포함 확인
+    const bundleRes = await page.goto(`http://localhost:${TEST_PORT}/bundle.js`);
+    const bundleBody = await bundleRes!.text();
+    expect(bundleBody).toContain("//# sourceMappingURL=/bundle.js.map");
+
+    // /bundle.js.map 엔드포인트 응답 확인
+    const smRes = await page.goto(`http://localhost:${TEST_PORT}/bundle.js.map`);
+    expect(smRes!.status()).toBe(200);
+    const smBody = await smRes!.text();
+
+    // V3 소스맵 JSON 구조 검증
+    const sm = JSON.parse(smBody);
+    expect(sm.version).toBe(3);
+    expect(sm.file).toBe("bundle.js");
+    expect(sm.sources).toBeDefined();
+    expect(sm.sources.length).toBeGreaterThan(0);
+    expect(sm.mappings).toBeDefined();
+    expect(sm.mappings.length).toBeGreaterThan(0);
+  });
+
   test("빌드 에러 시 에러 오버레이가 표시된다", async ({ page }) => {
     await page.goto(`http://localhost:${TEST_PORT}/`);
 
