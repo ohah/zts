@@ -8,6 +8,66 @@ fn getLog() std.fs.File.DeprecatedWriter {
     return std.fs.File.stderr().deprecatedWriter();
 }
 
+/// WS 클라이언트 목록 — 여러 스레드에서 접근하므로 mutex로 보호
+const WsClients = struct {
+    mutex: std.Thread.Mutex = .{},
+    /// WebSocket output writer 포인터 목록. handleWebSocket 스택에서 소유.
+    items: [max_clients]*std.Io.Writer = undefined,
+    len: usize = 0,
+
+    const max_clients = 64;
+
+    fn add(self: *WsClients, writer: *std.Io.Writer) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.len < max_clients) {
+            self.items[self.len] = writer;
+            self.len += 1;
+        }
+    }
+
+    fn remove(self: *WsClients, writer: *std.Io.Writer) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        for (self.items[0..self.len], 0..) |item, i| {
+            if (item == writer) {
+                self.len -= 1;
+                self.items[i] = self.items[self.len];
+                return;
+            }
+        }
+    }
+
+    fn broadcast(self: *WsClients, data: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        for (self.items[0..self.len]) |writer| {
+            // WebSocket text frame: FIN + opcode=text, then length, then payload
+            writeWsFrame(writer, data) catch {};
+        }
+    }
+};
+
+/// WebSocket text frame을 직접 인코딩하여 writer에 쓴다.
+/// std.http.Server.WebSocket.writeMessage와 동일한 형식이지만,
+/// WebSocket 구조체 없이 raw writer로 전송할 수 있다.
+fn writeWsFrame(writer: *std.Io.Writer, data: []const u8) !void {
+    // FIN=1, opcode=text(1)
+    try writer.writeByte(0x81);
+    // payload length (mask=0, server→client이므로 mask 불필요)
+    if (data.len < 126) {
+        try writer.writeByte(@intCast(data.len));
+    } else if (data.len <= 65535) {
+        try writer.writeByte(126);
+        try writer.writeAll(&std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(data.len))));
+    } else {
+        try writer.writeByte(127);
+        try writer.writeAll(&std.mem.toBytes(std.mem.nativeToBig(u64, @intCast(data.len))));
+    }
+    try writer.writeAll(data);
+    try writer.flush();
+}
+
 pub const DevServer = struct {
     allocator: std.mem.Allocator,
     root_dir: std.fs.Dir,
@@ -16,6 +76,7 @@ pub const DevServer = struct {
     tcp_server: ?std.net.Server,
     entry_point: ?[]const u8,
     abs_entry: ?[]const u8,
+    ws_clients: WsClients = .{},
 
     pub const Options = struct {
         root_dir: []const u8 = ".",
@@ -26,6 +87,7 @@ pub const DevServer = struct {
     const max_file_size: u64 = 50 * 1024 * 1024;
     const bundle_path = "/bundle.js";
     const hmr_path = "/__hmr";
+    const watch_interval_ms = 500;
 
     const js_headers = cors_headers ++ [_]http.Header{
         .{ .name = "Content-Type", .value = "application/javascript; charset=utf-8" },
@@ -86,6 +148,15 @@ pub const DevServer = struct {
         }
         w.print("\n", .{}) catch {};
 
+        // entry가 있으면 watch 스레드 시작
+        if (self.abs_entry != null) {
+            const watch_thread = std.Thread.spawn(.{}, watchLoop, .{self}) catch |err| {
+                getLog().print("zts: failed to start watch thread: {}\n", .{err}) catch {};
+                return err;
+            };
+            watch_thread.detach();
+        }
+
         self.acceptLoop();
     }
 
@@ -95,7 +166,11 @@ pub const DevServer = struct {
                 getLog().print("zts: accept failed: {}\n", .{err}) catch {};
                 continue;
             };
-            self.handleConnection(connection);
+            const thread = std.Thread.spawn(.{}, handleConnection, .{ self, connection }) catch {
+                connection.stream.close();
+                continue;
+            };
+            thread.detach();
         }
     }
 
@@ -139,7 +214,7 @@ pub const DevServer = struct {
                         getLog().print("zts: WebSocket handshake failed\n", .{}) catch {};
                         return;
                     };
-                    self.handleWebSocket(&ws);
+                    self.handleWebSocket(&ws, &conn_writer.interface);
                     return;
                 },
                 .other => {
@@ -159,8 +234,12 @@ pub const DevServer = struct {
         }
     }
 
-    fn handleWebSocket(_: *DevServer, ws: *http.Server.WebSocket) void {
+    fn handleWebSocket(self: *DevServer, ws: *http.Server.WebSocket, writer: *std.Io.Writer) void {
         getLog().print("  [ws] client connected\n", .{}) catch {};
+
+        // broadcast 리스트에 등록
+        self.ws_clients.add(writer);
+        defer self.ws_clients.remove(writer);
 
         ws.writeMessage("{\"type\":\"connected\"}", .text) catch {
             getLog().print("  [ws] failed to send connected message\n", .{}) catch {};
@@ -187,6 +266,29 @@ pub const DevServer = struct {
         }
 
         getLog().print("  [ws] client disconnected\n", .{}) catch {};
+    }
+
+    fn watchLoop(self: *DevServer) void {
+        getLog().print("  [watch] watching for changes...\n", .{}) catch {};
+
+        var last_mtime = getEntryMtime(self) orelse return;
+
+        while (true) {
+            std.Thread.sleep(watch_interval_ms * std.time.ns_per_ms);
+
+            const current_mtime = getEntryMtime(self) orelse continue;
+            if (current_mtime != last_mtime) {
+                last_mtime = current_mtime;
+                getLog().print("  [watch] file changed, sending full-reload\n", .{}) catch {};
+                self.ws_clients.broadcast("{\"type\":\"full-reload\"}");
+            }
+        }
+    }
+
+    fn getEntryMtime(self: *DevServer) ?i128 {
+        const entry = self.abs_entry orelse return null;
+        const stat = std.fs.cwd().statFile(entry) catch return null;
+        return stat.mtime;
     }
 
     fn handleRequest(self: *DevServer, request: *http.Server.Request) !void {
