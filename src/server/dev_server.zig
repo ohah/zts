@@ -593,7 +593,7 @@ pub const DevServer = struct {
         });
         defer bundler.deinit();
 
-        const result = try bundler.bundle();
+        var result = try bundler.bundle();
         defer result.deinit(self.allocator);
 
         if (result.hasErrors()) {
@@ -620,12 +620,13 @@ pub const DevServer = struct {
             return;
         }
 
-        // 소스맵 캐시 업데이트
+        // 소스맵 캐시 업데이트 (소유권 이전 — dupe 불필요)
         if (result.sourcemap) |sm| {
             self.sourcemap_cache.mutex.lock();
             defer self.sourcemap_cache.mutex.unlock();
             if (self.sourcemap_cache.data) |old| self.allocator.free(old);
-            self.sourcemap_cache.data = self.allocator.dupe(u8, sm) catch null;
+            self.sourcemap_cache.data = sm;
+            result.sourcemap = null; // deinit에서 이중 해제 방지
         }
 
         try request.respond(result.output, .{
@@ -641,10 +642,9 @@ pub const DevServer = struct {
 
     fn serveSourceMap(self: *DevServer, request: *http.Server.Request) !void {
         self.sourcemap_cache.mutex.lock();
-        const data = self.sourcemap_cache.data;
-        self.sourcemap_cache.mutex.unlock();
+        defer self.sourcemap_cache.mutex.unlock();
 
-        if (data) |sm| {
+        if (self.sourcemap_cache.data) |sm| {
             try request.respond(sm, .{
                 .extra_headers = &sourcemap_headers,
             });
