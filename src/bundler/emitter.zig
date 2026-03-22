@@ -177,7 +177,7 @@ pub fn emitWithTreeShaking(
 /// 각 청크마다 하나의 OutputFile을 생성:
 ///   1. 크로스 청크 의존성에 대한 side-effect import 문 삽입 (실행 순서 보장)
 ///   2. 청크 내 모듈들을 exec_index 순서로 변환+코드젠
-///   3. 출력 파일명은 엔트리 청크는 모듈명, 공통 청크는 chunk-{hash} 형식
+///   3. 출력 파일명은 엔트리 청크는 모듈명, 공통 청크는 chunk-{wyhash} 형식 (content-addressable)
 ///
 /// 반환된 OutputFile 배열과 각 OutputFile의 path/contents는 모두 allocator 소유.
 pub fn emitChunks(
@@ -245,7 +245,34 @@ pub fn emitChunks(
             }
         }
 
-        // 크로스 청크 import: 심볼 수준 바인딩이 있으면 named import, 없으면 side-effect import.
+        // 크로스 청크 import deconfliction:
+        // 여러 청크에서 같은 이름의 심볼을 import할 때 충돌 방지.
+        // 1단계: 모든 청크로부터의 import 이름 출현 횟수 카운트
+        // 2단계: 중복 이름은 `import { x as x$2 }` 형태로 alias 부여
+        var name_total_count: std.StringHashMapUnmanaged(u32) = .empty;
+        defer name_total_count.deinit(allocator);
+        for (chunk.cross_chunk_imports.items) |dep_chunk_idx| {
+            const dep_ci = @intFromEnum(dep_chunk_idx);
+            if (chunk.imports_from.get(dep_ci)) |syms| {
+                for (syms.items) |name| {
+                    const gop = try name_total_count.getOrPut(allocator, name);
+                    if (!gop.found_existing) gop.value_ptr.* = 0;
+                    gop.value_ptr.* += 1;
+                }
+            }
+        }
+
+        // 2단계: import 문 생성 (중복 이름은 alias 부여)
+        var name_seen_count: std.StringHashMapUnmanaged(u32) = .empty;
+        defer name_seen_count.deinit(allocator);
+
+        // alias 문자열을 임시 저장 (defer free)
+        var alias_strs: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (alias_strs.items) |s| allocator.free(s);
+            alias_strs.deinit(allocator);
+        }
+
         for (chunk.cross_chunk_imports.items) |dep_chunk_idx| {
             const dep_chunk = chunk_graph.getChunk(dep_chunk_idx);
             var dep_buf: [64]u8 = undefined;
@@ -256,15 +283,12 @@ pub fn emitChunks(
             const symbols = chunk.imports_from.get(dep_ci);
 
             if (symbols != null and symbols.?.items.len > 0) {
-                // 심볼 수준 import: import { a, b } from './chunk-N.js';
+                // 심볼 수준 import: import { a, b } from './chunk-xxx.js';
                 if (!options.minify) {
                     try chunk_output.appendSlice(allocator, "import { ");
                 } else {
                     try chunk_output.appendSlice(allocator, "import{");
                 }
-                // TODO: 같은 청크에 다른 출처의 동일 이름 import가 2개 이상이면
-                //       import { x as x$1 } 형태로 deconflict 필요.
-                //       현실적으로는 소스 코드에서 이미 alias를 사용하므로 드문 케이스.
                 // 결정론적 출력을 위해 심볼명 정렬
                 std.mem.sort([]const u8, symbols.?.items, {}, struct {
                     fn lessThan(_: void, a: []const u8, b: []const u8) bool {
@@ -272,7 +296,22 @@ pub fn emitChunks(
                     }
                 }.lessThan);
                 for (symbols.?.items, 0..) |name, si| {
-                    try chunk_output.appendSlice(allocator, name);
+                    const total = name_total_count.get(name) orelse 1;
+                    const seen_gop = try name_seen_count.getOrPut(allocator, name);
+                    if (!seen_gop.found_existing) seen_gop.value_ptr.* = 0;
+                    seen_gop.value_ptr.* += 1;
+                    const seen = seen_gop.value_ptr.*;
+
+                    if (total > 1 and seen > 1) {
+                        // 중복 이름 → alias 부여: import { x as x$2 }
+                        const alias = try std.fmt.allocPrint(allocator, "{s}${d}", .{ name, seen });
+                        try alias_strs.append(allocator, alias);
+                        try chunk_output.appendSlice(allocator, name);
+                        try chunk_output.appendSlice(allocator, " as "); // `as`는 키워드이므로 공백 필수
+                        try chunk_output.appendSlice(allocator, alias);
+                    } else {
+                        try chunk_output.appendSlice(allocator, name);
+                    }
                     if (si + 1 < symbols.?.items.len) {
                         if (!options.minify) {
                             try chunk_output.appendSlice(allocator, ", ");
@@ -321,7 +360,8 @@ pub fn emitChunks(
         };
         std.mem.sort(ModuleIndex, sorted_mods, ModSortCtx{ .mods = modules }, ModSortCtx.lessThan);
 
-        // cross-chunk import 이름 수집 — 점유 이름으로 등록하여 로컬과 충돌 방지
+        // cross-chunk import 이름 수집 — 점유 이름으로 등록하여 로컬과 충돌 방지.
+        // alias가 부여된 이름(x$2 등)도 점유 이름에 포함하여 로컬 변수와의 충돌 방지.
         var occupied: std.ArrayList([]const u8) = .empty;
         defer occupied.deinit(allocator);
         {
@@ -330,6 +370,10 @@ pub fn emitChunks(
                 for (if_entry.value_ptr.items) |name| {
                     try occupied.append(allocator, name);
                 }
+            }
+            // deconfliction alias 이름도 점유 목록에 추가
+            for (alias_strs.items) |alias| {
+                try occupied.append(allocator, alias);
             }
         }
 
@@ -524,11 +568,17 @@ fn rewriteDynamicImports(
 
 /// 청크의 출력 파일 stem을 반환한다 (확장자 없음).
 /// 엔트리 청크: 모듈 파일의 stem (예: "index", "lazy")
-/// 공통 청크: "chunk-{인덱스}" (충돌 방지. 프로덕션에서는 content hash로 교체 예정)
+/// 공통 청크: "chunk-{hash}" — 모듈 경로들의 Wyhash로 결정론적 content-addressable 파일명 생성.
+/// 같은 모듈 조합이면 항상 같은 파일명이 나오므로 캐시 무효화에 유리하다.
 fn chunkStem(chunk: *const Chunk, buf: []u8) []const u8 {
     if (chunk.name) |name| return name;
-    const idx = @intFromEnum(chunk.index);
-    return std.fmt.bufPrint(buf, "chunk-{d}", .{idx}) catch "chunk";
+    // Content-addressable: 모듈 경로들의 해시로 결정론적 파일명 생성
+    var hasher = std.hash.Wyhash.init(0);
+    for (chunk.modules.items) |mod_idx| {
+        hasher.update(std.mem.asBytes(&@intFromEnum(mod_idx)));
+    }
+    const h = hasher.final();
+    return std.fmt.bufPrint(buf, "chunk-{x:0>8}", .{@as(u32, @truncate(h))}) catch "chunk";
 }
 
 /// 단일 모듈을 Transformer → Codegen 파이프라인으로 처리.
@@ -1105,6 +1155,168 @@ test "CodeSplitting: multiple dynamic imports rewritten" {
             try std.testing.expect(std.mem.indexOf(u8, o.contents, "./pageB.js") != null);
             break;
         }
+    }
+}
+
+// ============================================================
+// Content Hash Filename Tests
+// ============================================================
+
+test "chunkStem: common chunk uses hex hash, not index" {
+    // 공통 청크의 파일명이 chunk-{hex} 형식인지 확인.
+    // 같은 모듈 조합이면 항상 같은 해시가 나와야 한다 (결정론적).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import './shared';\nconsole.log('a');");
+    try writeFile(tmp.dir, "b.ts", "import './shared';\nconsole.log('b');");
+    try writeFile(tmp.dir, "shared.ts", "export const shared = 1;");
+
+    var result = try buildGraphMultiEntry(std.testing.allocator, &tmp, &.{ "a.ts", "b.ts" });
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const ep_a = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
+    defer std.testing.allocator.free(ep_a);
+    const ep_b = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "b.ts" });
+    defer std.testing.allocator.free(ep_b);
+
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, result.graph.modules.items, &.{ ep_a, ep_b }, null);
+    defer cg.deinit();
+    try chunk_mod.computeCrossChunkLinks(&cg, result.graph.modules.items, std.testing.allocator, null);
+
+    const outputs = try emitChunks(std.testing.allocator, result.graph.modules.items, &cg, .{}, null);
+    defer {
+        for (outputs) |o| {
+            std.testing.allocator.free(o.path);
+            std.testing.allocator.free(o.contents);
+        }
+        std.testing.allocator.free(outputs);
+    }
+
+    // 공통 청크 파일명이 chunk-{8자리 hex}.js 형식인지 확인
+    var found_hash_chunk = false;
+    for (outputs) |o| {
+        if (std.mem.startsWith(u8, o.path, "chunk-")) {
+            found_hash_chunk = true;
+            // "chunk-" 뒤에 8자리 hex + ".js"여야 함
+            const after_prefix = o.path["chunk-".len..];
+            try std.testing.expect(after_prefix.len == 8 + ".js".len); // "XXXXXXXX.js"
+            // hex 문자만 포함되는지 확인
+            for (after_prefix[0..8]) |c| {
+                try std.testing.expect((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f'));
+            }
+            try std.testing.expect(std.mem.endsWith(u8, o.path, ".js"));
+        }
+    }
+    try std.testing.expect(found_hash_chunk);
+}
+
+test "chunkStem: same modules produce same hash (deterministic)" {
+    // 같은 모듈 조합으로 두 번 빌드해도 같은 chunk 파일명이 나와야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import './shared';\nconsole.log('a');");
+    try writeFile(tmp.dir, "b.ts", "import './shared';\nconsole.log('b');");
+    try writeFile(tmp.dir, "shared.ts", "export const shared = 1;");
+
+    var result1 = try buildGraphMultiEntry(std.testing.allocator, &tmp, &.{ "a.ts", "b.ts" });
+    defer result1.graph.deinit();
+    defer result1.cache.deinit();
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const ep_a = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
+    defer std.testing.allocator.free(ep_a);
+    const ep_b = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "b.ts" });
+    defer std.testing.allocator.free(ep_b);
+
+    var cg1 = try chunk_mod.generateChunks(std.testing.allocator, result1.graph.modules.items, &.{ ep_a, ep_b }, null);
+    defer cg1.deinit();
+    try chunk_mod.computeCrossChunkLinks(&cg1, result1.graph.modules.items, std.testing.allocator, null);
+
+    const outputs1 = try emitChunks(std.testing.allocator, result1.graph.modules.items, &cg1, .{}, null);
+    defer {
+        for (outputs1) |o| {
+            std.testing.allocator.free(o.path);
+            std.testing.allocator.free(o.contents);
+        }
+        std.testing.allocator.free(outputs1);
+    }
+
+    // 두 번째 빌드
+    var result2 = try buildGraphMultiEntry(std.testing.allocator, &tmp, &.{ "a.ts", "b.ts" });
+    defer result2.graph.deinit();
+    defer result2.cache.deinit();
+
+    var cg2 = try chunk_mod.generateChunks(std.testing.allocator, result2.graph.modules.items, &.{ ep_a, ep_b }, null);
+    defer cg2.deinit();
+    try chunk_mod.computeCrossChunkLinks(&cg2, result2.graph.modules.items, std.testing.allocator, null);
+
+    const outputs2 = try emitChunks(std.testing.allocator, result2.graph.modules.items, &cg2, .{}, null);
+    defer {
+        for (outputs2) |o| {
+            std.testing.allocator.free(o.path);
+            std.testing.allocator.free(o.contents);
+        }
+        std.testing.allocator.free(outputs2);
+    }
+
+    // 공통 청크 파일명이 동일한지 확인
+    var chunk_name1: ?[]const u8 = null;
+    var chunk_name2: ?[]const u8 = null;
+    for (outputs1) |o| {
+        if (std.mem.startsWith(u8, o.path, "chunk-")) chunk_name1 = o.path;
+    }
+    for (outputs2) |o| {
+        if (std.mem.startsWith(u8, o.path, "chunk-")) chunk_name2 = o.path;
+    }
+    try std.testing.expect(chunk_name1 != null);
+    try std.testing.expect(chunk_name2 != null);
+    try std.testing.expectEqualStrings(chunk_name1.?, chunk_name2.?);
+}
+
+// ============================================================
+// CJS Runtime Deduplication Tests
+// ============================================================
+
+test "CJS runtime: __commonJS only in chunks containing CJS modules" {
+    // CJS 모듈이 없는 청크에는 __commonJS 런타임이 주입되지 않아야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // a.ts는 ESM만 사용 — CJS 런타임 불필요
+    try writeFile(tmp.dir, "a.ts", "export const a = 1;");
+    // b.ts도 ESM만 사용
+    try writeFile(tmp.dir, "b.ts", "export const b = 2;");
+
+    var result = try buildGraphMultiEntry(std.testing.allocator, &tmp, &.{ "a.ts", "b.ts" });
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const ep_a = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
+    defer std.testing.allocator.free(ep_a);
+    const ep_b = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "b.ts" });
+    defer std.testing.allocator.free(ep_b);
+
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, result.graph.modules.items, &.{ ep_a, ep_b }, null);
+    defer cg.deinit();
+
+    const outputs = try emitChunks(std.testing.allocator, result.graph.modules.items, &cg, .{}, null);
+    defer {
+        for (outputs) |o| {
+            std.testing.allocator.free(o.path);
+            std.testing.allocator.free(o.contents);
+        }
+        std.testing.allocator.free(outputs);
+    }
+
+    // 어떤 청크에도 __commonJS가 없어야 함 (순수 ESM이므로)
+    for (outputs) |o| {
+        try std.testing.expect(std.mem.indexOf(u8, o.contents, "__commonJS") == null);
+        try std.testing.expect(std.mem.indexOf(u8, o.contents, "__toESM") == null);
     }
 }
 
