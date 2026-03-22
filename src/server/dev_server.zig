@@ -359,6 +359,7 @@ pub const DevServer = struct {
         var bundler = Bundler.init(allocator, .{
             .entry_points = &.{abs_entry},
             .platform = .browser,
+            .dev_mode = true,
         });
         defer bundler.deinit();
 
@@ -402,6 +403,7 @@ pub const DevServer = struct {
         var bundler = Bundler.init(allocator, .{
             .entry_points = &.{abs_entry},
             .platform = .browser,
+            .dev_mode = true,
         });
         defer bundler.deinit();
 
@@ -494,6 +496,8 @@ pub const DevServer = struct {
         var bundler = Bundler.init(self.allocator, .{
             .entry_points = &.{abs_entry},
             .platform = .browser,
+            .dev_mode = true,
+            .root_dir = self.root_path,
         });
         defer bundler.deinit();
 
@@ -580,6 +584,10 @@ pub const DevServer = struct {
             \\    ws.onmessage = function(e) {
             \\      var msg = JSON.parse(e.data);
             \\      if (msg.type === 'full-reload') { hideOverlay(); location.reload(); }
+            \\      if (msg.type === 'update' && typeof __zts_apply_update === 'function') {
+            \\        hideOverlay();
+            \\        __zts_apply_update(msg.modules);
+            \\      }
             \\      if (msg.type === 'error') { showOverlay(msg.errors); }
             \\    };
             \\    ws.onclose = function() {

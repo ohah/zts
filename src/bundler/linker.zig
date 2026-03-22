@@ -473,6 +473,220 @@ pub const Linker = struct {
         };
     }
 
+    /// Dev mode용 LinkingMetadata를 생성한다.
+    ///
+    /// 프로덕션 buildMetadataForAst와의 차이:
+    ///   - renames 없음 (스코프 호이스팅 안 함, 각 모듈이 자체 스코프 유지)
+    ///   - cjs_import_preamble: `const { x } = __zts_require("./path")` 형태
+    ///   - final_exports: 모든 모듈에 `__zts_exports.x = x;` 형태 (entry만이 아닌 전체)
+    pub fn buildDevMetadataForAst(
+        self: *const Linker,
+        new_ast: *const Ast,
+        module_index: u32,
+    ) !LinkingMetadata {
+        if (module_index >= self.modules.len) {
+            return .{
+                .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, 0),
+                .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
+                .final_exports = null,
+                .symbol_ids = &.{},
+                .allocator = self.allocator,
+            };
+        }
+
+        const m = self.modules[module_index];
+
+        // CJS 래핑 모듈은 dev mode에서도 기존대로 유지
+        if (m.wrap_kind == .cjs) {
+            const node_count = new_ast.nodes.items.len;
+            return .{
+                .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, node_count),
+                .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
+                .final_exports = null,
+                .symbol_ids = if (m.semantic) |sem| sem.symbol_ids else &.{},
+                .cjs_import_preamble = null,
+                .allocator = self.allocator,
+            };
+        }
+
+        const node_count = new_ast.nodes.items.len;
+        var skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, node_count);
+        errdefer skip_nodes.deinit();
+
+        // 1. import/export 노드 스킵 (프로덕션과 동일)
+        for (new_ast.nodes.items, 0..) |node, node_idx| {
+            switch (node.tag) {
+                .import_declaration => skip_nodes.set(node_idx),
+                .export_named_declaration => {
+                    const e = node.data.extra;
+                    if (e + 3 < new_ast.extra_data.items.len) {
+                        const decl_idx: NodeIndex = @enumFromInt(new_ast.extra_data.items[e]);
+                        if (decl_idx.isNone()) {
+                            skip_nodes.set(node_idx); // export { } 또는 re-export
+                        }
+                        // export const → codegen에서 export 키워드만 생략
+                    }
+                },
+                // export default → codegen이 linking_metadata 체크하여 키워드만 생략
+                .export_default_declaration => {},
+                .export_all_declaration => skip_nodes.set(node_idx),
+                else => {},
+            }
+        }
+
+        // 2. __zts_require preamble 생성
+        var preamble_buf: std.ArrayList(u8) = .empty;
+        defer preamble_buf.deinit(self.allocator);
+
+        // import record별 중복 방지: 같은 모듈에서 여러 named import 시 하나의 require로 합침
+        var require_emitted = std.AutoHashMap(u32, bool).init(self.allocator);
+        defer require_emitted.deinit();
+
+        // import binding을 import_record_index별로 그룹핑하여 출력
+        // 같은 소스에서 여러 이름을 가져오면: const { a, b } = __zts_require("./dep");
+        var rec_idx: u32 = 0;
+        while (rec_idx < m.import_records.len) : (rec_idx += 1) {
+            const rec = m.import_records[rec_idx];
+            if (rec.resolved.isNone()) continue;
+            if (rec.kind == .dynamic_import) continue;
+
+            // 이 record에 해당하는 binding 수집
+            var has_default = false;
+            var has_namespace = false;
+            var default_local: []const u8 = "";
+            var namespace_local: []const u8 = "";
+            var named_count: usize = 0;
+
+            for (m.import_bindings) |ib| {
+                if (ib.import_record_index != rec_idx) continue;
+                switch (ib.kind) {
+                    .default => {
+                        has_default = true;
+                        default_local = ib.local_name;
+                    },
+                    .namespace => {
+                        has_namespace = true;
+                        namespace_local = ib.local_name;
+                    },
+                    .named => named_count += 1,
+                }
+            }
+
+            if (!has_default and !has_namespace and named_count == 0) continue;
+
+            // resolve된 모듈 경로
+            const resolved_mod = @intFromEnum(rec.resolved);
+            const resolved_path = if (resolved_mod < self.modules.len) self.modules[resolved_mod].path else rec.specifier;
+
+            if (has_namespace) {
+                // import * as ns from './dep' → const ns = __zts_require("./path");
+                try preamble_buf.appendSlice(self.allocator, "var ");
+                try preamble_buf.appendSlice(self.allocator, namespace_local);
+                try preamble_buf.appendSlice(self.allocator, " = __zts_require(\"");
+                try preamble_buf.appendSlice(self.allocator, resolved_path);
+                try preamble_buf.appendSlice(self.allocator, "\");\n");
+            }
+
+            if (has_default) {
+                // import foo from './dep' → var foo = __zts_require("./path").default;
+                try preamble_buf.appendSlice(self.allocator, "var ");
+                try preamble_buf.appendSlice(self.allocator, default_local);
+                try preamble_buf.appendSlice(self.allocator, " = __zts_require(\"");
+                try preamble_buf.appendSlice(self.allocator, resolved_path);
+                try preamble_buf.appendSlice(self.allocator, "\").default;\n");
+            }
+
+            if (named_count > 0) {
+                // import { a, b } from './dep' → var { a, b } = __zts_require("./path");
+                try preamble_buf.appendSlice(self.allocator, "var { ");
+                var first = true;
+                for (m.import_bindings) |ib| {
+                    if (ib.import_record_index != rec_idx or ib.kind != .named) continue;
+                    if (!first) try preamble_buf.appendSlice(self.allocator, ", ");
+                    first = false;
+                    // import { foo as bar } → foo: bar
+                    if (!std.mem.eql(u8, ib.imported_name, ib.local_name)) {
+                        try preamble_buf.appendSlice(self.allocator, ib.imported_name);
+                        try preamble_buf.appendSlice(self.allocator, ": ");
+                        try preamble_buf.appendSlice(self.allocator, ib.local_name);
+                    } else {
+                        try preamble_buf.appendSlice(self.allocator, ib.local_name);
+                    }
+                }
+                try preamble_buf.appendSlice(self.allocator, " } = __zts_require(\"");
+                try preamble_buf.appendSlice(self.allocator, resolved_path);
+                try preamble_buf.appendSlice(self.allocator, "\");\n");
+            }
+        }
+
+        var cjs_import_preamble: ?[]const u8 = null;
+        if (preamble_buf.items.len > 0) {
+            cjs_import_preamble = try self.allocator.dupe(u8, preamble_buf.items);
+        }
+
+        // 3. __zts_exports 할당 생성 (모든 모듈, entry 여부 무관)
+        var final_exports: ?[]const u8 = null;
+        if (m.export_bindings.len > 0) {
+            var buf: std.ArrayList(u8) = .empty;
+            defer buf.deinit(self.allocator);
+
+            for (m.export_bindings) |eb| {
+                if (eb.kind == .re_export_all) continue;
+                if (std.mem.eql(u8, eb.exported_name, "*")) continue;
+
+                // __zts_exports.name = local_name;
+                // re-export의 경우: __zts_exports.name = __zts_require("./dep").name;
+                if (eb.kind == .re_export) {
+                    if (eb.import_record_index) |iri| {
+                        if (iri < m.import_records.len) {
+                            const irec = m.import_records[iri];
+                            if (!irec.resolved.isNone()) {
+                                const re_mod = @intFromEnum(irec.resolved);
+                                const re_path = if (re_mod < self.modules.len) self.modules[re_mod].path else irec.specifier;
+                                try buf.appendSlice(self.allocator, "__zts_exports.");
+                                try buf.appendSlice(self.allocator, eb.exported_name);
+                                try buf.appendSlice(self.allocator, " = __zts_require(\"");
+                                try buf.appendSlice(self.allocator, re_path);
+                                try buf.appendSlice(self.allocator, "\").");
+                                try buf.appendSlice(self.allocator, eb.local_name);
+                                try buf.appendSlice(self.allocator, ";\n");
+                                continue;
+                            }
+                        }
+                    }
+                }
+
+                try buf.appendSlice(self.allocator, "__zts_exports.");
+                try buf.appendSlice(self.allocator, eb.exported_name);
+                try buf.appendSlice(self.allocator, " = ");
+                try buf.appendSlice(self.allocator, eb.local_name);
+                try buf.appendSlice(self.allocator, ";\n");
+            }
+
+            if (buf.items.len > 0) {
+                final_exports = try self.allocator.dupe(u8, buf.items);
+            }
+        }
+
+        const sem = m.semantic orelse return .{
+            .skip_nodes = skip_nodes,
+            .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
+            .final_exports = final_exports,
+            .symbol_ids = &.{},
+            .cjs_import_preamble = cjs_import_preamble,
+            .allocator = self.allocator,
+        };
+
+        return .{
+            .skip_nodes = skip_nodes,
+            .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
+            .final_exports = final_exports,
+            .symbol_ids = sem.symbol_ids,
+            .cjs_import_preamble = cjs_import_preamble,
+            .allocator = self.allocator,
+        };
+    }
+
     /// 특정 모듈에 대한 LinkingMetadata를 생성한다 (원본 AST 기준, 테스트용).
     pub fn buildMetadata(self: *const Linker, module_index: u32, is_entry: bool) !LinkingMetadata {
         if (module_index >= self.modules.len) {
