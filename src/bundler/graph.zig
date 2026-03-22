@@ -224,6 +224,7 @@ pub const ModuleGraph = struct {
         module.export_bindings = binding_scanner_mod.extractExportBindings(self.allocator, &parser.ast, scan_result.records) catch &.{};
 
         module.ast = parser.ast;
+        module.line_offsets = scanner.line_offsets.items;
 
         // package.json sideEffects 필드 반영 (node_modules 패키지만)
         self.applySideEffectsFromPackageJson(module);

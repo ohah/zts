@@ -47,6 +47,8 @@ pub const BundleOptions = struct {
 pub const BundleResult = struct {
     /// 번들 출력 내용 (단일 파일). code_splitting=false일 때 사용. allocator 소유.
     output: []const u8,
+    /// 소스맵 JSON (V3). null이면 소스맵 미생성. allocator 소유.
+    sourcemap: ?[]const u8 = null,
     /// 다중 출력 파일. code_splitting=true일 때 사용. allocator 소유.
     /// null이면 단일 파일 모드 (output 필드 사용).
     outputs: ?[]OutputFile = null,
@@ -87,6 +89,7 @@ pub const BundleResult = struct {
 
     pub fn deinit(self: *const BundleResult, allocator: std.mem.Allocator) void {
         allocator.free(self.output);
+        if (self.sourcemap) |sm| allocator.free(sm);
         if (self.outputs) |outs| {
             for (outs) |o| {
                 allocator.free(o.path);
@@ -179,17 +182,19 @@ pub const Bundler = struct {
         var output: []const u8 = "";
         var outputs: ?[]OutputFile = null;
 
-        // dev mode용 per-module codes (emitDevBundle에서 한 번의 패스로 생성)
+        // dev mode용 per-module codes + sourcemap (emitDevBundle에서 한 번의 패스로 생성)
         var module_dev_codes_from_emit: ?[]const emitter.DevBundleResult.ModuleDevCode = null;
+        var dev_sourcemap: ?[]const u8 = null;
 
         if (self.options.dev_mode) {
-            // Dev mode: 모듈 래핑 + HMR 런타임 주입 + per-module codes 동시 생성
+            // Dev mode: 모듈 래핑 + HMR 런타임 주입 + per-module codes + 소스맵 동시 생성
             const dev_result = try emitter.emitDevBundle(
                 self.allocator,
                 &graph,
                 .{
                     .format = self.options.format,
                     .minify = self.options.minify,
+                    .sourcemap = true, // dev mode에서는 항상 소스맵 생성
                     .dev_mode = true,
                     .root_dir = self.options.root_dir,
                 },
@@ -197,6 +202,7 @@ pub const Bundler = struct {
             );
             output = dev_result.output;
             module_dev_codes_from_emit = dev_result.module_codes;
+            dev_sourcemap = dev_result.sourcemap;
         } else if (self.options.code_splitting) {
             // Code splitting 경로: 청크 그래프 생성 → 다중 파일 출력
             var chunk_graph = try chunk_mod.generateChunks(
@@ -291,6 +297,7 @@ pub const Bundler = struct {
 
         return .{
             .output = output,
+            .sourcemap = dev_sourcemap,
             .outputs = outputs,
             .diagnostics = diagnostics,
             .module_paths = module_paths,
@@ -9438,4 +9445,34 @@ test "Bundler: dev mode module_dev_codes" {
         try std.testing.expect(c.id.len > 0);
         try std.testing.expect(std.mem.indexOf(u8, c.code, "__zts_register(\"") != null);
     }
+}
+
+test "Bundler: dev mode sourcemap" {
+    // dev mode에서 소스맵이 생성되는지 확인
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "utils.ts", "export const add = (a, b) => a + b;");
+    try writeFile(tmp.dir, "index.ts", "import { add } from './utils';\nconsole.log(add(1, 2));");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 소스맵이 생성되었는지
+    const sm = result.sourcemap orelse return error.TestUnexpectedResult;
+    // V3 소스맵 JSON 구조 확인
+    try std.testing.expect(std.mem.indexOf(u8, sm, "\"version\":3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sm, "\"mappings\":\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sm, "\"sources\":[") != null);
+    // 번들에 sourceMappingURL이 있는지
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "//# sourceMappingURL=/bundle.js.map") != null);
 }

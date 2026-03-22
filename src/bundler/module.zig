@@ -48,6 +48,9 @@ pub const Module = struct {
     parse_arena: ?std.heap.ArenaAllocator,
     /// semantic analyzer 결과. parse_arena가 소유. linker에서 사용.
     semantic: ?ModuleSemanticData,
+    /// Scanner의 line offset 테이블. parse_arena가 소유. 소스맵 생성에 사용.
+    /// line_offsets[i] = i번째 줄의 시작 byte offset.
+    line_offsets: []const u32 = &.{},
     /// import 바인딩 상세. graph allocator 소유 (소스 텍스트 참조).
     import_bindings: []ImportBinding = &.{},
     /// export 바인딩 상세. graph allocator 소유 (소스 텍스트 참조).
