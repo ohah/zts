@@ -41,6 +41,10 @@ pub const ModuleGraph = struct {
     diagnostics: std.ArrayList(BundlerDiagnostic),
     resolve_cache: *ResolveCache,
 
+    /// 패키지별 sideEffects 캐시. pkg_dir_path → SideEffects.
+    /// 같은 패키지의 여러 모듈이 동일 package.json을 반복 읽지 않도록.
+    side_effects_cache: std.StringHashMap(pkg_json.PackageJson.SideEffects),
+
     // DFS 상태
     exec_counter: u32 = 0,
     cycle_counter: u32 = 0,
@@ -52,6 +56,7 @@ pub const ModuleGraph = struct {
             .path_to_module = std.StringHashMap(ModuleIndex).init(allocator),
             .diagnostics = .empty,
             .resolve_cache = resolve_cache,
+            .side_effects_cache = std.StringHashMap(pkg_json.PackageJson.SideEffects).init(allocator),
         };
     }
 
@@ -69,6 +74,7 @@ pub const ModuleGraph = struct {
             self.allocator.free(key.*);
         }
         self.path_to_module.deinit();
+        self.side_effects_cache.deinit();
         self.diagnostics.deinit(self.allocator);
     }
 
@@ -233,16 +239,29 @@ pub const ModuleGraph = struct {
         }
 
         const pkg_dir_path = module.path[0..pkg_end];
+
+        // 캐시 확인 — 같은 패키지의 package.json을 반복 읽지 않음
+        if (self.side_effects_cache.get(pkg_dir_path)) |cached| {
+            switch (cached) {
+                .all => |val| module.side_effects = val,
+                .patterns, .unknown => {},
+            }
+            return;
+        }
+
         var pkg_dir = std.fs.cwd().openDir(pkg_dir_path, .{}) catch return;
         defer pkg_dir.close();
 
         var parsed = pkg_json.parsePackageJson(self.allocator, pkg_dir) catch return;
         defer parsed.deinit();
 
+        // 캐시에 저장
+        self.side_effects_cache.put(pkg_dir_path, parsed.pkg.side_effects) catch {};
+
         switch (parsed.pkg.side_effects) {
             .all => |val| module.side_effects = val,
-            .patterns => {}, // 글로브 패턴 매칭은 추후 지원
-            .unknown => {}, // sideEffects 필드 없음 → 기본값(true) 유지
+            .patterns => {},
+            .unknown => {},
         }
     }
 
