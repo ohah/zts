@@ -251,9 +251,9 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
        3. ✅ WebSocket 서버 — PR #262
        4. ✅ Live Reload (thread-per-connection + watch) — PR #263
        5. ✅ 모듈 그래프 전체 파일 감시 — PR #266
-       6. 에러 오버레이 (브라우저 화면에 빌드 에러 표시)
-       7. 소스맵 서빙 (dev 모드 디버깅)
-       8. SPA 폴백 (historyApiFallback)
+       6. ✅ 에러 오버레이 — PR #267
+       7. 소스맵 서빙 (번들러 emitter에 소스맵 생성 추가 필요 — 현재 단일 파일 트랜스파일에서만 동작)
+       8. ✅ SPA 폴백 — PR #269
        9. import.meta.hot API (모듈 단위 교체)
        10. React Fast Refresh ($RefreshReg$/$RefreshSig$ 주입)
        11. CSS 핫 리로드 (link tag swap, 페이지 새로고침 없이)
@@ -554,12 +554,12 @@ HMR API 비교:
   4. ✅ Live Reload (thread-per-connection + watch → full-reload) — PR #263
   5. ✅ 모듈 그래프 전체 파일 감시 — PR #266
   ✅ TS non-null assertion 체이닝 수정 — PR #265
-  ✅ E2E 테스트 활성화 (Playwright 4개) — PR #264
+  ✅ E2E 테스트 활성화 (Playwright 5개) — PR #264, #268
 
 즉시 가치 (작은 작업):
-  6. 에러 오버레이 — 빌드 에러를 브라우저 화면에 표시 (Vite/Bun 방식)
-  7. 소스맵 서빙 — dev 모드 디버깅. 이미 소스맵 생성 기능 있음 (PR #53)
-  8. SPA 폴백 — / 이외 경로에서 index.html 반환 (React Router 등)
+  6. ✅ 에러 오버레이 — PR #267
+  7. 소스맵 서빙 — 번들러 emitter에 소스맵 생성 추가 필요 (현재 단일 파일만 지원)
+  8. ✅ SPA 폴백 — PR #269
 
 핵심 HMR (큰 작업):
   9. import.meta.hot API — 모듈 래핑 + accept/dispose API + 모듈 단위 교체
