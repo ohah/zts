@@ -6961,8 +6961,8 @@ test "@__NO_SIDE_EFFECTS__: function flag preserved in bundle output" {
 
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "function create") != null);
-    // NOTE: cross-module @__NO_SIDE_EFFECTS__ 전파는 linker/tree-shaker에서 처리 필요.
-    // 현재는 같은 모듈 내에서만 자동 /* @__PURE__ */ 출력.
+    // cross-module @__NO_SIDE_EFFECTS__ 전파: import한 함수의 호출에 /* @__PURE__ */ 자동 출력
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "/* @__PURE__ */") != null);
 }
 
 test "@__NO_SIDE_EFFECTS__: call to annotated function auto-pure in single file" {
@@ -7007,4 +7007,107 @@ test "@__NO_SIDE_EFFECTS__: function expression variant" {
     try std.testing.expect(!result.hasErrors());
     // make() 호출에 /* @__PURE__ */ 자동 출력
     try std.testing.expect(std.mem.indexOf(u8, result.output, "/* @__PURE__ */") != null);
+}
+
+test "@__NO_SIDE_EFFECTS__: cross-module re-export chain" {
+    // a.ts → b.ts (re-export) → c.ts (원본 @__NO_SIDE_EFFECTS__)
+    // a.ts에서 호출 시 /* @__PURE__ */ 출력되어야 함
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { create } from './re-export';
+        \\const x = create();
+        \\console.log(x);
+    );
+    try writeFile(tmp.dir, "re-export.ts", "export { create } from './lib';");
+    try writeFile(tmp.dir, "lib.ts", "/* @__NO_SIDE_EFFECTS__ */ export function create() { return {}; }");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "/* @__PURE__ */") != null);
+}
+
+test "@__NO_SIDE_EFFECTS__: cross-module multiple imports" {
+    // 여러 함수 중 하나만 @__NO_SIDE_EFFECTS__ — 해당 호출만 pure
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { pure, impure } from './lib';
+        \\const a = pure();
+        \\const b = impure();
+        \\console.log(a, b);
+    );
+    try writeFile(tmp.dir, "lib.ts",
+        \\/* @__NO_SIDE_EFFECTS__ */ export function pure() { return 1; }
+        \\export function impure() { return 2; }
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // pure() 호출에만 /* @__PURE__ */ 출력
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "/* @__PURE__ */") != null);
+    // /* @__PURE__ */ 는 1번만 나와야 함 (impure() 호출에는 없음)
+    const first = std.mem.indexOf(u8, result.output, "/* @__PURE__ */").?;
+    const second = std.mem.indexOf(u8, result.output[first + 1..], "/* @__PURE__ */");
+    try std.testing.expect(second == null);
+}
+
+test "@__NO_SIDE_EFFECTS__: cross-module default export" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import create from './lib';
+        \\const x = create();
+        \\console.log(x);
+    );
+    try writeFile(tmp.dir, "lib.ts", "/* @__NO_SIDE_EFFECTS__ */ export default function create() { return {}; }");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "/* @__PURE__ */") != null);
+}
+
+test "@__NO_SIDE_EFFECTS__: no false positive on normal import" {
+    // @__NO_SIDE_EFFECTS__ 없는 함수는 pure 마킹 안 됨
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { normal } from './lib';
+        \\const x = normal();
+        \\console.log(x);
+    );
+    try writeFile(tmp.dir, "lib.ts", "export function normal() { return {}; }");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // /* @__PURE__ */ 가 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "/* @__PURE__ */") == null);
 }

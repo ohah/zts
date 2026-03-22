@@ -169,6 +169,14 @@ fn emitModule(
         metadata = md;
     }
 
+    // Cross-module @__NO_SIDE_EFFECTS__ 전파:
+    // import한 함수가 원본 모듈에서 no_side_effects로 선언되었으면
+    // 현재 모듈의 해당 호출에 is_pure 플래그를 자동 설정한다.
+    if (linker) |l| {
+        const sym_ids = if (metadata) |md| md.symbol_ids else &.{};
+        propagateCrossModulePurity(l, module, &transformer.new_ast, sym_ids);
+    }
+
     // Codegen: AST → JS 문자열
     var cg = Codegen.initWithOptions(arena_alloc, &transformer.new_ast, .{
         .minify = options.minify,
@@ -190,6 +198,120 @@ fn emitModule(
 
     // arena 해제 전에 복사 (caller 소유)
     return try allocator.dupe(u8, code);
+}
+
+/// Cross-module @__NO_SIDE_EFFECTS__ 전파.
+///
+/// 단일 모듈 내에서는 semantic analyzer가 callee symbol의 no_side_effects 플래그를 보고
+/// call_expression에 is_pure를 자동 설정한다 (analyzer.zig:863-876).
+/// 하지만 cross-module import의 경우, importing 모듈의 semantic analyzer는 원본 모듈의
+/// symbol을 모르므로 is_pure가 설정되지 않는다.
+///
+/// 이 함수는 linker가 해석한 import→export 바인딩을 활용하여:
+/// 1. import한 symbol이 원본 모듈에서 no_side_effects로 선언되었는지 확인
+/// 2. 해당 symbol을 callee로 사용하는 call_expression에 is_pure 플래그 설정
+fn propagateCrossModulePurity(
+    linker: *const Linker,
+    module: *const Module,
+    new_ast: *Ast,
+    symbol_ids: []const ?u32,
+) void {
+    const sem = module.semantic orelse return;
+    if (sem.scope_maps.len == 0) return;
+    const module_scope = sem.scope_maps[0];
+    const module_index: u32 = @intFromEnum(module.index);
+
+    // 1단계: no_side_effects인 import binding의 local symbol_id를 수집한다.
+    //   - 각 import binding → linker resolved binding → canonical export 모듈의 symbol 확인
+    //   - 원본 symbol에 no_side_effects 플래그가 있으면, local symbol_id를 pure set에 추가
+    //
+    // 비트셋 대신 심볼 수가 적으므로 플래그 배열을 사용한다.
+    // (import binding 수는 보통 수십 개 이하)
+    var has_any_pure = false;
+
+    // 심볼에 직접 no_side_effects 전파 (symbol 배열을 수정하지 않고 별도 플래그 사용)
+    // pure_import_symbols[sym_idx] = true이면 해당 symbol은 cross-module no_side_effects
+    const sym_count = sem.symbols.len;
+    if (sym_count == 0) return;
+
+    // 스택 할당 가능한 크기 (256개 이하면 스택, 초과 시 불가)
+    var pure_flags_buf: [256]bool = .{false} ** 256;
+    const pure_flags: []bool = if (sym_count <= 256)
+        pure_flags_buf[0..sym_count]
+    else
+        return; // 256개 초과 심볼은 극히 드물므로 스킵 (추후 allocator 사용으로 확장 가능)
+
+    for (module.import_bindings) |ib| {
+        // namespace import는 함수가 아니므로 스킵
+        if (ib.kind == .namespace) continue;
+
+        // linker에서 이 import의 resolved binding 조회
+        const resolved = linker.getResolvedBinding(module_index, ib.local_span) orelse continue;
+
+        // canonical export의 원본 모듈에서 symbol 조회
+        const canon_mod_idx = @intFromEnum(resolved.canonical.module_index);
+        if (canon_mod_idx >= linker.modules.len) continue;
+        const target_module = linker.modules[canon_mod_idx];
+        const target_sem = target_module.semantic orelse continue;
+
+        // export 이름으로 target 모듈의 symbol 찾기
+        if (target_sem.scope_maps.len == 0) continue;
+        const target_scope = target_sem.scope_maps[0];
+
+        // export_name → local_name → symbol 조회
+        // (default export의 경우 local_name이 다를 수 있음)
+        var target_sym_name = resolved.canonical.export_name;
+        if (std.mem.eql(u8, target_sym_name, "default")) {
+            if (linker.getExportLocalName(canon_mod_idx, "default")) |local| {
+                target_sym_name = local;
+            }
+        }
+
+        const target_sym_idx = target_scope.get(target_sym_name) orelse continue;
+        if (target_sym_idx >= target_sem.symbols.len) continue;
+
+        if (!target_sem.symbols[target_sym_idx].decl_flags.no_side_effects) continue;
+
+        // 이 import binding의 local symbol_id를 pure로 마킹
+        const local_sym_idx = module_scope.get(ib.local_name) orelse continue;
+        if (local_sym_idx >= sym_count) continue;
+
+        pure_flags[local_sym_idx] = true;
+        has_any_pure = true;
+    }
+
+    if (!has_any_pure) return;
+
+    // 2단계: new_ast의 call_expression/new_expression을 순회하여
+    //   callee의 symbol_id가 pure set에 있으면 is_pure 플래그를 설정한다.
+    const CallFlags = @import("../parser/ast.zig").CallFlags;
+
+    for (new_ast.nodes.items) |node| {
+        if (node.tag != .call_expression and node.tag != .new_expression) continue;
+
+        const e = node.data.extra;
+        if (!new_ast.hasExtra(e, 3)) continue;
+
+        // callee 노드 가져오기
+        const callee_idx = new_ast.readExtraNode(e, 0);
+        if (callee_idx.isNone()) continue;
+        const callee_ni = @intFromEnum(callee_idx);
+
+        // callee가 단순 identifier_reference인지 확인
+        if (callee_ni >= new_ast.nodes.items.len) continue;
+        const callee_node = new_ast.nodes.items[callee_ni];
+        if (callee_node.tag != .identifier_reference) continue;
+
+        // callee의 symbol_id 조회 (new_ast 기준)
+        if (callee_ni >= symbol_ids.len) continue;
+        const sym_idx = symbol_ids[callee_ni] orelse continue;
+        if (sym_idx >= sym_count) continue;
+
+        // pure import이면 is_pure 플래그 설정
+        if (pure_flags[sym_idx]) {
+            new_ast.extra_data.items[e + 3] |= CallFlags.is_pure;
+        }
+    }
 }
 
 // ============================================================

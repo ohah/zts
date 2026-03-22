@@ -253,7 +253,7 @@ pub const Linker = struct {
     }
 
     /// export의 실제 local_name을 조회. default export에서 "default" → "greet" 등.
-    fn getExportLocalName(self: *const Linker, module_index: u32, exported_name: []const u8) ?[]const u8 {
+    pub fn getExportLocalName(self: *const Linker, module_index: u32, exported_name: []const u8) ?[]const u8 {
         var key_buf: [4096]u8 = undefined;
         const key = makeExportKeyBuf(&key_buf, module_index, exported_name);
         const entry = self.export_map.get(key) orelse return null;
