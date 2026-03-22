@@ -179,6 +179,27 @@ pub fn spanKey(span: Span) u64 {
     return @as(u64, span.start) << 32 | span.end;
 }
 
+/// 모듈 인덱스 + 이름 → 복합 키 (힙 할당). linker/tree_shaker의 export 맵에서 사용.
+/// 형식: [4 bytes module_index][0x00][name bytes]
+pub fn makeModuleKey(allocator: std.mem.Allocator, module_index: u32, name: []const u8) ![]const u8 {
+    var buf = try allocator.alloc(u8, 4 + 1 + name.len);
+    @memcpy(buf[0..4], std.mem.asBytes(&module_index));
+    buf[4] = 0;
+    @memcpy(buf[5..], name);
+    return buf;
+}
+
+/// 모듈 인덱스 + 이름 → 복합 키 (스택 버퍼, 조회용). 할당 없음.
+/// name이 4091바이트를 초과하면 assert 실패.
+pub fn makeModuleKeyBuf(buf: *[4096]u8, module_index: u32, name: []const u8) []const u8 {
+    const total = 5 + name.len;
+    std.debug.assert(total <= 4096);
+    @memcpy(buf[0..4], std.mem.asBytes(&module_index));
+    buf[4] = 0;
+    @memcpy(buf[5 .. 5 + name.len], name);
+    return buf[0..total];
+}
+
 // ============================================================
 // Tests
 // ============================================================

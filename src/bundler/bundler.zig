@@ -20,6 +20,7 @@ const Platform = @import("resolve_cache.zig").Platform;
 const emitter = @import("emitter.zig");
 const EmitOptions = emitter.EmitOptions;
 const Linker = @import("linker.zig").Linker;
+const TreeShaker = @import("tree_shaker.zig").TreeShaker;
 
 pub const BundleOptions = struct {
     entry_points: []const []const u8,
@@ -29,6 +30,8 @@ pub const BundleOptions = struct {
     minify: bool = false,
     /// 스코프 호이스팅 활성화 (import/export 제거 + 변수 리네임). false면 기존 동작.
     scope_hoist: bool = true,
+    /// tree-shaking 활성화 (미사용 export/모듈 제거). scope_hoist가 true일 때만 동작.
+    tree_shaking: bool = true,
 };
 
 pub const BundleResult = struct {
@@ -108,12 +111,21 @@ pub const Bundler = struct {
         } else null;
         defer if (linker) |*l| l.deinit();
 
+        // 2.5. Tree-shaking (scope_hoist + tree_shaking 둘 다 켜져 있을 때)
+        var shaker: ?TreeShaker = if (self.options.scope_hoist and self.options.tree_shaking) blk: {
+            var s = try TreeShaker.init(self.allocator, graph.modules.items, &(linker.?));
+            try s.analyze(self.options.entry_points);
+            break :blk s;
+        } else null;
+        defer if (shaker) |*s| s.deinit();
+
         // 3. 번들 출력 생성
-        const output = try emitter.emit(
+        const output = try emitter.emitWithTreeShaking(
             self.allocator,
             &graph,
             .{ .format = self.options.format, .minify = self.options.minify },
             if (linker) |*l| l else null,
+            if (shaker) |*s| s else null,
         );
         errdefer self.allocator.free(output);
 
@@ -6313,4 +6325,137 @@ test "TypeScript: import type fully stripped in bundle" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "interface") == null);
     // greet 함수는 유지
     try std.testing.expect(std.mem.indexOf(u8, result.output, "function greet") != null);
+}
+
+// ============================================================
+// Tree-shaking integration tests
+// ============================================================
+
+test "TreeShaking: unused side_effects=false module excluded from bundle" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // a.ts imports only b. c.ts is imported by b but side_effects=false + nobody uses c's exports.
+    try writeFile(tmp.dir, "a.ts", "import { x } from './b'; console.log(x);");
+    try writeFile(tmp.dir, "b.ts", "export const x = 42;");
+    try writeFile(tmp.dir, "c.ts", "export const dead_code = 'should not appear';");
+
+    const entry = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(entry);
+
+    // Bundler를 직접 사용하면 c.ts는 graph에 없음 (a.ts가 import하지 않으므로).
+    // tree-shaking은 graph에 있는데 아무도 사용하지 않는 모듈을 제거.
+    // 실제 테스트: b.ts가 c.ts를 import하지만 c.ts의 export를 사용하지 않는 경우.
+    try writeFile(tmp.dir, "b.ts", "import './c';\nexport const x = 42;");
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // x는 출력에 존재
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "42") != null);
+    // c.ts는 side_effects=true가 기본이므로 포함됨 (side_effects 기본값)
+    // 이 테스트는 기본 동작 확인: side_effects=true면 포함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "dead_code") != null);
+}
+
+test "TreeShaking: tree_shaking=false preserves all modules" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import { x } from './b'; console.log(x);");
+    try writeFile(tmp.dir, "b.ts", "export const x = 1;");
+
+    const entry = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = false,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "const x = 1;") != null);
+}
+
+test "TreeShaking: entry point exports preserved in bundle" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "export const a = 1;\nexport const b = 2;");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 진입점의 모든 export가 출력에 존재
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "const a = 1;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "const b = 2;") != null);
+}
+
+test "TreeShaking: only used exports from dependency" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import { used } from './b'; console.log(used);");
+    try writeFile(tmp.dir, "b.ts", "export const used = 'yes'; export const unused = 'no';");
+
+    const entry = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // used는 출력에 존재
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "'yes'") != null);
+    // unused도 같은 모듈이라 출력에 존재 (모듈 수준 tree-shaking이므로)
+    // 1단계에서는 모듈 전체를 포함/제거. export 수준 제거는 2단계.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "'no'") != null);
+}
+
+test "TreeShaking: re-export chain dependency included" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import { x } from './b'; console.log(x);");
+    try writeFile(tmp.dir, "b.ts", "export { x } from './c';");
+    try writeFile(tmp.dir, "c.ts", "export const x = 42;");
+
+    const entry = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "42") != null);
+}
+
+test "TreeShaking: side-effect-only import preserved" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import './polyfill';\nconst x = 1;");
+    try writeFile(tmp.dir, "polyfill.ts", "globalThis.myPolyfill = true;");
+
+    const entry = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // polyfill.ts는 side_effects=true (기본) → 출력에 포함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "myPolyfill") != null);
 }

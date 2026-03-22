@@ -25,6 +25,7 @@ const Codegen = @import("../codegen/codegen.zig").Codegen;
 const CodegenOptions = @import("../codegen/codegen.zig").CodegenOptions;
 const Linker = @import("linker.zig").Linker;
 const LinkingMetadata = @import("linker.zig").LinkingMetadata;
+const TreeShaker = @import("tree_shaker.zig").TreeShaker;
 
 pub const EmitOptions = struct {
     format: Format = .esm,
@@ -50,12 +51,27 @@ pub fn emit(
     options: EmitOptions,
     linker: ?*const Linker,
 ) ![]const u8 {
+    return emitWithTreeShaking(allocator, graph, options, linker, null);
+}
+
+/// tree-shaking 적용된 번들 출력. shaker가 null이면 모든 모듈 포함 (기존 동작).
+pub fn emitWithTreeShaking(
+    allocator: std.mem.Allocator,
+    graph: *const ModuleGraph,
+    options: EmitOptions,
+    linker: ?*const Linker,
+    shaker: ?*const TreeShaker,
+) ![]const u8 {
     // 1. JS 모듈만 필터 + exec_index 순으로 정렬
     var sorted: std.ArrayList(*const Module) = .empty;
     defer sorted.deinit(allocator);
 
-    for (graph.modules.items) |*m| {
+    for (graph.modules.items, 0..) |*m, i| {
         if (m.module_type == .javascript and m.ast != null) {
+            // tree-shaking: 미포함 모듈 스킵
+            if (shaker) |s| {
+                if (!s.isIncluded(@intCast(i))) continue;
+            }
             try sorted.append(allocator, m);
         }
     }

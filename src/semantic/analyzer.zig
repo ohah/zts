@@ -1430,7 +1430,8 @@ pub const SemanticAnalyzer = struct {
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (extra_start + 2 >= extras.len) return;
-        // test_expr은 순회 불필요 (리터럴/식별자)
+        // test_expr 순회 — 식별자 참조를 포함할 수 있음 (e.g. case VAL:)
+        try self.visitNode(@enumFromInt(extras[extra_start]));
         const body_start = extras[extra_start + 1];
         const body_len = extras[extra_start + 2];
         try self.visitNodeList(.{ .start = body_start, .len = body_len });
@@ -1733,6 +1734,8 @@ pub const SemanticAnalyzer = struct {
             .assignment_pattern, .assignment_target_with_default => {
                 // binary: { left = binding, right = default_value }
                 try self.registerBinding(node.data.binary.left, kind);
+                // 기본값 순회 — 식별자 참조를 포함할 수 있음 (e.g. function f(a = imported))
+                try self.visitNode(node.data.binary.right);
             },
             .binding_rest_element, .rest_element, .assignment_target_rest => {
                 // unary: { operand = binding }
