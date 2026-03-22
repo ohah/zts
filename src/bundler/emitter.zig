@@ -259,12 +259,33 @@ pub fn emitWithTreeShaking(
 ///   __zts_exports.result = result;
 /// });
 /// ```
+/// Dev mode 번들 결과. 전체 번들 + per-module codes를 한 번의 transform 패스로 생성.
+pub const DevBundleResult = struct {
+    /// 전체 번들 출력 (HMR 런타임 + 모든 모듈 __zts_register). allocator 소유.
+    output: []const u8,
+    /// 모듈별 __zts_register() 코드. HMR 모듈 단위 업데이트용. allocator 소유.
+    module_codes: []const ModuleDevCode,
+
+    pub const ModuleDevCode = struct {
+        id: []const u8,
+        code: []const u8,
+    };
+
+    pub fn deinitCodes(codes: []const ModuleDevCode, allocator: std.mem.Allocator) void {
+        for (codes) |c| {
+            allocator.free(c.id);
+            allocator.free(c.code);
+        }
+        allocator.free(codes);
+    }
+};
+
 pub fn emitDevBundle(
     allocator: std.mem.Allocator,
     graph: *const ModuleGraph,
     options: EmitOptions,
     linker: ?*const Linker,
-) ![]const u8 {
+) !DevBundleResult {
     // 1. JS 모듈만 필터 + exec_index 순 정렬
     var sorted: std.ArrayList(*const Module) = .empty;
     defer sorted.deinit(allocator);
@@ -292,44 +313,83 @@ pub fn emitDevBundle(
         try output.appendSlice(allocator, HMR_RUNTIME);
     }
 
+    // per-module codes 수집 (한 번의 transform 패스에서 동시 생성)
+    var module_codes: std.ArrayList(DevBundleResult.ModuleDevCode) = .empty;
+    errdefer {
+        for (module_codes.items) |c| {
+            allocator.free(c.id);
+            allocator.free(c.code);
+        }
+        module_codes.deinit(allocator);
+    }
+
     // 3. 각 모듈을 __zts_register로 래핑
     for (sorted.items) |m| {
         const module_id = makeModuleId(m.path, options.root_dir);
         const code = try emitDevModule(allocator, m, options, linker) orelse continue;
         defer allocator.free(code);
 
+        // __zts_register 래핑 코드 생성
+        const wrapped = try wrapWithRegister(allocator, module_id, code, options.minify);
+        errdefer allocator.free(wrapped);
+
+        // per-module code 저장
+        try module_codes.append(allocator, .{
+            .id = try allocator.dupe(u8, module_id),
+            .code = try allocator.dupe(u8, wrapped),
+        });
+
+        // 번들에 추가
         if (!options.minify) {
             try output.appendSlice(allocator, "// --- ");
             try output.appendSlice(allocator, std.fs.path.basename(m.path));
             try output.appendSlice(allocator, " ---\n");
         }
-
-        // __zts_register("module_id", function(__zts_module, __zts_exports) { ... });
-        try output.appendSlice(allocator, "__zts_register(\"");
-        try output.appendSlice(allocator, module_id);
-        if (options.minify) {
-            try output.appendSlice(allocator, "\",function(__zts_module,__zts_exports){");
-        } else {
-            try output.appendSlice(allocator, "\", function(__zts_module, __zts_exports) {\n");
-        }
-
-        // 모듈 코드 (들여쓰기: 개행 뒤에 탭 삽입, 청크 단위로 처리)
+        try output.appendSlice(allocator, wrapped);
+        allocator.free(wrapped);
         if (!options.minify) {
-            var rest: []const u8 = code;
-            while (std.mem.indexOfScalar(u8, rest, '\n')) |nl| {
-                try output.appendSlice(allocator, rest[0 .. nl + 1]);
-                try output.append(allocator, '\t');
-                rest = rest[nl + 1 ..];
-            }
-            try output.appendSlice(allocator, rest);
-            try output.appendSlice(allocator, "\n});\n\n");
-        } else {
-            try output.appendSlice(allocator, code);
-            try output.appendSlice(allocator, "});");
+            try output.append(allocator, '\n');
         }
     }
 
-    return output.toOwnedSlice(allocator);
+    return .{
+        .output = try output.toOwnedSlice(allocator),
+        .module_codes = try module_codes.toOwnedSlice(allocator),
+    };
+}
+
+/// __zts_register("id", function(...) { code }) 래핑 코드를 생성한다.
+/// emitDevBundle과 외부에서 공용으로 사용.
+pub fn wrapWithRegister(
+    allocator: std.mem.Allocator,
+    module_id: []const u8,
+    code: []const u8,
+    minify: bool,
+) ![]const u8 {
+    var wrapped: std.ArrayList(u8) = .empty;
+    errdefer wrapped.deinit(allocator);
+
+    try wrapped.appendSlice(allocator, "__zts_register(\"");
+    try wrapped.appendSlice(allocator, module_id);
+
+    if (minify) {
+        try wrapped.appendSlice(allocator, "\",function(__zts_module,__zts_exports){");
+        try wrapped.appendSlice(allocator, code);
+        try wrapped.appendSlice(allocator, "});");
+    } else {
+        try wrapped.appendSlice(allocator, "\", function(__zts_module, __zts_exports) {\n");
+        // 모듈 코드 들여쓰기
+        var rest: []const u8 = code;
+        while (std.mem.indexOfScalar(u8, rest, '\n')) |nl| {
+            try wrapped.appendSlice(allocator, rest[0 .. nl + 1]);
+            try wrapped.append(allocator, '\t');
+            rest = rest[nl + 1 ..];
+        }
+        try wrapped.appendSlice(allocator, rest);
+        try wrapped.appendSlice(allocator, "\n});");
+    }
+
+    return wrapped.toOwnedSlice(allocator);
 }
 
 /// Dev mode용 단일 모듈 변환.

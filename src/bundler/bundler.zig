@@ -54,8 +54,8 @@ pub const BundleResult = struct {
     diagnostics: ?[]OwnedDiagnostic,
     /// 번들에 포함된 모든 모듈의 절대 경로. allocator 소유. dev server watch용.
     module_paths: ?[]const []const u8 = null,
-    /// dev mode: 각 모듈의 __zts_register(...) 코드. HMR 모듈 단위 업데이트용.
-    /// module_paths와 1:1 대응 (같은 인덱스). allocator 소유.
+    /// dev mode: JS 모듈별 __zts_register(...) 코드. HMR 모듈 단위 업데이트용.
+    /// id로 매칭 (module_paths와 인덱스 대응 아님). allocator 소유.
     module_dev_codes: ?[]const ModuleDevCode = null,
 
     /// dev mode에서 모듈별 HMR 업데이트 코드.
@@ -64,6 +64,15 @@ pub const BundleResult = struct {
         id: []const u8,
         /// __zts_register("id", function(...) { ... }); 코드
         code: []const u8,
+
+        /// ModuleDevCode 배열을 해제한다.
+        pub fn freeAll(codes: []const ModuleDevCode, allocator: std.mem.Allocator) void {
+            for (codes) |c| {
+                allocator.free(c.id);
+                allocator.free(c.code);
+            }
+            allocator.free(codes);
+        }
     };
 
     /// 문자열 필드를 소유하는 diagnostic (graph 해제 후에도 유효).
@@ -98,11 +107,7 @@ pub const BundleResult = struct {
             allocator.free(paths);
         }
         if (self.module_dev_codes) |codes| {
-            for (codes) |c| {
-                allocator.free(c.id);
-                allocator.free(c.code);
-            }
-            allocator.free(codes);
+            ModuleDevCode.freeAll(codes, allocator);
         }
     }
 
@@ -174,9 +179,12 @@ pub const Bundler = struct {
         var output: []const u8 = "";
         var outputs: ?[]OutputFile = null;
 
+        // dev mode용 per-module codes (emitDevBundle에서 한 번의 패스로 생성)
+        var module_dev_codes_from_emit: ?[]const emitter.DevBundleResult.ModuleDevCode = null;
+
         if (self.options.dev_mode) {
-            // Dev mode: 모듈 래핑 + HMR 런타임 주입
-            output = try emitter.emitDevBundle(
+            // Dev mode: 모듈 래핑 + HMR 런타임 주입 + per-module codes 동시 생성
+            const dev_result = try emitter.emitDevBundle(
                 self.allocator,
                 &graph,
                 .{
@@ -187,6 +195,8 @@ pub const Bundler = struct {
                 },
                 if (linker) |*l| l else null,
             );
+            output = dev_result.output;
+            module_dev_codes_from_emit = dev_result.module_codes;
         } else if (self.options.code_splitting) {
             // Code splitting 경로: 청크 그래프 생성 → 다중 파일 출력
             var chunk_graph = try chunk_mod.generateChunks(
@@ -266,46 +276,17 @@ pub const Bundler = struct {
             break :blk paths;
         } else null;
 
-        // 6. Dev mode: per-module dev codes 수집 (HMR 모듈 단위 업데이트용)
-        const module_dev_codes: ?[]BundleResult.ModuleDevCode = if (self.options.dev_mode and graph.modules.items.len > 0) blk: {
-            const emit_opts = EmitOptions{
-                .format = self.options.format,
-                .minify = self.options.minify,
-                .dev_mode = true,
-                .root_dir = self.options.root_dir,
-            };
-            var codes: std.ArrayList(BundleResult.ModuleDevCode) = .empty;
-            errdefer {
-                for (codes.items) |c| {
-                    self.allocator.free(c.id);
-                    self.allocator.free(c.code);
-                }
-                codes.deinit(self.allocator);
+        // 6. Dev mode: emitDevBundle에서 이미 생성된 per-module codes를 BundleResult 타입으로 변환
+        const module_dev_codes: ?[]const BundleResult.ModuleDevCode = if (module_dev_codes_from_emit) |emit_codes| blk: {
+            // emitter.DevBundleResult.ModuleDevCode → BundleResult.ModuleDevCode
+            // 필드가 동일하므로 메모리 레이아웃이 같지만 타입이 다르므로 변환
+            const result_codes = try self.allocator.alloc(BundleResult.ModuleDevCode, emit_codes.len);
+            for (emit_codes, 0..) |ec, i| {
+                result_codes[i] = .{ .id = ec.id, .code = ec.code };
             }
-
-            for (graph.modules.items) |*m| {
-                if (m.module_type != .javascript or m.ast == null) continue;
-
-                const module_id = emitter.makeModuleId(m.path, self.options.root_dir);
-                const raw_code = try emitter.emitDevModule(self.allocator, m, emit_opts, if (linker) |*l| l else null) orelse continue;
-                defer self.allocator.free(raw_code);
-
-                // __zts_register("id", function(__zts_module, __zts_exports) { ... });
-                var wrapped: std.ArrayList(u8) = .empty;
-                defer wrapped.deinit(self.allocator);
-                try wrapped.appendSlice(self.allocator, "__zts_register(\"");
-                try wrapped.appendSlice(self.allocator, module_id);
-                try wrapped.appendSlice(self.allocator, "\", function(__zts_module, __zts_exports) {\n");
-                try wrapped.appendSlice(self.allocator, raw_code);
-                try wrapped.appendSlice(self.allocator, "\n});");
-
-                try codes.append(self.allocator, .{
-                    .id = try self.allocator.dupe(u8, module_id),
-                    .code = try self.allocator.dupe(u8, wrapped.items),
-                });
-            }
-
-            break :blk try codes.toOwnedSlice(self.allocator);
+            // emit_codes 배열 자체만 해제 (내부 문자열은 result_codes로 소유권 이전)
+            self.allocator.free(emit_codes);
+            break :blk result_codes;
         } else null;
 
         return .{
