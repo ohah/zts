@@ -32,6 +32,7 @@ const Parser = @import("../parser/parser.zig").Parser;
 const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
 const ModuleSemanticData = @import("module.zig").ModuleSemanticData;
 const Span = @import("../lexer/token.zig").Span;
+const pkg_json = @import("package_json.zig");
 
 pub const ModuleGraph = struct {
     allocator: std.mem.Allocator,
@@ -204,7 +205,45 @@ pub const ModuleGraph = struct {
         module.export_bindings = binding_scanner_mod.extractExportBindings(self.allocator, &parser.ast, records) catch &.{};
 
         module.ast = parser.ast;
+
+        // package.json sideEffects 필드 반영 (node_modules 패키지만)
+        self.applySideEffectsFromPackageJson(module);
+
         module.state = .ready;
+    }
+
+    /// node_modules 패키지의 package.json sideEffects 필드를 module.side_effects에 반영.
+    /// 모듈 경로에서 가장 가까운 node_modules/패키지/package.json을 찾아서 읽음.
+    fn applySideEffectsFromPackageJson(self: *ModuleGraph, module: *Module) void {
+        // node_modules 안의 모듈만 대상
+        const nm = "node_modules" ++ std.fs.path.sep_str;
+        const nm_pos = std.mem.lastIndexOf(u8, module.path, nm) orelse return;
+        const pkg_start = nm_pos + nm.len;
+
+        // 패키지 디렉토리 경로: node_modules/패키지명/ (스코프 패키지 @scope/name 지원)
+        var pkg_end = pkg_start;
+        if (pkg_end < module.path.len and module.path[pkg_end] == '@') {
+            // @scope/name — 첫 번째 / 후 두 번째 / 까지
+            if (std.mem.indexOfPos(u8, module.path, pkg_end, std.fs.path.sep_str)) |sep1| {
+                pkg_end = if (std.mem.indexOfPos(u8, module.path, sep1 + 1, std.fs.path.sep_str)) |sep2| sep2 else module.path.len;
+            } else pkg_end = module.path.len;
+        } else {
+            // 일반 패키지 — 첫 번째 / 까지
+            pkg_end = std.mem.indexOfPos(u8, module.path, pkg_start, std.fs.path.sep_str) orelse module.path.len;
+        }
+
+        const pkg_dir_path = module.path[0..pkg_end];
+        var pkg_dir = std.fs.cwd().openDir(pkg_dir_path, .{}) catch return;
+        defer pkg_dir.close();
+
+        var parsed = pkg_json.parsePackageJson(self.allocator, pkg_dir) catch return;
+        defer parsed.deinit();
+
+        switch (parsed.pkg.side_effects) {
+            .all => |val| module.side_effects = val,
+            .patterns => {}, // 글로브 패턴 매칭은 추후 지원
+            .unknown => {}, // sideEffects 필드 없음 → 기본값(true) 유지
+        }
     }
 
     /// Phase 1: 모듈의 import들을 resolve하고 의존성 모듈을 등록한다.

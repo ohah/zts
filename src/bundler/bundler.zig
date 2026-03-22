@@ -6591,3 +6591,70 @@ test "@__PURE__: preserved across modules in bundle" {
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "/* @__PURE__ */") != null);
 }
+
+// ============================================================
+// package.json sideEffects integration tests
+// ============================================================
+
+test "sideEffects: package.json sideEffects=false auto-applied" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { x } from './node_modules/mypkg/index.js'; console.log('entry');");
+    try writeFile(tmp.dir, "node_modules/mypkg/package.json",
+        \\{"name":"mypkg","sideEffects":false}
+    );
+    try writeFile(tmp.dir, "node_modules/mypkg/index.js", "export const x = 1; console.log('should be removed');");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "should be removed") == null);
+}
+
+test "sideEffects: package.json sideEffects=true keeps module" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import './node_modules/polyfill/index.js'; console.log('entry');");
+    try writeFile(tmp.dir, "node_modules/polyfill/package.json",
+        \\{"name":"polyfill","sideEffects":true}
+    );
+    try writeFile(tmp.dir, "node_modules/polyfill/index.js", "globalThis.polyfilled = true;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "polyfilled") != null);
+}
+
+test "sideEffects: no package.json field keeps default true" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import './node_modules/nopkg/index.js';");
+    try writeFile(tmp.dir, "node_modules/nopkg/package.json",
+        \\{"name":"nopkg"}
+    );
+    try writeFile(tmp.dir, "node_modules/nopkg/index.js", "console.log('included');");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "included") != null);
+}
