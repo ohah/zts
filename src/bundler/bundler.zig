@@ -42,6 +42,8 @@ pub const BundleOptions = struct {
     dev_mode: bool = false,
     /// dev mode에서 모듈 ID 생성 시 기준 경로 (상대 경로 계산용).
     root_dir: ?[]const u8 = null,
+    /// React Fast Refresh 활성화. $RefreshReg$/$RefreshSig$ 주입.
+    react_refresh: bool = false,
 };
 
 pub const BundleResult = struct {
@@ -197,6 +199,7 @@ pub const Bundler = struct {
                     .sourcemap = true, // dev mode에서는 항상 소스맵 생성
                     .dev_mode = true,
                     .root_dir = self.options.root_dir,
+                    .react_refresh = self.options.react_refresh,
                 },
                 if (linker) |*l| l else null,
             );
@@ -9475,4 +9478,33 @@ test "Bundler: dev mode sourcemap" {
     try std.testing.expect(std.mem.indexOf(u8, sm, "\"sources\":[") != null);
     // 번들에 sourceMappingURL이 있는지
     try std.testing.expect(std.mem.indexOf(u8, result.output, "//# sourceMappingURL=/bundle.js.map") != null);
+}
+
+test "Bundler: dev mode react fast refresh" {
+    // React Fast Refresh가 컴포넌트에 $RefreshReg$ 주입하는지 확인
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "App.ts", "export default function App() { return 'hello'; }\nfunction Helper() { return 'helper'; }");
+
+    const entry = try absPath(&tmp, "App.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .react_refresh = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // $RefreshReg$ 호출이 주입되었는지
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$RefreshReg$") != null);
+    // PascalCase 함수명(App, Helper) 등록
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"App\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"Helper\"") != null);
+    // _c 핸들 변수 선언
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_c") != null);
 }
