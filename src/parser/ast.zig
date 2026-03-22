@@ -544,6 +544,7 @@ pub const Ast = struct {
 pub const FunctionFlags = struct {
     pub const is_async: u32 = 0x01;
     pub const is_generator: u32 = 0x02;
+    pub const no_side_effects: u32 = 0x04; // @__NO_SIDE_EFFECTS__
 };
 
 /// call_expression / new_expression의 flags 비트 (D082).

@@ -6660,3 +6660,31 @@ test "sideEffects: no package.json field keeps default true" {
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "included") != null);
 }
+
+// ============================================================
+// @__NO_SIDE_EFFECTS__ tests
+// ============================================================
+
+test "@__NO_SIDE_EFFECTS__: function flag preserved in bundle output" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // @__NO_SIDE_EFFECTS__ 함수를 import해서 호출
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { create } from './lib';
+        \\const x = create();
+        \\console.log(x);
+    );
+    try writeFile(tmp.dir, "lib.ts", "/* @__NO_SIDE_EFFECTS__ */ export function create() { return {}; }");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 함수 자체는 번들에 포함됨 (사용 중이므로)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function create") != null);
+}
