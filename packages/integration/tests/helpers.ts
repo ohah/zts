@@ -60,13 +60,7 @@ export async function bundleAndRun(
   const outFile = join(dir, "out.js");
 
   try {
-    const bundle = await runZts([
-      "--bundle",
-      join(dir, entry),
-      "-o",
-      outFile,
-      ...extraArgs,
-    ]);
+    const bundle = await runZts(["--bundle", join(dir, entry), "-o", outFile, ...extraArgs]);
 
     if (bundle.exitCode !== 0) {
       throw new Error(`ZTS bundle failed: ${bundle.stderr}`);

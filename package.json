@@ -12,6 +12,14 @@
     "test:e2e": "bun run --cwd packages/e2e test",
     "test:all": "bun run test:integration && bun run test:e2e",
     "build:zts": "zig build -Doptimize=ReleaseFast",
+    "lint": "oxlint packages/",
+    "lint:fix": "oxlint --fix packages/",
+    "fmt": "oxfmt format packages/",
+    "fmt:check": "oxfmt format --check packages/",
     "playwright:install": "bunx playwright install --with-deps chromium"
+  },
+  "devDependencies": {
+    "oxfmt": "^0.41.0",
+    "oxlint": "^1.56.0"
   }
 }
