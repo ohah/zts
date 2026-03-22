@@ -270,6 +270,35 @@ pub const Linker = struct {
         return self.canonical_names.get(key);
     }
 
+    /// AST에서 import/export 노드를 식별하여 스킵 비트셋을 생성한다.
+    /// buildMetadataForAst와 buildDevMetadataForAst에서 공유.
+    fn buildSkipNodes(allocator: std.mem.Allocator, new_ast: *const Ast) !std.DynamicBitSet {
+        const node_count = new_ast.nodes.items.len;
+        var skip_nodes = try std.DynamicBitSet.initEmpty(allocator, node_count);
+        errdefer skip_nodes.deinit();
+
+        for (new_ast.nodes.items, 0..) |node, node_idx| {
+            switch (node.tag) {
+                .import_declaration => skip_nodes.set(node_idx),
+                .export_named_declaration => {
+                    const e = node.data.extra;
+                    if (e + 3 < new_ast.extra_data.items.len) {
+                        const decl_idx: NodeIndex = @enumFromInt(new_ast.extra_data.items[e]);
+                        if (decl_idx.isNone()) {
+                            skip_nodes.set(node_idx); // export { } 또는 re-export
+                        }
+                        // export const → codegen에서 export 키워드만 생략
+                    }
+                },
+                // export default → codegen이 linking_metadata 체크하여 키워드만 생략
+                .export_default_declaration => {},
+                .export_all_declaration => skip_nodes.set(node_idx),
+                else => {},
+            }
+        }
+        return skip_nodes;
+    }
+
     /// transformer 이후의 new_ast를 기반으로 LinkingMetadata를 생성한다.
     /// skip_nodes와 renames가 new_ast의 노드 인덱스와 일치.
     pub fn buildMetadataForAst(
@@ -303,38 +332,10 @@ pub const Linker = struct {
             };
         }
 
-        const node_count = new_ast.nodes.items.len;
-        var skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, node_count);
+        var skip_nodes = try buildSkipNodes(self.allocator, new_ast);
         errdefer skip_nodes.deinit();
         var renames = std.AutoHashMap(u32, []const u8).init(self.allocator);
         errdefer renames.deinit();
-
-        // 1. new_ast에서 import/export 노드 스킵
-        for (new_ast.nodes.items, 0..) |node, node_idx| {
-            switch (node.tag) {
-                .import_declaration => skip_nodes.set(node_idx),
-                .export_named_declaration => {
-                    // export const x = 1 → export 키워드만 생략 (codegen 분기로 처리)
-                    // export { x } → 전체 스킵
-                    // export { x } from './dep' → 전체 스킵
-                    const e = node.data.extra;
-                    if (e + 3 < new_ast.extra_data.items.len) {
-                        const decl_idx: NodeIndex = @enumFromInt(new_ast.extra_data.items[e]);
-                        if (decl_idx.isNone()) {
-                            skip_nodes.set(node_idx); // export { } 또는 re-export
-                        }
-                        // export const → codegen에서 export 키워드만 생략
-                    }
-                },
-                .export_default_declaration => {
-                    // 번들 모드에서 codegen이 "export default" 키워드만 생략하고
-                    // 내부 선언은 유지하므로 skip_nodes에 넣지 않음.
-                    // (emitExportDefault가 linking_metadata 체크하여 처리)
-                },
-                .export_all_declaration => skip_nodes.set(node_idx),
-                else => {},
-            }
-        }
 
         // 2. import 바인딩 리네임 (모듈의 semantic 기반)
         const sem = m.semantic orelse return .{
@@ -509,38 +510,12 @@ pub const Linker = struct {
             };
         }
 
-        const node_count = new_ast.nodes.items.len;
-        var skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, node_count);
+        var skip_nodes = try buildSkipNodes(self.allocator, new_ast);
         errdefer skip_nodes.deinit();
-
-        // 1. import/export 노드 스킵 (프로덕션과 동일)
-        for (new_ast.nodes.items, 0..) |node, node_idx| {
-            switch (node.tag) {
-                .import_declaration => skip_nodes.set(node_idx),
-                .export_named_declaration => {
-                    const e = node.data.extra;
-                    if (e + 3 < new_ast.extra_data.items.len) {
-                        const decl_idx: NodeIndex = @enumFromInt(new_ast.extra_data.items[e]);
-                        if (decl_idx.isNone()) {
-                            skip_nodes.set(node_idx); // export { } 또는 re-export
-                        }
-                        // export const → codegen에서 export 키워드만 생략
-                    }
-                },
-                // export default → codegen이 linking_metadata 체크하여 키워드만 생략
-                .export_default_declaration => {},
-                .export_all_declaration => skip_nodes.set(node_idx),
-                else => {},
-            }
-        }
 
         // 2. __zts_require preamble 생성
         var preamble_buf: std.ArrayList(u8) = .empty;
         defer preamble_buf.deinit(self.allocator);
-
-        // import record별 중복 방지: 같은 모듈에서 여러 named import 시 하나의 require로 합침
-        var require_emitted = std.AutoHashMap(u32, bool).init(self.allocator);
-        defer require_emitted.deinit();
 
         // import binding을 import_record_index별로 그룹핑하여 출력
         // 같은 소스에서 여러 이름을 가져오면: const { a, b } = __zts_require("./dep");
