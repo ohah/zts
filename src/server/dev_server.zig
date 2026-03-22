@@ -308,49 +308,83 @@ pub const DevServer = struct {
         while (true) {
             std.Thread.sleep(watch_interval_ms * std.time.ns_per_ms);
 
-            var changed = false;
+            // 변경된 파일 수집
+            var changed_paths: std.ArrayList([]const u8) = .empty;
+            defer changed_paths.deinit(self.allocator);
+
             for (watch_paths) |p| {
                 const stat = std.fs.cwd().statFile(p) catch continue;
                 const prev = mtime_map.get(p) orelse {
                     mtime_map.put(p, stat.mtime) catch {};
-                    changed = true;
+                    changed_paths.append(self.allocator, p) catch {};
                     continue;
                 };
                 if (stat.mtime != prev) {
                     mtime_map.put(p, stat.mtime) catch {};
                     getLog().print("  [watch] changed: {s}\n", .{std.fs.path.basename(p)}) catch {};
-                    changed = true;
+                    changed_paths.append(self.allocator, p) catch {};
                 }
             }
 
-            if (changed) {
-                // 재번들 시도 → 에러면 에러 오버레이, 성공이면 full-reload
-                const rebuild_result = tryRebuild(self.allocator, abs_entry);
-                switch (rebuild_result) {
-                    .success => |new_paths| {
-                        self.ws_clients.broadcast("{\"type\":\"full-reload\"}");
-                        freeWatchPaths(self.allocator, &watch_paths);
-                        watch_paths = new_paths;
-                        mtime_map.clearAndFree();
-                        for (watch_paths) |p| {
-                            const stat = std.fs.cwd().statFile(p) catch continue;
-                            mtime_map.put(p, stat.mtime) catch {};
+            if (changed_paths.items.len == 0) continue;
+
+            // 재번들 시도 → 에러면 에러 오버레이, 성공이면 HMR update (폴백: full-reload)
+            const rebuild_result = tryRebuild(self.allocator, abs_entry);
+            switch (rebuild_result) {
+                .success => |result| {
+                    defer {
+                        // module_dev_codes는 HMR 메시지 빌드 후 해제
+                        if (result.dev_codes) |codes| {
+                            for (codes) |c| {
+                                self.allocator.free(c.id);
+                                self.allocator.free(c.code);
+                            }
+                            self.allocator.free(codes);
                         }
-                        getLog().print("  [watch] watching {d} files for changes...\n", .{watch_paths.len}) catch {};
-                    },
-                    .build_error => |err_msg| {
-                        defer self.allocator.free(err_msg);
-                        self.ws_clients.broadcast(err_msg);
-                        getLog().print("  [watch] build error, overlay sent\n", .{}) catch {};
-                    },
-                    .fatal => {},
-                }
+                    }
+
+                    // HMR update 메시지 빌드: 변경된 모듈만 포함
+                    const hmr_msg = buildHmrUpdateMessage(
+                        self.allocator,
+                        changed_paths.items,
+                        result.dev_codes,
+                    );
+
+                    if (hmr_msg) |msg| {
+                        defer self.allocator.free(msg);
+                        self.ws_clients.broadcast(msg);
+                        getLog().print("  [hmr] update sent ({d} modules)\n", .{changed_paths.items.len}) catch {};
+                    } else {
+                        // dev codes가 없거나 매칭 실패 → full-reload 폴백
+                        self.ws_clients.broadcast("{\"type\":\"full-reload\"}");
+                    }
+
+                    freeWatchPaths(self.allocator, &watch_paths);
+                    watch_paths = result.paths;
+                    mtime_map.clearAndFree();
+                    for (watch_paths) |p| {
+                        const stat = std.fs.cwd().statFile(p) catch continue;
+                        mtime_map.put(p, stat.mtime) catch {};
+                    }
+                    getLog().print("  [watch] watching {d} files for changes...\n", .{watch_paths.len}) catch {};
+                },
+                .build_error => |err_msg| {
+                    defer self.allocator.free(err_msg);
+                    self.ws_clients.broadcast(err_msg);
+                    getLog().print("  [watch] build error, overlay sent\n", .{}) catch {};
+                },
+                .fatal => {},
             }
         }
     }
 
+    const RebuildSuccess = struct {
+        paths: []const []const u8,
+        dev_codes: ?[]const Bundler.BundleResult.ModuleDevCode,
+    };
+
     const RebuildResult = union(enum) {
-        success: []const []const u8, // module_paths (소유권 이전)
+        success: RebuildSuccess,
         build_error: []const u8, // JSON 에러 메시지 (allocator 소유)
         fatal, // 번들러 자체 실패
     };
@@ -395,8 +429,56 @@ pub const DevServer = struct {
 
         const paths = result.module_paths;
         result.module_paths = null;
+        const dev_codes = result.module_dev_codes;
+        result.module_dev_codes = null; // 소유권 이전
         result.deinit(allocator);
-        return if (paths) |p| .{ .success = p } else .fatal;
+        return if (paths) |p| .{ .success = .{ .paths = p, .dev_codes = dev_codes } } else .fatal;
+    }
+
+    /// 변경된 파일 경로와 dev codes를 매칭하여 HMR update JSON 메시지를 빌드한다.
+    /// 매칭되는 모듈이 없으면 null 반환 (full-reload 폴백).
+    ///
+    /// 출력 형태: {"type":"update","modules":[{"id":"path","code":"__zts_register(...)"}]}
+    fn buildHmrUpdateMessage(
+        allocator: std.mem.Allocator,
+        changed_paths: []const []const u8,
+        dev_codes: ?[]const Bundler.BundleResult.ModuleDevCode,
+    ) ?[]const u8 {
+        const codes = dev_codes orelse return null;
+        if (codes.len == 0) return null;
+
+        var msg: std.ArrayList(u8) = .empty;
+        defer msg.deinit(allocator);
+        const w = msg.writer(allocator);
+
+        w.print("{{\"type\":\"update\",\"modules\":[", .{}) catch return null;
+        var count: usize = 0;
+
+        for (codes) |c| {
+            // dev code의 id (상대/절대) → 변경 경로와 매칭
+            var matched = false;
+            for (changed_paths) |cp| {
+                // 절대 경로가 id를 suffix로 포함하는지 확인
+                if (std.mem.eql(u8, cp, c.id) or std.mem.endsWith(u8, cp, c.id)) {
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) continue;
+
+            if (count > 0) w.print(",", .{}) catch {};
+            w.print("{{\"id\":\"", .{}) catch return null;
+            writeJsonEscaped(w, c.id) catch return null;
+            w.print("\",\"code\":\"", .{}) catch return null;
+            writeJsonEscaped(w, c.code) catch return null;
+            w.print("\"}}", .{}) catch return null;
+            count += 1;
+        }
+
+        if (count == 0) return null;
+
+        w.print("]}}", .{}) catch return null;
+        return allocator.dupe(u8, msg.items) catch return null;
     }
 
     fn collectModulePaths(allocator: std.mem.Allocator, abs_entry: []const u8) ?[]const []const u8 {

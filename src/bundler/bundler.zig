@@ -54,6 +54,17 @@ pub const BundleResult = struct {
     diagnostics: ?[]OwnedDiagnostic,
     /// 번들에 포함된 모든 모듈의 절대 경로. allocator 소유. dev server watch용.
     module_paths: ?[]const []const u8 = null,
+    /// dev mode: 각 모듈의 __zts_register(...) 코드. HMR 모듈 단위 업데이트용.
+    /// module_paths와 1:1 대응 (같은 인덱스). allocator 소유.
+    module_dev_codes: ?[]const ModuleDevCode = null,
+
+    /// dev mode에서 모듈별 HMR 업데이트 코드.
+    pub const ModuleDevCode = struct {
+        /// 모듈 ID (dev bundle에서 사용하는 경로)
+        id: []const u8,
+        /// __zts_register("id", function(...) { ... }); 코드
+        code: []const u8,
+    };
 
     /// 문자열 필드를 소유하는 diagnostic (graph 해제 후에도 유효).
     pub const OwnedDiagnostic = struct {
@@ -85,6 +96,13 @@ pub const BundleResult = struct {
         if (self.module_paths) |paths| {
             for (paths) |p| allocator.free(p);
             allocator.free(paths);
+        }
+        if (self.module_dev_codes) |codes| {
+            for (codes) |c| {
+                allocator.free(c.id);
+                allocator.free(c.code);
+            }
+            allocator.free(codes);
         }
     }
 
@@ -248,11 +266,54 @@ pub const Bundler = struct {
             break :blk paths;
         } else null;
 
+        // 6. Dev mode: per-module dev codes 수집 (HMR 모듈 단위 업데이트용)
+        const module_dev_codes: ?[]BundleResult.ModuleDevCode = if (self.options.dev_mode and graph.modules.items.len > 0) blk: {
+            const emit_opts = EmitOptions{
+                .format = self.options.format,
+                .minify = self.options.minify,
+                .dev_mode = true,
+                .root_dir = self.options.root_dir,
+            };
+            var codes: std.ArrayList(BundleResult.ModuleDevCode) = .empty;
+            errdefer {
+                for (codes.items) |c| {
+                    self.allocator.free(c.id);
+                    self.allocator.free(c.code);
+                }
+                codes.deinit(self.allocator);
+            }
+
+            for (graph.modules.items) |*m| {
+                if (m.module_type != .javascript or m.ast == null) continue;
+
+                const module_id = emitter.makeModuleId(m.path, self.options.root_dir);
+                const raw_code = try emitter.emitDevModule(self.allocator, m, emit_opts, if (linker) |*l| l else null) orelse continue;
+                defer self.allocator.free(raw_code);
+
+                // __zts_register("id", function(__zts_module, __zts_exports) { ... });
+                var wrapped: std.ArrayList(u8) = .empty;
+                defer wrapped.deinit(self.allocator);
+                try wrapped.appendSlice(self.allocator, "__zts_register(\"");
+                try wrapped.appendSlice(self.allocator, module_id);
+                try wrapped.appendSlice(self.allocator, "\", function(__zts_module, __zts_exports) {\n");
+                try wrapped.appendSlice(self.allocator, raw_code);
+                try wrapped.appendSlice(self.allocator, "\n});");
+
+                try codes.append(self.allocator, .{
+                    .id = try self.allocator.dupe(u8, module_id),
+                    .code = try self.allocator.dupe(u8, wrapped.items),
+                });
+            }
+
+            break :blk try codes.toOwnedSlice(self.allocator);
+        } else null;
+
         return .{
             .output = output,
             .outputs = outputs,
             .diagnostics = diagnostics,
             .module_paths = module_paths,
+            .module_dev_codes = module_dev_codes,
         };
     }
 };
@@ -9366,4 +9427,34 @@ test "Bundler: dev mode default import" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, ".default") != null);
     // greet.ts의 default export
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_exports.default") != null);
+}
+
+test "Bundler: dev mode module_dev_codes" {
+    // dev mode에서 module_dev_codes가 생성되는지 확인
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "utils.ts", "export const add = (a, b) => a + b;");
+    try writeFile(tmp.dir, "index.ts", "import { add } from './utils';\nconsole.log(add(1, 2));");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // module_dev_codes가 존재하고 2개 모듈 (utils + index)
+    const codes = result.module_dev_codes orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 2), codes.len);
+    // 각 code에 __zts_register 래핑이 있는지
+    for (codes) |c| {
+        try std.testing.expect(c.id.len > 0);
+        try std.testing.expect(std.mem.indexOf(u8, c.code, "__zts_register(\"") != null);
+    }
 }
