@@ -262,6 +262,12 @@ pub fn emitChunks(
                 } else {
                     try chunk_output.appendSlice(allocator, "import{");
                 }
+                // 결정론적 출력을 위해 심볼명 정렬
+                std.mem.sort([]const u8, symbols.?.items, {}, struct {
+                    fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                        return std.mem.order(u8, a, b) == .lt;
+                    }
+                }.lessThan);
                 for (symbols.?.items, 0..) |name, si| {
                     try chunk_output.appendSlice(allocator, name);
                     if (si + 1 < symbols.?.items.len) {
@@ -340,6 +346,8 @@ pub fn emitChunks(
 
         // 크로스 청크 export: exports_to에 심볼이 있으면 export 문 생성.
         // 다른 청크가 이 청크에서 심볼을 가져가는 경우에만 출력.
+        // TODO: linker가 심볼을 rename한 경우 (이름 충돌 해결) export { x$1 as x } 형태 필요.
+        //       현재는 원본 이름으로 출력 — scope hoisting이 청크별로 분리되면 해결.
         if (chunk.exports_to.count() > 0) {
             // 결정론적 출력을 위해 이름을 정렬
             var export_names: std.ArrayList([]const u8) = .empty;
