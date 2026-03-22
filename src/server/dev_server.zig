@@ -3,6 +3,7 @@ const http = std.http;
 const mime = @import("mime.zig");
 const lib = @import("../root.zig");
 const Bundler = lib.bundler.Bundler;
+const BundleResult = lib.bundler.BundleResult;
 
 fn getLog() std.fs.File.DeprecatedWriter {
     return std.fs.File.stderr().deprecatedWriter();
@@ -333,13 +334,8 @@ pub const DevServer = struct {
             switch (rebuild_result) {
                 .success => |result| {
                     defer {
-                        // module_dev_codes는 HMR 메시지 빌드 후 해제
                         if (result.dev_codes) |codes| {
-                            for (codes) |c| {
-                                self.allocator.free(c.id);
-                                self.allocator.free(c.code);
-                            }
-                            self.allocator.free(codes);
+                            BundleResult.ModuleDevCode.freeAll(codes, self.allocator);
                         }
                     }
 
@@ -380,7 +376,7 @@ pub const DevServer = struct {
 
     const RebuildSuccess = struct {
         paths: []const []const u8,
-        dev_codes: ?[]const Bundler.BundleResult.ModuleDevCode,
+        dev_codes: ?[]const BundleResult.ModuleDevCode,
     };
 
     const RebuildResult = union(enum) {
@@ -442,7 +438,7 @@ pub const DevServer = struct {
     fn buildHmrUpdateMessage(
         allocator: std.mem.Allocator,
         changed_paths: []const []const u8,
-        dev_codes: ?[]const Bundler.BundleResult.ModuleDevCode,
+        dev_codes: ?[]const BundleResult.ModuleDevCode,
     ) ?[]const u8 {
         const codes = dev_codes orelse return null;
         if (codes.len == 0) return null;
@@ -458,8 +454,11 @@ pub const DevServer = struct {
             // dev code의 id (상대/절대) → 변경 경로와 매칭
             var matched = false;
             for (changed_paths) |cp| {
-                // 절대 경로가 id를 suffix로 포함하는지 확인
-                if (std.mem.eql(u8, cp, c.id) or std.mem.endsWith(u8, cp, c.id)) {
+                // 절대 경로가 id를 suffix로 포함하는지 확인 (경로 구분자 체크로 false positive 방지)
+                if (std.mem.eql(u8, cp, c.id) or
+                    (std.mem.endsWith(u8, cp, c.id) and
+                        cp.len > c.id.len and cp[cp.len - c.id.len - 1] == '/'))
+                {
                     matched = true;
                     break;
                 }
