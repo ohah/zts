@@ -502,19 +502,13 @@ test "CJS: require with non-string argument ignored" {
     try std.testing.expect(!result.has_cjs_require);
 }
 
-test "CJS: module.exports detected — parser limitation" {
+test "CJS: module.exports detected" {
     const alloc = std.testing.allocator;
-    // 알려진 제한: ZTS 파서는 `module`을 항상 TS namespace 키워드로 인식하므로
-    // `module.exports = ...`가 assignment_expression 대신 ts_module_declaration으로 파싱됨.
-    // .cjs 파일용 TS 비활성화 모드가 추가되면 이 테스트를 갱신할 것.
-    // 여기서는 isModuleExportsAssign 로직이 올바르게 구현되었음을 간접 검증:
-    // exports.x (동일한 static_member_expression 매칭 로직) 테스트가 이를 커버.
     const result = try parseAndExtractFull(alloc, "module.exports = {};");
     defer alloc.free(result.records);
 
-    // 현재는 ts_module_declaration으로 파싱되므로 false
-    // TODO: .cjs 모드 추가 후 true로 변경
-    try std.testing.expect(!result.has_module_exports);
+    try std.testing.expect(result.has_module_exports);
+    try std.testing.expect(!result.has_esm_syntax);
 }
 
 test "CJS: exports.x detected" {
