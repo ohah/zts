@@ -7111,3 +7111,71 @@ test "@__NO_SIDE_EFFECTS__: no false positive on normal import" {
     // /* @__PURE__ */ 가 없어야 함
     try std.testing.expect(std.mem.indexOf(u8, result.output, "/* @__PURE__ */") == null);
 }
+
+test "@__NO_SIDE_EFFECTS__: export default async function" {
+    // async 키워드가 @__NO_SIDE_EFFECTS__ 전파를 끊지 않는지 확인
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import create from './lib';
+        \\const x = create();
+        \\console.log(x);
+    );
+    try writeFile(tmp.dir, "lib.ts", "/* @__NO_SIDE_EFFECTS__ */ export default async function create() { return {}; }");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "/* @__PURE__ */") != null);
+}
+
+test "@__NO_SIDE_EFFECTS__: export async function (named)" {
+    // export async function도 @__NO_SIDE_EFFECTS__ 전파됨
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { fetchData } from './lib';
+        \\const x = fetchData();
+        \\console.log(x);
+    );
+    try writeFile(tmp.dir, "lib.ts", "/* @__NO_SIDE_EFFECTS__ */ export async function fetchData() { return {}; }");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "/* @__PURE__ */") != null);
+}
+
+test "@__NO_SIDE_EFFECTS__: single-file async function" {
+    // 단일 파일에서도 async function @__NO_SIDE_EFFECTS__ 동작 확인
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts",
+        \\/* @__NO_SIDE_EFFECTS__ */ async function create() { return {}; }
+        \\const x = create();
+        \\console.log(x);
+    );
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "/* @__PURE__ */") != null);
+}
