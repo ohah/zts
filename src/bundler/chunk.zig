@@ -384,7 +384,10 @@ pub fn generateChunks(
         bs.* = try BitSet.init(allocator, @intCast(entry_count));
     }
 
-    // BitSet → ChunkIndex HashMap (Phase 3에서 O(1) 청크 lookup에 사용)
+    // BitSet → ChunkIndex HashMap (Phase 3에서 O(1) 청크 lookup에 사용).
+    // 주의: HashMap key의 BitSet.entries 포인터가 Chunk.bits와 동일한 메모리를 가리킴 (aliased).
+    // Chunk.deinit이 []u8를 해제하므로 HashMap.deinit에서는 key를 해제하지 않음.
+    // 이 HashMap은 generateChunks 내에서만 사용되고 Chunk보다 먼저 해제됨.
     var bits_to_chunk: std.HashMapUnmanaged(BitSet, ChunkIndex, BitSetContext, 80) = .empty;
     defer bits_to_chunk.deinit(allocator);
 
