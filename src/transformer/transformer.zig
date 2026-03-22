@@ -480,8 +480,10 @@ pub const Transformer = struct {
         const expr = self.old_ast.getNode(expr_idx);
         if (expr.tag != .call_expression) return false;
 
-        // call_expression: binary = { left=callee, right=args_start, flags=args_len }
-        const callee_idx = expr.data.binary.left;
+        // call_expression: extra = [callee, args_start, args_len, flags]
+        const ce = expr.data.extra;
+        if (ce >= self.old_ast.extra_data.items.len) return false;
+        const callee_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[ce]);
         if (callee_idx.isNone()) return false;
         const callee = self.old_ast.getNode(callee_idx);
 
@@ -853,42 +855,45 @@ pub const Transformer = struct {
         return self.addExtraNode(.switch_case, node.span, &.{ @intFromEnum(new_test), new_stmts.start, new_stmts.len });
     }
 
-    /// call_expression: extra_data = [callee, args_start, args_len, optional_chain_flag]
-    /// call_expression: binary = { left=callee, right=@enumFromInt(args_start), flags=args_len }
+    /// call_expression: extra = [callee, args_start, args_len, flags]
     fn visitCallExpression(self: *Transformer, node: Node) Error!NodeIndex {
-        const new_callee = try self.visitNode(node.data.binary.left);
-        const args_start: u32 = @intFromEnum(node.data.binary.right);
-        // flags의 하위 15비트 = args_len, bit 15 = optional chaining 플래그 (0x8000)
-        const raw_flags = node.data.binary.flags;
-        const args_len: u32 = raw_flags & 0x7FFF;
-        const is_optional: u16 = raw_flags & 0x8000;
+        const e = node.data.extra;
+        const extras = self.old_ast.extra_data.items;
+        if (e + 3 >= extras.len) return NodeIndex.none;
+        const callee: NodeIndex = @enumFromInt(extras[e]);
+        const args_start = extras[e + 1];
+        const args_len = extras[e + 2];
+        const flags = extras[e + 3];
+        const new_callee = try self.visitNode(callee);
         const new_args = try self.visitExtraList(args_start, args_len);
+        const new_extra = try self.new_ast.addExtras(&.{
+            @intFromEnum(new_callee), new_args.start, new_args.len, flags,
+        });
         return self.new_ast.addNode(.{
             .tag = .call_expression,
             .span = node.span,
-            .data = .{ .binary = .{
-                .left = new_callee,
-                .right = @enumFromInt(new_args.start),
-                .flags = @intCast(new_args.len | is_optional),
-            } },
+            .data = .{ .extra = new_extra },
         });
     }
 
-    /// new_expression: binary = { left=callee, right=args_start, flags=args_len }
-    /// call_expression과 동일한 binary 레이아웃 (파서가 binary로 저장).
+    /// new_expression: extra = [callee, args_start, args_len, flags]
     fn visitNewExpression(self: *Transformer, node: Node) Error!NodeIndex {
-        const new_callee = try self.visitNode(node.data.binary.left);
-        const args_start: u32 = @intFromEnum(node.data.binary.right);
-        const args_len: u32 = node.data.binary.flags;
+        const e = node.data.extra;
+        const extras = self.old_ast.extra_data.items;
+        if (e + 3 >= extras.len) return NodeIndex.none;
+        const callee: NodeIndex = @enumFromInt(extras[e]);
+        const args_start = extras[e + 1];
+        const args_len = extras[e + 2];
+        const flags = extras[e + 3];
+        const new_callee = try self.visitNode(callee);
         const new_args = try self.visitExtraList(args_start, args_len);
+        const new_extra = try self.new_ast.addExtras(&.{
+            @intFromEnum(new_callee), new_args.start, new_args.len, flags,
+        });
         return self.new_ast.addNode(.{
             .tag = .new_expression,
             .span = node.span,
-            .data = .{ .binary = .{
-                .left = new_callee,
-                .right = @enumFromInt(new_args.start),
-                .flags = @intCast(new_args.len),
-            } },
+            .data = .{ .extra = new_extra },
         });
     }
 

@@ -832,14 +832,20 @@ pub const Codegen = struct {
         try self.writeByte(']');
     }
 
-    /// call_expression: binary = { left=callee, right=@enumFromInt(args_start), flags=args_len|0x8000(optional) }
+    /// call_expression: extra = [callee, args_start, args_len, flags]
     fn emitCall(self: *Codegen, node: Node) !void {
-        const callee = node.data.binary.left;
-        const args_start: u32 = @intFromEnum(node.data.binary.right);
-        // flags 하위 15비트 = args_len, bit 15 = optional chaining (0x8000)
-        const args_len: u32 = node.data.binary.flags & 0x7FFF;
-        const is_optional = (node.data.binary.flags & 0x8000) != 0;
+        const e = node.data.extra;
+        if (e + 3 >= self.ast.extra_data.items.len) return;
+        const callee: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+        const args_start = self.ast.extra_data.items[e + 1];
+        const args_len = self.ast.extra_data.items[e + 2];
+        const flags = self.ast.extra_data.items[e + 3];
+        const CallFlags = @import("../parser/ast.zig").CallFlags;
+        const is_optional = (flags & CallFlags.optional_chain) != 0;
+        const is_pure = (flags & CallFlags.is_pure) != 0;
 
+        // @__PURE__ 주석 재출력 (minify가 아닐 때)
+        if (is_pure and !self.options.minify) try self.write("/* @__PURE__ */ ");
         try self.emitNode(callee);
         if (is_optional) try self.write("?.");
         try self.writeByte('(');
@@ -847,12 +853,18 @@ pub const Codegen = struct {
         try self.writeByte(')');
     }
 
-    /// new_expression: binary = { left=callee, right=args_start, flags=args_len }
-    /// call_expression과 동일한 binary 레이아웃.
+    /// new_expression: extra = [callee, args_start, args_len, flags]
     fn emitNew(self: *Codegen, node: Node) !void {
-        const callee = node.data.binary.left;
-        const args_start: u32 = @intFromEnum(node.data.binary.right);
-        const args_len: u32 = node.data.binary.flags;
+        const e = node.data.extra;
+        if (e + 3 >= self.ast.extra_data.items.len) return;
+        const callee: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+        const args_start = self.ast.extra_data.items[e + 1];
+        const args_len = self.ast.extra_data.items[e + 2];
+        const flags = self.ast.extra_data.items[e + 3];
+        const CallFlags = @import("../parser/ast.zig").CallFlags;
+        const is_pure = (flags & CallFlags.is_pure) != 0;
+
+        if (is_pure and !self.options.minify) try self.write("/* @__PURE__ */ ");
 
         try self.write("new ");
         try self.emitNode(callee);
