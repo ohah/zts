@@ -238,6 +238,7 @@ pub const Transformer = struct {
             .conditional_expression,
             .for_in_statement,
             .for_of_statement,
+            .for_await_of_statement,
             .try_statement,
             => self.visitTernaryNode(node),
 

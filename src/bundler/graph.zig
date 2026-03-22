@@ -527,12 +527,10 @@ fn detectTopLevelAwait(ast: *const Ast) bool {
     return false;
 }
 
-/// 노드 트리를 재귀적으로 탐색하여 await_expression이 있는지 확인한다.
-/// 함수/arrow/class 경계에서 멈춘다 — 내부의 await는 TLA가 아님.
-/// for-of 노드의 경우, 소스 텍스트에서 `for await`를 직접 확인한다
-/// (파서가 is_await 플래그를 AST에 저장하지 않으므로).
+/// 노드 트리를 재귀적으로 탐색하여 await_expression 또는 for_await_of_statement이 있는지 확인한다.
+/// 함수/arrow/class/method 경계에서 멈춘다 — 내부의 await는 TLA가 아님.
+/// 노드 타입을 열거하는 대신 함수 경계만 체크하고 나머지는 모든 자식을 순회한다.
 fn containsAwait(ast: *const Ast, idx: NodeIndex, depth: u32) bool {
-    // 재귀 깊이 제한 — 비정상적으로 깊은 중첩 방지
     if (depth > 128) return false;
     if (idx.isNone()) return false;
     const ni = @intFromEnum(idx);
@@ -540,18 +538,9 @@ fn containsAwait(ast: *const Ast, idx: NodeIndex, depth: u32) bool {
 
     const node = ast.nodes.items[ni];
 
-    // await_expression 발견 → TLA!
+    // TLA 발견
     if (node.tag == .await_expression) return true;
-
-    // for-await-of: 파서가 is_await 플래그를 AST에 저장하지 않으므로
-    // 소스 텍스트에서 `for` ~ `(` 사이에 "await"가 있는지 확인한다.
-    if (node.tag == .for_of_statement) {
-        if (isForAwaitOf(ast, node)) return true;
-        // body도 확인해야 함 (for-of 내부에 top-level await가 있을 수 있음)
-        if (containsAwait(ast, node.data.ternary.a, depth + 1)) return true;
-        if (containsAwait(ast, node.data.ternary.b, depth + 1)) return true;
-        return containsAwait(ast, node.data.ternary.c, depth + 1);
-    }
+    if (node.tag == .for_await_of_statement) return true;
 
     // 함수 경계 — 내부의 await는 async 함수의 await이므로 TLA가 아님
     if (node.tag == .function_declaration or
@@ -559,168 +548,120 @@ fn containsAwait(ast: *const Ast, idx: NodeIndex, depth: u32) bool {
         node.tag == .arrow_function_expression or
         node.tag == .class_declaration or
         node.tag == .class_expression or
-        node.tag == .function or
         node.tag == .method_definition or
         node.tag == .static_block) return false;
 
-    // 자식 노드 재귀 탐색 — 노드 타입별 데이터 구조에 따라 분기
-    switch (node.tag) {
-        // unary 계열: operand 하나만 확인
-        .expression_statement,
-        .parenthesized_expression,
-        .yield_expression,
-        .spread_element,
-        .return_statement,
-        .throw_statement,
-        .export_default_declaration,
-        .unary_expression,
-        .update_expression,
-        .decorator,
-        => return containsAwait(ast, node.data.unary.operand, depth + 1),
+    // 모든 자식 노드를 일반적으로 순회 — 데이터 레이아웃별 분기
+    return switch (node.tag) {
+        // 자식 없음 (리터럴, 식별자 등)
+        .invalid, .elision, .boolean_literal, .null_literal, .numeric_literal,
+        .string_literal, .bigint_literal, .regexp_literal, .this_expression,
+        .identifier_reference, .private_identifier, .empty_statement,
+        .break_statement, .continue_statement, .debugger_statement,
+        .import_declaration, .export_all_declaration,
+        => false,
 
-        // binary 계열: left + right
-        .binary_expression,
-        .logical_expression,
-        .assignment_expression,
-        .while_statement,
-        .do_while_statement,
-        .labeled_statement,
-        .with_statement,
-        .catch_clause,
-        .for_in_statement,
-        => {
-            if (containsAwait(ast, node.data.binary.left, depth + 1)) return true;
-            return containsAwait(ast, node.data.binary.right, depth + 1);
-        },
+        // unary: operand
+        .expression_statement, .parenthesized_expression, .yield_expression,
+        .spread_element, .return_statement, .throw_statement,
+        .export_default_declaration, .unary_expression, .update_expression,
+        .decorator, .import_expression,
+        => containsAwait(ast, node.data.unary.operand, depth + 1),
 
-        // ternary 계열: a + b + c
-        .if_statement,
-        .try_statement,
-        .conditional_expression,
-        => {
-            if (containsAwait(ast, node.data.ternary.a, depth + 1)) return true;
-            if (containsAwait(ast, node.data.ternary.b, depth + 1)) return true;
-            return containsAwait(ast, node.data.ternary.c, depth + 1);
-        },
+        // binary: left + right
+        .binary_expression, .logical_expression, .assignment_expression,
+        .while_statement, .do_while_statement, .labeled_statement,
+        .with_statement, .catch_clause, .for_in_statement, .for_of_statement,
+        => containsAwait(ast, node.data.binary.left, depth + 1) or
+            containsAwait(ast, node.data.binary.right, depth + 1),
 
-        // list 계열: extra_data에서 인덱스 배열 참조
-        .block_statement,
-        .array_expression,
-        .sequence_expression,
-        => {
+        // ternary: a + b + c
+        .if_statement, .try_statement, .conditional_expression,
+        .for_await_of_statement,
+        => containsAwait(ast, node.data.ternary.a, depth + 1) or
+            containsAwait(ast, node.data.ternary.b, depth + 1) or
+            containsAwait(ast, node.data.ternary.c, depth + 1),
+
+        // list: extra_data 인덱스 배열
+        .program, .block_statement, .array_expression, .sequence_expression,
+        .object_expression,
+        => blk: {
             const list = node.data.list;
-            if (list.start + list.len > ast.extra_data.items.len) return false;
+            if (list.start + list.len > ast.extra_data.items.len) break :blk false;
             for (ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
-                if (containsAwait(ast, @enumFromInt(raw), depth + 1)) return true;
+                if (containsAwait(ast, @enumFromInt(raw), depth + 1)) break :blk true;
             }
-            return false;
+            break :blk false;
         },
 
-        // variable_declaration: extra [kind_flags, list_start, list_len]
-        .variable_declaration => {
+        // extra 기반 노드: 자식 위치가 알려진 것만 재귀
+        .variable_declaration => blk: {
             const e = node.data.extra;
-            if (!ast.hasExtra(e, 2)) return false;
+            if (!ast.hasExtra(e, 2)) break :blk false;
             const list_start = ast.readExtra(e, 1);
             const list_len = ast.readExtra(e, 2);
-            if (list_start + list_len > ast.extra_data.items.len) return false;
+            if (list_start + list_len > ast.extra_data.items.len) break :blk false;
             for (ast.extra_data.items[list_start .. list_start + list_len]) |raw| {
-                if (containsAwait(ast, @enumFromInt(raw), depth + 1)) return true;
+                if (containsAwait(ast, @enumFromInt(raw), depth + 1)) break :blk true;
             }
-            return false;
+            break :blk false;
         },
-
-        // variable_declarator: extra [name, type_ann, init]
-        .variable_declarator => {
-            return containsAwait(ast, ast.readExtraNode(node.data.extra, 2), depth + 1);
-        },
-
-        // call_expression / new_expression: extra [callee, args_start, args_len, flags]
-        .call_expression, .new_expression => {
+        .variable_declarator => containsAwait(ast, ast.readExtraNode(node.data.extra, 2), depth + 1),
+        .call_expression, .new_expression => blk: {
             const e = node.data.extra;
-            if (containsAwait(ast, ast.readExtraNode(e, 0), depth + 1)) return true;
-            if (!ast.hasExtra(e, 2)) return false;
+            if (containsAwait(ast, ast.readExtraNode(e, 0), depth + 1)) break :blk true;
+            if (!ast.hasExtra(e, 2)) break :blk false;
             const args_start = ast.readExtra(e, 1);
             const args_len = ast.readExtra(e, 2);
-            if (args_start + args_len > ast.extra_data.items.len) return false;
+            if (args_start + args_len > ast.extra_data.items.len) break :blk false;
             for (ast.extra_data.items[args_start .. args_start + args_len]) |raw| {
-                if (containsAwait(ast, @enumFromInt(raw), depth + 1)) return true;
+                if (containsAwait(ast, @enumFromInt(raw), depth + 1)) break :blk true;
             }
-            return false;
+            break :blk false;
         },
-
-        // for_statement: extra [init, test, update, body]
-        .for_statement => {
+        .for_statement => blk: {
             const e = node.data.extra;
-            if (containsAwait(ast, ast.readExtraNode(e, 0), depth + 1)) return true;
-            if (containsAwait(ast, ast.readExtraNode(e, 1), depth + 1)) return true;
-            if (containsAwait(ast, ast.readExtraNode(e, 2), depth + 1)) return true;
-            return containsAwait(ast, ast.readExtraNode(e, 3), depth + 1);
+            break :blk containsAwait(ast, ast.readExtraNode(e, 0), depth + 1) or
+                containsAwait(ast, ast.readExtraNode(e, 1), depth + 1) or
+                containsAwait(ast, ast.readExtraNode(e, 2), depth + 1) or
+                containsAwait(ast, ast.readExtraNode(e, 3), depth + 1);
         },
-
-        // switch_statement: extra [discriminant, cases_start, cases_len]
-        .switch_statement => {
+        .switch_statement => blk: {
             const e = node.data.extra;
-            if (containsAwait(ast, ast.readExtraNode(e, 0), depth + 1)) return true;
-            if (!ast.hasExtra(e, 2)) return false;
+            if (containsAwait(ast, ast.readExtraNode(e, 0), depth + 1)) break :blk true;
+            if (!ast.hasExtra(e, 2)) break :blk false;
             const cases_start = ast.readExtra(e, 1);
             const cases_len = ast.readExtra(e, 2);
-            if (cases_start + cases_len > ast.extra_data.items.len) return false;
+            if (cases_start + cases_len > ast.extra_data.items.len) break :blk false;
             for (ast.extra_data.items[cases_start .. cases_start + cases_len]) |raw| {
-                if (containsAwait(ast, @enumFromInt(raw), depth + 1)) return true;
+                if (containsAwait(ast, @enumFromInt(raw), depth + 1)) break :blk true;
             }
-            return false;
+            break :blk false;
         },
-
-        // switch_case: extra [test, body_start, body_len]
-        .switch_case => {
+        .switch_case => blk: {
             const e = node.data.extra;
-            if (containsAwait(ast, ast.readExtraNode(e, 0), depth + 1)) return true;
-            if (!ast.hasExtra(e, 2)) return false;
+            if (containsAwait(ast, ast.readExtraNode(e, 0), depth + 1)) break :blk true;
+            if (!ast.hasExtra(e, 2)) break :blk false;
             const body_start = ast.readExtra(e, 1);
             const body_len = ast.readExtra(e, 2);
-            if (body_start + body_len > ast.extra_data.items.len) return false;
+            if (body_start + body_len > ast.extra_data.items.len) break :blk false;
             for (ast.extra_data.items[body_start .. body_start + body_len]) |raw| {
-                if (containsAwait(ast, @enumFromInt(raw), depth + 1)) return true;
+                if (containsAwait(ast, @enumFromInt(raw), depth + 1)) break :blk true;
             }
-            return false;
+            break :blk false;
         },
+        .export_named_declaration => containsAwait(ast, ast.readExtraNode(node.data.extra, 0), depth + 1),
+        .static_member_expression => containsAwait(ast, ast.readExtraNode(node.data.extra, 0), depth + 1),
+        .computed_member_expression => containsAwait(ast, ast.readExtraNode(node.data.extra, 0), depth + 1) or
+            containsAwait(ast, ast.readExtraNode(node.data.extra, 1), depth + 1),
+        .object_property => containsAwait(ast, node.data.binary.left, depth + 1) or
+            containsAwait(ast, node.data.binary.right, depth + 1),
+        .template_literal, .tagged_template_expression => false,
 
-        // export_named_declaration: extra [declaration, specs_start, specs_len, source]
-        .export_named_declaration => {
-            return containsAwait(ast, ast.readExtraNode(node.data.extra, 0), depth + 1);
-        },
-
-        // static_member_expression: extra [object, property, flags]
-        .static_member_expression => {
-            return containsAwait(ast, ast.readExtraNode(node.data.extra, 0), depth + 1);
-        },
-
-        // computed_member_expression: extra [object, property, flags]
-        .computed_member_expression => {
-            const e = node.data.extra;
-            if (containsAwait(ast, ast.readExtraNode(e, 0), depth + 1)) return true;
-            return containsAwait(ast, ast.readExtraNode(e, 1), depth + 1);
-        },
-
-        // 리터럴, 식별자, 키워드 등 — 자식 없음
-        else => return false,
-    }
-}
-
-/// for_of_statement 노드가 `for await (...of...)` 인지 소스 텍스트로 확인한다.
-/// 파서가 is_await 플래그를 AST 노드에 저장하지 않으므로,
-/// span.start ("for" 키워드 시작)부터 "(" 까지의 소스에서 "await"를 찾는다.
-fn isForAwaitOf(ast: *const Ast, node: AstNode) bool {
-    const start = node.span.start;
-    // "for await (" 최대 길이는 ~15자 정도
-    const max_len: u32 = 20;
-    const end = @min(start + max_len, @as(u32, @intCast(ast.source.len)));
-    if (start >= end) return false;
-
-    const slice = ast.source[start..end];
-    // "for" 뒤의 공백 + "await" 패턴 탐색
-    if (std.mem.indexOf(u8, slice, "await")) |_| return true;
-    return false;
+        // 나머지 — 자식 구조를 알 수 없는 노드는 안전하게 false
+        // 새 노드 타입이 추가되면 여기에 명시적으로 추가해야 함
+        else => false,
+    };
 }
 
 // ============================================================

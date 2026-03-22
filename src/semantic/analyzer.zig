@@ -685,7 +685,7 @@ pub const SemanticAnalyzer = struct {
             .class_expression => try self.visitClassExpression(node),
             .for_statement => try self.visitForStatement(node),
             .for_in_statement => try self.visitForInOf(node),
-            .for_of_statement => try self.visitForInOf(node),
+            .for_of_statement, .for_await_of_statement => try self.visitForInOf(node),
             .switch_statement => try self.visitSwitchStatement(node),
             .catch_clause => try self.visitCatchClause(node),
 
@@ -1353,7 +1353,7 @@ pub const SemanticAnalyzer = struct {
             const is_loop = if (!body_idx.isNone()) blk: {
                 const body_tag = self.ast.getNode(body_idx).tag;
                 break :blk body_tag == .for_statement or body_tag == .for_in_statement or
-                    body_tag == .for_of_statement or body_tag == .while_statement or
+                    body_tag == .for_of_statement or body_tag == .for_await_of_statement or body_tag == .while_statement or
                     body_tag == .do_while_statement;
             } else false;
 

@@ -8120,3 +8120,90 @@ test "TLA: for-await-of detected" {
 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "[ZTS WARNING]") != null);
 }
+
+test "TLA: await inside object literal at top level" {
+    // 이전 containsAwait 구현에서 object_expression을 누락하여 감지 실패했던 케이스
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\const config = { data: await fetch('/api') };
+        \\export default config;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .cjs });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // object literal 내부 await도 TLA로 감지 → CJS 경고
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "ZTS WARNING") != null);
+}
+
+test "TLA: await inside array literal at top level" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\const items = [await fetch('/a'), await fetch('/b')];
+        \\export default items;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .cjs });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "ZTS WARNING") != null);
+}
+
+test "TLA: await inside ternary expression at top level" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\const val = true ? await fetch('/a') : null;
+        \\export default val;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .cjs });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "ZTS WARNING") != null);
+}
+
+test "TLA: for_await_of_statement detected via AST tag" {
+    // isForAwaitOf 소스 텍스트 스캔 대신 파서가 for_await_of_statement 태그를 생성하여 감지
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\async function* gen() { yield 1; yield 2; }
+        \\for await (const x of gen()) { console.log(x); }
+        \\export {};
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .cjs });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // for await 감지 → CJS 경고
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "ZTS WARNING") != null);
+    // codegen이 for await of를 올바르게 출력
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "await of") != null);
+}
