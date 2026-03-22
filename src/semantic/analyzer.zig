@@ -61,6 +61,10 @@ pub const SemanticAnalyzer = struct {
     /// module 모드 여부 (파서에서 전달받음)
     is_module: bool = false,
 
+    /// Top-Level Await 감지 결과. 모듈의 top-level에서 await가 사용되면 true.
+    /// 함수/arrow 내부의 await는 포함하지 않음.
+    has_top_level_await: bool = false,
+
     /// 메모리 할당자
     allocator: std.mem.Allocator,
 
@@ -227,6 +231,18 @@ pub const SemanticAnalyzer = struct {
             }
         }
         return null;
+    }
+
+    /// 현재 스코프 체인에 function 스코프가 있는지 확인한다.
+    /// TLA 감지에 사용: function 안이면 await는 TLA가 아님.
+    fn isInsideFunctionScope(self: *const SemanticAnalyzer) bool {
+        var scope_id = self.current_scope;
+        while (!scope_id.isNone()) {
+            const scope = self.scopes.items[scope_id.toIndex()];
+            if (scope.kind == .function) return true;
+            scope_id = scope.parent;
+        }
+        return false;
     }
 
     /// 현재 스코프가 strict mode인지 확인한다.
@@ -685,7 +701,14 @@ pub const SemanticAnalyzer = struct {
             .class_expression => try self.visitClassExpression(node),
             .for_statement => try self.visitForStatement(node),
             .for_in_statement => try self.visitForInOf(node),
-            .for_of_statement, .for_await_of_statement => try self.visitForInOf(node),
+            .for_of_statement => try self.visitForInOf(node),
+            .for_await_of_statement => {
+                // for await (... of ...) — top-level이면 TLA
+                if (self.is_module and !self.has_top_level_await and !self.isInsideFunctionScope()) {
+                    self.has_top_level_await = true;
+                }
+                try self.visitForInOf(node);
+            },
             .switch_statement => try self.visitSwitchStatement(node),
             .catch_clause => try self.visitCatchClause(node),
 
@@ -841,10 +864,17 @@ pub const SemanticAnalyzer = struct {
                 }
             },
             .yield_expression,
-            .await_expression,
             .parenthesized_expression,
             .spread_element,
             => {
+                try self.visitNode(node.data.unary.operand);
+            },
+            .await_expression => {
+                // TLA 감지: module top-level에서 await가 사용되면 플래그 세팅.
+                // 현재 스코프 체인에 function 스코프가 없으면 top-level.
+                if (self.is_module and !self.has_top_level_await and !self.isInsideFunctionScope()) {
+                    self.has_top_level_await = true;
+                }
                 try self.visitNode(node.data.unary.operand);
             },
             .call_expression,
