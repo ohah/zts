@@ -9056,3 +9056,184 @@ test "CodeSplitting: CRITICAL — two modules in same chunk with same name as cr
         }
     }
 }
+
+test "CodeSplitting: three entries sharing module — all import same name" {
+    // 3개 엔트리가 shared의 'x'를 import + 각 엔트리에도 로컬 'x'
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts",
+        \\import { x } from './shared';
+        \\const x2 = x;
+        \\console.log(x2);
+    );
+    try writeFile(tmp.dir, "b.ts",
+        \\import { x } from './shared';
+        \\console.log(x);
+    );
+    try writeFile(tmp.dir, "c.ts",
+        \\import { x } from './shared';
+        \\console.log(x);
+    );
+    try writeFile(tmp.dir, "shared.ts", "export const x = 'shared';");
+
+    const a_path = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(a_path);
+    const b_path = try absPath(&tmp, "b.ts");
+    defer std.testing.allocator.free(b_path);
+    const c_path = try absPath(&tmp, "c.ts");
+    defer std.testing.allocator.free(c_path);
+
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{ a_path, b_path, c_path },
+        .code_splitting = true,
+    });
+    defer bnd.deinit();
+    const result = try bnd.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outputs = result.outputs orelse return error.TestUnexpectedResult;
+    // 4 청크: 3 엔트리 + 1 공통
+    try std.testing.expectEqual(@as(usize, 4), outputs.len);
+}
+
+test "CodeSplitting: default export cross-chunk" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts",
+        \\import lib from './shared';
+        \\console.log(lib);
+    );
+    try writeFile(tmp.dir, "b.ts",
+        \\import lib from './shared';
+        \\console.log(lib);
+    );
+    try writeFile(tmp.dir, "shared.ts", "export default function() { return 42; }");
+
+    const a_path = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(a_path);
+    const b_path = try absPath(&tmp, "b.ts");
+    defer std.testing.allocator.free(b_path);
+
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{ a_path, b_path },
+        .code_splitting = true,
+    });
+    defer bnd.deinit();
+    const result = try bnd.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outputs = result.outputs orelse return error.TestUnexpectedResult;
+    try std.testing.expect(outputs.len >= 2);
+}
+
+test "CodeSplitting: deep chain across chunks" {
+    // a→b (static), a→c (dynamic), c→d (static), b→d (static)
+    // d는 a청크(via b)와 c청크(직접) 모두에서 도달 → 공통 청크
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts",
+        \\import { b } from './b';
+        \\const c = import('./c');
+        \\console.log(b, c);
+    );
+    try writeFile(tmp.dir, "b.ts",
+        \\import { d } from './d';
+        \\export const b = d + 1;
+    );
+    try writeFile(tmp.dir, "c.ts",
+        \\import { d } from './d';
+        \\export const c = d + 2;
+    );
+    try writeFile(tmp.dir, "d.ts", "export const d = 10;");
+
+    const entry = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(entry);
+
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+    });
+    defer bnd.deinit();
+    const result = try bnd.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outputs = result.outputs orelse return error.TestUnexpectedResult;
+    // d.ts가 공통 청크에 있어야 함 (a청크, c청크 모두에서 도달)
+    try std.testing.expect(outputs.len >= 2);
+}
+
+test "CodeSplitting: minified output with chunks" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts",
+        \\import { x } from './shared';
+        \\console.log(x);
+    );
+    try writeFile(tmp.dir, "b.ts",
+        \\import { x } from './shared';
+        \\console.log(x);
+    );
+    try writeFile(tmp.dir, "shared.ts", "export const x = 42;");
+
+    const a_path = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(a_path);
+    const b_path = try absPath(&tmp, "b.ts");
+    defer std.testing.allocator.free(b_path);
+
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{ a_path, b_path },
+        .code_splitting = true,
+        .minify = true,
+    });
+    defer bnd.deinit();
+    const result = try bnd.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outputs = result.outputs orelse return error.TestUnexpectedResult;
+    // minified: 모듈 경계 주석 없음
+    for (outputs) |o| {
+        try std.testing.expect(std.mem.indexOf(u8, o.contents, "// ---") == null);
+    }
+}
+
+test "CodeSplitting: CJS module in shared chunk" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts",
+        \\import cjs from './shared.cjs';
+        \\console.log(cjs);
+    );
+    try writeFile(tmp.dir, "b.ts",
+        \\import cjs from './shared.cjs';
+        \\console.log(cjs);
+    );
+    try writeFile(tmp.dir, "shared.cjs", "module.exports = { value: 42 };");
+
+    const a_path = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(a_path);
+    const b_path = try absPath(&tmp, "b.ts");
+    defer std.testing.allocator.free(b_path);
+
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{ a_path, b_path },
+        .code_splitting = true,
+    });
+    defer bnd.deinit();
+    const result = try bnd.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outputs = result.outputs orelse return error.TestUnexpectedResult;
+    // CJS 모듈이 공통 청크에 __commonJS 래핑되어야 함
+    var has_commonjs = false;
+    for (outputs) |o| {
+        if (std.mem.indexOf(u8, o.contents, "__commonJS") != null) {
+            has_commonjs = true;
+        }
+    }
+    try std.testing.expect(has_commonjs);
+}
