@@ -473,10 +473,17 @@ pub fn generateChunks(
         );
     }
 
-    // 엔트리 모듈 자신도 자신의 엔트리 청크에 할당 (Phase 3에서 이미 처리된 경우 스킵)
+    // 엔트리 모듈은 반드시 자신의 엔트리 청크에 할당되어야 함.
+    // Phase 3에서 공통 청크에 배정되었을 수 있으므로, 강제로 엔트리 청크로 이동.
     for (entries.items, 0..) |entry, ci| {
         const chunk_idx: ChunkIndex = @enumFromInt(@as(u32, @intCast(ci)));
-        if (chunk_graph.getModuleChunk(entry.module_idx).isNone()) {
+        const current = chunk_graph.getModuleChunk(entry.module_idx);
+        if (current.isNone()) {
+            // 아직 미할당 → 엔트리 청크에 할당
+            chunk_graph.assignModuleToChunk(entry.module_idx, chunk_idx);
+            try chunk_graph.getChunkMut(chunk_idx).addModule(allocator, entry.module_idx);
+        } else if (current != chunk_idx) {
+            // 공통 청크에 잘못 배정됨 → 엔트리 청크로 재할당 (esbuild 동작)
             chunk_graph.assignModuleToChunk(entry.module_idx, chunk_idx);
             try chunk_graph.getChunkMut(chunk_idx).addModule(allocator, entry.module_idx);
         }
