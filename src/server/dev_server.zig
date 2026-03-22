@@ -117,7 +117,6 @@ pub const DevServer = struct {
                 },
             };
 
-            // WebSocket upgrade 체크
             switch (request.upgradeRequested()) {
                 .websocket => |opt_key| {
                     const key = opt_key orelse {
@@ -160,11 +159,9 @@ pub const DevServer = struct {
         }
     }
 
-    fn handleWebSocket(self: *DevServer, ws: *http.Server.WebSocket) void {
-        _ = self;
+    fn handleWebSocket(_: *DevServer, ws: *http.Server.WebSocket) void {
         getLog().print("  [ws] client connected\n", .{}) catch {};
 
-        // 연결 후 connected 메시지 전송
         ws.writeMessage("{\"type\":\"connected\"}", .text) catch {
             getLog().print("  [ws] failed to send connected message\n", .{}) catch {};
             return;
