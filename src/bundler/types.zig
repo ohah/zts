@@ -55,6 +55,14 @@ pub const ExportsKind = enum {
     esm_with_dynamic_fallback,
 };
 
+/// 모듈 래핑 방식 (esbuild WrapKind).
+pub const WrapKind = enum {
+    /// 래핑 없음 — ESM 모듈, 스코프 호이스팅 적용
+    none,
+    /// CJS 래핑 — __commonJS({ ... }) 팩토리 함수로 감싸기
+    cjs,
+};
+
 // ============================================================
 // 모듈 타입 (D073)
 // ============================================================
@@ -188,6 +196,24 @@ test "ModuleType: fromExtension" {
 // ============================================================
 // 공유 유틸리티
 // ============================================================
+
+/// 모듈 경로에서 require_xxx 변수명을 생성한다.
+/// "lib/foo-bar.cjs" → "require_foo_bar"
+pub fn makeRequireVarName(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    const basename = std.fs.path.basename(path);
+    const stem = std.fs.path.stem(basename);
+
+    var name: std.ArrayList(u8) = .empty;
+    try name.appendSlice(allocator, "require_");
+    for (stem) |c| {
+        if (std.ascii.isAlphanumeric(c) or c == '_') {
+            try name.append(allocator, c);
+        } else {
+            try name.append(allocator, '_');
+        }
+    }
+    return name.toOwnedSlice(allocator);
+}
 
 /// Span을 u64 키로 변환. 번들러 전역에서 식별자/노드를 고유 식별하는 데 사용.
 /// binding_scanner, linker 등에서 동일 함수를 공유하여 키 불일치 방지.

@@ -208,6 +208,8 @@ pub const ModuleGraph = struct {
 
         // CJS/ESM 판별 — 스캔 결과 + 확장자 + package.json type 필드
         module.exports_kind = determineExportsKind(scan_result, module.path);
+        // CJS 모듈은 __commonJS 팩토리 함수로 래핑
+        module.wrap_kind = if (module.exports_kind == .commonjs) .cjs else .none;
 
         // Import/Export 바인딩 상세 추출 — linker에서 사용
         module.import_bindings = binding_scanner_mod.extractImportBindings(self.allocator, &parser.ast, scan_result.records) catch &.{};
