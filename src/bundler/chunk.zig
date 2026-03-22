@@ -19,6 +19,8 @@ const std = @import("std");
 const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 const ChunkIndex = types.ChunkIndex;
+const Module = @import("module.zig").Module;
+const TreeShaker = @import("tree_shaker.zig").TreeShaker;
 
 // ============================================================
 // BitSet — 진입점 비트 마스크
@@ -269,6 +271,215 @@ pub const ChunkGraph = struct {
         return self.chunks.items.len;
     }
 };
+
+// ============================================================
+// generateChunks — 모듈 그래프에서 청크 생성
+// ============================================================
+
+/// 엔트리 정보. 유저 엔트리와 dynamic import 대상을 구분.
+const EntryInfo = struct {
+    module_idx: ModuleIndex,
+    is_dynamic: bool,
+};
+
+/// 모듈 그래프에서 청크를 생성한다 (esbuild/rolldown 패턴).
+///
+/// Phase 1: 엔트리 초기화 — 유저 엔트리 + dynamic import 대상을 수집하고,
+///          각 엔트리마다 Chunk를 생성한다.
+/// Phase 2: 도달 가능성 마킹 — 각 엔트리에서 BFS로 정적 import를 따라가며
+///          모듈별 BitSet에 도달 가능한 엔트리 비트를 설정한다.
+/// Phase 3: 청크 할당 — 동일한 BitSet을 가진 모듈들을 같은 Chunk에 묶는다.
+///          여러 엔트리에서 도달 가능한 모듈은 공통 청크(common chunk)로 분리.
+///
+/// shaker가 null이 아니면 tree-shaking 결과를 반영하여 미포함 모듈을 스킵한다.
+pub fn generateChunks(
+    allocator: std.mem.Allocator,
+    modules: []const Module,
+    entry_points: []const []const u8,
+    shaker: ?*const TreeShaker,
+) !ChunkGraph {
+    // ── Phase 1: 엔트리 수집 ──
+    // 유저 엔트리 (CLI 진입점) + dynamic import 대상을 모두 모은다.
+    // 각각이 하나의 출력 청크가 된다.
+    var entries: std.ArrayList(EntryInfo) = .empty;
+    defer entries.deinit(allocator);
+
+    // Phase 1a: 유저 엔트리 — entry_points 경로와 일치하는 모듈을 찾는다.
+    for (modules, 0..) |m, i| {
+        for (entry_points) |ep| {
+            if (std.mem.eql(u8, m.path, ep)) {
+                try entries.append(allocator, .{
+                    .module_idx = @enumFromInt(@as(u32, @intCast(i))),
+                    .is_dynamic = false,
+                });
+                break;
+            }
+        }
+    }
+
+    // Phase 1b: dynamic import 대상 — 이미 유저 엔트리인 모듈은 스킵.
+    // dynamic import 대상은 별도의 청크 경계를 형성한다 (code splitting의 핵심).
+    var dynamic_seen: std.AutoHashMap(u32, void) = .init(allocator);
+    defer dynamic_seen.deinit();
+
+    for (modules) |m| {
+        for (m.dynamic_imports.items) |dyn_idx| {
+            const di = @intFromEnum(dyn_idx);
+            const gop = try dynamic_seen.getOrPut(di);
+            if (!gop.found_existing) {
+                // 이미 유저 엔트리로 등록된 모듈인지 확인
+                var is_user_entry = false;
+                for (entries.items) |e| {
+                    if (@intFromEnum(e.module_idx) == di and !e.is_dynamic) {
+                        is_user_entry = true;
+                        break;
+                    }
+                }
+                if (!is_user_entry) {
+                    try entries.append(allocator, .{
+                        .module_idx = dyn_idx,
+                        .is_dynamic = true,
+                    });
+                }
+            }
+        }
+    }
+
+    const entry_count = entries.items.len;
+    if (entry_count == 0) {
+        return ChunkGraph.init(allocator, modules.len);
+    }
+
+    // ChunkGraph 생성 — 모듈→청크 매핑 배열을 module_count 크기로 할당.
+    var chunk_graph = try ChunkGraph.init(allocator, modules.len);
+    errdefer chunk_graph.deinit();
+
+    // 모듈별 도달 가능성 BitSet — splitting_info[module_index]는
+    // 그 모듈이 어떤 엔트리들에서 도달 가능한지를 나타낸다.
+    var splitting_info = try allocator.alloc(BitSet, modules.len);
+    defer {
+        for (splitting_info) |*bs| bs.deinit(allocator);
+        allocator.free(splitting_info);
+    }
+    for (splitting_info) |*bs| {
+        bs.* = try BitSet.init(allocator, @intCast(entry_count));
+    }
+
+    // Phase 1c: 엔트리별 Chunk 생성
+    for (entries.items, 0..) |entry, bit_idx| {
+        var bits = try BitSet.init(allocator, @intCast(entry_count));
+        bits.setBit(@intCast(bit_idx));
+
+        // 출력 파일명 = 모듈 파일명의 stem (확장자 제거)
+        const name = std.fs.path.stem(std.fs.path.basename(
+            modules[@intFromEnum(entry.module_idx)].path,
+        ));
+
+        var chunk = Chunk.init(.none, .{ .entry_point = .{
+            .bit = @intCast(bit_idx),
+            .module = entry.module_idx,
+            .is_dynamic = entry.is_dynamic,
+        } }, bits);
+        chunk.name = name;
+
+        _ = try chunk_graph.addChunk(chunk);
+    }
+
+    // ── Phase 2: BFS 도달 가능성 마킹 ──
+    // 각 엔트리에서 정적 import(dependencies)만 따라가며 BFS 순회.
+    // dynamic import는 청크 경계이므로 따라가지 않는다.
+    // 결과: splitting_info[모듈]에 도달 가능한 엔트리 비트가 설정됨.
+    var queue: std.ArrayList(ModuleIndex) = .empty;
+    defer queue.deinit(allocator);
+
+    for (entries.items, 0..) |entry, bit_idx| {
+        queue.clearRetainingCapacity();
+        try queue.append(allocator, entry.module_idx);
+
+        while (queue.items.len > 0) {
+            const mod_idx = queue.orderedRemove(0);
+            const mi = @intFromEnum(mod_idx);
+            if (mi >= modules.len) continue;
+
+            // 이미 이 비트가 설정되어 있으면 스킵 (순환 참조 방지)
+            if (splitting_info[mi].hasBit(@intCast(bit_idx))) continue;
+            splitting_info[mi].setBit(@intCast(bit_idx));
+
+            // 정적 의존성만 따라감 — dynamic import는 별도 엔트리이므로 BFS 경계
+            for (modules[mi].dependencies.items) |dep_idx| {
+                const dep_i = @intFromEnum(dep_idx);
+                if (dep_i < modules.len and !splitting_info[dep_i].hasBit(@intCast(bit_idx))) {
+                    try queue.append(allocator, dep_idx);
+                }
+            }
+        }
+    }
+
+    // ── Phase 3: 모듈을 청크에 할당 ──
+    // exec_index 순으로 처리하여 청크 내 모듈 순서(=ESM 실행 순서)를 보장.
+    // 동일한 BitSet을 가진 모듈들은 같은 청크에 묶인다.
+    // 엔트리 청크의 BitSet과 일치하지 않는 새로운 BitSet 패턴이 나오면
+    // 공통 청크(common chunk)를 새로 생성한다.
+    const sorted_indices = try allocator.alloc(usize, modules.len);
+    defer allocator.free(sorted_indices);
+    for (sorted_indices, 0..) |*idx, i| idx.* = i;
+    std.mem.sort(usize, sorted_indices, modules, struct {
+        fn lessThan(mods: []const Module, a: usize, b: usize) bool {
+            return mods[a].exec_index < mods[b].exec_index;
+        }
+    }.lessThan);
+
+    for (sorted_indices) |mi| {
+        // tree-shaking: 미포함 모듈 스킵
+        if (shaker) |s| {
+            if (!s.isIncluded(@intCast(mi))) continue;
+        }
+
+        // JS 모듈만 청크에 할당 (JSON, CSS 등은 별도 처리)
+        if (modules[mi].module_type != .javascript) continue;
+
+        // 비트가 비어있으면 어떤 엔트리에서도 도달 불가 → 스킵
+        if (splitting_info[mi].isEmpty()) continue;
+
+        // 동일한 BitSet 패턴의 청크를 선형 탐색.
+        // 엔트리 수가 보통 수십 개 이하이므로 O(chunks)로 충분.
+        // 성능이 문제가 되면 BitSet → ChunkIndex HashMap으로 교체 가능.
+        var found_chunk: ?ChunkIndex = null;
+        for (chunk_graph.chunks.items, 0..) |chunk, ci| {
+            if (chunk.bits.eql(splitting_info[mi])) {
+                found_chunk = @enumFromInt(@as(u32, @intCast(ci)));
+                break;
+            }
+        }
+
+        const chunk_idx = if (found_chunk) |ci| ci else blk: {
+            // 기존 청크와 일치하지 않는 새로운 BitSet 패턴 → 공통 청크 생성
+            const bits = try splitting_info[mi].clone(allocator);
+            const new_chunk = Chunk.init(.none, .common, bits);
+            break :blk try chunk_graph.addChunk(new_chunk);
+        };
+
+        chunk_graph.assignModuleToChunk(
+            @enumFromInt(@as(u32, @intCast(mi))),
+            chunk_idx,
+        );
+        try chunk_graph.getChunkMut(chunk_idx).addModule(
+            allocator,
+            @enumFromInt(@as(u32, @intCast(mi))),
+        );
+    }
+
+    // 엔트리 모듈 자신도 자신의 엔트리 청크에 할당 (Phase 3에서 이미 처리된 경우 스킵)
+    for (entries.items, 0..) |entry, ci| {
+        const chunk_idx: ChunkIndex = @enumFromInt(@as(u32, @intCast(ci)));
+        if (chunk_graph.getModuleChunk(entry.module_idx).isNone()) {
+            chunk_graph.assignModuleToChunk(entry.module_idx, chunk_idx);
+            try chunk_graph.getChunkMut(chunk_idx).addModule(allocator, entry.module_idx);
+        }
+    }
+
+    return chunk_graph;
+}
 
 // ============================================================
 // Tests — BitSet
@@ -630,4 +841,182 @@ test "ChunkKind: entry_point vs common" {
 
     const cm: ChunkKind = .common;
     try std.testing.expect(cm == .common);
+}
+
+// ============================================================
+// Tests — generateChunks
+// ============================================================
+
+/// 테스트용 Module을 생성한다. javascript 타입, exec_index = index.
+fn makeTestModule(alloc: std.mem.Allocator, index: u32, path: []const u8) Module {
+    var m = Module.init(@enumFromInt(index), path);
+    m.module_type = .javascript;
+    m.exec_index = index;
+    m.state = .ready;
+    // ArrayList 필드는 .empty으로 초기화됨 — append 시 allocator를 전달
+    _ = alloc;
+    return m;
+}
+
+test "generateChunks: single entry, no dynamic imports" {
+    // 구조: entry(a.ts) → b.ts → c.ts
+    // 기대: 모든 모듈이 하나의 엔트리 청크에 포함
+    const alloc = std.testing.allocator;
+
+    var modules: [3]Module = .{
+        makeTestModule(alloc, 0, "a.ts"),
+        makeTestModule(alloc, 1, "b.ts"),
+        makeTestModule(alloc, 2, "c.ts"),
+    };
+    defer for (&modules) |*m| m.deinit(alloc);
+
+    // a → b → c
+    try modules[0].dependencies.append(alloc, @enumFromInt(1));
+    try modules[1].dependencies.append(alloc, @enumFromInt(2));
+
+    var cg = try generateChunks(alloc, &modules, &.{"a.ts"}, null);
+    defer cg.deinit();
+
+    // 엔트리 청크 1개
+    try std.testing.expectEqual(@as(usize, 1), cg.chunkCount());
+
+    // 모든 모듈이 청크 0에 할당
+    const chunk0: ChunkIndex = @enumFromInt(0);
+    try std.testing.expectEqual(chunk0, cg.getModuleChunk(@enumFromInt(0)));
+    try std.testing.expectEqual(chunk0, cg.getModuleChunk(@enumFromInt(1)));
+    try std.testing.expectEqual(chunk0, cg.getModuleChunk(@enumFromInt(2)));
+
+    // 청크가 엔트리 타입
+    try std.testing.expect(cg.getChunk(chunk0).isEntryPoint());
+
+    // 청크 이름 = 진입점 파일의 stem
+    try std.testing.expectEqualStrings("a", cg.getChunk(chunk0).name.?);
+}
+
+test "generateChunks: dynamic import creates separate chunk" {
+    // 구조: entry(index.ts) -static→ utils.ts
+    //       entry(index.ts) -dynamic→ lazy.ts
+    // 기대: index+utils → 청크0, lazy → 청크1
+    const alloc = std.testing.allocator;
+
+    var modules: [3]Module = .{
+        makeTestModule(alloc, 0, "index.ts"),
+        makeTestModule(alloc, 1, "utils.ts"),
+        makeTestModule(alloc, 2, "lazy.ts"),
+    };
+    defer for (&modules) |*m| m.deinit(alloc);
+
+    // index → utils (static), index → lazy (dynamic)
+    try modules[0].dependencies.append(alloc, @enumFromInt(1));
+    try modules[0].dynamic_imports.append(alloc, @enumFromInt(2));
+
+    var cg = try generateChunks(alloc, &modules, &.{"index.ts"}, null);
+    defer cg.deinit();
+
+    // 엔트리 청크 1개 + dynamic 청크 1개 = 2개
+    try std.testing.expectEqual(@as(usize, 2), cg.chunkCount());
+
+    // index, utils → 청크 0 (유저 엔트리)
+    const chunk0: ChunkIndex = @enumFromInt(0);
+    try std.testing.expectEqual(chunk0, cg.getModuleChunk(@enumFromInt(0)));
+    try std.testing.expectEqual(chunk0, cg.getModuleChunk(@enumFromInt(1)));
+
+    // lazy → 청크 1 (dynamic 엔트리)
+    const chunk1: ChunkIndex = @enumFromInt(1);
+    try std.testing.expectEqual(chunk1, cg.getModuleChunk(@enumFromInt(2)));
+
+    // 청크 1은 dynamic 엔트리
+    const lazy_chunk = cg.getChunk(chunk1);
+    switch (lazy_chunk.kind) {
+        .entry_point => |info| try std.testing.expect(info.is_dynamic),
+        .common => return error.TestUnexpectedResult,
+    }
+}
+
+test "generateChunks: shared module creates common chunk" {
+    // 구조: entry A(a.ts) → shared.ts
+    //       entry B(b.ts) → shared.ts
+    // 기대: a → 청크0, b → 청크1, shared → 공통 청크2
+    const alloc = std.testing.allocator;
+
+    var modules: [3]Module = .{
+        makeTestModule(alloc, 0, "a.ts"),
+        makeTestModule(alloc, 1, "b.ts"),
+        makeTestModule(alloc, 2, "shared.ts"),
+    };
+    defer for (&modules) |*m| m.deinit(alloc);
+
+    // a → shared, b → shared
+    try modules[0].dependencies.append(alloc, @enumFromInt(2));
+    try modules[1].dependencies.append(alloc, @enumFromInt(2));
+
+    var cg = try generateChunks(alloc, &modules, &.{ "a.ts", "b.ts" }, null);
+    defer cg.deinit();
+
+    // 엔트리 2개 + 공통 1개 = 3개
+    try std.testing.expectEqual(@as(usize, 3), cg.chunkCount());
+
+    // a → 청크0, b → 청크1
+    const chunk0: ChunkIndex = @enumFromInt(0);
+    const chunk1: ChunkIndex = @enumFromInt(1);
+    try std.testing.expectEqual(chunk0, cg.getModuleChunk(@enumFromInt(0)));
+    try std.testing.expectEqual(chunk1, cg.getModuleChunk(@enumFromInt(1)));
+
+    // shared → 청크2 (공통 청크)
+    const shared_chunk_idx = cg.getModuleChunk(@enumFromInt(2));
+    try std.testing.expect(!shared_chunk_idx.isNone());
+    try std.testing.expect(!cg.getChunk(shared_chunk_idx).isEntryPoint());
+}
+
+test "generateChunks: diamond dependency" {
+    // 구조: A(a.ts) → B(b.ts) → D(d.ts)
+    //       A(a.ts) → C(c.ts) → D(d.ts)
+    //       두 엔트리: A, C
+    // 기대: A,B → 청크0 (A 엔트리에서만 도달), C → 청크1,
+    //       D → 공통 청크 (A와 C 둘 다에서 도달)
+    const alloc = std.testing.allocator;
+
+    var modules: [4]Module = .{
+        makeTestModule(alloc, 0, "a.ts"),
+        makeTestModule(alloc, 1, "b.ts"),
+        makeTestModule(alloc, 2, "c.ts"),
+        makeTestModule(alloc, 3, "d.ts"),
+    };
+    defer for (&modules) |*m| m.deinit(alloc);
+
+    // A → B, A → C, B → D, C → D
+    try modules[0].dependencies.append(alloc, @enumFromInt(1));
+    try modules[0].dependencies.append(alloc, @enumFromInt(2));
+    try modules[1].dependencies.append(alloc, @enumFromInt(3));
+    try modules[2].dependencies.append(alloc, @enumFromInt(3));
+
+    var cg = try generateChunks(alloc, &modules, &.{ "a.ts", "c.ts" }, null);
+    defer cg.deinit();
+
+    // D가 양쪽 엔트리에서 도달 가능 → 공통 청크 생성
+    const d_chunk_idx = cg.getModuleChunk(@enumFromInt(3));
+    try std.testing.expect(!d_chunk_idx.isNone());
+    try std.testing.expect(!cg.getChunk(d_chunk_idx).isEntryPoint());
+
+    // C는 엔트리 청크1에 할당 (C가 두 번째 엔트리이므로 bit 1)
+    // A 엔트리(bit 0)에서도 C에 도달하므로, C의 BitSet = {0,1}
+    // 이는 D와 동일한 BitSet → 같은 공통 청크에 묶임
+    const c_chunk_idx = cg.getModuleChunk(@enumFromInt(2));
+    try std.testing.expect(!c_chunk_idx.isNone());
+
+    // B는 A에서만 도달 → A 엔트리 청크에 묶임
+    const b_chunk_idx = cg.getModuleChunk(@enumFromInt(1));
+    const a_chunk_idx = cg.getModuleChunk(@enumFromInt(0));
+    try std.testing.expectEqual(a_chunk_idx, b_chunk_idx);
+}
+
+test "generateChunks: no modules" {
+    // 빈 모듈 배열 → 빈 ChunkGraph (청크 0개)
+    const alloc = std.testing.allocator;
+    const empty_modules: []const Module = &.{};
+
+    var cg = try generateChunks(alloc, empty_modules, &.{"entry.ts"}, null);
+    defer cg.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), cg.chunkCount());
 }
