@@ -74,6 +74,20 @@ fn writeWsFrame(writer: *std.Io.Writer, data: []const u8) !void {
     try writer.flush();
 }
 
+/// JSON 문자열 값 내부의 특수 문자를 이스케이프한다.
+fn writeJsonEscaped(w: anytype, s: []const u8) !void {
+    for (s) |c| {
+        switch (c) {
+            '"' => try w.print("\\\"", .{}),
+            '\\' => try w.print("\\\\", .{}),
+            '\n' => try w.print("\\n", .{}),
+            '\r' => try w.print("\\r", .{}),
+            '\t' => try w.print("\\t", .{}),
+            else => try w.writeByte(c),
+        }
+    }
+}
+
 pub const DevServer = struct {
     allocator: std.mem.Allocator,
     root_dir: std.fs.Dir,
@@ -310,22 +324,78 @@ pub const DevServer = struct {
             }
 
             if (changed) {
-                self.ws_clients.broadcast("{\"type\":\"full-reload\"}");
-
-                // 모듈 그래프가 변경됐을 수 있으므로 경로 목록 + mtime 맵 재구축
-                if (collectModulePaths(self.allocator, abs_entry)) |new_paths| {
-                    freeWatchPaths(self.allocator, &watch_paths);
-                    watch_paths = new_paths;
-                    // mtime_map 초기화 후 재구축 — 이전 키는 freed 상태이므로 재사용 불가
-                    mtime_map.clearAndFree();
-                    for (watch_paths) |p| {
-                        const stat = std.fs.cwd().statFile(p) catch continue;
-                        mtime_map.put(p, stat.mtime) catch {};
-                    }
-                    getLog().print("  [watch] watching {d} files for changes...\n", .{watch_paths.len}) catch {};
+                // 재번들 시도 → 에러면 에러 오버레이, 성공이면 full-reload
+                const rebuild_result = tryRebuild(self.allocator, abs_entry);
+                switch (rebuild_result) {
+                    .success => |new_paths| {
+                        self.ws_clients.broadcast("{\"type\":\"full-reload\"}");
+                        freeWatchPaths(self.allocator, &watch_paths);
+                        watch_paths = new_paths;
+                        mtime_map.clearAndFree();
+                        for (watch_paths) |p| {
+                            const stat = std.fs.cwd().statFile(p) catch continue;
+                            mtime_map.put(p, stat.mtime) catch {};
+                        }
+                        getLog().print("  [watch] watching {d} files for changes...\n", .{watch_paths.len}) catch {};
+                    },
+                    .build_error => |err_msg| {
+                        defer self.allocator.free(err_msg);
+                        self.ws_clients.broadcast(err_msg);
+                        getLog().print("  [watch] build error, overlay sent\n", .{}) catch {};
+                    },
+                    .fatal => {},
                 }
             }
         }
+    }
+
+    const RebuildResult = union(enum) {
+        success: []const []const u8, // module_paths (소유권 이전)
+        build_error: []const u8, // JSON 에러 메시지 (allocator 소유)
+        fatal, // 번들러 자체 실패
+    };
+
+    fn tryRebuild(allocator: std.mem.Allocator, abs_entry: []const u8) RebuildResult {
+        var bundler = Bundler.init(allocator, .{
+            .entry_points = &.{abs_entry},
+            .platform = .browser,
+        });
+        defer bundler.deinit();
+
+        var result = bundler.bundle() catch return .fatal;
+
+        // 파싱 에러(warning)도 dev server에서는 에러로 취급
+        const has_build_issues = blk: {
+            for (result.getDiagnostics()) |d| {
+                if (d.severity == .@"error" or d.code == .parse_error) break :blk true;
+            }
+            break :blk false;
+        };
+        if (has_build_issues) {
+            const diags = result.getDiagnostics();
+            var msg: std.ArrayList(u8) = .empty;
+            defer msg.deinit(allocator);
+            const w = msg.writer(allocator);
+            w.print("{{\"type\":\"error\",\"errors\":[", .{}) catch return .fatal;
+            for (diags, 0..) |d, i| {
+                if (i > 0) w.print(",", .{}) catch {};
+                w.print("{{\"file\":\"", .{}) catch {};
+                writeJsonEscaped(w, d.file_path) catch return .fatal;
+                w.print("\",\"message\":\"", .{}) catch {};
+                writeJsonEscaped(w, d.message) catch return .fatal;
+                w.print("\"}}", .{}) catch {};
+            }
+            w.print("]}}", .{}) catch return .fatal;
+
+            const err_json = allocator.dupe(u8, msg.items) catch return .fatal;
+            result.deinit(allocator);
+            return .{ .build_error = err_json };
+        }
+
+        const paths = result.module_paths;
+        result.module_paths = null;
+        result.deinit(allocator);
+        return .{ .success = paths orelse &.{} };
     }
 
     fn collectModulePaths(allocator: std.mem.Allocator, abs_entry: []const u8) ?[]const []const u8 {
@@ -463,13 +533,36 @@ pub const DevServer = struct {
             \\<script type="module" src="/bundle.js"></script>
             \\<script>
             \\(function() {
-            \\  var ws, timer;
+            \\  var ws, timer, overlay;
+            \\  function showOverlay(errors) {
+            \\    hideOverlay();
+            \\    overlay = document.createElement('div');
+            \\    overlay.id = 'zts-error-overlay';
+            \\    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);color:#ff5555;font-family:monospace;font-size:14px;padding:32px;box-sizing:border-box;z-index:99999;overflow:auto;white-space:pre-wrap;';
+            \\    var html = '<div style="max-width:800px;margin:0 auto">';
+            \\    html += '<h2 style="color:#ff5555;margin:0 0 16px">Build Error</h2>';
+            \\    for (var i = 0; i < errors.length; i++) {
+            \\      html += '<div style="background:#1a1a1a;border:1px solid #ff5555;border-radius:4px;padding:16px;margin-bottom:12px">';
+            \\      html += '<div style="color:#888;margin-bottom:8px">' + errors[i].file + '</div>';
+            \\      html += '<div style="color:#fff">' + errors[i].message + '</div>';
+            \\      html += '</div>';
+            \\    }
+            \\    html += '</div>';
+            \\    overlay.innerHTML = html;
+            \\    overlay.onclick = function() { hideOverlay(); };
+            \\    document.body.appendChild(overlay);
+            \\  }
+            \\  function hideOverlay() {
+            \\    if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+            \\    overlay = null;
+            \\  }
             \\  function connect() {
             \\    ws = new WebSocket('ws://' + location.host + '/__hmr');
             \\    ws.onopen = function() { console.log('[zts] HMR connected'); };
             \\    ws.onmessage = function(e) {
             \\      var msg = JSON.parse(e.data);
-            \\      if (msg.type === 'full-reload') { location.reload(); }
+            \\      if (msg.type === 'full-reload') { hideOverlay(); location.reload(); }
+            \\      if (msg.type === 'error') { showOverlay(msg.errors); }
             \\    };
             \\    ws.onclose = function() {
             \\      console.log('[zts] HMR disconnected, reconnecting...');
