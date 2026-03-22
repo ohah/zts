@@ -336,7 +336,7 @@ pub fn emitDevBundle(
 /// 프로덕션 emitModule과의 차이:
 ///   - buildDevMetadataForAst 사용 (rename 없음, __zts_require preamble)
 ///   - final_exports → __zts_exports.x = x; 형태
-fn emitDevModule(
+pub fn emitDevModule(
     allocator: std.mem.Allocator,
     module: *const Module,
     options: EmitOptions,
@@ -396,7 +396,7 @@ fn emitDevModule(
 
 /// 모듈 경로를 dev bundle용 ID로 변환.
 /// root_dir이 있으면 상대 경로, 없으면 절대 경로 그대로 사용.
-fn makeModuleId(path: []const u8, root_dir: ?[]const u8) []const u8 {
+pub fn makeModuleId(path: []const u8, root_dir: ?[]const u8) []const u8 {
     const root = root_dir orelse return path;
     if (root.len == 0) return path;
 
