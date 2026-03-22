@@ -262,6 +262,9 @@ pub fn emitChunks(
                 } else {
                     try chunk_output.appendSlice(allocator, "import{");
                 }
+                // TODO: 같은 청크에 다른 출처의 동일 이름 import가 2개 이상이면
+                //       import { x as x$1 } 형태로 deconflict 필요.
+                //       현실적으로는 소스 코드에서 이미 alias를 사용하므로 드문 케이스.
                 // 결정론적 출력을 위해 심볼명 정렬
                 std.mem.sort([]const u8, symbols.?.items, {}, struct {
                     fn lessThan(_: void, a: []const u8, b: []const u8) bool {
