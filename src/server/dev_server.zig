@@ -471,10 +471,18 @@ pub const DevServer = struct {
 
         self.serveStaticFile(request, rel_path) catch |err| switch (err) {
             error.FileNotFound => {
-                try request.respond("404 Not Found", .{
-                    .status = .not_found,
-                    .extra_headers = &cors_headers,
-                });
+                // SPA 폴백: 확장자 없는 경로 → index.html (React Router 등)
+                if (self.entry_point != null and std.fs.path.extension(rel_path).len == 0) {
+                    self.serveStaticFile(request, "index.html") catch |e2| switch (e2) {
+                        error.FileNotFound => try self.serveAutoHtml(request),
+                        else => return e2,
+                    };
+                } else {
+                    try request.respond("404 Not Found", .{
+                        .status = .not_found,
+                        .extra_headers = &cors_headers,
+                    });
+                }
             },
             else => return err,
         };
