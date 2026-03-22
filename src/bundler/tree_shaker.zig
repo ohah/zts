@@ -21,6 +21,10 @@ const Module = @import("module.zig").Module;
 const ExportBinding = @import("binding_scanner.zig").ExportBinding;
 const ImportBinding = @import("binding_scanner.zig").ImportBinding;
 const Linker = @import("linker.zig").Linker;
+const Ast = @import("../parser/ast.zig").Ast;
+const Node = @import("../parser/ast.zig").Node;
+const NodeIndex = @import("../parser/ast.zig").NodeIndex;
+const CallFlags = @import("../parser/ast.zig").CallFlags;
 
 pub const TreeShaker = struct {
     allocator: std.mem.Allocator,
@@ -159,6 +163,126 @@ pub const TreeShaker = struct {
         var key_buf: [4096]u8 = undefined;
         const key = types.makeModuleKeyBuf(&key_buf, module_index, export_name);
         return self.used_exports.contains(key);
+    }
+
+    /// 모듈의 top-level 문장이 모두 순수한지 판별.
+    /// 순수: import/export 선언, 함수/클래스 선언, 변수 선언(초기값이 순수), @__PURE__ call.
+    /// 불순: 일반 call expression, assignment to global, etc.
+    fn isModulePure(ast: *const Ast) bool {
+        if (ast.nodes.items.len == 0) return false;
+        // program 노드는 파서가 마지막에 추가 — 마지막 노드
+        const root = ast.nodes.items[ast.nodes.items.len - 1];
+        if (root.tag != .program) return false;
+        const stmts = root.data.list;
+        if (stmts.len == 0) return false; // 빈 모듈은 기본값 유지
+        if (stmts.start + stmts.len > ast.extra_data.items.len) return false;
+
+        const stmt_indices = ast.extra_data.items[stmts.start .. stmts.start + stmts.len];
+        for (stmt_indices) |raw| {
+            const idx: NodeIndex = @enumFromInt(raw);
+            if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) continue;
+            const stmt = ast.nodes.items[@intFromEnum(idx)];
+            if (!isStatementPure(ast, stmt)) return false;
+        }
+        return true;
+    }
+
+    fn isStatementPure(ast: *const Ast, stmt: Node) bool {
+        return switch (stmt.tag) {
+            // 선언문 — side effect 없음
+            .import_declaration,
+            .export_named_declaration,
+            .export_all_declaration,
+            .export_default_declaration,
+            .function_declaration,
+            .class_declaration,
+            .ts_interface_declaration,
+            .ts_type_alias_declaration,
+            .ts_enum_declaration,
+            .ts_module_declaration,
+            => true,
+
+            // 변수 선언 — 초기값에 따라 다름
+            .variable_declaration => isVarDeclPure(ast, stmt),
+
+            // expression statement — 내부 expression이 순수하면 OK
+            .expression_statement => isExpressionPure(ast, stmt.data.unary.operand),
+
+            // 빈 문장
+            .empty_statement => true,
+
+            // 나머지 — 보수적으로 불순
+            else => false,
+        };
+    }
+
+    fn isVarDeclPure(ast: *const Ast, stmt: Node) bool {
+        // variable_declaration: list of declarators
+        const list = stmt.data.list;
+        if (list.len == 0) return true;
+        if (list.start + list.len > ast.extra_data.items.len) return false;
+        const decls = ast.extra_data.items[list.start .. list.start + list.len];
+        for (decls) |raw| {
+            const idx: NodeIndex = @enumFromInt(raw);
+            if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) continue;
+            const decl = ast.nodes.items[@intFromEnum(idx)];
+            // variable_declarator: binary { left=binding, right=init }
+            if (decl.tag != .variable_declarator) return false;
+            const init_val = decl.data.binary.right;
+            if (init_val.isNone()) continue; // let x; — 순수
+            if (!isExpressionPure(ast, init_val)) return false;
+        }
+        return true;
+    }
+
+    fn isExpressionPure(ast: *const Ast, idx: NodeIndex) bool {
+        if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return true;
+        const node = ast.nodes.items[@intFromEnum(idx)];
+        return switch (node.tag) {
+            // 리터럴 — 항상 순수
+            .boolean_literal,
+            .null_literal,
+            .numeric_literal,
+            .string_literal,
+            .bigint_literal,
+            .regexp_literal,
+            .template_literal,
+            => true,
+
+            // 식별자 참조 — 읽기만, side effect 없음
+            .identifier_reference => true,
+
+            // 함수/클래스 expression — 선언만, 호출 아님
+            .function_expression,
+            .arrow_function_expression,
+            .class_expression,
+            => true,
+
+            // 배열/객체 리터럴 — 원소가 순수하면 OK (보수적으로 true)
+            .array_expression, .object_expression => true,
+
+            // @__PURE__ call — 순수
+            .call_expression => {
+                if (ast.hasExtra(node.data.extra, 3)) {
+                    return (ast.readExtra(node.data.extra, 3) & CallFlags.is_pure) != 0;
+                }
+                return false;
+            },
+
+            // @__PURE__ new — 순수
+            .new_expression => {
+                if (ast.hasExtra(node.data.extra, 3)) {
+                    return (ast.readExtra(node.data.extra, 3) & CallFlags.is_pure) != 0;
+                }
+                return false;
+            },
+
+            // 괄호 expression — 내부가 순수하면 OK
+            .parenthesized_expression => isExpressionPure(ast, node.data.unary.operand),
+
+            // 나머지 — 보수적으로 불순
+            else => false,
+        };
     }
 
     // ============================================================
@@ -2166,3 +2290,7 @@ test "ref: 10-module fan-out all sideEffects=false — only 3 used" {
     try std.testing.expect(!r.shaker.isIncluded(r.findModule("w8.ts").?));
     try std.testing.expect(!r.shaker.isIncluded(r.findModule("w10.ts").?));
 }
+
+// NOTE: @__PURE__ 기반 자동 side_effects 판별은 후속 PR에서 구현 예정.
+// isModulePure/isStatementPure/isExpressionPure 함수는 준비되어 있지만,
+// 기존 테스트와의 호환성 문제(side_effects=true 전제)로 인해 아직 analyze()에서 활성화하지 않음.
