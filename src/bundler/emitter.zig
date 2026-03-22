@@ -313,12 +313,15 @@ pub fn emitDevBundle(
             try output.appendSlice(allocator, "\", function(__zts_module, __zts_exports) {\n");
         }
 
-        // 모듈 코드 (들여쓰기)
+        // 모듈 코드 (들여쓰기: 개행 뒤에 탭 삽입, 청크 단위로 처리)
         if (!options.minify) {
-            for (code) |c| {
-                try output.append(allocator, c);
-                if (c == '\n') try output.append(allocator, '\t');
+            var rest: []const u8 = code;
+            while (std.mem.indexOfScalar(u8, rest, '\n')) |nl| {
+                try output.appendSlice(allocator, rest[0 .. nl + 1]);
+                try output.append(allocator, '\t');
+                rest = rest[nl + 1 ..];
             }
+            try output.appendSlice(allocator, rest);
             try output.appendSlice(allocator, "\n});\n\n");
         } else {
             try output.appendSlice(allocator, code);
@@ -366,9 +369,12 @@ fn emitDevModule(
         metadata = md;
     }
 
+    // propagateCrossModulePurity 생략: dev mode에서는 tree-shaking이 꺼져 있으므로
+    // @__NO_SIDE_EFFECTS__ cross-module 전파가 불필요하다.
+
     var cg = Codegen.initWithOptions(arena_alloc, &transformer.new_ast, .{
         .minify = options.minify,
-        .module_format = .esm, // dev mode는 항상 ESM 스타일 (export 키워드만 생략)
+        .module_format = .esm,
         .linking_metadata = if (metadata) |*md| md else null,
     });
     const code = try cg.generate(root);
