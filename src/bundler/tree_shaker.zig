@@ -28,8 +28,10 @@ pub const TreeShaker = struct {
     linker: *const Linker,
     included: std.DynamicBitSet,
     used_exports: std.StringHashMap(void),
-    /// 진입점 모듈을 O(1)로 조회하기 위한 bitset. analyze()에서 설정.
     entry_set: std.DynamicBitSet,
+    /// 모듈별 local re-export name set. isImportBindingUsed의 O(E) 스캔을 O(1)로 최적화.
+    /// analyze()에서 사전 구축, null이면 해당 모듈에 local re-export 없음.
+    re_export_sets: []?std.StringHashMap(void) = &.{},
 
     const max_fixpoint_iterations: u32 = 100;
 
@@ -60,9 +62,9 @@ pub const TreeShaker = struct {
     /// Tree-shaking 분석 (fixpoint 방식).
     ///
     /// 포함된 모듈의 import만 export 사용으로 카운트한다.
-    /// 수렴은 보통 2-3회 이내 (included가 단조 감소하므로).
+    /// included는 단조가 아님 — 축소(미사용 제거)와 확장(canonical/side-effect 전파)이 교차.
+    /// 변경이 없을 때 수렴하며, 실제로는 2-3회 이내.
     pub fn analyze(self: *TreeShaker, entry_points: []const []const u8) !void {
-        // 1. entry_set 사전 계산 (이후 O(1) bitset 조회)
         for (self.modules, 0..) |m, i| {
             for (entry_points) |ep| {
                 if (std.mem.eql(u8, m.path, ep)) {
@@ -72,31 +74,56 @@ pub const TreeShaker = struct {
             }
         }
 
-        // 2. 초기 시드: 진입점 + side_effects=true
         for (self.modules, 0..) |m, i| {
             if (self.entry_set.isSet(i) or m.side_effects) {
                 self.included.set(i);
             }
         }
 
-        // 3. Fixpoint
+        // 모듈별 re-export local name set 사전 구축 (isImportBindingUsed 최적화)
+        var re_export_sets = try self.allocator.alloc(?std.StringHashMap(void), self.modules.len);
+        defer {
+            for (re_export_sets) |*s| {
+                if (s.*) |*set| set.deinit();
+            }
+            self.allocator.free(re_export_sets);
+        }
+        for (self.modules, 0..) |m, i| {
+            var has_local_reexport = false;
+            for (m.export_bindings) |eb| {
+                if (eb.kind == .local) {
+                    has_local_reexport = true;
+                    break;
+                }
+            }
+            if (has_local_reexport) {
+                var set = std.StringHashMap(void).init(self.allocator);
+                for (m.export_bindings) |eb| {
+                    if (eb.kind == .local) try set.put(eb.local_name, {});
+                }
+                re_export_sets[i] = set;
+            } else {
+                re_export_sets[i] = null;
+            }
+        }
+        self.re_export_sets = re_export_sets;
+
         var iteration: u32 = 0;
         while (iteration < max_fixpoint_iterations) : (iteration += 1) {
             self.clearUsedExports();
 
-            // 진입점 export 마킹
             for (self.modules, 0..) |_, i| {
                 if (self.entry_set.isSet(i)) try self.markAllExportsUsed(@intCast(i));
             }
 
-            // 포함된 모듈의 import binding → export 마킹 + canonical 모듈 포함
             for (self.modules, 0..) |m, i| {
                 if (!self.included.isSet(i)) continue;
                 try self.processModuleImports(m);
             }
 
-            // sideEffects=false + used export 없음 → 제거
             var changed = false;
+
+            // 미사용 sideEffects=false 모듈 제거
             for (self.modules, 0..) |m, i| {
                 if (!self.included.isSet(i)) continue;
                 if (self.entry_set.isSet(i) or m.side_effects) continue;
@@ -106,7 +133,7 @@ pub const TreeShaker = struct {
                 }
             }
 
-            // 포함된 모듈이 import하는 side_effects=true 모듈 포함
+            // 포함된 모듈이 import하는 side_effects=true 모듈 전파
             for (self.modules, 0..) |m, i| {
                 if (!self.included.isSet(i)) continue;
                 for (m.import_records) |rec| {
@@ -148,7 +175,7 @@ pub const TreeShaker = struct {
             const target_mod = @intFromEnum(rec.resolved);
             if (target_mod >= self.modules.len) continue;
 
-            if (!isImportBindingUsed(m, ib)) continue;
+            if (!self.isImportBindingUsed(m, ib)) continue;
 
             const canonical = self.linker.resolveExportChain(rec.resolved, ib.imported_name, 0);
             if (canonical) |c| {
@@ -167,7 +194,7 @@ pub const TreeShaker = struct {
     /// import binding이 실제로 사용되는지 판별.
     /// reference_count > 0이거나, export { x }로 re-export되면 "사용됨".
     /// semantic data 없으면 보수적으로 true.
-    fn isImportBindingUsed(m: Module, ib: ImportBinding) bool {
+    fn isImportBindingUsed(self: *const TreeShaker, m: Module, ib: ImportBinding) bool {
         if (m.semantic) |sem| {
             if (sem.scope_maps.len > 0) {
                 if (sem.scope_maps[0].get(ib.local_name)) |sym_idx| {
@@ -176,9 +203,12 @@ pub const TreeShaker = struct {
             }
         } else return true;
 
-        // export { x }는 reference_count에 반영되지 않으므로 export binding 직접 확인
-        for (m.export_bindings) |eb| {
-            if (eb.kind == .local and std.mem.eql(u8, eb.local_name, ib.local_name)) return true;
+        // export { x }는 reference_count에 반영되지 않으므로 사전 구축된 set으로 O(1) 확인
+        const mod_idx = @intFromEnum(m.index);
+        if (mod_idx < self.re_export_sets.len) {
+            if (self.re_export_sets[mod_idx]) |set| {
+                return set.contains(ib.local_name);
+            }
         }
         return false;
     }
