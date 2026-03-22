@@ -358,25 +358,28 @@ pub const DevServer = struct {
 
             // CSS 변경 → 번들 재빌드 없이 css-update 전송 (link tag swap)
             var has_css = false;
-            for (changed_paths.items) |cp| {
-                if (std.mem.endsWith(u8, cp, ".css")) {
-                    has_css = true;
-                    // 상대 경로 계산: root_dir prefix 제거
-                    const rel = blk: {
-                        const root_real = std.fs.cwd().realpathAlloc(self.allocator, self.root_path) catch break :blk std.fs.path.basename(cp);
-                        defer self.allocator.free(root_real);
-                        if (std.mem.startsWith(u8, cp, root_real)) {
-                            var r = cp[root_real.len..];
-                            if (r.len > 0 and r[0] == '/') r = r[1..];
-                            break :blk r;
-                        }
-                        break :blk std.fs.path.basename(cp);
-                    };
+            {
+                // root_real을 루프 밖에서 1회만 계산
+                const root_real = std.fs.cwd().realpathAlloc(self.allocator, self.root_path) catch null;
+                defer if (root_real) |r| self.allocator.free(r);
 
-                    var msg_buf: [512]u8 = undefined;
-                    const css_msg = std.fmt.bufPrint(&msg_buf, "{{\"type\":\"css-update\",\"file\":\"/{s}\"}}", .{rel}) catch continue;
-                    self.ws_clients.broadcast(css_msg);
-                    getLog().print("  [hmr] css update: {s}\n", .{std.fs.path.basename(cp)}) catch {};
+                for (changed_paths.items) |cp| {
+                    if (std.mem.endsWith(u8, cp, ".css")) {
+                        has_css = true;
+                        const rel = if (root_real) |root| blk: {
+                            if (std.mem.startsWith(u8, cp, root)) {
+                                var r = cp[root.len..];
+                                if (r.len > 0 and r[0] == '/') r = r[1..];
+                                break :blk r;
+                            }
+                            break :blk std.fs.path.basename(cp);
+                        } else std.fs.path.basename(cp);
+
+                        var msg_buf: [512]u8 = undefined;
+                        const css_msg = std.fmt.bufPrint(&msg_buf, "{{\"type\":\"css-update\",\"file\":\"/{s}\"}}", .{rel}) catch continue;
+                        self.ws_clients.broadcast(css_msg);
+                        getLog().print("  [hmr] css update: {s}\n", .{std.fs.path.basename(cp)}) catch {};
+                    }
                 }
             }
 
