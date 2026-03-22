@@ -698,18 +698,26 @@ pub const Codegen = struct {
     // ================================================================
 
     fn emitUnary(self: *Codegen, node: Node) !void {
-        const op: Kind = @enumFromInt(node.data.unary.flags);
+        const e = node.data.extra;
+        const extras = self.ast.extra_data.items;
+        if (e + 1 >= extras.len) return;
+        const operand: NodeIndex = @enumFromInt(extras[e]);
+        const op: Kind = @enumFromInt(@as(u8, @truncate(extras[e + 1])));
         try self.write(op.symbol());
         if (op == .kw_typeof or op == .kw_void or op == .kw_delete) try self.writeByte(' ');
-        try self.emitNode(node.data.unary.operand);
+        try self.emitNode(operand);
     }
 
     fn emitUpdate(self: *Codegen, node: Node) !void {
-        const flags = node.data.unary.flags;
+        const e = node.data.extra;
+        const extras = self.ast.extra_data.items;
+        if (e + 1 >= extras.len) return;
+        const operand: NodeIndex = @enumFromInt(extras[e]);
+        const flags = extras[e + 1];
         const is_postfix = (flags & 0x100) != 0;
         const op: Kind = @enumFromInt(@as(u8, @truncate(flags)));
         if (!is_postfix) try self.write(op.symbol());
-        try self.emitNode(node.data.unary.operand);
+        try self.emitNode(operand);
         if (is_postfix) try self.write(op.symbol());
     }
 
@@ -811,24 +819,36 @@ pub const Codegen = struct {
     }
 
     fn emitStaticMember(self: *Codegen, node: Node) !void {
-        try self.emitNode(node.data.binary.left);
+        const e = node.data.extra;
+        const extras = self.ast.extra_data.items;
+        if (e + 2 >= extras.len) return;
+        const object: NodeIndex = @enumFromInt(extras[e]);
+        const property: NodeIndex = @enumFromInt(extras[e + 1]);
+        const flags = extras[e + 2];
+        try self.emitNode(object);
         // flags=1 → optional chaining (a?.b)
-        if (node.data.binary.flags == 1) {
+        if (flags & 1 != 0) {
             try self.write("?.");
         } else {
             try self.writeByte('.');
         }
-        try self.emitNode(node.data.binary.right);
+        try self.emitNode(property);
     }
 
     fn emitComputedMember(self: *Codegen, node: Node) !void {
-        try self.emitNode(node.data.binary.left);
+        const e = node.data.extra;
+        const extras = self.ast.extra_data.items;
+        if (e + 2 >= extras.len) return;
+        const object: NodeIndex = @enumFromInt(extras[e]);
+        const property: NodeIndex = @enumFromInt(extras[e + 1]);
+        const flags = extras[e + 2];
+        try self.emitNode(object);
         // flags=1 → optional chaining (a?.[b])
-        if (node.data.binary.flags == 1) {
+        if (flags & 1 != 0) {
             try self.write("?.");
         }
         try self.writeByte('[');
-        try self.emitNode(node.data.binary.right);
+        try self.emitNode(property);
         try self.writeByte(']');
     }
 
@@ -874,8 +894,11 @@ pub const Codegen = struct {
     }
 
     fn emitTaggedTemplate(self: *Codegen, node: Node) !void {
-        try self.emitNode(node.data.binary.left);
-        try self.emitNode(node.data.binary.right);
+        const e = node.data.extra;
+        const extras = self.ast.extra_data.items;
+        if (e + 1 >= extras.len) return;
+        try self.emitNode(@enumFromInt(extras[e]));
+        try self.emitNode(@enumFromInt(extras[e + 1]));
     }
 
     /// import.meta → CJS에서 치환
@@ -924,12 +947,15 @@ pub const Codegen = struct {
         try self.emitNode(body);
     }
 
-    /// arrow_function_expression: binary = { left=params, right=body, flags }
+    /// arrow_function_expression: extra = [params, body, flags]
     /// flags: 0x01 = async
     fn emitArrow(self: *Codegen, node: Node) !void {
-        const params = node.data.binary.left;
-        const body = node.data.binary.right;
-        const flags = node.data.binary.flags;
+        const e = node.data.extra;
+        const extras = self.ast.extra_data.items;
+        if (e + 2 >= extras.len) return;
+        const params: NodeIndex = @enumFromInt(extras[e]);
+        const body: NodeIndex = @enumFromInt(extras[e + 1]);
+        const flags = extras[e + 2];
 
         if (flags & 0x01 != 0) try self.write("async ");
 

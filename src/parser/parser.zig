@@ -465,7 +465,8 @@ pub const Parser = struct {
 
             // 2) member expression — optional chaining이 아니면 valid (태그 유지)
             .static_member_expression, .computed_member_expression => {
-                if (node.data.binary.flags == 0) return true; // normal
+                const e = node.data.extra;
+                if (e + 2 < self.ast.extra_data.items.len and self.ast.extra_data.items[e + 2] == 0) return true; // normal
                 // optional chaining (a?.b, a?.[b])은 assignment target이 아님
                 if (is_top) try self.addError(node.span, "Invalid assignment target");
                 return false;
@@ -784,9 +785,16 @@ pub const Parser = struct {
             // unary node — operand만 검사
             .parenthesized_expression,
             .spread_element,
+            => try self.checkCoverParamDefaultForYieldAwait(node.data.unary.operand),
+            // unary/update: extra = [operand, operator_and_flags]
             .unary_expression,
             .update_expression,
-            => try self.checkCoverParamDefaultForYieldAwait(node.data.unary.operand),
+            => {
+                const e = node.data.extra;
+                if (e < self.ast.extra_data.items.len) {
+                    try self.checkCoverParamDefaultForYieldAwait(@enumFromInt(self.ast.extra_data.items[e]));
+                }
+            },
             // list node — 각 요소 검사
             .sequence_expression,
             .array_expression,

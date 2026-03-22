@@ -145,11 +145,14 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
                         .data = .{ .string_ref = id_span },
                     });
                     const body = try parseArrowBody(self, true, param);
-                    return try self.ast.addNode(.{
-                        .tag = .arrow_function_expression,
-                        .span = .{ .start = async_span.start, .end = self.currentSpan().start },
-                        .data = .{ .binary = .{ .left = param, .right = body, .flags = 0x01 } },
-                    });
+                    {
+                        const ae = try self.ast.addExtras(&.{ @intFromEnum(param), @intFromEnum(body), 0x01 });
+                        return try self.ast.addNode(.{
+                            .tag = .arrow_function_expression,
+                            .span = .{ .start = async_span.start, .end = self.currentSpan().start },
+                            .data = .{ .extra = ae },
+                        });
+                    }
                 }
                 self.restoreState(saved);
             }
@@ -167,11 +170,14 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
                     if (self.current() == .arrow and !self.scanner.token.has_newline_before) {
                         try self.advance(); // skip =>
                         const body = try parseArrowBody(self, true, .none);
-                        return try self.ast.addNode(.{
-                            .tag = .arrow_function_expression,
-                            .span = .{ .start = async_span.start, .end = self.currentSpan().start },
-                            .data = .{ .binary = .{ .left = .none, .right = body, .flags = 0x01 } },
-                        });
+                        {
+                            const ae = try self.ast.addExtras(&.{ @intFromEnum(NodeIndex.none), @intFromEnum(body), 0x01 });
+                            return try self.ast.addNode(.{
+                                .tag = .arrow_function_expression,
+                                .span = .{ .start = async_span.start, .end = self.currentSpan().start },
+                                .data = .{ .extra = ae },
+                            });
+                        }
                     }
                     self.restoreState(saved);
                 } else {
@@ -183,11 +189,14 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
                         try self.checkAsyncArrowParamsForAwait(params_expr);
                         try self.advance(); // skip =>
                         const body = try parseArrowBody(self, true, params_expr);
-                        return try self.ast.addNode(.{
-                            .tag = .arrow_function_expression,
-                            .span = .{ .start = async_span.start, .end = self.currentSpan().start },
-                            .data = .{ .binary = .{ .left = params_expr, .right = body, .flags = 0x01 } },
-                        });
+                        {
+                            const ae = try self.ast.addExtras(&.{ @intFromEnum(params_expr), @intFromEnum(body), 0x01 });
+                            return try self.ast.addNode(.{
+                                .tag = .arrow_function_expression,
+                                .span = .{ .start = async_span.start, .end = self.currentSpan().start },
+                                .data = .{ .extra = ae },
+                            });
+                        }
                     }
                     self.restoreState(saved);
                 }
@@ -213,11 +222,14 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
             });
             const body = try parseArrowBody(self, false, param);
 
-            return try self.ast.addNode(.{
-                .tag = .arrow_function_expression,
-                .span = .{ .start = id_span.start, .end = self.currentSpan().start },
-                .data = .{ .binary = .{ .left = param, .right = body, .flags = 0 } },
-            });
+            {
+                const ae = try self.ast.addExtras(&.{ @intFromEnum(param), @intFromEnum(body), 0 });
+                return try self.ast.addNode(.{
+                    .tag = .arrow_function_expression,
+                    .span = .{ .start = id_span.start, .end = self.currentSpan().start },
+                    .data = .{ .extra = ae },
+                });
+            }
         }
 
         // arrow가 아님 → 되돌리기
@@ -233,11 +245,14 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
         if (self.current() == .arrow and !self.scanner.token.has_newline_before) {
             try self.advance(); // skip =>
             const body = try parseArrowBody(self, false, .none);
-            return try self.ast.addNode(.{
-                .tag = .arrow_function_expression,
-                .span = .{ .start = arrow_start, .end = self.currentSpan().start },
-                .data = .{ .binary = .{ .left = .none, .right = body, .flags = 0 } },
-            });
+            {
+                const ae = try self.ast.addExtras(&.{ @intFromEnum(NodeIndex.none), @intFromEnum(body), 0 });
+                return try self.ast.addNode(.{
+                    .tag = .arrow_function_expression,
+                    .span = .{ .start = arrow_start, .end = self.currentSpan().start },
+                    .data = .{ .extra = ae },
+                });
+            }
         }
         self.restoreState(saved);
     }
@@ -296,11 +311,14 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
         try self.advance(); // skip =>
         const body = try parseArrowBody(self, false, left);
 
-        return try self.ast.addNode(.{
-            .tag = .arrow_function_expression,
-            .span = .{ .start = left_start, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = left, .right = body, .flags = 0 } },
-        });
+        {
+            const ae = try self.ast.addExtras(&.{ @intFromEnum(left), @intFromEnum(body), 0 });
+            return try self.ast.addNode(.{
+                .tag = .arrow_function_expression,
+                .span = .{ .start = left_start, .end = self.currentSpan().start },
+                .data = .{ .extra = ae },
+            });
+        }
     }
 
     if (self.current().isAssignment()) {
@@ -459,7 +477,8 @@ fn parseUnaryExpression(self: *Parser) ParseError2!NodeIndex {
                         del_node.tag == .computed_member_expression or
                         del_node.tag == .private_field_expression)
                     {
-                        const right_idx = del_node.data.binary.right;
+                        const de = del_node.data.extra;
+                        const right_idx: NodeIndex = if (de + 1 < self.ast.extra_data.items.len) @enumFromInt(self.ast.extra_data.items[de + 1]) else NodeIndex.none;
                         if (!right_idx.isNone() and @intFromEnum(right_idx) < self.ast.nodes.items.len) {
                             if (self.ast.getNode(right_idx).tag == .private_identifier) {
                                 try self.addError(del_node.span, "Private fields cannot be deleted");
@@ -481,11 +500,14 @@ fn parseUnaryExpression(self: *Parser) ParseError2!NodeIndex {
                     } else break;
                 }
             }
-            return try self.ast.addNode(.{
-                .tag = .unary_expression,
-                .span = .{ .start = start, .end = self.currentSpan().start },
-                .data = .{ .unary = .{ .operand = operand, .flags = @intFromEnum(kind) } },
-            });
+            {
+                const ue = try self.ast.addExtras(&.{ @intFromEnum(operand), @intFromEnum(kind) });
+                return try self.ast.addNode(.{
+                    .tag = .unary_expression,
+                    .span = .{ .start = start, .end = self.currentSpan().start },
+                    .data = .{ .extra = ue },
+                });
+            }
         },
         .plus2, .minus2 => {
             const start = self.currentSpan().start;
@@ -493,11 +515,14 @@ fn parseUnaryExpression(self: *Parser) ParseError2!NodeIndex {
             const operand = try parseUnaryExpression(self);
             // ++/-- operand는 유효한 assignment target이어야 함
             _ = try self.coverExpressionToAssignmentTarget(operand, true);
-            return try self.ast.addNode(.{
-                .tag = .update_expression,
-                .span = .{ .start = start, .end = self.currentSpan().start },
-                .data = .{ .unary = .{ .operand = operand, .flags = @intFromEnum(kind) } },
-            });
+            {
+                const ue = try self.ast.addExtras(&.{ @intFromEnum(operand), @intFromEnum(kind) });
+                return try self.ast.addNode(.{
+                    .tag = .update_expression,
+                    .span = .{ .start = start, .end = self.currentSpan().start },
+                    .data = .{ .extra = ue },
+                });
+            }
         },
         .kw_await => {
             // static initializer에서 await 사용 금지 (ECMAScript 15.7.14)
@@ -549,11 +574,14 @@ fn parsePostfixExpression(self: *Parser) ParseError2!NodeIndex {
         const expr_start = self.ast.getNode(expr).span.start;
         const kind = self.current();
         try self.advance();
-        expr = try self.ast.addNode(.{
-            .tag = .update_expression,
-            .span = .{ .start = expr_start, .end = self.currentSpan().start },
-            .data = .{ .unary = .{ .operand = expr, .flags = @as(u16, @intFromEnum(kind)) | 0x100 } }, // 0x100 = postfix
-        });
+        {
+            const ue = try self.ast.addExtras(&.{ @intFromEnum(expr), @as(u32, @intFromEnum(kind)) | 0x100 }); // 0x100 = postfix
+            expr = try self.ast.addNode(.{
+                .tag = .update_expression,
+                .span = .{ .start = expr_start, .end = self.currentSpan().start },
+                .data = .{ .extra = ue },
+            });
+        }
     }
 
     // TS: non-null assertion (expr!)
@@ -640,14 +668,17 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                         try self.addError(self.ast.getNode(prop).span, "Private field access on super is not allowed");
                     }
                 }
-                expr = try self.ast.addNode(.{
-                    .tag = if (!prop.isNone() and self.ast.getNode(prop).tag == .private_identifier)
-                        .private_field_expression
-                    else
-                        .static_member_expression,
-                    .span = .{ .start = expr_start, .end = self.currentSpan().start },
-                    .data = .{ .binary = .{ .left = expr, .right = prop, .flags = 0 } },
-                });
+                {
+                    const me = try self.ast.addExtras(&.{ @intFromEnum(expr), @intFromEnum(prop), 0 });
+                    expr = try self.ast.addNode(.{
+                        .tag = if (!prop.isNone() and self.ast.getNode(prop).tag == .private_identifier)
+                            .private_field_expression
+                        else
+                            .static_member_expression,
+                        .span = .{ .start = expr_start, .end = self.currentSpan().start },
+                        .data = .{ .extra = me },
+                    });
+                }
             },
             .l_bracket => {
                 // 계산된 멤버 접근: a[b] — `in` 연산자 허용 (ECMAScript: [+In])
@@ -656,11 +687,14 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                 const prop = try parseExpression(self);
                 self.restoreContext(cm_saved);
                 try self.expect(.r_bracket);
-                expr = try self.ast.addNode(.{
-                    .tag = .computed_member_expression,
-                    .span = .{ .start = expr_start, .end = self.currentSpan().start },
-                    .data = .{ .binary = .{ .left = expr, .right = prop, .flags = 0 } },
-                });
+                {
+                    const me = try self.ast.addExtras(&.{ @intFromEnum(expr), @intFromEnum(prop), 0 });
+                    expr = try self.ast.addNode(.{
+                        .tag = .computed_member_expression,
+                        .span = .{ .start = expr_start, .end = self.currentSpan().start },
+                        .data = .{ .extra = me },
+                    });
+                }
             },
             .question_dot => {
                 // optional chaining: a?.b, a?.[b], a?.()
@@ -672,11 +706,14 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                     const prop = try parseExpression(self);
                     self.restoreContext(oc_saved);
                     try self.expect(.r_bracket);
-                    expr = try self.ast.addNode(.{
-                        .tag = .computed_member_expression,
-                        .span = .{ .start = expr_start, .end = self.currentSpan().start },
-                        .data = .{ .binary = .{ .left = expr, .right = prop, .flags = 1 } }, // 1 = optional
-                    });
+                    {
+                        const me = try self.ast.addExtras(&.{ @intFromEnum(expr), @intFromEnum(prop), 1 }); // 1 = optional
+                        expr = try self.ast.addNode(.{
+                            .tag = .computed_member_expression,
+                            .span = .{ .start = expr_start, .end = self.currentSpan().start },
+                            .data = .{ .extra = me },
+                        });
+                    }
                 } else if (self.current() == .l_paren) {
                     // a?.()
                     try self.advance();
@@ -693,11 +730,14 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                 } else {
                     // a?.b
                     const prop = try parseIdentifierName(self);
-                    expr = try self.ast.addNode(.{
-                        .tag = .static_member_expression,
-                        .span = .{ .start = expr_start, .end = self.currentSpan().start },
-                        .data = .{ .binary = .{ .left = expr, .right = prop, .flags = 1 } }, // 1 = optional
-                    });
+                    {
+                        const me = try self.ast.addExtras(&.{ @intFromEnum(expr), @intFromEnum(prop), 1 }); // 1 = optional
+                        expr = try self.ast.addNode(.{
+                            .tag = .static_member_expression,
+                            .span = .{ .start = expr_start, .end = self.currentSpan().start },
+                            .data = .{ .extra = me },
+                        });
+                    }
                 }
                 after_optional_chain = true;
                 continue;
@@ -720,11 +760,14 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                         .data = .{ .none = 0 },
                     });
                 };
-                expr = try self.ast.addNode(.{
-                    .tag = .tagged_template_expression,
-                    .span = .{ .start = expr_start, .end = self.currentSpan().start },
-                    .data = .{ .binary = .{ .left = expr, .right = tmpl, .flags = 0 } },
-                });
+                {
+                    const te = try self.ast.addExtras(&.{ @intFromEnum(expr), @intFromEnum(tmpl), 0 });
+                    expr = try self.ast.addNode(.{
+                        .tag = .tagged_template_expression,
+                        .span = .{ .start = expr_start, .end = self.currentSpan().start },
+                        .data = .{ .extra = te },
+                    });
+                }
             },
             else => break,
         }
@@ -797,21 +840,27 @@ fn parseNewCallee(self: *Parser) ParseError2!NodeIndex {
             .dot => {
                 try self.advance();
                 const prop = try parseIdentifierName(self);
-                expr = try self.ast.addNode(.{
-                    .tag = .static_member_expression,
-                    .span = .{ .start = expr_start, .end = self.currentSpan().start },
-                    .data = .{ .binary = .{ .left = expr, .right = prop, .flags = 0 } },
-                });
+                {
+                    const me = try self.ast.addExtras(&.{ @intFromEnum(expr), @intFromEnum(prop), 0 });
+                    expr = try self.ast.addNode(.{
+                        .tag = .static_member_expression,
+                        .span = .{ .start = expr_start, .end = self.currentSpan().start },
+                        .data = .{ .extra = me },
+                    });
+                }
             },
             .l_bracket => {
                 try self.advance();
                 const prop = try parseExpression(self);
                 try self.expect(.r_bracket);
-                expr = try self.ast.addNode(.{
-                    .tag = .computed_member_expression,
-                    .span = .{ .start = expr_start, .end = self.currentSpan().start },
-                    .data = .{ .binary = .{ .left = expr, .right = prop, .flags = 0 } },
-                });
+                {
+                    const me = try self.ast.addExtras(&.{ @intFromEnum(expr), @intFromEnum(prop), 0 });
+                    expr = try self.ast.addNode(.{
+                        .tag = .computed_member_expression,
+                        .span = .{ .start = expr_start, .end = self.currentSpan().start },
+                        .data = .{ .extra = me },
+                    });
+                }
             },
             else => break,
         }
