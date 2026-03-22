@@ -855,12 +855,13 @@ pub const Codegen = struct {
     /// call_expression: extra = [callee, args_start, args_len, flags]
     fn emitCall(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
-        if (e + 3 >= self.ast.extra_data.items.len) return;
-        const callee: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-        const args_start = self.ast.extra_data.items[e + 1];
-        const args_len = self.ast.extra_data.items[e + 2];
-        const flags = self.ast.extra_data.items[e + 3];
-        const CallFlags = @import("../parser/ast.zig").CallFlags;
+        const extras = self.ast.extra_data.items;
+        if (e + 3 >= extras.len) return;
+        const callee: NodeIndex = @enumFromInt(extras[e]);
+        const args_start = extras[e + 1];
+        const args_len = extras[e + 2];
+        const flags = extras[e + 3];
+        const CallFlags = ast_mod.CallFlags;
         const is_optional = (flags & CallFlags.optional_chain) != 0;
         const is_pure = (flags & CallFlags.is_pure) != 0;
 
@@ -876,12 +877,13 @@ pub const Codegen = struct {
     /// new_expression: extra = [callee, args_start, args_len, flags]
     fn emitNew(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
-        if (e + 3 >= self.ast.extra_data.items.len) return;
-        const callee: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-        const args_start = self.ast.extra_data.items[e + 1];
-        const args_len = self.ast.extra_data.items[e + 2];
-        const flags = self.ast.extra_data.items[e + 3];
-        const CallFlags = @import("../parser/ast.zig").CallFlags;
+        const extras = self.ast.extra_data.items;
+        if (e + 3 >= extras.len) return;
+        const callee: NodeIndex = @enumFromInt(extras[e]);
+        const args_start = extras[e + 1];
+        const args_len = extras[e + 2];
+        const flags = extras[e + 3];
+        const CallFlags = ast_mod.CallFlags;
         const is_pure = (flags & CallFlags.is_pure) != 0;
 
         if (is_pure and !self.options.minify) try self.write("/* @__PURE__ */ ");

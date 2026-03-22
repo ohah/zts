@@ -718,9 +718,13 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                     // a?.()
                     try self.advance();
                     const arg_list = try parseArgumentList(self);
-                    const Flags = @import("ast.zig").CallFlags;
+                    var oc_flags: u32 = ast_mod.CallFlags.optional_chain;
+                    if (had_pure_comment) {
+                        oc_flags |= ast_mod.CallFlags.is_pure;
+                        had_pure_comment = false;
+                    }
                     const oc_extra = try self.ast.addExtras(&.{
-                        @intFromEnum(expr), arg_list.start, arg_list.len, Flags.optional_chain,
+                        @intFromEnum(expr), arg_list.start, arg_list.len, oc_flags,
                     });
                     expr = try self.ast.addNode(.{
                         .tag = .call_expression,

@@ -420,6 +420,8 @@ pub const Transformer = struct {
         const extras = self.old_ast.extra_data.items;
         if (e + 2 >= extras.len) return NodeIndex.none;
         const new_left = try self.visitNode(@enumFromInt(extras[e]));
+        // computed_member: right는 임의 expression. static_member/private_field: right는 식별자 리프.
+        // visitNode가 리프를 copyNodeDirect로 처리하므로 동일하게 visitNode 호출.
         const new_right = try self.visitNode(@enumFromInt(extras[e + 1]));
         const new_extra = try self.new_ast.addExtras(&.{ @intFromEnum(new_left), @intFromEnum(new_right), extras[e + 2] });
         return self.new_ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
