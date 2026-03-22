@@ -384,6 +384,10 @@ pub fn generateChunks(
         bs.* = try BitSet.init(allocator, @intCast(entry_count));
     }
 
+    // BitSet → ChunkIndex HashMap (Phase 3에서 O(1) 청크 lookup에 사용)
+    var bits_to_chunk: std.HashMapUnmanaged(BitSet, ChunkIndex, BitSetContext, 80) = .empty;
+    defer bits_to_chunk.deinit(allocator);
+
     // Phase 1c: 엔트리별 Chunk 생성
     for (entries.items, 0..) |entry, bit_idx| {
         var bits = try BitSet.init(allocator, @intCast(entry_count));
@@ -402,7 +406,8 @@ pub fn generateChunks(
         } }, bits);
         chunk.name = name;
 
-        _ = try chunk_graph.addChunk(chunk);
+        const ci = try chunk_graph.addChunk(chunk);
+        try bits_to_chunk.put(allocator, bits, ci);
     }
 
     // ── Phase 2: BFS 도달 가능성 마킹 ──
@@ -461,23 +466,15 @@ pub fn generateChunks(
         // 비트가 비어있으면 어떤 엔트리에서도 도달 불가 → 스킵
         if (splitting_info[mi].isEmpty()) continue;
 
-        // 동일한 BitSet 패턴의 청크를 선형 탐색.
-        // 엔트리 수가 보통 수십 개 이하이므로 O(chunks)로 충분.
-        // 성능이 문제가 되면 BitSet → ChunkIndex HashMap으로 교체 가능.
-        var found_chunk: ?ChunkIndex = null;
-        for (chunk_graph.chunks.items, 0..) |chunk, ci| {
-            if (chunk.bits.eql(splitting_info[mi])) {
-                found_chunk = @enumFromInt(@as(u32, @intCast(ci)));
-                break;
-            }
-        }
-
-        const chunk_idx = if (found_chunk) |ci| ci else blk: {
-            // 기존 청크와 일치하지 않는 새로운 BitSet 패턴 → 공통 청크 생성
+        // BitSet → ChunkIndex O(1) lookup (esbuild/rolldown 패턴)
+        const chunk_idx = if (bits_to_chunk.get(splitting_info[mi])) |ci| ci else blk: {
+            // 새로운 BitSet 패턴 → 공통 청크 생성
             var bits = try splitting_info[mi].clone(allocator);
             errdefer bits.deinit(allocator);
             const new_chunk = Chunk.init(.none, .common, bits);
-            break :blk try chunk_graph.addChunk(new_chunk);
+            const ci = try chunk_graph.addChunk(new_chunk);
+            try bits_to_chunk.put(allocator, bits, ci);
+            break :blk ci;
         };
 
         chunk_graph.assignModuleToChunk(
