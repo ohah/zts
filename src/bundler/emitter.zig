@@ -244,27 +244,19 @@ fn emitModule(
         return try allocator.dupe(u8, wrapped.items);
     }
 
-    // CJS import preamble 삽입 (require_xxx() 호출문)
-    var final_code = code;
-    if (metadata) |md| {
-        if (md.cjs_import_preamble) |preamble| {
-            final_code = try std.mem.concat(allocator, u8, &.{ preamble, code });
-        }
-    }
+    // CJS import preamble + final_exports를 하나의 concat으로 합침 (중간 할당 누수 방지)
+    const preamble = if (metadata) |md| md.cjs_import_preamble else null;
+    const final_exports = if (metadata) |md| md.final_exports else null;
 
-    // final_exports 붙이기 (엔트리 포인트)
-    if (metadata) |m| {
-        if (m.final_exports) |fe| {
-            const combined = try std.mem.concat(allocator, u8, &.{ final_code, fe });
-            return combined;
-        }
+    if (preamble != null or final_exports != null) {
+        return try std.mem.concat(allocator, u8, &.{
+            preamble orelse "",
+            code,
+            final_exports orelse "",
+        });
     }
 
     // arena 해제 전에 복사 (caller 소유)
-    if (final_code.ptr != code.ptr) {
-        // final_code는 이미 allocator 소유
-        return final_code;
-    }
     return try allocator.dupe(u8, code);
 }
 

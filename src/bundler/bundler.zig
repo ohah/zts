@@ -7566,3 +7566,153 @@ test "CJS: require chain (CJS requires CJS)" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require_a") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require_b") != null);
 }
+
+test "CJS: namespace import from CJS" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import * as lib from './lib.cjs';\nconsole.log(lib.value);");
+    try writeFile(tmp.dir, "lib.cjs", "exports.value = 42;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_lib") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") != null);
+}
+
+test "CJS: multiple named imports from same CJS module" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { add, subtract } from './math.cjs';
+        \\console.log(add(1, 2), subtract(3, 1));
+    );
+    try writeFile(tmp.dir, "math.cjs",
+        \\exports.add = function(a, b) { return a + b; };
+        \\exports.subtract = function(a, b) { return a - b; };
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_math") != null);
+    // named import preamble에 add, subtract 모두 포함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ".add") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ".subtract") != null);
+}
+
+test "CJS: aliased named import from CJS" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { value as v } from './lib.cjs';\nconsole.log(v);");
+    try writeFile(tmp.dir, "lib.cjs", "exports.value = 42;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_lib") != null);
+}
+
+test "CJS: minified CJS wrapping" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import lib from './lib.cjs';\nconsole.log(lib);");
+    try writeFile(tmp.dir, "lib.cjs", "module.exports = 42;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .minify = true });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // minified 런타임 헬퍼
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS=") != null);
+    // 모듈 경계 주석 없음
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "// ---") == null);
+}
+
+test "CJS: special characters in module path sanitized" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import lib from './my-lib.cjs';\nconsole.log(lib);");
+    try writeFile(tmp.dir, "my-lib.cjs", "module.exports = 'hello';");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 하이픈이 _로 변환됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_my_lib") != null);
+}
+
+test "CJS: ESM module importing from both ESM and CJS" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { esm } from './esm-dep';
+        \\import { cjs } from './cjs-dep.cjs';
+        \\console.log(esm, cjs);
+    );
+    try writeFile(tmp.dir, "esm-dep.ts", "export const esm = 'esm';");
+    try writeFile(tmp.dir, "cjs-dep.cjs", "exports.cjs = 'cjs';");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // ESM dep은 스코프 호이스팅 (const esm 직접 노출)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "const esm") != null);
+    // CJS dep은 __commonJS 래핑
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_cjs_dep") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") != null);
+}
+
+test "CJS: empty CJS module" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import lib from './empty.cjs';\nconsole.log(lib);");
+    try writeFile(tmp.dir, "empty.cjs", "// empty module");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // .cjs 확장자이므로 CJS로 래핑됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_empty") != null);
+}
