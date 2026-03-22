@@ -26,10 +26,13 @@ pub fn parseFunctionDeclaration(self: *Parser) ParseError2!NodeIndex {
 
 fn parseFunctionDeclarationWithFlags(self: *Parser, extra_flags: u32) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
+    // @__NO_SIDE_EFFECTS__ 주석이 function 키워드 직전에 있으면 캡처
+    const had_no_side_effects = self.scanner.token.has_no_side_effects_comment;
     try self.advance(); // skip 'function'
 
     // generator: function* name()
     var flags = extra_flags;
+    if (had_no_side_effects) flags |= FunctionFlags.no_side_effects;
     if (try self.eat(.star)) {
         flags |= FunctionFlags.is_generator;
     }
@@ -126,9 +129,11 @@ pub fn parseAsyncFunctionDeclarationDefaultExport(self: *Parser) ParseError2!Nod
 /// export default에서만 사용.
 fn parseFunctionDeclarationWithFlagsOptionalName(self: *Parser, extra_flags: u32) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
+    const had_no_side_effects = self.scanner.token.has_no_side_effects_comment;
     try self.advance(); // skip 'function'
 
     var flags = extra_flags;
+    if (had_no_side_effects) flags |= FunctionFlags.no_side_effects;
     if (try self.eat(.star)) {
         flags |= FunctionFlags.is_generator;
     }
@@ -202,10 +207,12 @@ pub fn parseFunctionExpression(self: *Parser) ParseError2!NodeIndex {
 
 pub fn parseFunctionExpressionWithFlags(self: *Parser, extra_flags: u32) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
+    const had_no_side_effects = self.scanner.token.has_no_side_effects_comment;
     try self.advance(); // skip 'function'
 
     // generator: function* () {}
     var flags: u32 = extra_flags;
+    if (had_no_side_effects) flags |= FunctionFlags.no_side_effects;
     if (try self.eat(.star)) {
         flags |= FunctionFlags.is_generator;
     }

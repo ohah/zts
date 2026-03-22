@@ -48,8 +48,11 @@ pub const Token = struct {
     /// 이 토큰 직전에 줄바꿈이 있었는지 (ASI 판정에 필요)
     has_newline_before: bool = false,
 
-    /// 이 토큰 직전에 @__PURE__ 또는 @__NO_SIDE_EFFECTS__ 주석이 있었는지 (D025)
+    /// 이 토큰 직전에 @__PURE__ / #__PURE__ 주석이 있었는지 (D025)
     has_pure_comment_before: bool = false,
+
+    /// 이 토큰 직전에 @__NO_SIDE_EFFECTS__ 주석이 있었는지 (D025)
+    has_no_side_effects_comment: bool = false,
 
     /// 이 토큰이 유니코드 이스케이프를 포함하는지 (oxc 방식).
     /// escaped keyword 감지에 사용: advance()에서 escaped && is_keyword → 에러.

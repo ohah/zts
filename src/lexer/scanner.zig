@@ -332,6 +332,7 @@ pub const Scanner = struct {
     pub fn next(self: *Scanner) !void {
         self.token.has_newline_before = false;
         self.token.has_pure_comment_before = false;
+        self.token.has_no_side_effects_comment = false;
         self.token.has_escape = false;
         self.token.has_legacy_octal = false;
 
@@ -915,10 +916,13 @@ pub const Scanner = struct {
             std.mem.indexOf(u8, comment_text, "#") == null) return;
 
         if (std.mem.indexOf(u8, comment_text, "@__PURE__") != null or
-            std.mem.indexOf(u8, comment_text, "#__PURE__") != null or
-            std.mem.indexOf(u8, comment_text, "@__NO_SIDE_EFFECTS__") != null)
+            std.mem.indexOf(u8, comment_text, "#__PURE__") != null)
         {
             self.token.has_pure_comment_before = true;
+        }
+
+        if (std.mem.indexOf(u8, comment_text, "@__NO_SIDE_EFFECTS__") != null) {
+            self.token.has_no_side_effects_comment = true;
         }
 
         // JSX pragma 감지 (D026)
@@ -2227,14 +2231,16 @@ test "Scanner: #__PURE__ comment sets flag" {
     try std.testing.expect(scanner.token.has_pure_comment_before);
 }
 
-test "Scanner: @__NO_SIDE_EFFECTS__ comment sets flag" {
+test "Scanner: @__NO_SIDE_EFFECTS__ comment sets separate flag" {
     const source = "/* @__NO_SIDE_EFFECTS__ */ function f() {}";
     var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
     try scanner.next();
     try std.testing.expectEqual(Kind.kw_function, scanner.token.kind);
-    try std.testing.expect(scanner.token.has_pure_comment_before);
+    // @__NO_SIDE_EFFECTS__는 has_pure_comment_before가 아닌 별도 플래그
+    try std.testing.expect(!scanner.token.has_pure_comment_before);
+    try std.testing.expect(scanner.token.has_no_side_effects_comment);
 }
 
 test "Scanner: normal comment does not set pure flag" {
