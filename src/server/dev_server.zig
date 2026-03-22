@@ -124,7 +124,7 @@ pub const DevServer = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator, options: Options) !DevServer {
-        const root_dir = std.fs.cwd().openDir(options.root_dir, .{}) catch |err| {
+        const root_dir = std.fs.cwd().openDir(options.root_dir, .{ .iterate = true }) catch |err| {
             getLog().print("zts: cannot open directory '{s}': {}\n", .{ options.root_dir, err }) catch {};
             return err;
         };

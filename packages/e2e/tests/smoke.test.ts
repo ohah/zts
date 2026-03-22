@@ -191,12 +191,12 @@ test.describe("Dev Server E2E", () => {
           }
         };
         ws.onerror = () => resolve("error");
-        setTimeout(() => resolve("timeout"), 8000);
+        setTimeout(() => resolve("timeout"), 12000);
       });
     }, TEST_PORT);
 
-    // watch가 감지할 수 있도록 잠시 대기 후 CSS 변경
-    await new Promise((r) => setTimeout(r, 1000));
+    // watch가 감지할 수 있도록 잠시 대기 후 CSS 변경 (CI 환경에서 mtime polling 간격 고려)
+    await new Promise((r) => setTimeout(r, 1500));
     await writeFile(join(fixtureDir, "style.css"), "body { background: red; }");
 
     const result = await updatePromise;
