@@ -237,6 +237,10 @@ fn parseImportSpecifier(self: *Parser) ParseError2!NodeIndex {
 
 pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
+    // @__NO_SIDE_EFFECTS__ 주석이 export 키워드 앞에 있으면 캡처.
+    // export function f() {} 형태에서 주석은 export 토큰에 붙지만,
+    // function 파서에서 확인해야 하므로 여기서 미리 저장한다.
+    const had_no_side_effects = self.scanner.token.has_no_side_effects_comment;
     // ECMAScript 15.2: export 선언은 module의 top-level에서만 허용
     if (!self.is_module) {
         try self.addError(self.currentSpan(), "'export' declaration is only allowed in module code");
@@ -244,9 +248,17 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
         try self.addError(self.currentSpan(), "'export' declaration must be at the top level");
     }
     try self.advance(); // skip 'export'
+    // export 토큰의 @__NO_SIDE_EFFECTS__를 다음 토큰(function)에 전파
+    if (had_no_side_effects) {
+        self.scanner.token.has_no_side_effects_comment = true;
+    }
 
     // export default
     if (try self.eat(.kw_default)) {
+        // export default function: default 소비 후 다시 function 토큰에 전파
+        if (had_no_side_effects) {
+            self.scanner.token.has_no_side_effects_comment = true;
+        }
         const decl = switch (self.current()) {
             // export default function / export default function* — 이름 선택적
             .kw_function => blk: {
