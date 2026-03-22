@@ -106,7 +106,10 @@ pub fn parseAsyncStatement(self: *Parser) ParseError2!NodeIndex {
     const peek = try self.peekNext();
     // async [no LineTerminator here] function → async function declaration
     if (peek.kind == .kw_function and !peek.has_newline_before) {
+        // @__NO_SIDE_EFFECTS__: async 소비 후 function 토큰에 전파
+        const had_no_side_effects = self.scanner.token.has_no_side_effects_comment;
         try self.advance(); // skip 'async'
+        if (had_no_side_effects) self.scanner.token.has_no_side_effects_comment = true;
         return parseFunctionDeclarationWithFlags(self, FunctionFlags.is_async);
     }
     // async 뒤에 줄바꿈이 있거나 function이 아니면 → expression statement
@@ -121,7 +124,10 @@ pub fn parseFunctionDeclarationDefaultExport(self: *Parser) ParseError2!NodeInde
 
 /// export default async function / async function* — 이름이 선택적
 pub fn parseAsyncFunctionDeclarationDefaultExport(self: *Parser) ParseError2!NodeIndex {
+    // @__NO_SIDE_EFFECTS__: async 소비 후 function 토큰에 전파
+    const had_no_side_effects = self.scanner.token.has_no_side_effects_comment;
     try self.advance(); // skip 'async'
+    if (had_no_side_effects) self.scanner.token.has_no_side_effects_comment = true;
     return parseFunctionDeclarationWithFlagsOptionalName(self, FunctionFlags.is_async);
 }
 
