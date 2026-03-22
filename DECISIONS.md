@@ -731,6 +731,9 @@
   - 노드 크기 확장: 모든 AST 순회 성능에 영향. 캐시 라인당 노드 수 감소 (2.6 → 2개)
   - 가변 크기: WASM 직접 접근 포기 + 프로젝트 전체 재작성 비용
 - **참고**: esbuild(`ECall.CanBeUnwrappedIfUnused: bool`), oxc(`CallExpression.pure: bool`), Bun(`E.Call.can_be_unwrapped_if_unused: CallUnwrap(u2)`) — 모두 가변 크기 노드라 필드 추가로 해결. ZTS는 24B 고정이므로 extra_data로 동등한 확장성 확보.
+- **전환 완료 노드**: call_expression, new_expression, static_member_expression, computed_member_expression, private_field_expression, unary_expression, update_expression, arrow_function_expression, tagged_template_expression
+- **inline 유지 노드**: identifier_reference, string_literal (분석 단계 플래그만 필요 → tree-shaker 자체 구조에서 관리), array/object_expression (포맷팅 힌트는 span에서 유추), binary/assignment_expression (연산자 종류만, 확장 불필요)
+- **규칙**: "파싱 시 설정되는 플래그가 있는 노드 → extra_data. 분석 시 플래그만 필요한 노드 → 해당 분석 단계의 자체 구조. 플래그 불필요/유추 가능 → inline 유지"
 
 ### Phase 6 (Advanced) 미결정 사항
 - 개발 서버 고급 기능 (증분 재빌드, 프레임워크 통합)
