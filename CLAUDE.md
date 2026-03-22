@@ -225,7 +225,7 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
    - ✅ 4b. **Top-level await** — PR #251
      - semantic analyzer 기반 감지 (스코프 체인 추적, for_await_of_statement 태그)
      - 전이적 전파 (static import 체인), 비-ESM 경고
-   - ✅ 4c. **Code splitting** — PR #252-257
+   - ✅ 4c. **Code splitting** — PR #252-258
      - BitSet 도달 가능성 알고리즘 (rolldown 패턴)
      - generateChunks (엔트리 초기화 + BFS 마킹 + 청크 할당)
      - computeCrossChunkLinks (청크 간 의존성 + 심볼 수준 import/export)
@@ -234,6 +234,8 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
      - cross-chunk export alias (`export { x$1 as x }`)
      - cross-chunk import/local name 충돌 방지 (occupied names)
      - dynamic import 경로 리라이트 (`import('./page')` → `import('./page.js')`)
+     - content hash 파일명 (`chunk-{8자 hex}.js`, 결정론적)
+     - 동일 이름 cross-chunk import deconflict (`import { x as x$2 }`)
    - 4d. **Dev server + HMR** — 다음, watch 모드(✅) 위에 확장
      - HTTP + WebSocket 내장 서버
      - import.meta.hot API 주입
