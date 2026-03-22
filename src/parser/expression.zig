@@ -584,7 +584,23 @@ fn parsePostfixExpression(self: *Parser) ParseError2!NodeIndex {
 }
 
 pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
+    // @__PURE__ / #__PURE__ 주석이 바로 앞에 있으면 캡처 (esbuild/Bun 패턴).
+    // 첫 번째 call/new expression에만 적용하고 소비함.
+    var had_pure_comment = self.scanner.token.has_pure_comment_before;
     var expr = try parsePrimaryExpression(self);
+
+    // parsePrimaryExpression이 new_expression을 반환했으면 pure 플래그 사후 설정
+    if (had_pure_comment and !expr.isNone()) {
+        const result_tag = self.ast.getNode(expr).tag;
+        if (result_tag == .new_expression or result_tag == .call_expression) {
+            const e = self.ast.getNode(expr).data.extra;
+            if (e + 3 < self.ast.extra_data.items.len) {
+                self.ast.extra_data.items[e + 3] |= ast_mod.CallFlags.is_pure;
+            }
+            had_pure_comment = false;
+        }
+    }
+
     var after_optional_chain = false;
 
     while (true) {
@@ -598,10 +614,19 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                 // 함수 호출
                 try self.advance();
                 const arg_list = try parseArgumentList(self);
+                const Flags = ast_mod.CallFlags;
+                var call_flags: u32 = 0;
+                if (had_pure_comment) {
+                    call_flags |= Flags.is_pure;
+                    had_pure_comment = false; // 소비: 첫 call에만 적용
+                }
+                const call_extra = try self.ast.addExtras(&.{
+                    @intFromEnum(expr), arg_list.start, arg_list.len, call_flags,
+                });
                 expr = try self.ast.addNode(.{
                     .tag = .call_expression,
                     .span = .{ .start = expr_start, .end = self.currentSpan().start },
-                    .data = .{ .binary = .{ .left = expr, .right = @enumFromInt(arg_list.start), .flags = @intCast(arg_list.len) } },
+                    .data = .{ .extra = call_extra },
                 });
             },
             .dot => {
@@ -656,10 +681,14 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                     // a?.()
                     try self.advance();
                     const arg_list = try parseArgumentList(self);
+                    const Flags = @import("ast.zig").CallFlags;
+                    const oc_extra = try self.ast.addExtras(&.{
+                        @intFromEnum(expr), arg_list.start, arg_list.len, Flags.optional_chain,
+                    });
                     expr = try self.ast.addNode(.{
                         .tag = .call_expression,
                         .span = .{ .start = expr_start, .end = self.currentSpan().start },
-                        .data = .{ .binary = .{ .left = expr, .right = @enumFromInt(arg_list.start), .flags = @intCast(arg_list.len | 0x8000) } }, // 0x8000 = optional
+                        .data = .{ .extra = oc_extra },
                     });
                 } else {
                     // a?.b
@@ -733,16 +762,22 @@ fn parseNewCallee(self: *Parser) ParseError2!NodeIndex {
         if (self.current() == .l_paren) {
             try self.advance();
             const arg_list = try parseArgumentList(self);
+            const ne = try self.ast.addExtras(&.{
+                @intFromEnum(callee), arg_list.start, arg_list.len, 0,
+            });
             return try self.ast.addNode(.{
                 .tag = .new_expression,
                 .span = .{ .start = span.start, .end = self.currentSpan().start },
-                .data = .{ .binary = .{ .left = callee, .right = @enumFromInt(arg_list.start), .flags = @intCast(arg_list.len) } },
+                .data = .{ .extra = ne },
             });
         }
+        const ne_no_args = try self.ast.addExtras(&.{
+            @intFromEnum(callee), 0, 0, 0,
+        });
         return try self.ast.addNode(.{
             .tag = .new_expression,
             .span = .{ .start = span.start, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = callee, .right = NodeIndex.none, .flags = 0 } },
+            .data = .{ .extra = ne_no_args },
         });
     }
 
@@ -897,18 +932,24 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
             if (self.current() == .l_paren) {
                 try self.advance(); // skip (
                 const arg_list = try parseArgumentList(self);
+                const ne2 = try self.ast.addExtras(&.{
+                    @intFromEnum(callee), arg_list.start, arg_list.len, 0,
+                });
                 return try self.ast.addNode(.{
                     .tag = .new_expression,
                     .span = .{ .start = span.start, .end = self.currentSpan().start },
-                    .data = .{ .binary = .{ .left = callee, .right = @enumFromInt(arg_list.start), .flags = @intCast(arg_list.len) } },
+                    .data = .{ .extra = ne2 },
                 });
             }
 
             // 인자 없는 new: new Foo
+            const ne2_no = try self.ast.addExtras(&.{
+                @intFromEnum(callee), 0, 0, 0,
+            });
             return try self.ast.addNode(.{
                 .tag = .new_expression,
                 .span = .{ .start = span.start, .end = self.currentSpan().start },
-                .data = .{ .binary = .{ .left = callee, .right = NodeIndex.none, .flags = 0 } },
+                .data = .{ .extra = ne2_no },
             });
         },
         .kw_super => {

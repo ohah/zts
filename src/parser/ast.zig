@@ -529,6 +529,13 @@ pub const FunctionFlags = struct {
     pub const is_generator: u32 = 0x02;
 };
 
+/// call_expression / new_expression의 flags 비트 (D082).
+/// extra: [callee, args_start, args_len, flags]
+pub const CallFlags = struct {
+    pub const is_pure: u32 = 0x01; // @__PURE__ / #__PURE__
+    pub const optional_chain: u32 = 0x02; // a?.()
+};
+
 // ============================================================
 // Tests
 // ============================================================

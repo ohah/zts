@@ -808,15 +808,15 @@ pub const SemanticAnalyzer = struct {
             .call_expression,
             .new_expression,
             => {
-                // binary: { left = callee, right = @enumFromInt(args_start), flags = args_len }
-                // callee 순회
-                try self.visitNode(node.data.binary.left);
-                // 인자 순회 — visitNodeList 재활용
-                // flags 하위 15비트가 인자 개수 (상위 비트는 optional chaining 플래그)
-                try self.visitNodeList(.{
-                    .start = @intFromEnum(node.data.binary.right),
-                    .len = node.data.binary.flags & 0x7FFF,
-                });
+                // extra: [callee, args_start, args_len, flags]
+                const e = node.data.extra;
+                if (e + 2 < self.ast.extra_data.items.len) {
+                    try self.visitNode(@enumFromInt(self.ast.extra_data.items[e]));
+                    try self.visitNodeList(.{
+                        .start = self.ast.extra_data.items[e + 1],
+                        .len = self.ast.extra_data.items[e + 2],
+                    });
+                }
             },
             .tagged_template_expression => {
                 // binary: { left = tag, right = template, flags = 0 }
