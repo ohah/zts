@@ -7433,3 +7433,136 @@ test "Integration: mixed default/named import from same module" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "'1.0'") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "debug") != null);
 }
+
+// ============================================================
+// CJS Wrapping Tests
+// ============================================================
+
+test "CJS: single CJS module wrapped with __commonJS" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import lib from './lib.cjs';\nconsole.log(lib);");
+    try writeFile(tmp.dir, "lib.cjs", "module.exports = { value: 42 };");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // __commonJS 런타임 헬퍼가 포함되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") != null);
+    // require_lib 변수명이 생성되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_lib") != null);
+    // module.exports가 래핑 내부에 유지되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports") != null);
+}
+
+test "CJS: ESM imports default from CJS" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import lib from './lib.cjs';\nconsole.log(lib);");
+    try writeFile(tmp.dir, "lib.cjs", "module.exports = 42;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // require_lib() 호출이 포함되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_lib()") != null);
+}
+
+test "CJS: ESM imports named from CJS" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { value } from './lib.cjs';\nconsole.log(value);");
+    try writeFile(tmp.dir, "lib.cjs", "exports.value = 42;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // require_lib()와 .value 접근이 포함되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_lib()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ".value") != null);
+}
+
+test "CJS: no runtime helper when no CJS modules" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { x } from './lib';\nconsole.log(x);");
+    try writeFile(tmp.dir, "lib.ts", "export const x = 42;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 순수 ESM이면 __commonJS 런타임이 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") == null);
+}
+
+test "CJS: mixed ESM and CJS modules" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { x } from './esm';
+        \\import cjs from './lib.cjs';
+        \\console.log(x, cjs);
+    );
+    try writeFile(tmp.dir, "esm.ts", "export const x = 'esm';");
+    try writeFile(tmp.dir, "lib.cjs", "module.exports = 'cjs';");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // ESM 모듈은 스코프 호이스팅 (import 제거)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "const x = 'esm'") != null);
+    // CJS 모듈은 __commonJS 래핑
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_lib") != null);
+}
+
+test "CJS: require chain (CJS requires CJS)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import a from './a.cjs';\nconsole.log(a);");
+    try writeFile(tmp.dir, "a.cjs", "const b = require('./b.cjs');\nmodule.exports = b + 1;");
+    try writeFile(tmp.dir, "b.cjs", "module.exports = 10;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 두 CJS 모듈 모두 래핑되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_b") != null);
+}

@@ -35,12 +35,15 @@ pub const LinkingMetadata = struct {
     /// 노드 인덱스 → 심볼 인덱스 매핑. 빌림 — deinit에서 해제하지 않음.
     /// module.parse_arena 또는 transformer.new_symbol_ids(emit_arena)가 소유.
     symbol_ids: []const ?u32,
+    /// CJS 모듈을 import하는 경우: require_xxx() 호출 preamble (e.g. "var lib = require_lib();\n")
+    cjs_import_preamble: ?[]const u8 = null,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *LinkingMetadata) void {
         self.skip_nodes.deinit();
         self.renames.deinit();
         if (self.final_exports) |fe| self.allocator.free(fe);
+        if (self.cjs_import_preamble) |p| self.allocator.free(p);
     }
 };
 
@@ -286,6 +289,20 @@ pub const Linker = struct {
         }
 
         const m = self.modules[module_index];
+
+        // CJS 래핑 모듈은 스코프 호이스팅 대상이 아님 — 내부 코드를 그대로 유지
+        if (m.wrap_kind == .cjs) {
+            const node_count = new_ast.nodes.items.len;
+            return .{
+                .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, node_count),
+                .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
+                .final_exports = null,
+                .symbol_ids = if (m.semantic) |sem| sem.symbol_ids else &.{},
+                .cjs_import_preamble = null,
+                .allocator = self.allocator,
+            };
+        }
+
         const node_count = new_ast.nodes.items.len;
         var skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, node_count);
         errdefer skip_nodes.deinit();
@@ -328,6 +345,10 @@ pub const Linker = struct {
             .allocator = self.allocator,
         };
 
+        // CJS import preamble 빌드용 버퍼
+        var cjs_preamble_buf: std.ArrayList(u8) = .empty;
+        defer cjs_preamble_buf.deinit(self.allocator);
+
         if (sem.scope_maps.len > 0) {
             const module_scope = sem.scope_maps[0];
             // import 바인딩 → canonical 이름
@@ -337,6 +358,32 @@ pub const Linker = struct {
                 if (rec.resolved.isNone()) continue;
 
                 const canonical_mod = @intFromEnum(rec.resolved);
+
+                // CJS 모듈에서 import하는 경우: preamble에서 require_xxx() 호출 생성
+                if (canonical_mod < self.modules.len and self.modules[canonical_mod].wrap_kind == .cjs) {
+                    const target_path = self.modules[canonical_mod].path;
+                    const req_var = try types.makeRequireVarName(self.allocator, target_path);
+                    defer self.allocator.free(req_var);
+
+                    if (ib.kind == .namespace or std.mem.eql(u8, ib.imported_name, "default")) {
+                        // default/namespace import: var <local> = require_xxx();
+                        try cjs_preamble_buf.appendSlice(self.allocator, "var ");
+                        try cjs_preamble_buf.appendSlice(self.allocator, ib.local_name);
+                        try cjs_preamble_buf.appendSlice(self.allocator, " = ");
+                        try cjs_preamble_buf.appendSlice(self.allocator, req_var);
+                        try cjs_preamble_buf.appendSlice(self.allocator, "();\n");
+                    } else {
+                        // named import: var <local> = require_xxx().<imported>;
+                        try cjs_preamble_buf.appendSlice(self.allocator, "var ");
+                        try cjs_preamble_buf.appendSlice(self.allocator, ib.local_name);
+                        try cjs_preamble_buf.appendSlice(self.allocator, " = ");
+                        try cjs_preamble_buf.appendSlice(self.allocator, req_var);
+                        try cjs_preamble_buf.appendSlice(self.allocator, "().");
+                        try cjs_preamble_buf.appendSlice(self.allocator, ib.imported_name);
+                        try cjs_preamble_buf.appendSlice(self.allocator, ";\n");
+                    }
+                    continue;
+                }
 
                 // default import 처리: "default" → export의 실제 local_name
                 // (e.g. "export default function greet()" → "greet")
@@ -370,6 +417,12 @@ pub const Linker = struct {
             }
         }
 
+        // CJS import preamble 저장
+        var cjs_import_preamble: ?[]const u8 = null;
+        if (cjs_preamble_buf.items.len > 0) {
+            cjs_import_preamble = try self.allocator.dupe(u8, cjs_preamble_buf.items);
+        }
+
         // 3. 엔트리 포인트 final exports
         var final_exports: ?[]const u8 = null;
         if (is_entry and m.export_bindings.len > 0) {
@@ -401,6 +454,7 @@ pub const Linker = struct {
             .renames = renames,
             .final_exports = final_exports,
             .symbol_ids = sem.symbol_ids,
+            .cjs_import_preamble = cjs_import_preamble,
             .allocator = self.allocator,
         };
     }

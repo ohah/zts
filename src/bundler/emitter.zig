@@ -17,6 +17,11 @@ const std = @import("std");
 const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 const ModuleType = types.ModuleType;
+const WrapKind = types.WrapKind;
+
+/// CJS 런타임 헬퍼: __commonJS 팩토리 함수 (esbuild 호환)
+const CJS_RUNTIME = "var __commonJS = (cb, mod) => function __require() {\n\treturn mod || (0, cb[Object.keys(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;\n};\n";
+const CJS_RUNTIME_MIN = "var __commonJS=(cb,mod)=>function __require(){return mod||(0,cb[Object.keys(cb)[0]])((mod={exports:{}}).exports,mod),mod.exports};";
 const Module = @import("module.zig").Module;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
 const Ast = @import("../parser/ast.zig").Ast;
@@ -91,6 +96,22 @@ pub fn emitWithTreeShaking(
         .iife => try output.appendSlice(allocator, "(function() {\n"),
         .cjs => try output.appendSlice(allocator, "'use strict';\n"),
         .esm => {},
+    }
+
+    // CJS 런타임 헬퍼 주입: CJS 래핑 모듈이 하나라도 있으면 주입
+    var needs_cjs_runtime = false;
+    for (sorted.items) |m| {
+        if (m.wrap_kind == .cjs) {
+            needs_cjs_runtime = true;
+            break;
+        }
+    }
+    if (needs_cjs_runtime) {
+        if (options.minify) {
+            try output.appendSlice(allocator, CJS_RUNTIME_MIN);
+        } else {
+            try output.appendSlice(allocator, CJS_RUNTIME);
+        }
     }
 
     // 엔트리 모듈 인덱스 (final exports용)
@@ -188,15 +209,62 @@ fn emitModule(
     });
     const code = try cg.generate(root);
 
+    // CJS 래핑: __commonJS 팩토리 함수로 감싸기
+    if (module.wrap_kind == .cjs) {
+        const basename = std.fs.path.basename(module.path);
+
+        const var_name = try types.makeRequireVarName(allocator, module.path);
+        defer allocator.free(var_name);
+
+        var wrapped: std.ArrayList(u8) = .empty;
+        defer wrapped.deinit(allocator);
+
+        if (options.minify) {
+            try wrapped.appendSlice(allocator, "var ");
+            try wrapped.appendSlice(allocator, var_name);
+            try wrapped.appendSlice(allocator, "=__commonJS({\"");
+            try wrapped.appendSlice(allocator, basename);
+            try wrapped.appendSlice(allocator, "\"(exports,module){");
+            try wrapped.appendSlice(allocator, code);
+            try wrapped.appendSlice(allocator, "}});");
+        } else {
+            try wrapped.appendSlice(allocator, "var ");
+            try wrapped.appendSlice(allocator, var_name);
+            try wrapped.appendSlice(allocator, " = __commonJS({\n\t\"");
+            try wrapped.appendSlice(allocator, basename);
+            try wrapped.appendSlice(allocator, "\"(exports, module) {\n");
+            // 내부 코드 들여쓰기
+            for (code) |c| {
+                try wrapped.append(allocator, c);
+                if (c == '\n') try wrapped.append(allocator, '\t');
+            }
+            try wrapped.appendSlice(allocator, "\n\t}\n});\n");
+        }
+
+        return try allocator.dupe(u8, wrapped.items);
+    }
+
+    // CJS import preamble 삽입 (require_xxx() 호출문)
+    var final_code = code;
+    if (metadata) |md| {
+        if (md.cjs_import_preamble) |preamble| {
+            final_code = try std.mem.concat(allocator, u8, &.{ preamble, code });
+        }
+    }
+
     // final_exports 붙이기 (엔트리 포인트)
     if (metadata) |m| {
         if (m.final_exports) |fe| {
-            const combined = try std.mem.concat(allocator, u8, &.{ code, fe });
+            const combined = try std.mem.concat(allocator, u8, &.{ final_code, fe });
             return combined;
         }
     }
 
     // arena 해제 전에 복사 (caller 소유)
+    if (final_code.ptr != code.ptr) {
+        // final_code는 이미 allocator 소유
+        return final_code;
+    }
     return try allocator.dupe(u8, code);
 }
 
