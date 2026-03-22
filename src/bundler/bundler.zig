@@ -6570,7 +6570,7 @@ test "@__PURE__: applies to first call only in chain" {
     try std.testing.expect(first != null);
     // 두 번째가 없어야 함
     if (first) |pos| {
-        try std.testing.expect(std.mem.indexOf(u8, output[pos + 15..], "/* @__PURE__ */") == null);
+        try std.testing.expect(std.mem.indexOf(u8, output[pos + 15 ..], "/* @__PURE__ */") == null);
     }
 }
 
