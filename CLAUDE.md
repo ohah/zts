@@ -257,10 +257,16 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
        9. import.meta.hot API (모듈 단위 교체)
        10. React Fast Refresh ($RefreshReg$/$RefreshSig$ 주입)
        11. CSS 핫 리로드 (link tag swap, 페이지 새로고침 없이)
-     - **추가 의사결정 (D059):**
-       - 동시성: `std.Thread.spawn` per-connection (esbuild goroutine과 유사)
+     - **추가 의사결정 (D059-D060):**
+       - D059. 동시성: `std.Thread.spawn` per-connection (esbuild goroutine과 유사)
        - dev server 전용이라 OS 스레드 10-20개면 충분
        - WS 클라이언트 목록: mutex 보호 고정 배열 (Metro와 동일 패턴)
+       - D060. import.meta.hot: **모듈 래핑 dev 번들 방식** (A안 채택)
+         - dev 모드에서 각 모듈을 함수로 감싸고 레지스트리에 등록
+         - 변경 시 해당 모듈 함수만 재실행 (full-reload 대신)
+         - emitter에 dev 모드 추가, 프로덕션 빌드(scope hoisting)는 그대로 유지
+         - B안(언번들 ESM, Vite 방식) 배제: dev/prod 동작 차이로 인한 버그 위험
+         - C안(API 스텁 + full-reload) 배제: 실질적 가치 없음
 5. **.d.ts 생성** (isolatedDeclarations) — 후순위. 당분간 tsc에 위임 (esbuild/SWC와 동일). 자체 구현 시 AST 순회로 export 타입 추출 (~500줄), 파일별 독립이라 번들러 불필요
 6. **프로파일링 → SIMD → 미니파이어** — 번들러 B2 완료 후 현실적 벤치마크 가능
    - 미니파이어 3단계: 1) whitespace (✅ 이미 있음, codegen minify) → 2) identifier mangling (번들 크기 70%, 스코프 분석 필수) → 3) syntax 최적화 (if→ternary, dead code 등)
