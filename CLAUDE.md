@@ -252,9 +252,9 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
        4. ✅ Live Reload (thread-per-connection + watch) — PR #263
        5. ✅ 모듈 그래프 전체 파일 감시 — PR #266
        6. ✅ 에러 오버레이 — PR #267
-       7. 소스맵 서빙 (번들러 emitter에 소스맵 생성 추가 필요 — 현재 단일 파일 트랜스파일에서만 동작)
+       7. ✅ 소스맵 서빙 — PR #272
        8. ✅ SPA 폴백 — PR #269
-       9. import.meta.hot API (모듈 단위 교체)
+       9. ✅ import.meta.hot API (모듈 래핑 + accept/dispose + 모듈 단위 교체) — PR #270, #271
        10. React Fast Refresh ($RefreshReg$/$RefreshSig$ 주입)
        11. CSS 핫 리로드 (link tag swap, 페이지 새로고침 없이)
      - **추가 의사결정 (D059-D060):**
@@ -326,8 +326,8 @@ Phase B1: 기반 (✅ 완료)          Phase B2: 핵심 (✅ 대부분 완료) P
   ├ ESM 실행 순서 보장             개발 서버 + HMR
   └ CJS 호환 래핑                   ├ ✅ HTTP + WS + Live Reload
 ✅ Tree-shaking (모듈 수준)         ├ ✅ 모듈 그래프 파일 감시
-  ├ export 사용 추적                 ├ 에러 오버레이 + 소스맵
-  ├ @__PURE__ / @__NO_SIDE_EFFECTS__├ import.meta.hot + Fast Refresh
+  ├ export 사용 추적                 ├ ✅ 에러 오버레이 + 소스맵
+  ├ @__PURE__ / @__NO_SIDE_EFFECTS__├ ✅ import.meta.hot + Fast Refresh (미완)
   ├ sideEffects 필드                 └ CSS 핫 리로드
   ├ sideEffects 필드
   └ cross-module 전파
@@ -564,11 +564,11 @@ HMR API 비교:
 
 즉시 가치 (작은 작업):
   6. ✅ 에러 오버레이 — PR #267
-  7. 소스맵 서빙 — 번들러 emitter에 소스맵 생성 추가 필요 (현재 단일 파일만 지원)
+  7. ✅ 소스맵 서빙 — PR #272 (번들 레벨 V3 소스맵 + /bundle.js.map 엔드포인트)
   8. ✅ SPA 폴백 — PR #269
 
 핵심 HMR (큰 작업):
-  9. import.meta.hot API — 모듈 래핑 + accept/dispose API + 모듈 단위 교체
+  9. ✅ import.meta.hot API — PR #270 (모듈 래핑 dev 번들), PR #271 (모듈 단위 WS update)
   10. React Fast Refresh — 컴포넌트 감지 + $RefreshReg$/$RefreshSig$ 주입
   11. CSS 핫 리로드 — link tag swap (페이지 새로고침 없이)
 ```
