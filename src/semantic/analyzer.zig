@@ -623,41 +623,12 @@ pub const SemanticAnalyzer = struct {
         }
     }
 
-    /// 스코프 체인에서 이름을 찾아 no_side_effects 여부 확인.
-    fn lookupNoSideEffects(self: *SemanticAnalyzer, name: []const u8) bool {
-        var scope_id = self.current_scope;
-        while (!scope_id.isNone()) {
-            const s_idx = scope_id.toIndex();
-            if (s_idx >= self.scope_maps.items.len) break;
-            if (self.scope_maps.items[s_idx].get(name)) |sym_idx| {
-                return sym_idx < self.symbols.items.len and self.symbols.items[sym_idx].decl_flags.no_side_effects;
-            }
-            scope_id = self.scopes.items[s_idx].parent;
-        }
-        return false;
-    }
-
     /// 노드가 @__NO_SIDE_EFFECTS__ 함수/arrow인지 확인.
     fn isFunctionWithNoSideEffects(self: *const SemanticAnalyzer, node: Node) bool {
-        const FnFlags = ast_mod.FunctionFlags;
-        const ArrowFlags = ast_mod.ArrowFlags;
+        const e = node.data.extra;
         return switch (node.tag) {
-            .function_expression, .function_declaration => blk: {
-                // extra: [name, params_start, params_len, body, flags, ...]
-                const flags = node.data.extra;
-                break :blk if (node.data.extra + 4 < self.ast.extra_data.items.len)
-                    (self.ast.extra_data.items[flags + 4] & FnFlags.no_side_effects) != 0
-                else
-                    false;
-            },
-            .arrow_function_expression => blk: {
-                // extra: [params, body, flags]
-                const flags = node.data.extra;
-                break :blk if (node.data.extra + 2 < self.ast.extra_data.items.len)
-                    (self.ast.extra_data.items[flags + 2] & ArrowFlags.no_side_effects) != 0
-                else
-                    false;
-            },
+            .function_expression, .function_declaration => self.ast.hasExtra(e, 4) and (self.ast.readExtra(e, 4) & ast_mod.FunctionFlags.no_side_effects) != 0,
+            .arrow_function_expression => self.ast.hasExtra(e, 2) and (self.ast.readExtra(e, 2) & ast_mod.ArrowFlags.no_side_effects) != 0,
             else => false,
         };
     }
@@ -889,17 +860,18 @@ pub const SemanticAnalyzer = struct {
                         .len = self.ast.readExtra(e, 2),
                     });
 
-                    // @__NO_SIDE_EFFECTS__ 자동 전파: callee가 no_side_effects 함수이면
-                    // CallFlags.is_pure 자동 설정. tree-shaker/codegen이 is_pure만 보면 됨.
-                    if (self.ast.hasExtra(e, 3) and !callee_idx.isNone() and
-                        @intFromEnum(callee_idx) < self.ast.nodes.items.len)
-                    {
-                        const callee_node = self.ast.getNode(callee_idx);
-                        if (callee_node.tag == .identifier_reference) {
-                            const callee_name = self.ast.source[callee_node.span.start..callee_node.span.end];
-                            if (self.lookupNoSideEffects(callee_name)) {
-                                const mutable_extra: [*]u32 = @constCast(self.ast.extra_data.items.ptr);
-                                mutable_extra[e + 3] |= ast_mod.CallFlags.is_pure;
+                    // @__NO_SIDE_EFFECTS__ 자동 전파: callee symbol이 no_side_effects이면
+                    // CallFlags.is_pure 자동 설정 (O(1) — resolveIdentifier가 설정한 symbol_ids 활용)
+                    if (self.ast.hasExtra(e, 3) and !callee_idx.isNone()) {
+                        const callee_ni = @intFromEnum(callee_idx);
+                        if (callee_ni < self.symbol_ids.items.len) {
+                            if (self.symbol_ids.items[callee_ni]) |sym_idx| {
+                                if (sym_idx < self.symbols.items.len and
+                                    self.symbols.items[sym_idx].decl_flags.no_side_effects)
+                                {
+                                    const mutable_extra: [*]u32 = @constCast(self.ast.extra_data.items.ptr);
+                                    mutable_extra[e + 3] |= ast_mod.CallFlags.is_pure;
+                                }
                             }
                         }
                     }
