@@ -23,14 +23,12 @@ test.beforeAll(async () => {
     { stdio: "pipe" },
   );
 
-  // 서버가 뜰 때까지 대기
   await new Promise((resolve) => setTimeout(resolve, 2000));
 });
 
 test.afterAll(async () => {
   if (server) {
     server.kill();
-    // 프로세스 종료 대기
     await new Promise((resolve) => server!.on("close", resolve));
   }
   await rm(fixtureDir, { recursive: true, force: true });
@@ -85,5 +83,35 @@ test.describe("Dev Server E2E", () => {
 
     expect(body).toContain("hello from zts");
     expect(body).not.toContain(": string");
+  });
+
+  test("빌드 에러 시 에러 오버레이가 표시된다", async ({ page }) => {
+    await page.goto(`http://localhost:${TEST_PORT}/`);
+
+    // HMR 연결 대기
+    await page.evaluate((port: number) => {
+      return new Promise<void>((resolve) => {
+        const ws = new WebSocket(`ws://localhost:${port}/__hmr`);
+        ws.onmessage = () => resolve();
+        setTimeout(() => resolve(), 3000);
+      });
+    }, TEST_PORT);
+
+    // 구문 에러 주입
+    await writeFile(join(fixtureDir, "app.ts"), "const x: = ;");
+
+    // 에러 오버레이가 나타날 때까지 대기
+    await expect(page.locator("#zts-error-overlay")).toBeVisible({ timeout: 5000 });
+    await expect(page.locator("#zts-error-overlay")).toContainText("Build Error");
+
+    // 에러 수정 → 오버레이 사라짐 + 페이지 리로드
+    await writeFile(
+      join(fixtureDir, "app.ts"),
+      'const msg: string = "hello from zts"; console.log(msg); var el = document.getElementById("root"); if (el) { el.textContent = msg; }',
+    );
+
+    // full-reload가 발생하면 페이지가 새로고침되어 오버레이가 사라짐
+    await expect(page.locator("#zts-error-overlay")).not.toBeVisible({ timeout: 5000 });
+    await expect(page.locator("#root")).toHaveText("hello from zts", { timeout: 5000 });
   });
 });
