@@ -584,16 +584,8 @@ fn parsePostfixExpression(self: *Parser) ParseError2!NodeIndex {
         }
     }
 
-    // TS: non-null assertion (expr!)
-    if (self.current() == .bang and !self.scanner.token.has_newline_before) {
-        const expr_start = self.ast.getNode(expr).span.start;
-        try self.advance();
-        expr = try self.ast.addNode(.{
-            .tag = .ts_non_null_expression,
-            .span = .{ .start = expr_start, .end = self.currentSpan().start },
-            .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
-        });
-    }
+    // TS non-null assertion (expr!) — parseCallExpression 내부에서 처리
+    // (체이닝 지원: foo()!.bar!.baz)
 
     // TS: as Type / satisfies Type (체이닝 가능: x as A as B)
     while (self.current() == .kw_as or self.current() == .kw_satisfies) {
@@ -772,6 +764,18 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                         .data = .{ .extra = te },
                     });
                 }
+            },
+            .bang => {
+                // TS non-null assertion: expr!
+                // `!` 뒤에 `.`, `[`, `(` 가 오면 체이닝 (foo()!.bar)
+                // 줄바꿈 뒤의 `!`는 논리 NOT으로 해석해야 하므로 제외
+                if (self.scanner.token.has_newline_before) break;
+                try self.advance();
+                expr = try self.ast.addNode(.{
+                    .tag = .ts_non_null_expression,
+                    .span = .{ .start = expr_start, .end = self.currentSpan().start },
+                    .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
+                });
             },
             else => break,
         }
