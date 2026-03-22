@@ -335,18 +335,14 @@ pub fn emitDevBundle(
         null;
     defer if (bundle_sm) |*sm| sm.deinit();
 
+    // HMR 런타임의 줄 수 (comptime 상수)
+    const hmr_runtime_lines = comptime blk: {
+        @setEvalBranchQuota(10000);
+        break :blk @as(u32, std.mem.count(u8, HMR_RUNTIME, "\n"));
+    };
+
     // 현재 번들 출력의 줄 번호 추적 (소스맵 오프셋용)
-    var bundle_line: u32 = 0;
-    if (!options.minify) {
-        // HMR 런타임의 줄 수 카운트
-        const runtime = HMR_RUNTIME;
-        for (runtime) |c| {
-            if (c == '\n') bundle_line += 1;
-        }
-    } else {
-        // minified 런타임은 1줄
-        bundle_line = 1;
-    }
+    var bundle_line: u32 = if (!options.minify) hmr_runtime_lines else 1;
 
     // 3. 각 모듈을 __zts_register로 래핑
     for (sorted.items) |m| {
@@ -380,16 +376,8 @@ pub fn emitDevBundle(
                 const source_idx = try sm.addSource(module_id);
                 // __zts_register header는 1줄 ("__zts_register(..., function(...) {\n")
                 const wrapper_header_lines: u32 = 1;
-                // preamble 줄 수 카운트
-                var preamble_lines: u32 = 0;
-                const preamble = if (emit_result.code.len > 0) blk: {
-                    // preamble은 code 시작 전의 __zts_require 줄들
-                    // emitDevModule이 concat한 결과이므로 직접 카운트는 어려움
-                    // 대신 매핑의 generated_line 기준으로 오프셋 적용
-                    _ = &preamble_lines;
-                    break :blk @as(u32, 0);
-                } else 0;
-                _ = preamble;
+                // preamble(__zts_require 줄)은 mapping.generated_line에 포함되어 있으므로
+                // 별도 offset 불필요 — emitDevModule이 preamble+code를 concat한 후 codegen 생성.
 
                 for (maps) |mapping| {
                     try sm.addMapping(.{
@@ -407,9 +395,7 @@ pub fn emitDevBundle(
         }
 
         // 번들 줄 번호 추적
-        for (wrapped) |c| {
-            if (c == '\n') bundle_line += 1;
-        }
+        bundle_line += @intCast(std.mem.count(u8, wrapped, "\n"));
         allocator.free(wrapped);
         if (!options.minify) {
             bundle_line += 1; // trailing newline
@@ -475,8 +461,6 @@ pub const DevModuleEmitResult = struct {
     code: []const u8,
     /// 소스맵 매핑 (소스맵 활성화 시). generated_line/col은 code 기준 (오프셋 미적용).
     mappings: ?[]const SourceMap.Mapping = null,
-    /// 소스 파일명 (소스맵용)
-    source_name: ?[]const u8 = null,
 };
 
 /// Dev mode용 단일 모듈 변환.
@@ -556,7 +540,6 @@ pub fn emitDevModule(
     return .{
         .code = final_code,
         .mappings = mappings,
-        .source_name = if (options.sourcemap) makeModuleId(module.path, options.root_dir) else null,
     };
 }
 
