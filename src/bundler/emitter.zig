@@ -187,6 +187,9 @@ pub fn emitChunks(
     options: EmitOptions,
     linker: ?*const Linker,
 ) ![]OutputFile {
+    // Code splitting은 ESM 출력만 지원 — CJS/IIFE에서는 네이티브 import()가 없음
+    if (options.format != .esm) return error.CodeSplittingRequiresESM;
+
     var outputs: std.ArrayList(OutputFile) = .empty;
     errdefer {
         for (outputs.items) |o| {
@@ -246,7 +249,8 @@ pub fn emitChunks(
         // 심볼 수준 바인딩은 아직 미구현 — 실행 순서 보장용 side-effect import만.
         for (chunk.cross_chunk_imports.items) |dep_chunk_idx| {
             const dep_chunk = chunk_graph.getChunk(dep_chunk_idx);
-            const dep_stem = chunkStem(dep_chunk);
+            var dep_buf: [64]u8 = undefined;
+            const dep_stem = chunkStem(dep_chunk, &dep_buf);
             if (!options.minify) {
                 try chunk_output.appendSlice(allocator, "import './");
                 try chunk_output.appendSlice(allocator, dep_stem);
@@ -302,8 +306,10 @@ pub fn emitChunks(
         }
 
         // 출력 파일명 생성: "{stem}.js"
-        const stem = chunkStem(chunk);
+        var stem_buf: [64]u8 = undefined;
+        const stem = chunkStem(chunk, &stem_buf);
         const filename = try std.fmt.allocPrint(allocator, "{s}.js", .{stem});
+        errdefer allocator.free(filename);
 
         try outputs.append(allocator, .{
             .path = filename,
@@ -316,9 +322,11 @@ pub fn emitChunks(
 
 /// 청크의 출력 파일 stem을 반환한다 (확장자 없음).
 /// 엔트리 청크: 모듈 파일의 stem (예: "index", "lazy")
-/// 공통 청크: "chunk" (고정 — 프로덕션에서는 content hash로 교체 예정)
-fn chunkStem(chunk: *const Chunk) []const u8 {
-    return chunk.name orelse "chunk";
+/// 공통 청크: "chunk-{인덱스}" (충돌 방지. 프로덕션에서는 content hash로 교체 예정)
+fn chunkStem(chunk: *const Chunk, buf: []u8) []const u8 {
+    if (chunk.name) |name| return name;
+    const idx = @intFromEnum(chunk.index);
+    return std.fmt.bufPrint(buf, "chunk-{d}", .{idx}) catch "chunk";
 }
 
 /// 단일 모듈을 Transformer → Codegen 파이프라인으로 처리.
