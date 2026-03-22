@@ -28,6 +28,10 @@ const CJS_RUNTIME_MIN = "var __commonJS=(cb,mod)=>function __require(){return mo
 /// 아니면 { ...mod, default: mod } 형태로 namespace 객체 생성.
 const TOESM_RUNTIME = "var __toESM = (mod) => mod && mod.__esModule ? mod : { ...mod, default: mod };\n";
 const TOESM_RUNTIME_MIN = "var __toESM=(mod)=>mod&&mod.__esModule?mod:{...mod,default:mod};";
+const chunk_mod = @import("chunk.zig");
+const ChunkGraph = chunk_mod.ChunkGraph;
+const Chunk = chunk_mod.Chunk;
+const ChunkIndex = types.ChunkIndex;
 const Module = @import("module.zig").Module;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
 const Ast = @import("../parser/ast.zig").Ast;
@@ -168,9 +172,159 @@ pub fn emitWithTreeShaking(
     return output.toOwnedSlice(allocator);
 }
 
+/// 청크 그래프를 기반으로 다중 출력 파일을 생성한다 (code splitting).
+///
+/// 각 청크마다 하나의 OutputFile을 생성:
+///   1. 크로스 청크 의존성에 대한 side-effect import 문 삽입 (실행 순서 보장)
+///   2. 청크 내 모듈들을 exec_index 순서로 변환+코드젠
+///   3. 출력 파일명은 엔트리 청크는 모듈명, 공통 청크는 chunk-{hash} 형식
+///
+/// 반환된 OutputFile 배열과 각 OutputFile의 path/contents는 모두 allocator 소유.
+pub fn emitChunks(
+    allocator: std.mem.Allocator,
+    modules: []const Module,
+    chunk_graph: *const ChunkGraph,
+    options: EmitOptions,
+    linker: ?*const Linker,
+) ![]OutputFile {
+    var outputs: std.ArrayList(OutputFile) = .empty;
+    errdefer {
+        for (outputs.items) |o| {
+            allocator.free(o.contents);
+            allocator.free(o.path);
+        }
+        outputs.deinit(allocator);
+    }
+
+    // 청크를 exec_order 순으로 정렬하여 결정론적 출력 순서 보장.
+    // 엔트리 청크가 먼저, 공통 청크가 나중에 오도록 정렬한다.
+    const sorted_indices = try allocator.alloc(usize, chunk_graph.chunkCount());
+    defer allocator.free(sorted_indices);
+    for (sorted_indices, 0..) |*idx, i| idx.* = i;
+
+    const SortCtx = struct {
+        chunks: []const Chunk,
+        fn lessThan(ctx: @This(), a: usize, b: usize) bool {
+            const ca = ctx.chunks[a];
+            const cb = ctx.chunks[b];
+            // 엔트리 청크 우선
+            const a_is_entry: u1 = if (ca.isEntryPoint()) 0 else 1;
+            const b_is_entry: u1 = if (cb.isEntryPoint()) 0 else 1;
+            if (a_is_entry != b_is_entry) return a_is_entry < b_is_entry;
+            // 같은 종류 내에서는 exec_order 순
+            return ca.exec_order < cb.exec_order;
+        }
+    };
+    std.mem.sort(usize, sorted_indices, SortCtx{ .chunks = chunk_graph.chunks.items }, SortCtx.lessThan);
+
+    for (sorted_indices) |ci| {
+        const chunk = &chunk_graph.chunks.items[ci];
+
+        var chunk_output: std.ArrayList(u8) = .empty;
+        errdefer chunk_output.deinit(allocator);
+
+        // CJS 런타임 헬퍼: 이 청크에 CJS 래핑 모듈이 있으면 주입
+        var needs_cjs_runtime = false;
+        for (chunk.modules.items) |mod_idx| {
+            const mi = @intFromEnum(mod_idx);
+            if (mi < modules.len and modules[mi].wrap_kind == .cjs) {
+                needs_cjs_runtime = true;
+                break;
+            }
+        }
+        if (needs_cjs_runtime) {
+            if (options.minify) {
+                try chunk_output.appendSlice(allocator, CJS_RUNTIME_MIN);
+                try chunk_output.appendSlice(allocator, TOESM_RUNTIME_MIN);
+            } else {
+                try chunk_output.appendSlice(allocator, CJS_RUNTIME);
+                try chunk_output.appendSlice(allocator, TOESM_RUNTIME);
+            }
+        }
+
+        // 크로스 청크 import: 의존 청크의 side-effect import 문을 삽입.
+        // 심볼 수준 바인딩은 아직 미구현 — 실행 순서 보장용 side-effect import만.
+        for (chunk.cross_chunk_imports.items) |dep_chunk_idx| {
+            const dep_chunk = chunk_graph.getChunk(dep_chunk_idx);
+            const dep_stem = chunkStem(dep_chunk);
+            if (!options.minify) {
+                try chunk_output.appendSlice(allocator, "import './");
+                try chunk_output.appendSlice(allocator, dep_stem);
+                try chunk_output.appendSlice(allocator, ".js';\n");
+            } else {
+                try chunk_output.appendSlice(allocator, "import'./");
+                try chunk_output.appendSlice(allocator, dep_stem);
+                try chunk_output.appendSlice(allocator, ".js';");
+            }
+        }
+
+        // 청크 내 모듈을 exec_index 순으로 정렬
+        const sorted_mods = try allocator.alloc(ModuleIndex, chunk.modules.items.len);
+        defer allocator.free(sorted_mods);
+        @memcpy(sorted_mods, chunk.modules.items);
+
+        const ModSortCtx = struct {
+            mods: []const Module,
+            fn lessThan(ctx: @This(), a: ModuleIndex, b: ModuleIndex) bool {
+                const ai = @intFromEnum(a);
+                const bi = @intFromEnum(b);
+                const a_exec = if (ai < ctx.mods.len) ctx.mods[ai].exec_index else std.math.maxInt(u32);
+                const b_exec = if (bi < ctx.mods.len) ctx.mods[bi].exec_index else std.math.maxInt(u32);
+                return a_exec < b_exec;
+            }
+        };
+        std.mem.sort(ModuleIndex, sorted_mods, ModSortCtx{ .mods = modules }, ModSortCtx.lessThan);
+
+        // 엔트리 모듈 인덱스 (final exports용)
+        const entry_mod_idx: ?u32 = switch (chunk.kind) {
+            .entry_point => |info| @intFromEnum(info.module),
+            .common => null,
+        };
+
+        for (sorted_mods) |mod_idx| {
+            const mi = @intFromEnum(mod_idx);
+            if (mi >= modules.len) continue;
+            const m = &modules[mi];
+
+            const is_entry = if (entry_mod_idx) |ei| mi == ei else false;
+            const code = try emitModule(allocator, m, options, linker, is_entry) orelse continue;
+            defer allocator.free(code);
+
+            if (!options.minify) {
+                try chunk_output.appendSlice(allocator, "// --- ");
+                try chunk_output.appendSlice(allocator, std.fs.path.basename(m.path));
+                try chunk_output.appendSlice(allocator, " ---\n");
+            }
+            try chunk_output.appendSlice(allocator, code);
+            if (!options.minify) {
+                try chunk_output.append(allocator, '\n');
+            }
+        }
+
+        // 출력 파일명 생성: "{stem}.js"
+        const stem = chunkStem(chunk);
+        const filename = try std.fmt.allocPrint(allocator, "{s}.js", .{stem});
+
+        try outputs.append(allocator, .{
+            .path = filename,
+            .contents = try chunk_output.toOwnedSlice(allocator),
+        });
+    }
+
+    return outputs.toOwnedSlice(allocator);
+}
+
+/// 청크의 출력 파일 stem을 반환한다 (확장자 없음).
+/// 엔트리 청크: 모듈 파일의 stem (예: "index", "lazy")
+/// 공통 청크: "chunk" (고정 — 프로덕션에서는 content hash로 교체 예정)
+fn chunkStem(chunk: *const Chunk) []const u8 {
+    return chunk.name orelse "chunk";
+}
+
 /// 단일 모듈을 Transformer → Codegen 파이프라인으로 처리.
 /// 모듈별 arena에 AST가 보존되어 있으므로 재파싱 불필요.
-fn emitModule(
+/// emitChunks에서도 사용하므로 pub으로 노출.
+pub fn emitModule(
     allocator: std.mem.Allocator,
     module: *const Module,
     options: EmitOptions,
@@ -540,4 +694,100 @@ test "emitter: TS enum and interface stripping" {
     try std.testing.expect(std.mem.indexOf(u8, output, "Color") != null);
     // 일반 코드 유지
     try std.testing.expect(std.mem.indexOf(u8, output, "const x") != null);
+}
+
+// ============================================================
+// emitChunks Tests
+// ============================================================
+
+fn buildGraphMultiEntry(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_names: []const []const u8) !struct { graph: ModuleGraph, cache: resolve_cache_mod.ResolveCache } {
+    const dp = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dp);
+
+    var entries: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (entries.items) |e| allocator.free(e);
+        entries.deinit(allocator);
+    }
+    for (entry_names) |name| {
+        try entries.append(allocator, try std.fs.path.resolve(allocator, &.{ dp, name }));
+    }
+
+    var cache = resolve_cache_mod.ResolveCache.init(allocator, .browser, &.{});
+    var graph = ModuleGraph.init(allocator, &cache);
+    try graph.build(entries.items);
+    return .{ .graph = graph, .cache = cache };
+}
+
+test "emitChunks: single chunk produces one OutputFile" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
+    defer std.testing.allocator.free(entry_path);
+
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, result.graph.modules.items, &.{entry_path}, null);
+    defer cg.deinit();
+
+    const outputs = try emitChunks(std.testing.allocator, result.graph.modules.items, &cg, .{}, null);
+    defer {
+        for (outputs) |o| {
+            std.testing.allocator.free(o.path);
+            std.testing.allocator.free(o.contents);
+        }
+        std.testing.allocator.free(outputs);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), outputs.len);
+    try std.testing.expectEqualStrings("index.js", outputs[0].path);
+    try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "const x = 1;") != null);
+}
+
+test "emitChunks: two entries with shared module — 3 OutputFiles" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import './shared';\nconsole.log('a');");
+    try writeFile(tmp.dir, "b.ts", "import './shared';\nconsole.log('b');");
+    try writeFile(tmp.dir, "shared.ts", "console.log('shared');");
+
+    var result = try buildGraphMultiEntry(std.testing.allocator, &tmp, &.{ "a.ts", "b.ts" });
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const ep_a = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
+    defer std.testing.allocator.free(ep_a);
+    const ep_b = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "b.ts" });
+    defer std.testing.allocator.free(ep_b);
+
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, result.graph.modules.items, &.{ ep_a, ep_b }, null);
+    defer cg.deinit();
+    try chunk_mod.computeCrossChunkLinks(&cg, result.graph.modules.items, std.testing.allocator);
+
+    const outputs = try emitChunks(std.testing.allocator, result.graph.modules.items, &cg, .{}, null);
+    defer {
+        for (outputs) |o| {
+            std.testing.allocator.free(o.path);
+            std.testing.allocator.free(o.contents);
+        }
+        std.testing.allocator.free(outputs);
+    }
+
+    // 2 엔트리 + 1 공통 = 3 파일
+    try std.testing.expectEqual(@as(usize, 3), outputs.len);
+
+    // shared 코드는 정확히 1개의 출력에만 포함
+    var shared_count: usize = 0;
+    for (outputs) |o| {
+        if (std.mem.indexOf(u8, o.contents, "'shared'") != null) shared_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), shared_count);
 }
