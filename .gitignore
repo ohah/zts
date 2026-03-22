@@ -3,6 +3,14 @@ zig-out/
 zig-cache/
 .zig-cache/
 
+# Node/Bun
+node_modules/
+bun.lock
+
+# Playwright
+test-results/
+playwright-report/
+
 # OS
 .DS_Store
 Thumbs.db
