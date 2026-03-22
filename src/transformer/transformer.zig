@@ -1500,16 +1500,16 @@ pub const Transformer = struct {
         for (stmts) |raw_stmt_idx| {
             const stmt_idx: NodeIndex = @enumFromInt(raw_stmt_idx);
             // 재귀적으로 Hook 호출 검색
-            try self.findHookCallsInNode(stmt_idx, &sig_buf);
+            try self.findHookCallsInNode(stmt_idx, &sig_buf, null);
         }
 
         if (sig_buf.items.len == 0) return null;
         return try self.allocator.dupe(u8, sig_buf.items);
     }
 
-    /// 블록의 최상위 문장들에서 Hook 호출을 찾아 시그니처 버퍼에 추가한다 (old_ast 기준).
-    /// 깊은 재귀 대신 call_expression만 직접 탐색 (segfault 방지).
-    fn findHookCallsInNode(self: *Transformer, idx: NodeIndex, sig_buf: *std.ArrayList(u8)) Error!void {
+    /// Hook 호출을 찾아 시그니처 버퍼에 추가한다 (old_ast 기준).
+    /// binding_ctx: 부모 variable_declarator의 LHS 바인딩 텍스트 (null이면 없음).
+    fn findHookCallsInNode(self: *Transformer, idx: NodeIndex, sig_buf: *std.ArrayList(u8), binding_ctx: ?[]const u8) Error!void {
         if (idx.isNone()) return;
         if (@intFromEnum(idx) >= self.old_ast.nodes.items.len) return;
         const node = self.old_ast.getNode(idx);
@@ -1527,7 +1527,6 @@ pub const Transformer = struct {
                         const name = self.old_ast.getText(callee.data.string_ref);
                         if (isHookCall(name)) hook_name = name;
                     } else if (callee.tag == .static_member_expression) {
-                        // React.useState() → property name이 hook인지 확인
                         const me = callee.data.binary;
                         if (!me.right.isNone() and @intFromEnum(me.right) < self.old_ast.nodes.items.len) {
                             const prop = self.old_ast.getNode(me.right);
@@ -1543,7 +1542,30 @@ pub const Transformer = struct {
                             try sig_buf.appendSlice(self.allocator, "\\n");
                         }
                         try sig_buf.appendSlice(self.allocator, name);
-                        try sig_buf.appendSlice(self.allocator, "{}");
+                        try sig_buf.append(self.allocator, '{');
+                        // 바인딩 패턴 포함: useState{[foo, setFoo](0)}
+                        if (binding_ctx) |b| {
+                            try sig_buf.appendSlice(self.allocator, b);
+                        }
+                        // 첫 번째 인자 포함 (useState/useReducer의 초기값)
+                        if (self.old_ast.hasExtra(e, 3)) {
+                            const args_start = self.old_ast.extra_data.items[e + 1];
+                            const args_len = self.old_ast.extra_data.items[e + 2];
+                            if (args_len > 0 and args_start < self.old_ast.extra_data.items.len) {
+                                const first_arg_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[args_start]);
+                                if (!first_arg_idx.isNone() and @intFromEnum(first_arg_idx) < self.old_ast.nodes.items.len) {
+                                    const first_arg = self.old_ast.getNode(first_arg_idx);
+                                    if (first_arg.span.start < first_arg.span.end and
+                                        first_arg.span.start & 0x8000_0000 == 0)
+                                    {
+                                        try sig_buf.append(self.allocator, '(');
+                                        try sig_buf.appendSlice(self.allocator, self.old_ast.source[first_arg.span.start..first_arg.span.end]);
+                                        try sig_buf.append(self.allocator, ')');
+                                    }
+                                }
+                            }
+                        }
+                        try sig_buf.append(self.allocator, '}');
                     }
                 }
             }
@@ -1558,7 +1580,7 @@ pub const Transformer = struct {
 
         // expression_statement → 내부 expression 탐색
         if (node.tag == .expression_statement) {
-            try self.findHookCallsInNode(node.data.unary.operand, sig_buf);
+            try self.findHookCallsInNode(node.data.unary.operand, sig_buf, null);
             return;
         }
 
@@ -1571,19 +1593,29 @@ pub const Transformer = struct {
                 if (list_start + list_len <= self.old_ast.extra_data.items.len) {
                     const items = self.old_ast.extra_data.items[list_start .. list_start + list_len];
                     for (items) |raw| {
-                        try self.findHookCallsInNode(@enumFromInt(raw), sig_buf);
+                        try self.findHookCallsInNode(@enumFromInt(raw), sig_buf, null);
                     }
                 }
             }
             return;
         }
 
-        // variable_declarator → init(initializer) 탐색
+        // variable_declarator → LHS 바인딩 추출 + init 탐색
         if (node.tag == .variable_declarator) {
             const e = node.data.extra;
             if (self.old_ast.hasExtra(e, 3)) {
+                // LHS 바인딩 텍스트 추출 (binding_identifier 또는 array/object pattern)
+                const lhs_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[e]);
+                var lhs_text: ?[]const u8 = null;
+                if (!lhs_idx.isNone() and @intFromEnum(lhs_idx) < self.old_ast.nodes.items.len) {
+                    const lhs = self.old_ast.getNode(lhs_idx);
+                    if (lhs.span.start < lhs.span.end and lhs.span.start & 0x8000_0000 == 0) {
+                        lhs_text = self.old_ast.source[lhs.span.start..lhs.span.end];
+                    }
+                }
+
                 const init_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[e + 2]);
-                try self.findHookCallsInNode(init_idx, sig_buf);
+                try self.findHookCallsInNode(init_idx, sig_buf, lhs_text);
             }
             return;
         }
@@ -1594,7 +1626,7 @@ pub const Transformer = struct {
             if (l.len > 0 and l.start + l.len <= self.old_ast.extra_data.items.len) {
                 const items = self.old_ast.extra_data.items[l.start .. l.start + l.len];
                 for (items) |raw| {
-                    try self.findHookCallsInNode(@enumFromInt(raw), sig_buf);
+                    try self.findHookCallsInNode(@enumFromInt(raw), sig_buf, null);
                 }
             }
         }

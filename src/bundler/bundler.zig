@@ -9548,7 +9548,9 @@ test "Bundler: dev mode refresh signature" {
     try std.testing.expect(std.mem.indexOf(u8, output, "_s()") != null);
     // _s(App, "signature"); 시그니처 연결
     try std.testing.expect(std.mem.indexOf(u8, output, "_s(App") != null);
-    // 시그니처에 useState와 useEffect가 포함
+    // 시그니처에 useState, useEffect 포함
     try std.testing.expect(std.mem.indexOf(u8, output, "useState") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "useEffect") != null);
+    // 바인딩 정보: useState{x(0)} — LHS 바인딩 + 초기값
+    try std.testing.expect(std.mem.indexOf(u8, output, "useState{x(0)}") != null);
 }
