@@ -55,8 +55,6 @@ jobs:
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
-    # dev server 구현 후 활성화
-    if: false
 
     steps:
       - name: Checkout
