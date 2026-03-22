@@ -114,7 +114,7 @@ pub fn extractImportsWithCjsDetection(allocator: std.mem.Allocator, ast: *const 
 /// AST를 순회하여 모든 import/export 소스 경로를 추출한다.
 /// 반환된 슬라이스의 specifier는 소스 코드를 가리키는 참조이므로
 /// 소스가 유효한 동안만 사용 가능.
-/// (하위 호환용 — 내부적으로 extractImportsWithCjsDetection을 호출)
+/// CJS 감지가 불필요한 경우의 간편 API (binding_scanner 등에서 사용).
 pub fn extractImports(allocator: std.mem.Allocator, ast: *const Ast) ![]ImportRecord {
     const result = try extractImportsWithCjsDetection(allocator, ast);
     return result.records;
@@ -207,7 +207,7 @@ fn tryExtractRequire(ast: *const Ast, node: Node) ?ImportRecord {
     const callee = ast.nodes.items[callee_ni];
     if (callee.tag != .identifier_reference) return null;
 
-    const callee_text = ast.source[callee.span.start..callee.span.end];
+    const callee_text = ast.getText(callee.span);
     if (!std.mem.eql(u8, callee_text, "require")) return null;
 
     // 인수가 정확히 1개인지 확인
@@ -229,65 +229,48 @@ fn tryExtractRequire(ast: *const Ast, node: Node) ?ImportRecord {
     };
 }
 
-/// assignment_expression의 left가 module.exports인지 확인.
-/// assignment_expression: binary { left, right, flags }
-/// left가 static_member_expression이고 object="module", property="exports"인 경우.
-fn isModuleExportsAssign(ast: *const Ast, node: Node) bool {
+/// assignment_expression의 left가 `obj.prop` 형태의 static_member_expression인지 확인하고,
+/// object의 identifier 텍스트를 반환한다. property 텍스트도 함께 반환.
+fn getAssignMemberParts(ast: *const Ast, node: Node) ?struct { object: []const u8, property: []const u8 } {
     const left_idx = node.data.binary.left;
-    if (left_idx.isNone()) return false;
+    if (left_idx.isNone()) return null;
     const left_ni = @intFromEnum(left_idx);
-    if (left_ni >= ast.nodes.items.len) return false;
+    if (left_ni >= ast.nodes.items.len) return null;
     const left = ast.nodes.items[left_ni];
-    if (left.tag != .static_member_expression) return false;
+    if (left.tag != .static_member_expression) return null;
 
-    // static_member_expression extra: [object, property, flags]
     const me = left.data.extra;
-    if (!ast.hasExtra(me, 1)) return false;
+    if (!ast.hasExtra(me, 1)) return null;
 
-    // object가 identifier_reference "module"인지 확인
     const obj_idx = ast.readExtraNode(me, 0);
-    if (obj_idx.isNone()) return false;
+    if (obj_idx.isNone()) return null;
     const obj_ni = @intFromEnum(obj_idx);
-    if (obj_ni >= ast.nodes.items.len) return false;
+    if (obj_ni >= ast.nodes.items.len) return null;
     const obj = ast.nodes.items[obj_ni];
-    if (obj.tag != .identifier_reference) return false;
-    const obj_text = ast.source[obj.span.start..obj.span.end];
-    if (!std.mem.eql(u8, obj_text, "module")) return false;
+    if (obj.tag != .identifier_reference) return null;
 
-    // property가 "exports"인지 확인
     const prop_idx = ast.readExtraNode(me, 1);
-    if (prop_idx.isNone()) return false;
+    if (prop_idx.isNone()) return null;
     const prop_ni = @intFromEnum(prop_idx);
-    if (prop_ni >= ast.nodes.items.len) return false;
+    if (prop_ni >= ast.nodes.items.len) return null;
     const prop = ast.nodes.items[prop_ni];
-    const prop_text = ast.source[prop.span.start..prop.span.end];
-    return std.mem.eql(u8, prop_text, "exports");
+
+    return .{
+        .object = ast.getText(obj.span),
+        .property = ast.getText(prop.span),
+    };
+}
+
+/// assignment_expression의 left가 module.exports인지 확인.
+fn isModuleExportsAssign(ast: *const Ast, node: Node) bool {
+    const parts = getAssignMemberParts(ast, node) orelse return false;
+    return std.mem.eql(u8, parts.object, "module") and std.mem.eql(u8, parts.property, "exports");
 }
 
 /// assignment_expression의 left가 exports.xxx인지 확인.
-/// assignment_expression: binary { left, right, flags }
-/// left가 static_member_expression이고 object="exports"인 경우.
 fn isExportsDotAssign(ast: *const Ast, node: Node) bool {
-    const left_idx = node.data.binary.left;
-    if (left_idx.isNone()) return false;
-    const left_ni = @intFromEnum(left_idx);
-    if (left_ni >= ast.nodes.items.len) return false;
-    const left = ast.nodes.items[left_ni];
-    if (left.tag != .static_member_expression) return false;
-
-    // static_member_expression extra: [object, property, flags]
-    const me = left.data.extra;
-    if (!ast.hasExtra(me, 0)) return false;
-
-    // object가 identifier_reference "exports"인지 확인
-    const obj_idx = ast.readExtraNode(me, 0);
-    if (obj_idx.isNone()) return false;
-    const obj_ni = @intFromEnum(obj_idx);
-    if (obj_ni >= ast.nodes.items.len) return false;
-    const obj = ast.nodes.items[obj_ni];
-    if (obj.tag != .identifier_reference) return false;
-    const obj_text = ast.source[obj.span.start..obj.span.end];
-    return std.mem.eql(u8, obj_text, "exports");
+    const parts = getAssignMemberParts(ast, node) orelse return false;
+    return std.mem.eql(u8, parts.object, "exports");
 }
 
 /// string_literal 노드의 텍스트를 따옴표 없이 반환한다.
