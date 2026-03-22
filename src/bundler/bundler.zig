@@ -7062,7 +7062,7 @@ test "@__NO_SIDE_EFFECTS__: cross-module multiple imports" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "/* @__PURE__ */") != null);
     // /* @__PURE__ */ 는 1번만 나와야 함 (impure() 호출에는 없음)
     const first = std.mem.indexOf(u8, result.output, "/* @__PURE__ */").?;
-    const second = std.mem.indexOf(u8, result.output[first + 1..], "/* @__PURE__ */");
+    const second = std.mem.indexOf(u8, result.output[first + 1 ..], "/* @__PURE__ */");
     try std.testing.expect(second == null);
 }
 
