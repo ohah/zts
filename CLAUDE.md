@@ -217,21 +217,39 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
    - ✅ tree-shaking (모듈 수준): 미사용 export 추적, 자동 순수 판별, package.json sideEffects, fixpoint 분석
    - ✅ `@__PURE__` / `@__NO_SIDE_EFFECTS__`: 렉서 감지 → semantic 전파 → codegen 출력 → tree-shaker 활용
    - ✅ cross-module `@__NO_SIDE_EFFECTS__` 전파: import한 함수의 호출에 `/* @__PURE__ */` 자동 출력 (re-export chain, default export, async function 포함)
-   - 다음: 통합 테스트 강화 → ES 다운레벨링
-4. **ES 다운레벨링** (ES2024→ES2016 점진적, ES2015 이후, ES5) — 트랜스포머 visitor 추가. 독립적이라 언제든 가능하지만 AST 안정화 후가 이상적
-   - 1차 ES2024→ES2020 (~200줄, 1~2일): `??`, `?.`, `??=`/`||=`/`&&=`, class public field
-   - 2차 ES2019→ES2016 (~500줄, 3~5일): async/await→generator+Promise, rest/spread properties
-   - 3차 ES2015 (~6000줄, 4~6주): class→function/prototype, arrow→bind, let/const→var+IIFE, generator→상태 머신, destructuring, for-of, template literal
-   - 4차 ES5 (~2000줄, 1~2주): polyfill + 런타임 헬퍼 (tslib 방식)
-   - 참고: oxc `crates/oxc_transformer/src/es20XX/` (버전별 폴더, 가장 구조 유사), Babel `packages/babel-plugin-transform-*/` (ES5까지 완벽), esbuild `pkg/js_parser/js_parser_lower.go` (읽기 쉬움)
-   - 런타임 헬퍼: `__extends`, `__awaiter`, `__generator` 등 15개+ — 필요한 것만 주입 (esbuild 방식)
-4. **.d.ts 생성** (isolatedDeclarations) — 후순위. 당분간 tsc에 위임 (esbuild/SWC와 동일). 자체 구현 시 AST 순회로 export 타입 추출 (~500줄), 파일별 독립이라 번들러 불필요
-5. **번들러 설계** (멀티스레드 모델 포함) — 아래 번들러 상세 참조
-6. **번들러 MVP** — Arena + 멀티스레드 + 모듈 해석 통합
-7. **프로파일링 → SIMD → 미니파이어** — 번들러 MVP로 현실적 벤치마크 가능. SIMD는 렉서 함수 3개 교체 (공백 스킵, 식별자 스캔, 문자열 스캔), 인터페이스 불변이라 언제 넣어도 비용 동일
+   - ✅ 통합 테스트 강화: barrel file, diamond re-export, class extends, export star 등 8개 실전 패턴
+4. **번들러 Phase B2 (핵심)** — CJS interop → TLA → Code splitting → HMR
+   - 4a. **CJS interop (입력)** — node_modules 대부분이 CJS이므로 실전 사용의 필수 전제
+     - require() 호출 감지 + CommonJS 래핑 (__require, module, exports)
+     - module.exports / exports.x 패턴 인식
+     - ESM import cjs → default import = module.exports
+     - ESM import { named } from cjs → named 추출 (정적 분석)
+     - 동적 require (조건부) → 보수적으로 전부 포함
+     - 참고: esbuild `pkg/js_parser/js_parser.go` (CJS 감지), rolldown `crates/rolldown/src/module_loader/`
+   - 4b. **Top-level await** — 모듈 실행 순서에 영향, code splitting 전에 해결 필요
+     - TLA 있는 모듈의 동적 import → 정적 의존성으로 승격
+     - 비-ESM 출력(CJS/IIFE) 시 TLA 에러 또는 async 래핑
+   - 4c. **Code splitting** — 동적 import 기준 청크 분할
+     - 동적 import (`import('./page')`) → 별도 청크
+     - 공통 모듈 추출: 여러 진입점이 공유하는 모듈 → 별도 청크
+     - 순환 참조 → 같은 청크로 묶기
+     - 런타임 로더: 청크를 동적 로드하는 코드 생성 (ESM 기반)
+   - 4d. **Dev server + HMR** — watch 모드(✅) 위에 확장
+     - HTTP + WebSocket 내장 서버
+     - import.meta.hot API 주입
+     - React Fast Refresh 연동
+     - 증분 재빌드 (모듈 그래프 diff)
+5. **.d.ts 생성** (isolatedDeclarations) — 후순위. 당분간 tsc에 위임 (esbuild/SWC와 동일). 자체 구현 시 AST 순회로 export 타입 추출 (~500줄), 파일별 독립이라 번들러 불필요
+6. **프로파일링 → SIMD → 미니파이어** — 번들러 B2 완료 후 현실적 벤치마크 가능
    - 미니파이어 3단계: 1) whitespace (✅ 이미 있음, codegen minify) → 2) identifier mangling (번들 크기 70%, 스코프 분석 필수) → 3) syntax 최적화 (if→ternary, dead code 등)
    - mangling은 번들러의 스코프/심볼 데이터를 공유하므로 번들러 후가 효율적
-   - 단독 미니파이(`zts --minify`)도 가능하지만 번들+미니파이 통합이 최대 효과
+   - SIMD는 렉서 함수 3개 교체, 인터페이스 불변이라 언제 넣어도 비용 동일
+7. **ES 다운레벨링** (ES2024→ES2016 점진적, ES2015 이후, ES5) — 번들러 완성 후 진행
+   - 1차 ES2024→ES2020 (~200줄): `??`, `?.`, `??=`/`||=`/`&&=`, class public field
+   - 2차 ES2019→ES2016 (~500줄): async/await→generator+Promise, rest/spread properties
+   - 3차 ES2015 (~6000줄): class→function/prototype, arrow→bind, let/const→var+IIFE, generator→상태 머신
+   - 4차 ES5 (~2000줄): polyfill + 런타임 헬퍼 (tslib 방식)
+   - 참고: oxc `crates/oxc_transformer/src/es20XX/`, Babel `packages/babel-plugin-transform-*/`, esbuild `pkg/js_parser/js_parser_lower.go`
 8. **WASM 공개 AST API** — 모든 게 안정화된 후. AST 변동 중 넣으면 매번 breaking change
 
 #### 번들러 상세 설계
@@ -262,25 +280,25 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
 
 ##### 번들러 Phase별 기능 분류
 ```
-Phase B1: 기반 (✅ 완료)          Phase B2: 핵심           Phase B3: 고급
+Phase B1: 기반 (✅ 완료)          Phase B2: 핵심 (다음)     Phase B3: 고급
 ─────────────────                 ──────────────           ──────────────
-✅ 모듈 해석 (Node/TS)            Code splitting           플러그인 시스템
-  ├ node_modules 탐색              ├ 동적 import 분할       ├ resolve/load/transform 훅
-  ├ package.json exports           ├ 공통 청크 추출         ├ Rollup 플러그인 호환
-  ├ tsconfig paths/baseUrl         ├ 런타임 로더            └ Vite 플러그인 호환
-  └ 조건부 exports                 └ CSS code splitting    React Native 지원
-✅ 모듈 그래프                    개발 서버 + HMR           ├ Metro 호환 해석
-  ├ 정적 import/export             ├ HTTP + WebSocket       ├ 플랫폼 확장자 (.ios/.android)
-  ├ 순환 참조 감지                 ├ import.meta.hot         ├ polyfill 주입
-  └ 동적 import                    ├ React Fast Refresh      └ Hermes 타겟 최적화
-✅ 단일 파일 번들 생성             └ 증분 재빌드
-  └ 진입점 → 단일 출력
-✅ 스코프 호이스팅
-  ├ 변수 이름 충돌 해결
-  ├ ESM 실행 순서 보장
-  └ CJS 호환 래핑
-✅ Tree-shaking (모듈 수준)
-  ├ export 사용 추적
+✅ 모듈 해석 (Node/TS)            CJS interop (입력)       플러그인 시스템
+  ├ node_modules 탐색              ├ require() 감지/래핑     ├ resolve/load/transform 훅
+  ├ package.json exports           ├ module.exports 인식     ├ Rollup 플러그인 호환
+  ├ tsconfig paths/baseUrl         ├ ESM↔CJS 브릿지         └ Vite 플러그인 호환
+  └ 조건부 exports                 └ named 추출 (정적)     React Native 지원
+✅ 모듈 그래프                    Top-level await           ├ Metro 호환 해석
+  ├ 정적 import/export             ├ 실행 순서 보장          ├ 플랫폼 확장자 (.ios/.android)
+  ├ 순환 참조 감지                 └ 동적→정적 승격          ├ polyfill 주입
+  └ 동적 import                   Code splitting            └ Hermes 타겟 최적화
+✅ 단일 파일 번들 생성             ├ 동적 import 분할       CSS 번들링
+  └ 진입점 → 단일 출력              ├ 공통 청크 추출         ├ 별도 파서
+✅ 스코프 호이스팅                 └ 런타임 로더            └ CSS modules
+  ├ 변수 이름 충돌 해결            개발 서버 + HMR
+  ├ ESM 실행 순서 보장              ├ HTTP + WebSocket
+  └ CJS 호환 래핑                  ├ import.meta.hot
+✅ Tree-shaking (모듈 수준)        ├ React Fast Refresh
+  ├ export 사용 추적                └ 증분 재빌드
   ├ @__PURE__ / @__NO_SIDE_EFFECTS__
   ├ sideEffects 필드
   └ cross-module 전파
