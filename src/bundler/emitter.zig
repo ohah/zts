@@ -122,6 +122,19 @@ pub fn emitWithTreeShaking(
         }
     }
 
+    // TLA 검증: 비-ESM 출력에서 TLA 사용 시 경고 주석 삽입.
+    // Top-Level Await는 ESM 전용 기능이므로 CJS/IIFE 포맷에서는 동작하지 않는다.
+    // DFS로 exec_index가 부여된 모듈만 확인한다 — 동적 import로만 도달하는 모듈은
+    // exec_index가 maxInt(u32)이며, 비동기 로딩이므로 경고 불필요.
+    if (options.format != .esm) {
+        for (sorted.items) |m| {
+            if (m.uses_top_level_await and m.exec_index != std.math.maxInt(u32)) {
+                try output.appendSlice(allocator, "/* [ZTS WARNING] Top-level await requires ESM output format. */\n");
+                break;
+            }
+        }
+    }
+
     // 엔트리 모듈 인덱스 (final exports용)
     const entry_idx: ?u32 = if (sorted.items.len > 0)
         @intFromEnum(sorted.items[sorted.items.len - 1].index)

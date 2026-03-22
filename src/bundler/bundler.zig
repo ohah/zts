@@ -7954,3 +7954,169 @@ test "CJS: multiple ESM modules importing same CJS module" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require_shared") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") != null);
 }
+
+// ============================================================
+// Top-Level Await (TLA) Tests
+// ============================================================
+
+test "TLA: detected in module" {
+    // top-level await가 있는 모듈은 uses_top_level_await=true가 되어야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const data = await fetch('/api');\nconsole.log(data);");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // await 표현식이 번들 출력에 포함되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "await") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "fetch") != null);
+}
+
+test "TLA: not detected inside async function" {
+    // async 함수 내부의 await는 TLA가 아니므로 경고가 없어야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "async function load() { const x = await fetch('/api'); return x; }\nconsole.log(load);");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    // CJS 포맷: TLA가 없으므로 경고 주석이 없어야 함
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .cjs,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // async 함수 내부 await는 TLA가 아님 → 경고 없음
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "[ZTS WARNING]") == null);
+}
+
+test "TLA: propagated to importer" {
+    // B가 TLA를 사용하고, A가 B를 static import하면
+    // A도 TLA로 전파되어야 한다 (import 체인 전파).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import './b';\nconsole.log('a');");
+    try writeFile(tmp.dir, "b.ts", "const data = await Promise.resolve(42);\nconsole.log(data);");
+
+    const entry = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(entry);
+
+    // CJS 포맷: A가 B(TLA)를 import → A도 TLA → 경고 발생
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .cjs,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // TLA 전파 → CJS에서 경고 주석 포함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "[ZTS WARNING]") != null);
+}
+
+test "TLA: not propagated via dynamic import" {
+    // 동적 import는 비동기이므로 TLA를 전파하지 않아야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "const mod = import('./b');\nconsole.log(mod);");
+    try writeFile(tmp.dir, "b.ts", "const data = await Promise.resolve(42);\nexport default data;");
+
+    const entry = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(entry);
+
+    // CJS 포맷: 동적 import → TLA 비전파 → 경고 없음
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .cjs,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // 동적 import는 TLA 전파 안 함 → 경고 없음
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "[ZTS WARNING]") == null);
+}
+
+test "TLA: warning for CJS output" {
+    // CJS 포맷에서 TLA 사용 시 경고 주석이 삽입되어야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const x = await Promise.resolve(1);\nconsole.log(x);");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .cjs,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "[ZTS WARNING] Top-level await requires ESM output format.") != null);
+}
+
+test "TLA: no warning for ESM output" {
+    // ESM 포맷에서는 TLA가 정상이므로 경고가 없어야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const x = await Promise.resolve(1);\nconsole.log(x);");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // ESM → 경고 없음
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "[ZTS WARNING]") == null);
+}
+
+test "TLA: for-await-of detected" {
+    // `for await (const x of gen) {}` 는 TLA이다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\async function* gen() { yield 1; yield 2; }
+        \\for await (const x of gen()) { console.log(x); }
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    // CJS 포맷: for-await-of는 TLA → 경고 발생
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .cjs,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "[ZTS WARNING]") != null);
+}

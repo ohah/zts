@@ -65,6 +65,8 @@ pub const Module = struct {
     exports_kind: types.ExportsKind = .none,
     /// 모듈 래핑 방식 (CJS → __commonJS 팩토리 함수)
     wrap_kind: types.WrapKind = .none,
+    /// Top-Level Await 사용 여부. TLA 모듈을 static import하는 모듈도 전이적으로 true.
+    uses_top_level_await: bool = false,
     side_effects: bool,
     /// DFS 후위 순서 = ESM 실행 순서 (D058, D076).
     /// maxInt = 미방문 (DFS에서 할당되지 않음).
