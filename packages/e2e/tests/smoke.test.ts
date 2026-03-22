@@ -86,6 +86,20 @@ test.describe("Dev Server E2E", () => {
     expect(body).not.toContain(": string");
   });
 
+  test("React Fast Refresh 코드가 주입된다", async ({ page }) => {
+    const response = await page.goto(`http://localhost:${TEST_PORT}/bundle.js`);
+    const body = await response!.text();
+
+    // $RefreshReg$ 글로벌 바인딩 (HMR 런타임)
+    expect(body).toContain("$RefreshReg$");
+    expect(body).toContain("$RefreshSig$");
+    // react-refresh 런타임 연결
+    expect(body).toContain("__REACT_REFRESH_RUNTIME__");
+    // /@react-refresh 가상 엔드포인트
+    const refreshRes = await page.goto(`http://localhost:${TEST_PORT}/@react-refresh`);
+    expect(refreshRes!.status()).toBe(200);
+  });
+
   test("소스맵이 서빙된다", async ({ page }) => {
     // bundle.js에 sourceMappingURL 포함 확인
     const bundleRes = await page.goto(`http://localhost:${TEST_PORT}/bundle.js`);
