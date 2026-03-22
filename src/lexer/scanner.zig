@@ -921,7 +921,9 @@ pub const Scanner = struct {
             self.token.has_pure_comment_before = true;
         }
 
-        if (std.mem.indexOf(u8, comment_text, "@__NO_SIDE_EFFECTS__") != null) {
+        if (std.mem.indexOf(u8, comment_text, "@__NO_SIDE_EFFECTS__") != null or
+            std.mem.indexOf(u8, comment_text, "#__NO_SIDE_EFFECTS__") != null)
+        {
             self.token.has_no_side_effects_comment = true;
         }
 
