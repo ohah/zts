@@ -274,28 +274,93 @@ pub const DevServer = struct {
         getLog().print("  [ws] client disconnected\n", .{}) catch {};
     }
 
-    // TODO: entry 파일만 감시. 번들러 모듈 그래프의 모든 import 파일을 감시해야 함 (5단계)
     fn watchLoop(self: *DevServer) void {
-        getLog().print("  [watch] watching for changes...\n", .{}) catch {};
+        const abs_entry = self.abs_entry orelse return;
 
-        var last_mtime = getEntryMtime(self) orelse return;
+        // 초기 번들 → 모듈 경로 수집
+        var watch_paths = collectModulePaths(self.allocator, abs_entry) orelse return;
+        defer freeWatchPaths(self.allocator, &watch_paths);
+
+        // 초기 mtime 맵 구축
+        var mtime_map = std.StringHashMap(i128).init(self.allocator);
+        defer mtime_map.deinit();
+        for (watch_paths) |p| {
+            const stat = std.fs.cwd().statFile(p) catch continue;
+            mtime_map.put(p, stat.mtime) catch continue;
+        }
+
+        getLog().print("  [watch] watching {d} files for changes...\n", .{watch_paths.len}) catch {};
 
         while (true) {
             std.Thread.sleep(watch_interval_ms * std.time.ns_per_ms);
 
-            const current_mtime = getEntryMtime(self) orelse continue;
-            if (current_mtime != last_mtime) {
-                last_mtime = current_mtime;
-                getLog().print("  [watch] file changed, sending full-reload\n", .{}) catch {};
+            var changed = false;
+            for (watch_paths) |p| {
+                const stat = std.fs.cwd().statFile(p) catch continue;
+                const prev = mtime_map.get(p) orelse {
+                    mtime_map.put(p, stat.mtime) catch {};
+                    changed = true;
+                    continue;
+                };
+                if (stat.mtime != prev) {
+                    mtime_map.put(p, stat.mtime) catch {};
+                    getLog().print("  [watch] changed: {s}\n", .{std.fs.path.basename(p)}) catch {};
+                    changed = true;
+                }
+            }
+
+            if (changed) {
                 self.ws_clients.broadcast("{\"type\":\"full-reload\"}");
+
+                // 모듈 그래프가 변경됐을 수 있으므로 경로 목록 갱신
+                if (collectModulePaths(self.allocator, abs_entry)) |new_paths| {
+                    freeWatchPaths(self.allocator, &watch_paths);
+                    watch_paths = new_paths;
+                    for (watch_paths) |p| {
+                        if (!mtime_map.contains(p)) {
+                            const stat = std.fs.cwd().statFile(p) catch continue;
+                            mtime_map.put(p, stat.mtime) catch {};
+                        }
+                    }
+                }
             }
         }
     }
 
-    fn getEntryMtime(self: *DevServer) ?i128 {
-        const entry = self.abs_entry orelse return null;
-        const stat = std.fs.cwd().statFile(entry) catch return null;
-        return stat.mtime;
+    fn collectModulePaths(allocator: std.mem.Allocator, abs_entry: []const u8) ?[]const []const u8 {
+        var bundler = Bundler.init(allocator, .{
+            .entry_points = &.{abs_entry},
+            .platform = .browser,
+        });
+        defer bundler.deinit();
+
+        const result = bundler.bundle() catch return null;
+        defer {
+            allocator.free(result.output);
+            if (result.outputs) |outs| {
+                for (outs) |o| {
+                    allocator.free(o.path);
+                    allocator.free(o.contents);
+                }
+                allocator.free(outs);
+            }
+            if (result.diagnostics) |diags| {
+                for (diags) |d| {
+                    allocator.free(d.message);
+                    allocator.free(d.file_path);
+                    if (d.suggestion) |s| allocator.free(s);
+                }
+                allocator.free(diags);
+            }
+        }
+
+        // module_paths만 소유권 이전 (나머지는 위 defer에서 해제)
+        return result.module_paths;
+    }
+
+    fn freeWatchPaths(allocator: std.mem.Allocator, paths: *[]const []const u8) void {
+        for (paths.*) |p| allocator.free(p);
+        allocator.free(paths.*);
     }
 
     fn handleRequest(self: *DevServer, request: *http.Server.Request) !void {

@@ -47,6 +47,8 @@ pub const BundleResult = struct {
     outputs: ?[]OutputFile = null,
     /// 빌드 중 발생한 진단 메시지들. deep copy — 내부 문자열도 allocator 소유.
     diagnostics: ?[]OwnedDiagnostic,
+    /// 번들에 포함된 모든 모듈의 절대 경로. allocator 소유. dev server watch용.
+    module_paths: ?[]const []const u8 = null,
 
     /// 문자열 필드를 소유하는 diagnostic (graph 해제 후에도 유효).
     pub const OwnedDiagnostic = struct {
@@ -74,6 +76,10 @@ pub const BundleResult = struct {
                 if (d.suggestion) |s| allocator.free(s);
             }
             allocator.free(diags);
+        }
+        if (self.module_paths) |paths| {
+            for (paths) |p| allocator.free(p);
+            allocator.free(paths);
         }
     }
 
@@ -208,10 +214,24 @@ pub const Bundler = struct {
             break :blk diags;
         } else null;
 
+        // 5. 모듈 경로 수집 (dev server watch용)
+        const module_paths: ?[]const []const u8 = if (graph.modules.items.len > 0) blk: {
+            const paths = try self.allocator.alloc([]const u8, graph.modules.items.len);
+            errdefer self.allocator.free(paths);
+            var path_count: usize = 0;
+            errdefer for (paths[0..path_count]) |p| self.allocator.free(p);
+            for (graph.modules.items) |m| {
+                paths[path_count] = try self.allocator.dupe(u8, m.path);
+                path_count += 1;
+            }
+            break :blk paths;
+        } else null;
+
         return .{
             .output = output,
             .outputs = outputs,
             .diagnostics = diagnostics,
+            .module_paths = module_paths,
         };
     }
 };
