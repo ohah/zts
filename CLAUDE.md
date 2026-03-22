@@ -237,6 +237,7 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
      - content hash 파일명 (`chunk-{8자 hex}.js`, 결정론적)
      - 동일 이름 cross-chunk import deconflict (`import { x as x$2 }`)
    - 4d. **Dev server + HMR** — 다음, watch 모드(✅) 위에 확장
+     - **선행: Bun 모노레포 셋업** (E2E 테스트에 Playwright 필요)
      - HTTP + WebSocket 내장 서버
      - import.meta.hot API 주입
      - React Fast Refresh 연동
