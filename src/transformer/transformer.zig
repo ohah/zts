@@ -101,15 +101,6 @@ pub const Transformer = struct {
         signature: []const u8,
     };
 
-    /// React builtin Hook 이름 목록 (use 접두사 + 소문자로 시작하는 것도 custom hook)
-    const builtin_hooks = [_][]const u8{
-        "useState",            "useReducer",    "useEffect",
-        "useLayoutEffect",     "useCallback",   "useMemo",
-        "useRef",              "useContext",    "useTransition",
-        "useDeferredValue",    "useId",         "useSyncExternalStore",
-        "useImperativeHandle", "useDebugValue",
-    };
-
     pub fn init(allocator: std.mem.Allocator, old_ast: *const Ast, options: TransformOptions) Transformer {
         return .{
             .old_ast = old_ast,
@@ -1483,8 +1474,9 @@ pub const Transformer = struct {
 
     /// Hook 호출 이름이 React Hook인지 확인 (use 접두사 + 다음 문자가 대문자).
     fn isHookCall(name: []const u8) bool {
-        if (name.len < 4) return false;
         if (!std.mem.startsWith(u8, name, "use")) return false;
+        // "use" 자체도 React 19 hook
+        if (name.len == 3) return true;
         // use 다음 문자가 대문자 (useState, useEffect, useMyHook 등)
         return name[3] >= 'A' and name[3] <= 'Z';
     }
@@ -1534,6 +1526,16 @@ pub const Transformer = struct {
                     if (callee.tag == .identifier_reference) {
                         const name = self.old_ast.getText(callee.data.string_ref);
                         if (isHookCall(name)) hook_name = name;
+                    } else if (callee.tag == .static_member_expression) {
+                        // React.useState() → property name이 hook인지 확인
+                        const me = callee.data.binary;
+                        if (!me.right.isNone() and @intFromEnum(me.right) < self.old_ast.nodes.items.len) {
+                            const prop = self.old_ast.getNode(me.right);
+                            if (prop.tag == .identifier_reference) {
+                                const name = self.old_ast.getText(prop.data.string_ref);
+                                if (isHookCall(name)) hook_name = name;
+                            }
+                        }
                     }
 
                     if (hook_name) |name| {
