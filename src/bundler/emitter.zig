@@ -101,6 +101,7 @@ const Ast = @import("../parser/ast.zig").Ast;
 const Transformer = @import("../transformer/transformer.zig").Transformer;
 const Codegen = @import("../codegen/codegen.zig").Codegen;
 const CodegenOptions = @import("../codegen/codegen.zig").CodegenOptions;
+const SourceMap = @import("../codegen/sourcemap.zig");
 const Linker = @import("linker.zig").Linker;
 const LinkingMetadata = @import("linker.zig").LinkingMetadata;
 const TreeShaker = @import("tree_shaker.zig").TreeShaker;
@@ -108,6 +109,8 @@ const TreeShaker = @import("tree_shaker.zig").TreeShaker;
 pub const EmitOptions = struct {
     format: Format = .esm,
     minify: bool = false,
+    /// 소스맵 생성 활성화. dev mode에서는 번들 레벨 소스맵을 생성한다.
+    sourcemap: bool = false,
     /// dev mode: 각 모듈을 __zts_register() 팩토리로 래핑하고
     /// HMR 런타임을 주입한다. import.meta.hot API 지원.
     dev_mode: bool = false,
@@ -259,12 +262,14 @@ pub fn emitWithTreeShaking(
 ///   __zts_exports.result = result;
 /// });
 /// ```
-/// Dev mode 번들 결과. 전체 번들 + per-module codes를 한 번의 transform 패스로 생성.
+/// Dev mode 번들 결과. 전체 번들 + per-module codes + 소스맵을 한 번의 transform 패스로 생성.
 pub const DevBundleResult = struct {
     /// 전체 번들 출력 (HMR 런타임 + 모든 모듈 __zts_register). allocator 소유.
     output: []const u8,
     /// 모듈별 __zts_register() 코드. HMR 모듈 단위 업데이트용. allocator 소유.
     module_codes: []const ModuleDevCode,
+    /// 번들 소스맵 JSON (V3). null이면 소스맵 미생성. allocator 소유.
+    sourcemap: ?[]const u8 = null,
 
     pub const ModuleDevCode = struct {
         id: []const u8,
@@ -323,14 +328,35 @@ pub fn emitDevBundle(
         module_codes.deinit(allocator);
     }
 
+    // 번들 레벨 소스맵 빌더 (소스맵 활성화 시)
+    var bundle_sm: ?SourceMap.SourceMapBuilder = if (options.sourcemap)
+        SourceMap.SourceMapBuilder.init(allocator)
+    else
+        null;
+    defer if (bundle_sm) |*sm| sm.deinit();
+
+    // 현재 번들 출력의 줄 번호 추적 (소스맵 오프셋용)
+    var bundle_line: u32 = 0;
+    if (!options.minify) {
+        // HMR 런타임의 줄 수 카운트
+        const runtime = HMR_RUNTIME;
+        for (runtime) |c| {
+            if (c == '\n') bundle_line += 1;
+        }
+    } else {
+        // minified 런타임은 1줄
+        bundle_line = 1;
+    }
+
     // 3. 각 모듈을 __zts_register로 래핑
     for (sorted.items) |m| {
         const module_id = makeModuleId(m.path, options.root_dir);
-        const code = try emitDevModule(allocator, m, options, linker) orelse continue;
-        defer allocator.free(code);
+        const emit_result = try emitDevModule(allocator, m, options, linker) orelse continue;
+        defer allocator.free(emit_result.code);
+        defer if (emit_result.mappings) |maps| allocator.free(maps);
 
         // __zts_register 래핑 코드 생성
-        const wrapped = try wrapWithRegister(allocator, module_id, code, options.minify);
+        const wrapped = try wrapWithRegister(allocator, module_id, emit_result.code, options.minify);
         errdefer allocator.free(wrapped);
 
         // per-module code 저장
@@ -344,17 +370,69 @@ pub fn emitDevBundle(
             try output.appendSlice(allocator, "// --- ");
             try output.appendSlice(allocator, std.fs.path.basename(m.path));
             try output.appendSlice(allocator, " ---\n");
+            bundle_line += 1; // comment line
         }
         try output.appendSlice(allocator, wrapped);
+
+        // 소스맵: 모듈 매핑을 번들 오프셋으로 조정하여 추가
+        if (bundle_sm) |*sm| {
+            if (emit_result.mappings) |maps| {
+                const source_idx = try sm.addSource(module_id);
+                // __zts_register header는 1줄 ("__zts_register(..., function(...) {\n")
+                const wrapper_header_lines: u32 = 1;
+                // preamble 줄 수 카운트
+                var preamble_lines: u32 = 0;
+                const preamble = if (emit_result.code.len > 0) blk: {
+                    // preamble은 code 시작 전의 __zts_require 줄들
+                    // emitDevModule이 concat한 결과이므로 직접 카운트는 어려움
+                    // 대신 매핑의 generated_line 기준으로 오프셋 적용
+                    _ = &preamble_lines;
+                    break :blk @as(u32, 0);
+                } else 0;
+                _ = preamble;
+
+                for (maps) |mapping| {
+                    try sm.addMapping(.{
+                        .generated_line = bundle_line + wrapper_header_lines + mapping.generated_line,
+                        .generated_column = if (mapping.generated_line == 0)
+                            mapping.generated_column
+                        else
+                            mapping.generated_column + 1, // tab 들여쓰기 오프셋
+                        .source_index = source_idx,
+                        .original_line = mapping.original_line,
+                        .original_column = mapping.original_column,
+                    });
+                }
+            }
+        }
+
+        // 번들 줄 번호 추적
+        for (wrapped) |c| {
+            if (c == '\n') bundle_line += 1;
+        }
         allocator.free(wrapped);
         if (!options.minify) {
+            bundle_line += 1; // trailing newline
             try output.append(allocator, '\n');
         }
+    }
+
+    // 소스맵 JSON 생성
+    var sourcemap_json: ?[]const u8 = null;
+    if (bundle_sm) |*sm| {
+        const json = try sm.generateJSON("bundle.js");
+        sourcemap_json = try allocator.dupe(u8, json);
+    }
+
+    // 소스맵 참조 추가
+    if (sourcemap_json != null) {
+        try output.appendSlice(allocator, "//# sourceMappingURL=/bundle.js.map\n");
     }
 
     return .{
         .output = try output.toOwnedSlice(allocator),
         .module_codes = try module_codes.toOwnedSlice(allocator),
+        .sourcemap = sourcemap_json,
     };
 }
 
@@ -392,6 +470,15 @@ pub fn wrapWithRegister(
     return wrapped.toOwnedSlice(allocator);
 }
 
+/// Dev mode 단일 모듈 emit 결과.
+pub const DevModuleEmitResult = struct {
+    code: []const u8,
+    /// 소스맵 매핑 (소스맵 활성화 시). generated_line/col은 code 기준 (오프셋 미적용).
+    mappings: ?[]const SourceMap.Mapping = null,
+    /// 소스 파일명 (소스맵용)
+    source_name: ?[]const u8 = null,
+};
+
 /// Dev mode용 단일 모듈 변환.
 /// 프로덕션 emitModule과의 차이:
 ///   - buildDevMetadataForAst 사용 (rename 없음, __zts_require preamble)
@@ -401,7 +488,7 @@ pub fn emitDevModule(
     module: *const Module,
     options: EmitOptions,
     linker: ?*const Linker,
-) !?[]const u8 {
+) !?DevModuleEmitResult {
     const ast = &(module.ast orelse return null);
 
     var emit_arena = std.heap.ArenaAllocator.init(allocator);
@@ -435,23 +522,42 @@ pub fn emitDevModule(
     var cg = Codegen.initWithOptions(arena_alloc, &transformer.new_ast, .{
         .minify = options.minify,
         .module_format = .esm,
+        .sourcemap = options.sourcemap,
         .linking_metadata = if (metadata) |*md| md else null,
     });
+    // 소스맵용: line_offsets와 소스 파일 등록
+    if (options.sourcemap) {
+        cg.line_offsets = module.line_offsets;
+        try cg.addSourceFile(makeModuleId(module.path, options.root_dir));
+    }
     const code = try cg.generate(root);
+
+    // 소스맵 매핑 복사 (arena 해제 전에)
+    var mappings: ?[]SourceMap.Mapping = null;
+    if (cg.sm_builder) |*sm| {
+        if (sm.mappings.items.len > 0) {
+            mappings = try allocator.dupe(SourceMap.Mapping, sm.mappings.items);
+        }
+    }
 
     // preamble (__zts_require) + code + epilogue (__zts_exports)
     const preamble = if (metadata) |md| md.cjs_import_preamble else null;
     const final_exports = if (metadata) |md| md.final_exports else null;
 
-    if (preamble != null or final_exports != null) {
-        return try std.mem.concat(allocator, u8, &.{
+    const final_code = if (preamble != null or final_exports != null)
+        try std.mem.concat(allocator, u8, &.{
             preamble orelse "",
             code,
             final_exports orelse "",
-        });
-    }
+        })
+    else
+        try allocator.dupe(u8, code);
 
-    return try allocator.dupe(u8, code);
+    return .{
+        .code = final_code,
+        .mappings = mappings,
+        .source_name = if (options.sourcemap) makeModuleId(module.path, options.root_dir) else null,
+    };
 }
 
 /// 모듈 경로를 dev bundle용 ID로 변환.

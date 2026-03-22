@@ -98,6 +98,11 @@ pub const DevServer = struct {
     entry_point: ?[]const u8,
     abs_entry: ?[]const u8,
     ws_clients: WsClients = .{},
+    /// 마지막 번들의 소스맵 (캐시). /bundle.js.map 요청 시 반환. mutex로 보호.
+    sourcemap_cache: struct {
+        mutex: std.Thread.Mutex = .{},
+        data: ?[]const u8 = null,
+    } = .{},
 
     pub const Options = struct {
         root_dir: []const u8 = ".",
@@ -530,6 +535,12 @@ pub const DevServer = struct {
         };
 
         if (self.entry_point != null) {
+            // /bundle.js.map — 캐시된 소스맵 반환
+            if (std.mem.eql(u8, raw_path, "/bundle.js.map")) {
+                self.serveSourceMap(request) catch {};
+                return;
+            }
+
             if (std.mem.eql(u8, raw_path, bundle_path)) {
                 self.serveBundle(request) catch |err| {
                     getLog().print("zts: bundle failed: {}\n", .{err}) catch {};
@@ -609,11 +620,41 @@ pub const DevServer = struct {
             return;
         }
 
+        // 소스맵 캐시 업데이트
+        if (result.sourcemap) |sm| {
+            self.sourcemap_cache.mutex.lock();
+            defer self.sourcemap_cache.mutex.unlock();
+            if (self.sourcemap_cache.data) |old| self.allocator.free(old);
+            self.sourcemap_cache.data = self.allocator.dupe(u8, sm) catch null;
+        }
+
         try request.respond(result.output, .{
             .extra_headers = &js_headers,
         });
 
         getLog().print("  200 {s} (bundled)\n", .{bundle_path}) catch {};
+    }
+
+    const sourcemap_headers = cors_headers ++ [_]http.Header{
+        .{ .name = "Content-Type", .value = "application/json; charset=utf-8" },
+    };
+
+    fn serveSourceMap(self: *DevServer, request: *http.Server.Request) !void {
+        self.sourcemap_cache.mutex.lock();
+        const data = self.sourcemap_cache.data;
+        self.sourcemap_cache.mutex.unlock();
+
+        if (data) |sm| {
+            try request.respond(sm, .{
+                .extra_headers = &sourcemap_headers,
+            });
+            getLog().print("  200 /bundle.js.map\n", .{}) catch {};
+        } else {
+            try request.respond("", .{
+                .status = .not_found,
+                .extra_headers = &cors_headers,
+            });
+        }
     }
 
     fn serveAutoHtml(_: *DevServer, request: *http.Server.Request) !void {
