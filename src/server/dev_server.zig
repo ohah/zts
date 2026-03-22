@@ -312,16 +312,17 @@ pub const DevServer = struct {
             if (changed) {
                 self.ws_clients.broadcast("{\"type\":\"full-reload\"}");
 
-                // 모듈 그래프가 변경됐을 수 있으므로 경로 목록 갱신
+                // 모듈 그래프가 변경됐을 수 있으므로 경로 목록 + mtime 맵 재구축
                 if (collectModulePaths(self.allocator, abs_entry)) |new_paths| {
                     freeWatchPaths(self.allocator, &watch_paths);
                     watch_paths = new_paths;
+                    // mtime_map 초기화 후 재구축 — 이전 키는 freed 상태이므로 재사용 불가
+                    mtime_map.clearAndFree();
                     for (watch_paths) |p| {
-                        if (!mtime_map.contains(p)) {
-                            const stat = std.fs.cwd().statFile(p) catch continue;
-                            mtime_map.put(p, stat.mtime) catch {};
-                        }
+                        const stat = std.fs.cwd().statFile(p) catch continue;
+                        mtime_map.put(p, stat.mtime) catch {};
                     }
+                    getLog().print("  [watch] watching {d} files for changes...\n", .{watch_paths.len}) catch {};
                 }
             }
         }
@@ -334,28 +335,11 @@ pub const DevServer = struct {
         });
         defer bundler.deinit();
 
-        const result = bundler.bundle() catch return null;
-        defer {
-            allocator.free(result.output);
-            if (result.outputs) |outs| {
-                for (outs) |o| {
-                    allocator.free(o.path);
-                    allocator.free(o.contents);
-                }
-                allocator.free(outs);
-            }
-            if (result.diagnostics) |diags| {
-                for (diags) |d| {
-                    allocator.free(d.message);
-                    allocator.free(d.file_path);
-                    if (d.suggestion) |s| allocator.free(s);
-                }
-                allocator.free(diags);
-            }
-        }
-
-        // module_paths만 소유권 이전 (나머지는 위 defer에서 해제)
-        return result.module_paths;
+        var result = bundler.bundle() catch return null;
+        const paths = result.module_paths;
+        result.module_paths = null; // deinit에서 해제하지 않도록 소유권 이전
+        result.deinit(allocator);
+        return paths;
     }
 
     fn freeWatchPaths(allocator: std.mem.Allocator, paths: *[]const []const u8) void {
