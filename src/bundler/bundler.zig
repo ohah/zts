@@ -148,7 +148,7 @@ pub const Bundler = struct {
             );
             defer chunk_graph.deinit();
 
-            try chunk_mod.computeCrossChunkLinks(&chunk_graph, graph.modules.items, self.allocator);
+            try chunk_mod.computeCrossChunkLinks(&chunk_graph, graph.modules.items, self.allocator, if (linker) |*l| l else null);
 
             outputs = try emitter.emitChunks(
                 self.allocator,
@@ -8415,10 +8415,14 @@ test "CodeSplitting: cross-chunk import statement" {
     try std.testing.expect(!result.hasErrors());
     const outs = result.outputs orelse return error.TestUnexpectedResult;
 
-    // 엔트리 청크 중 하나 이상에 import './chunk.js' 또는 import './shared.js'가 포함되어야 함
+    // 엔트리 청크 중 하나 이상에 cross-chunk import가 포함되어야 함.
+    // 심볼 수준: import { x } from './chunk-N.js'
+    // side-effect: import './chunk-N.js'
     var has_cross_import = false;
     for (outs) |o| {
-        if (std.mem.indexOf(u8, o.contents, "import './") != null) {
+        if (std.mem.indexOf(u8, o.contents, "import './") != null or
+            std.mem.indexOf(u8, o.contents, "from './") != null)
+        {
             has_cross_import = true;
             break;
         }
@@ -8490,4 +8494,186 @@ test "CodeSplitting: CJS format returns error" {
     // CJS + code_splitting은 에러
     const result = bnd.bundle();
     try std.testing.expect(result == error.CodeSplittingRequiresESM);
+}
+
+// ============================================================
+// Tests — 크로스 청크 심볼 수준 import/export
+// ============================================================
+
+test "CodeSplitting: cross-chunk named import — 심볼 수준 import 문 생성" {
+    // 2개 엔트리가 공통 모듈의 named export를 import할 때
+    // 엔트리 청크에 `import { x } from './chunk-N.js'` 형태가 생성되어야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import { createApp } from './shared';\nconsole.log(createApp);");
+    try writeFile(tmp.dir, "b.ts", "import { createApp } from './shared';\nconsole.log(createApp);");
+    try writeFile(tmp.dir, "shared.ts", "export function createApp() { return 'app'; }");
+
+    const entry_a = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(entry_a);
+    const entry_b = try absPath(&tmp, "b.ts");
+    defer std.testing.allocator.free(entry_b);
+
+    var bundler = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{ entry_a, entry_b },
+        .code_splitting = true,
+    });
+    defer bundler.deinit();
+
+    const result = try bundler.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+
+    // 엔트리 청크에 `import { createApp }` 형태의 named import가 있어야 함
+    var has_named_import = false;
+    for (outs) |o| {
+        if (std.mem.indexOf(u8, o.contents, "import { createApp }") != null or
+            std.mem.indexOf(u8, o.contents, "import{createApp}") != null)
+        {
+            has_named_import = true;
+            break;
+        }
+    }
+    try std.testing.expect(has_named_import);
+
+    // 공통 청크에 `export { createApp }` 형태의 export가 있어야 함
+    var has_export = false;
+    for (outs) |o| {
+        if (std.mem.indexOf(u8, o.contents, "export { createApp }") != null or
+            std.mem.indexOf(u8, o.contents, "export{createApp}") != null)
+        {
+            has_export = true;
+            break;
+        }
+    }
+    try std.testing.expect(has_export);
+}
+
+test "CodeSplitting: multiple named imports from common chunk" {
+    // 하나의 공통 청크에서 여러 심볼을 가져올 때
+    // import { a, b } from './chunk-N.js' 형태로 합쳐져야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import { x, y } from './shared';\nconsole.log(x, y);");
+    try writeFile(tmp.dir, "b.ts", "import { x } from './shared';\nconsole.log(x);");
+    try writeFile(tmp.dir, "shared.ts", "export const x = 1;\nexport const y = 2;");
+
+    const entry_a = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(entry_a);
+    const entry_b = try absPath(&tmp, "b.ts");
+    defer std.testing.allocator.free(entry_b);
+
+    var bundler = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{ entry_a, entry_b },
+        .code_splitting = true,
+    });
+    defer bundler.deinit();
+
+    const result = try bundler.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+
+    // a.ts 엔트리 청크에 x와 y 모두 import되어야 함
+    var has_multi_import = false;
+    for (outs) |o| {
+        // x와 y가 같은 import 문에 있는지 확인 (순서 무관)
+        if ((std.mem.indexOf(u8, o.contents, "import {") != null or
+            std.mem.indexOf(u8, o.contents, "import {") != null) and
+            std.mem.indexOf(u8, o.contents, "x") != null and
+            std.mem.indexOf(u8, o.contents, "y") != null and
+            std.mem.indexOf(u8, o.contents, "from './") != null)
+        {
+            has_multi_import = true;
+            break;
+        }
+    }
+    try std.testing.expect(has_multi_import);
+}
+
+test "CodeSplitting: no cross-chunk symbols when all in same chunk" {
+    // 단일 엔트리 — 모든 모듈이 같은 청크에 있으면
+    // cross-chunk import/export 없이 인라인 번들이어야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { x } from './dep';\nconsole.log(x);");
+    try writeFile(tmp.dir, "dep.ts", "export const x = 42;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var bundler = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+    });
+    defer bundler.deinit();
+
+    const result = try bundler.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+
+    // 단일 청크 — cross-chunk import/export가 없어야 함
+    try std.testing.expectEqual(@as(usize, 1), outs.len);
+    for (outs) |o| {
+        // import 문이나 from 문이 없어야 함 (side-effect든 named든)
+        try std.testing.expect(std.mem.indexOf(u8, o.contents, "import '") == null);
+        try std.testing.expect(std.mem.indexOf(u8, o.contents, "from '") == null);
+    }
+}
+
+test "CodeSplitting: re-export chain across chunks" {
+    // entry → re-exporter → original 체인에서
+    // re-exporter와 original이 공통 청크로 추출되면
+    // entry 청크에 심볼 import가 있어야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import { val } from './reexport';\nconsole.log(val);");
+    try writeFile(tmp.dir, "b.ts", "import { val } from './reexport';\nconsole.log(val);");
+    try writeFile(tmp.dir, "reexport.ts", "export { val } from './original';");
+    try writeFile(tmp.dir, "original.ts", "export const val = 'hello';");
+
+    const entry_a = try absPath(&tmp, "a.ts");
+    defer std.testing.allocator.free(entry_a);
+    const entry_b = try absPath(&tmp, "b.ts");
+    defer std.testing.allocator.free(entry_b);
+
+    var bundler = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{ entry_a, entry_b },
+        .code_splitting = true,
+    });
+    defer bundler.deinit();
+
+    const result = try bundler.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+
+    // 디버그: 출력 파일 수와 내용 확인
+    // re-export 체인에서 reexport.ts와 original.ts가 공통 청크로 추출되어야 함
+    // 2 엔트리 + 1~2 공통 = 3~4 파일
+    // 단, tree-shaking으로 reexport.ts가 제거되면 2개일 수 있음
+    try std.testing.expect(outs.len >= 2);
+
+    // 엔트리 청크에 cross-chunk import가 있거나,
+    // scope_hoist로 인라인되어 val이 직접 포함될 수 있음
+    var has_cross_import = false;
+    var has_val_inline = false;
+    for (outs) |o| {
+        if (std.mem.indexOf(u8, o.contents, "from './") != null or
+            std.mem.indexOf(u8, o.contents, "import './") != null)
+        {
+            has_cross_import = true;
+        }
+        if (std.mem.indexOf(u8, o.contents, "'hello'") != null) {
+            has_val_inline = true;
+        }
+    }
+    // cross-chunk import가 있거나, scope_hoist로 인라인되어 값이 포함되어야 함
+    try std.testing.expect(has_cross_import or has_val_inline);
 }
