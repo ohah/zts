@@ -393,12 +393,24 @@ pub fn main() !void {
         return;
     }
 
-    // --serve
+    // --serve (정적 서버 또는 --bundle과 조합하여 번들 서빙)
     if (is_serve) {
-        const serve_dir = input_file orelse ".";
+        // --serve --bundle entry.ts → entry의 디렉토리를 root로 사용
+        const serve_dir: []const u8 = if (is_bundle and input_file != null) blk: {
+            break :blk std.fs.path.dirname(input_file.?) orelse ".";
+        } else input_file orelse ".";
+
+        const entry: ?[]const u8 = if (is_bundle) blk: {
+            break :blk input_file orelse {
+                try stderr.print("Error: --serve --bundle requires an entry file path\n", .{});
+                return;
+            };
+        } else null;
+
         var dev_server = lib.server.DevServer.init(allocator, .{
             .root_dir = serve_dir,
             .port = serve_port,
+            .entry_point = entry,
         }) catch |err| {
             try stderr.print("Error: failed to start dev server: {}\n", .{err});
             return;
@@ -874,6 +886,7 @@ fn printUsage(writer: anytype) !void {
         \\
         \\Dev server:
         \\  --serve [dir]                    Start static file server (default: .)
+        \\  --serve --bundle <entry.ts>      Bundle and serve entry point
         \\  --port <number>                  Server port (default: 3000)
         \\
         \\Bundle options:
