@@ -69,6 +69,7 @@ pub const TreeShaker = struct {
     /// included는 단조가 아님 — 축소(미사용 제거)와 확장(canonical/side-effect 전파)이 교차.
     /// 변경이 없을 때 수렴하며, 실제로는 2-3회 이내.
     pub fn analyze(self: *TreeShaker, entry_points: []const []const u8) !void {
+        // entry_set 먼저 계산 (자동 순수 판별에서 진입점 제외용)
         for (self.modules, 0..) |m, i| {
             for (entry_points) |ep| {
                 if (std.mem.eql(u8, m.path, ep)) {
@@ -77,6 +78,11 @@ pub const TreeShaker = struct {
                 }
             }
         }
+
+        // TODO: 자동 순수 판별 활성화 — 별도 PR에서 기존 테스트 업데이트 후 활성화
+        // isModulePure/isStatementPure/isExpressionPure 분석 함수는 준비 완료.
+        // 활성화하면 `const x = 1`만 있는 모듈이 side_effects=false → 미사용 시 제거.
+        // 기존 테스트 200개+ 중 상당수가 side_effects=true를 전제하므로 일괄 수정 필요.
 
         for (self.modules, 0..) |m, i| {
             if (self.entry_set.isSet(i) or m.side_effects) {
@@ -189,18 +195,43 @@ pub const TreeShaker = struct {
 
     fn isStatementPure(ast: *const Ast, stmt: Node) bool {
         return switch (stmt.tag) {
-            // 선언문 — side effect 없음
+            // import/export 선언 — side effect 없음 (import 대상 모듈의 side effect는 별도 추적)
             .import_declaration,
-            .export_named_declaration,
             .export_all_declaration,
-            .export_default_declaration,
-            .function_declaration,
-            .class_declaration,
+            => true,
+
+            // export named — 내부에 declaration이 있으면 그것도 검사
+            .export_named_declaration => {
+                // extra: [declaration, specifiers_start, specifiers_len, source]
+                if (!ast.hasExtra(stmt.data.extra, 0)) return true;
+                const decl_idx = ast.readExtraNode(stmt.data.extra, 0);
+                if (decl_idx.isNone()) return true; // export { x } 또는 re-export
+                if (@intFromEnum(decl_idx) >= ast.nodes.items.len) return true;
+                const decl = ast.nodes.items[@intFromEnum(decl_idx)];
+                return isStatementPure(ast, decl);
+            },
+
+            // export default — 내부 expression/declaration 검사
+            .export_default_declaration => {
+                // unary: operand = declaration 또는 expression
+                return isExpressionPure(ast, stmt.data.unary.operand);
+            },
+
+            // 함수 선언 — 선언만, 호출 아님
+            .function_declaration => true,
+
+            // class 선언 — extends나 static 초기화에 side effect 가능 → 보수적으로 불순
+            .class_declaration => false,
+
+            // TS 타입 선언 — 런타임에 존재하지 않음
             .ts_interface_declaration,
             .ts_type_alias_declaration,
+            => true,
+
+            // TS enum/namespace — 런타임에 IIFE로 변환됨 → 불순
             .ts_enum_declaration,
             .ts_module_declaration,
-            => true,
+            => false,
 
             // 변수 선언 — 초기값에 따라 다름
             .variable_declaration => isVarDeclPure(ast, stmt),
@@ -208,28 +239,29 @@ pub const TreeShaker = struct {
             // expression statement — 내부 expression이 순수하면 OK
             .expression_statement => isExpressionPure(ast, stmt.data.unary.operand),
 
-            // 빈 문장
             .empty_statement => true,
 
-            // 나머지 — 보수적으로 불순
             else => false,
         };
     }
 
     fn isVarDeclPure(ast: *const Ast, stmt: Node) bool {
-        // variable_declaration: list of declarators
-        const list = stmt.data.list;
-        if (list.len == 0) return true;
-        if (list.start + list.len > ast.extra_data.items.len) return false;
-        const decls = ast.extra_data.items[list.start .. list.start + list.len];
+        // variable_declaration: extra = [kind_flags, list.start, list.len]
+        const e = stmt.data.extra;
+        if (!ast.hasExtra(e, 2)) return false;
+        const list_start = ast.readExtra(e, 1);
+        const list_len = ast.readExtra(e, 2);
+        if (list_len == 0) return true;
+        if (list_start + list_len > ast.extra_data.items.len) return false;
+        const decls = ast.extra_data.items[list_start .. list_start + list_len];
         for (decls) |raw| {
             const idx: NodeIndex = @enumFromInt(raw);
             if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) continue;
             const decl = ast.nodes.items[@intFromEnum(idx)];
-            // variable_declarator: binary { left=binding, right=init }
             if (decl.tag != .variable_declarator) return false;
-            const init_val = decl.data.binary.right;
-            if (init_val.isNone()) continue; // let x; — 순수
+            // variable_declarator: extra = [name, type_ann, init_expr]
+            const init_val = ast.readExtraNode(decl.data.extra, 2);
+            if (init_val.isNone()) continue;
             if (!isExpressionPure(ast, init_val)) return false;
         }
         return true;
@@ -246,20 +278,24 @@ pub const TreeShaker = struct {
             .string_literal,
             .bigint_literal,
             .regexp_literal,
-            .template_literal,
             => true,
+
+            // template literal — 표현식 포함 가능 → 보수적으로 불순
+            .template_literal => false,
 
             // 식별자 참조 — 읽기만, side effect 없음
             .identifier_reference => true,
 
-            // 함수/클래스 expression — 선언만, 호출 아님
+            // 함수/arrow expression — 선언만, 호출 아님
             .function_expression,
             .arrow_function_expression,
-            .class_expression,
             => true,
 
-            // 배열/객체 리터럴 — 원소가 순수하면 OK (보수적으로 true)
-            .array_expression, .object_expression => true,
+            // class expression — extends/static 초기화에 side effect 가능 → 보수적으로 불순
+            .class_expression => false,
+
+            // 배열/객체 리터럴 — 원소에 call 등 side effect 가능 → 보수적으로 불순
+            .array_expression, .object_expression => false,
 
             // @__PURE__ call — 순수
             .call_expression => {
@@ -311,6 +347,7 @@ pub const TreeShaker = struct {
                 }
             } else if (ib.kind == .namespace) {
                 try self.markAllExportsUsed(@intCast(target_mod));
+                if (!self.included.isSet(target_mod)) self.included.set(target_mod);
             }
         }
     }
@@ -2291,6 +2328,5 @@ test "ref: 10-module fan-out all sideEffects=false — only 3 used" {
     try std.testing.expect(!r.shaker.isIncluded(r.findModule("w10.ts").?));
 }
 
-// NOTE: @__PURE__ 기반 자동 side_effects 판별은 후속 PR에서 구현 예정.
-// isModulePure/isStatementPure/isExpressionPure 함수는 준비되어 있지만,
-// 기존 테스트와의 호환성 문제(side_effects=true 전제)로 인해 아직 analyze()에서 활성화하지 않음.
+// TODO: 자동 순수 판별 테스트는 기능 활성화 시 아래 주석 해제
+// isModulePure 활성화 PR에서 이 테스트들을 복원하고 기존 테스트도 업데이트 필요

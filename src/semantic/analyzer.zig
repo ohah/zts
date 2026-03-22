@@ -770,6 +770,14 @@ pub const SemanticAnalyzer = struct {
                 self.resolveIdentifier(name, @intFromEnum(idx));
             },
 
+            // JSX tag name이 대문자로 시작하면 컴포넌트 참조 (e.g. <Header />)
+            .jsx_identifier => {
+                const name = self.ast.getSourceText(node.span);
+                if (name.len > 0 and std.ascii.isUpper(name[0])) {
+                    self.resolveIdentifier(name, @intFromEnum(idx));
+                }
+            },
+
             // ---- 일반 표현식 순회 (private name 참조 등을 위해) ----
             .assignment_expression => {
                 // LHS가 식별자이면 reference count 증가
@@ -873,6 +881,31 @@ pub const SemanticAnalyzer = struct {
             // ---- computed property key ----
             // [expr] 형태의 프로퍼티 키 — 내부 expression을 순회하여 private name 참조 검출
             .computed_property_key => {
+                try self.visitNode(node.data.unary.operand);
+            },
+
+            // ---- JSX 순회 (tag name + attributes + children에서 식별자 참조 추적) ----
+            .jsx_element => {
+                // extra: [tag_name, attrs_start, attrs_len, children_start, children_len]
+                const e = node.data.extra;
+                if (self.ast.hasExtra(e, 4)) {
+                    try self.visitNode(self.ast.readExtraNode(e, 0));
+                    try self.visitNodeList(.{ .start = self.ast.readExtra(e, 1), .len = self.ast.readExtra(e, 2) }); // attrs
+                    try self.visitNodeList(.{ .start = self.ast.readExtra(e, 3), .len = self.ast.readExtra(e, 4) }); // children
+                }
+            },
+            .jsx_fragment => {
+                // extra: [children_start, children_len] or list
+                try self.visitNodeList(node.data.list);
+            },
+            .jsx_expression_container => {
+                try self.visitNode(node.data.unary.operand);
+            },
+            .jsx_attribute => {
+                // binary: { left=name, right=value }
+                try self.visitNode(node.data.binary.right);
+            },
+            .jsx_spread_attribute => {
                 try self.visitNode(node.data.unary.operand);
             },
 
