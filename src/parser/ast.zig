@@ -571,6 +571,7 @@ pub const UnaryFlags = struct {
 /// extra: [params, body, flags]
 pub const ArrowFlags = struct {
     pub const is_async: u32 = 0x01;
+    pub const no_side_effects: u32 = 0x02; // @__NO_SIDE_EFFECTS__
 };
 
 /// tagged_template_expression의 flags (D082).

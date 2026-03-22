@@ -6685,6 +6685,51 @@ test "@__NO_SIDE_EFFECTS__: function flag preserved in bundle output" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // 함수 자체는 번들에 포함됨 (사용 중이므로)
     try std.testing.expect(std.mem.indexOf(u8, result.output, "function create") != null);
+    // NOTE: cross-module @__NO_SIDE_EFFECTS__ 전파는 linker/tree-shaker에서 처리 필요.
+    // 현재는 같은 모듈 내에서만 자동 /* @__PURE__ */ 출력.
+}
+
+test "@__NO_SIDE_EFFECTS__: call to annotated function auto-pure in single file" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts",
+        \\/* @__NO_SIDE_EFFECTS__ */ function create() { return {}; }
+        \\const x = create();
+        \\console.log(x);
+    );
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // create() 호출에 /* @__PURE__ */ 자동 출력
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "/* @__PURE__ */") != null);
+}
+
+test "@__NO_SIDE_EFFECTS__: function expression variant" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts",
+        \\const make = /* @__NO_SIDE_EFFECTS__ */ function() { return {}; };
+        \\const x = make();
+        \\console.log(x);
+    );
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // make() 호출에 /* @__PURE__ */ 자동 출력
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "/* @__PURE__ */") != null);
 }
