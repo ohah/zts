@@ -108,6 +108,9 @@ pub const ModuleGraph = struct {
                 try self.dfs(idx, &visited, &in_stack);
             }
         }
+
+        // Phase 3: ExportsKind.none 모듈을 소비하는 쪽에 따라 승격
+        self.promoteExportsKinds();
     }
 
     /// 모듈을 그래프에 추가하고 파싱한다.
@@ -372,6 +375,36 @@ pub const ModuleGraph = struct {
                 const dep = @intFromEnum(deps[j]);
                 if (dep < self.modules.items.len and !visited.isSet(dep)) {
                     try stack.append(self.allocator, .{ .idx = dep, .post = false });
+                }
+            }
+        }
+    }
+
+    /// ExportsKind.none 모듈을 소비하는 쪽에 따라 승격한다.
+    /// - 다른 모듈이 `import`하면 → .esm
+    /// - 다른 모듈이 `require()`하면 → .commonjs + wrap_kind = .cjs
+    /// 모든 모듈의 import_records를 순회하여, 대상 모듈이 .none이면 승격.
+    /// require가 import보다 우선: 이미 .esm으로 승격된 모듈도 require가 있으면 .commonjs로 변경.
+    fn promoteExportsKinds(self: *ModuleGraph) void {
+        for (self.modules.items) |m| {
+            for (m.import_records) |rec| {
+                if (rec.resolved.isNone()) continue;
+                const target_idx = @intFromEnum(rec.resolved);
+                if (target_idx >= self.modules.items.len) continue;
+
+                var target = &self.modules.items[target_idx];
+
+                if (rec.kind == .require) {
+                    // require()로 소비 → CJS로 승격 (none 또는 이전에 esm으로 승격된 것도 덮어씀)
+                    if (target.exports_kind == .none) {
+                        target.exports_kind = .commonjs;
+                        target.wrap_kind = .cjs;
+                    }
+                } else if (rec.kind == .static_import or rec.kind == .side_effect or rec.kind == .re_export) {
+                    // ESM import로 소비 → .none이면 .esm으로 승격 (이미 결정된 건 안 건드림)
+                    if (target.exports_kind == .none) {
+                        target.exports_kind = .esm;
+                    }
                 }
             }
         }

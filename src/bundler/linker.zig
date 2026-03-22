@@ -379,12 +379,13 @@ pub const Linker = struct {
                     };
 
                     if (ib.kind == .namespace or std.mem.eql(u8, ib.imported_name, "default")) {
-                        // default/namespace import: var <local> = require_xxx();
+                        // default/namespace import: var <local> = __toESM(require_xxx());
+                        // __toESM이 __esModule 플래그를 확인하여 적절한 namespace 객체 생성
                         try cjs_preamble_buf.appendSlice(self.allocator, "var ");
                         try cjs_preamble_buf.appendSlice(self.allocator, ib.local_name);
-                        try cjs_preamble_buf.appendSlice(self.allocator, " = ");
+                        try cjs_preamble_buf.appendSlice(self.allocator, " = __toESM(");
                         try cjs_preamble_buf.appendSlice(self.allocator, req_var);
-                        try cjs_preamble_buf.appendSlice(self.allocator, "();\n");
+                        try cjs_preamble_buf.appendSlice(self.allocator, "());\n");
                     } else {
                         // named import: var <local> = require_xxx().<imported>;
                         try cjs_preamble_buf.appendSlice(self.allocator, "var ");
