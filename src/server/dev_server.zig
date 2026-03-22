@@ -665,9 +665,11 @@ pub const DevServer = struct {
             \\    ws.onmessage = function(e) {
             \\      var msg = JSON.parse(e.data);
             \\      if (msg.type === 'full-reload') { hideOverlay(); location.reload(); }
-            \\      if (msg.type === 'update' && typeof __zts_apply_update === 'function') {
-            \\        hideOverlay();
-            \\        __zts_apply_update(msg.modules);
+            \\      if (msg.type === 'update') {
+            \\        if (typeof __zts_apply_update === 'function') {
+            \\          hideOverlay();
+            \\          __zts_apply_update(msg.modules);
+            \\        } else { hideOverlay(); location.reload(); }
             \\      }
             \\      if (msg.type === 'error') { showOverlay(msg.errors); }
             \\    };
