@@ -1,6 +1,8 @@
 const std = @import("std");
 const http = std.http;
 const mime = @import("mime.zig");
+const lib = @import("../root.zig");
+const Bundler = lib.bundler.Bundler;
 
 fn getLog() std.fs.File.DeprecatedWriter {
     return std.fs.File.stderr().deprecatedWriter();
@@ -12,13 +14,17 @@ pub const DevServer = struct {
     root_path: []const u8,
     port: u16,
     tcp_server: ?std.net.Server,
+    /// 번들 엔트리 포인트 (절대 경로). null이면 정적 파일 서버 전용.
+    entry_point: ?[]const u8,
 
     pub const Options = struct {
         root_dir: []const u8 = ".",
         port: u16 = 3000,
+        entry_point: ?[]const u8 = null,
     };
 
     const max_file_size: u64 = 50 * 1024 * 1024;
+    const bundle_path = "/bundle.js";
 
     pub fn init(allocator: std.mem.Allocator, options: Options) !DevServer {
         const root_dir = std.fs.cwd().openDir(options.root_dir, .{}) catch |err| {
@@ -32,6 +38,7 @@ pub const DevServer = struct {
             .root_path = options.root_dir,
             .port = options.port,
             .tcp_server = null,
+            .entry_point = options.entry_point,
         };
     }
 
@@ -49,10 +56,14 @@ pub const DevServer = struct {
             return err;
         };
 
-        getLog().print("\n  zts dev server\n\n  Local: http://localhost:{d}/\n  Root:  {s}\n\n", .{
-            self.port,
-            self.root_path,
-        }) catch {};
+        const w = getLog();
+        w.print("\n  zts dev server\n\n", .{}) catch {};
+        w.print("  Local: http://localhost:{d}/\n", .{self.port}) catch {};
+        w.print("  Root:  {s}\n", .{self.root_path}) catch {};
+        if (self.entry_point) |ep| {
+            w.print("  Entry: {s}\n", .{ep}) catch {};
+        }
+        w.print("\n", .{}) catch {};
 
         self.acceptLoop();
     }
@@ -121,6 +132,31 @@ pub const DevServer = struct {
             return;
         };
 
+        // entry_point가 있을 때: /bundle.js → on-the-fly 번들링
+        if (self.entry_point != null) {
+            if (std.mem.eql(u8, raw_path, bundle_path)) {
+                self.serveBundle(request) catch |err| {
+                    getLog().print("zts: bundle failed: {}\n", .{err}) catch {};
+                    try request.respond("500 Bundle Error", .{
+                        .status = .internal_server_error,
+                        .extra_headers = &cors_headers,
+                    });
+                };
+                return;
+            }
+
+            // / → entry가 있으면 자동 HTML (index.html이 없을 때)
+            if (std.mem.eql(u8, rel_path, "index.html")) {
+                if (self.root_dir.openFile("index.html", .{})) |f| {
+                    f.close();
+                    // index.html이 있으면 정적 서빙으로 폴스루
+                } else |_| {
+                    try self.serveAutoHtml(request);
+                    return;
+                }
+            }
+        }
+
         self.serveStaticFile(request, rel_path) catch |err| switch (err) {
             error.FileNotFound => {
                 try request.respond("404 Not Found", .{
@@ -130,6 +166,80 @@ pub const DevServer = struct {
             },
             else => return err,
         };
+    }
+
+    fn serveBundle(self: *DevServer, request: *http.Server.Request) !void {
+        const entry = self.entry_point orelse unreachable;
+        const abs_entry = try std.fs.cwd().realpathAlloc(self.allocator, entry);
+        defer self.allocator.free(abs_entry);
+
+        var bundler = Bundler.init(self.allocator, .{
+            .entry_points = &.{abs_entry},
+            .platform = .browser,
+        });
+        defer bundler.deinit();
+
+        const result = try bundler.bundle();
+        defer result.deinit(self.allocator);
+
+        if (result.hasErrors()) {
+            const diags = result.getDiagnostics();
+            var msg: std.ArrayList(u8) = .empty;
+            defer msg.deinit(self.allocator);
+            const w = msg.writer(self.allocator);
+            try w.print("// ZTS Bundle Error\n", .{});
+            for (diags) |d| {
+                try w.print("// [{s}] {s}: {s}\n", .{
+                    @tagName(d.severity),
+                    d.file_path,
+                    d.message,
+                });
+            }
+            try w.print("console.error('ZTS: bundle failed, see server logs');\n", .{});
+
+            const js_headers = cors_headers ++ [_]http.Header{
+                .{ .name = "Content-Type", .value = "application/javascript; charset=utf-8" },
+            };
+            try request.respond(msg.items, .{
+                .status = .internal_server_error,
+                .extra_headers = &js_headers,
+            });
+
+            getLog().print("  500 {s} (bundle errors)\n", .{entry}) catch {};
+            return;
+        }
+
+        const js_headers = cors_headers ++ [_]http.Header{
+            .{ .name = "Content-Type", .value = "application/javascript; charset=utf-8" },
+        };
+        try request.respond(result.output, .{
+            .extra_headers = &js_headers,
+        });
+
+        getLog().print("  200 {s} (bundled)\n", .{bundle_path}) catch {};
+    }
+
+    fn serveAutoHtml(self: *DevServer, request: *http.Server.Request) !void {
+        _ = self;
+        const html =
+            \\<!DOCTYPE html>
+            \\<html>
+            \\<head><meta charset="utf-8"><title>ZTS Dev Server</title></head>
+            \\<body>
+            \\<div id="root"></div>
+            \\<script type="module" src="/bundle.js"></script>
+            \\</body>
+            \\</html>
+        ;
+
+        const headers = cors_headers ++ [_]http.Header{
+            .{ .name = "Content-Type", .value = "text/html; charset=utf-8" },
+        };
+        try request.respond(html, .{
+            .extra_headers = &headers,
+        });
+
+        getLog().print("  200 / (auto html)\n", .{}) catch {};
     }
 
     fn serveStaticFile(self: *DevServer, request: *http.Server.Request, rel_path: []const u8) !void {
