@@ -81,11 +81,33 @@ pub const Transformer = struct {
     /// transform 완료 후 프로그램 끝에 $RefreshReg$ 호출로 주입.
     refresh_registrations: std.ArrayList(RefreshRegistration) = .empty,
 
+    /// React Fast Refresh: Hook 시그니처 등록 목록.
+    /// 프로그램 끝에 var _s = $RefreshSig$(); + _s(Component, "sig") 호출로 주입.
+    refresh_signatures: std.ArrayList(RefreshSignature) = .empty,
+
     const RefreshRegistration = struct {
         /// _c / _c2 핸들 변수의 string_table Span (재사용)
         handle_span: Span,
         /// 컴포넌트 이름 (문자열)
         name: []const u8,
+    };
+
+    const RefreshSignature = struct {
+        /// _s / _s2 핸들 변수의 string_table Span
+        handle_span: Span,
+        /// 컴포넌트 이름 (문자열)
+        component_name: []const u8,
+        /// Hook 시그니처 문자열 ("useState{[foo, setFoo](0)}\nuseEffect{}")
+        signature: []const u8,
+    };
+
+    /// React builtin Hook 이름 목록 (use 접두사 + 소문자로 시작하는 것도 custom hook)
+    const builtin_hooks = [_][]const u8{
+        "useState",            "useReducer",    "useEffect",
+        "useLayoutEffect",     "useCallback",   "useMemo",
+        "useRef",              "useContext",    "useTransition",
+        "useDeferredValue",    "useId",         "useSyncExternalStore",
+        "useImperativeHandle", "useDebugValue",
     };
 
     pub fn init(allocator: std.mem.Allocator, old_ast: *const Ast, options: TransformOptions) Transformer {
@@ -104,6 +126,8 @@ pub const Transformer = struct {
         self.scratch.deinit(self.allocator);
         self.pending_nodes.deinit(self.allocator);
         self.refresh_registrations.deinit(self.allocator);
+        for (self.refresh_signatures.items) |s| self.allocator.free(s.signature);
+        self.refresh_signatures.deinit(self.allocator);
     }
 
     // ================================================================
@@ -119,8 +143,10 @@ pub const Transformer = struct {
         const root_idx: NodeIndex = @enumFromInt(@as(u32, @intCast(self.old_ast.nodes.items.len - 1)));
         const root = try self.visitNode(root_idx);
 
-        // React Fast Refresh: 컴포넌트 등록 코드를 프로그램 끝에 추가
-        if (self.options.react_refresh and self.refresh_registrations.items.len > 0) {
+        // React Fast Refresh: 컴포넌트 등록 + Hook 시그니처 코드를 프로그램 끝에 추가
+        if (self.options.react_refresh and
+            (self.refresh_registrations.items.len > 0 or self.refresh_signatures.items.len > 0))
+        {
             return try self.appendRefreshRegistrations(root);
         }
 
@@ -748,12 +774,25 @@ pub const Transformer = struct {
         const pp = try self.visitParamsCollectProperties(old_params);
 
         // 바디 방문
-        var new_body = try self.visitNode(self.readNodeIdx(e, 3));
+        const old_body_idx = self.readNodeIdx(e, 3);
+        var new_body = try self.visitNode(old_body_idx);
 
         // parameter property가 있으면 바디 앞에 this.x = x 문 삽입
         if (pp.prop_count > 0 and !new_body.isNone()) {
             new_body = try self.insertParameterPropertyAssignments(new_body, pp.prop_names[0..pp.prop_count]);
         }
+
+        // React Fast Refresh: Hook 시그니처 감지 + _s() 호출 삽입
+        // 함수 이름을 old_ast에서 추출 (new_name은 아직 extra에 추가 전이므로)
+        const old_name_idx = self.readNodeIdx(e, 0);
+        const func_name_for_sig: ?[]const u8 = if (!old_name_idx.isNone()) blk: {
+            const old_name_node = self.old_ast.getNode(old_name_idx);
+            if (old_name_node.tag == .binding_identifier or old_name_node.tag == .identifier_reference) {
+                break :blk self.old_ast.getText(old_name_node.data.string_ref);
+            }
+            break :blk null;
+        } else null;
+        try self.maybeRegisterRefreshSignature(func_name_for_sig, old_body_idx, &new_body);
 
         const none = @intFromEnum(NodeIndex.none);
         const result = try self.addExtraNode(node.tag, node.span, &.{
@@ -1230,6 +1269,19 @@ pub const Transformer = struct {
         const var_decl = try self.buildRefreshVarDeclaration();
         try self.scratch.append(self.allocator, var_decl);
 
+        // var _s = $RefreshSig$(); 선언들
+        const refresh_sig_span = try self.new_ast.addString("$RefreshSig$");
+        for (self.refresh_signatures.items) |sig| {
+            const sig_decl = try self.buildRefreshSigDeclaration(sig, refresh_sig_span);
+            try self.scratch.append(self.allocator, sig_decl);
+        }
+
+        // _s(Component, "signature"); 호출들
+        for (self.refresh_signatures.items) |sig| {
+            const sig_call = try self.buildRefreshSigCall(sig);
+            try self.scratch.append(self.allocator, sig_call);
+        }
+
         // $RefreshReg$(_c, "ComponentName"); 호출들
         const refresh_reg_span = try self.new_ast.addString("$RefreshReg$");
         for (self.refresh_registrations.items) |reg| {
@@ -1339,6 +1391,290 @@ pub const Transformer = struct {
             .tag = .expression_statement,
             .span = zero_span,
             .data = .{ .unary = .{ .operand = call, .flags = 0 } },
+        });
+    }
+
+    /// var _s = $RefreshSig$(); 선언 생성
+    fn buildRefreshSigDeclaration(self: *Transformer, sig: RefreshSignature, refresh_sig_span: Span) Error!NodeIndex {
+        const zero_span = Span{ .start = 0, .end = 0 };
+        const none = @intFromEnum(NodeIndex.none);
+
+        // $RefreshSig$() 호출
+        const callee = try self.new_ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = refresh_sig_span,
+            .data = .{ .string_ref = refresh_sig_span },
+        });
+        const empty_args = try self.new_ast.addNodeList(&.{});
+        const init_call = try self.addExtraNode(.call_expression, zero_span, &.{
+            @intFromEnum(callee),
+            empty_args.start,
+            empty_args.len,
+            0,
+        });
+
+        // var _s = $RefreshSig$();
+        const binding = try self.new_ast.addNode(.{
+            .tag = .binding_identifier,
+            .span = sig.handle_span,
+            .data = .{ .string_ref = sig.handle_span },
+        });
+        const declarator = try self.addExtraNode(.variable_declarator, sig.handle_span, &.{
+            @intFromEnum(binding),
+            none, // type annotation
+            @intFromEnum(init_call),
+        });
+
+        const decl_list = try self.new_ast.addNodeList(&.{declarator});
+        return self.addExtraNode(.variable_declaration, zero_span, &.{
+            0, // var
+            decl_list.start,
+            decl_list.len,
+        });
+    }
+
+    /// _s(Component, "signature"); 호출문 생성
+    fn buildRefreshSigCall(self: *Transformer, sig: RefreshSignature) Error!NodeIndex {
+        const zero_span = Span{ .start = 0, .end = 0 };
+
+        // _s 식별자
+        const callee = try self.new_ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = sig.handle_span,
+            .data = .{ .string_ref = sig.handle_span },
+        });
+
+        // Component 식별자
+        const comp_ref = try self.new_ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = zero_span,
+            .data = .{ .string_ref = try self.new_ast.addString(sig.component_name) },
+        });
+
+        // "signature" 문자열 리터럴
+        var quoted_buf: [1024]u8 = undefined;
+        const quoted = std.fmt.bufPrint(&quoted_buf, "\"{s}\"", .{sig.signature}) catch return error.OutOfMemory;
+        const quoted_span = try self.new_ast.addString(quoted);
+        const sig_str = try self.new_ast.addNode(.{
+            .tag = .string_literal,
+            .span = quoted_span,
+            .data = .{ .string_ref = quoted_span },
+        });
+
+        // _s(Component, "signature")
+        const args = try self.new_ast.addNodeList(&.{ comp_ref, sig_str });
+        const call = try self.addExtraNode(.call_expression, zero_span, &.{
+            @intFromEnum(callee),
+            args.start,
+            args.len,
+            0,
+        });
+
+        return self.new_ast.addNode(.{
+            .tag = .expression_statement,
+            .span = zero_span,
+            .data = .{ .unary = .{ .operand = call, .flags = 0 } },
+        });
+    }
+
+    // ================================================================
+    // React Fast Refresh — Hook 시그니처 ($RefreshSig$)
+    // ================================================================
+
+    /// Hook 호출 이름이 React Hook인지 확인 (use 접두사 + 다음 문자가 대문자).
+    fn isHookCall(name: []const u8) bool {
+        if (name.len < 4) return false;
+        if (!std.mem.startsWith(u8, name, "use")) return false;
+        // use 다음 문자가 대문자 (useState, useEffect, useMyHook 등)
+        return name[3] >= 'A' and name[3] <= 'Z';
+    }
+
+    /// old_ast에서 함수 body 내의 Hook 호출을 스캔하여 시그니처 문자열을 생성한다.
+    /// Hook이 없으면 null 반환.
+    fn scanHookSignature(self: *Transformer, func_body_idx: NodeIndex) Error!?[]const u8 {
+        if (!self.options.react_refresh) return null;
+        if (func_body_idx.isNone()) return null;
+
+        var sig_buf: std.ArrayList(u8) = .empty;
+        defer sig_buf.deinit(self.allocator);
+
+        // old_ast에서 body의 자식 문장들을 순회
+        const body_node = self.old_ast.getNode(func_body_idx);
+        if (body_node.tag != .block_statement) return null;
+
+        const list = body_node.data.list;
+        const stmts = self.old_ast.extra_data.items[list.start .. list.start + list.len];
+
+        for (stmts) |raw_stmt_idx| {
+            const stmt_idx: NodeIndex = @enumFromInt(raw_stmt_idx);
+            // 재귀적으로 Hook 호출 검색
+            try self.findHookCallsInNode(stmt_idx, &sig_buf);
+        }
+
+        if (sig_buf.items.len == 0) return null;
+        return try self.allocator.dupe(u8, sig_buf.items);
+    }
+
+    /// 블록의 최상위 문장들에서 Hook 호출을 찾아 시그니처 버퍼에 추가한다 (old_ast 기준).
+    /// 깊은 재귀 대신 call_expression만 직접 탐색 (segfault 방지).
+    fn findHookCallsInNode(self: *Transformer, idx: NodeIndex, sig_buf: *std.ArrayList(u8)) Error!void {
+        if (idx.isNone()) return;
+        if (@intFromEnum(idx) >= self.old_ast.nodes.items.len) return;
+        const node = self.old_ast.getNode(idx);
+
+        // call_expression에서 Hook 호출 감지
+        if (node.tag == .call_expression) {
+            const e = node.data.extra;
+            if (self.old_ast.hasExtra(e, 1)) {
+                const callee_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[e]);
+                if (!callee_idx.isNone() and @intFromEnum(callee_idx) < self.old_ast.nodes.items.len) {
+                    const callee = self.old_ast.getNode(callee_idx);
+                    var hook_name: ?[]const u8 = null;
+
+                    if (callee.tag == .identifier_reference) {
+                        const name = self.old_ast.getText(callee.data.string_ref);
+                        if (isHookCall(name)) hook_name = name;
+                    }
+
+                    if (hook_name) |name| {
+                        if (sig_buf.items.len > 0) {
+                            try sig_buf.appendSlice(self.allocator, "\\n");
+                        }
+                        try sig_buf.appendSlice(self.allocator, name);
+                        try sig_buf.appendSlice(self.allocator, "{}");
+                    }
+                }
+            }
+            return;
+        }
+
+        // 중첩 함수는 스킵
+        switch (node.tag) {
+            .function_declaration, .function_expression, .arrow_function_expression => return,
+            else => {},
+        }
+
+        // expression_statement → 내부 expression 탐색
+        if (node.tag == .expression_statement) {
+            try self.findHookCallsInNode(node.data.unary.operand, sig_buf);
+            return;
+        }
+
+        // variable_declaration → declarator들 탐색
+        if (node.tag == .variable_declaration) {
+            const e = node.data.extra;
+            if (self.old_ast.hasExtra(e, 3)) {
+                const list_start = self.old_ast.extra_data.items[e + 1];
+                const list_len = self.old_ast.extra_data.items[e + 2];
+                if (list_start + list_len <= self.old_ast.extra_data.items.len) {
+                    const items = self.old_ast.extra_data.items[list_start .. list_start + list_len];
+                    for (items) |raw| {
+                        try self.findHookCallsInNode(@enumFromInt(raw), sig_buf);
+                    }
+                }
+            }
+            return;
+        }
+
+        // variable_declarator → init(initializer) 탐색
+        if (node.tag == .variable_declarator) {
+            const e = node.data.extra;
+            if (self.old_ast.hasExtra(e, 3)) {
+                const init_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[e + 2]);
+                try self.findHookCallsInNode(init_idx, sig_buf);
+            }
+            return;
+        }
+
+        // block_statement → 자식 문장들 탐색
+        if (node.tag == .block_statement) {
+            const l = node.data.list;
+            if (l.len > 0 and l.start + l.len <= self.old_ast.extra_data.items.len) {
+                const items = self.old_ast.extra_data.items[l.start .. l.start + l.len];
+                for (items) |raw| {
+                    try self.findHookCallsInNode(@enumFromInt(raw), sig_buf);
+                }
+            }
+        }
+    }
+
+    /// _s / _s2 핸들 변수명 생성
+    fn makeSigHandle(self: *Transformer) Error!Span {
+        const idx = self.refresh_signatures.items.len;
+        if (idx == 0) {
+            return self.new_ast.addString("_s");
+        }
+        var buf: [16]u8 = undefined;
+        const name = std.fmt.bufPrint(&buf, "_s{d}", .{idx + 1}) catch return error.OutOfMemory;
+        return self.new_ast.addString(name);
+    }
+
+    /// Hook 시그니처가 있는 컴포넌트를 등록하고, body에 _s() 호출을 삽입한다.
+    fn maybeRegisterRefreshSignature(
+        self: *Transformer,
+        func_name: ?[]const u8,
+        old_body_idx: NodeIndex,
+        new_body: *NodeIndex,
+    ) Error!void {
+        if (!self.options.react_refresh) return;
+        const name = func_name orelse return;
+        if (!isComponentName(name)) return;
+
+        const signature = try self.scanHookSignature(old_body_idx) orelse return;
+
+        const handle_span = try self.makeSigHandle();
+        try self.refresh_signatures.append(self.allocator, .{
+            .handle_span = handle_span,
+            .component_name = name,
+            .signature = signature,
+        });
+
+        // body 시작에 _s(); 호출 삽입
+        new_body.* = try self.insertSigCallAtBodyStart(new_body.*, handle_span);
+    }
+
+    /// 블록 body 시작에 _s(); 호출문을 삽입한다.
+    fn insertSigCallAtBodyStart(self: *Transformer, body_idx: NodeIndex, handle_span: Span) Error!NodeIndex {
+        const body = self.new_ast.getNode(body_idx);
+        if (body.tag != .block_statement) return body_idx;
+
+        const old_list = body.data.list;
+        const old_stmts = self.new_ast.extra_data.items[old_list.start .. old_list.start + old_list.len];
+
+        const scratch_top = self.scratch.items.len;
+        defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+        // _s() 호출문
+        const zero_span = Span{ .start = 0, .end = 0 };
+        const callee = try self.new_ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = handle_span,
+            .data = .{ .string_ref = handle_span },
+        });
+        const empty_args = try self.new_ast.addNodeList(&.{});
+        const call = try self.addExtraNode(.call_expression, zero_span, &.{
+            @intFromEnum(callee),
+            empty_args.start,
+            empty_args.len,
+            0,
+        });
+        const call_stmt = try self.new_ast.addNode(.{
+            .tag = .expression_statement,
+            .span = zero_span,
+            .data = .{ .unary = .{ .operand = call, .flags = 0 } },
+        });
+
+        // [_s(), ...기존 문장들]
+        try self.scratch.append(self.allocator, call_stmt);
+        for (old_stmts) |raw_idx| {
+            try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+        }
+
+        const new_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+        return self.new_ast.addNode(.{
+            .tag = .block_statement,
+            .span = body.span,
+            .data = .{ .list = new_list },
         });
     }
 };
