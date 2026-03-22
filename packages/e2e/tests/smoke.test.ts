@@ -106,6 +106,45 @@ test.describe("Dev Server E2E", () => {
     expect(sm.mappings.length).toBeGreaterThan(0);
   });
 
+  test("파일 변경 시 HMR update 메시지를 수신한다", async ({ page }) => {
+    await page.goto(`http://localhost:${TEST_PORT}/`);
+
+    // WS 연결 + update 메시지 대기 설정
+    const updatePromise = page.evaluate((port: number) => {
+      return new Promise<string>((resolve) => {
+        const ws = new WebSocket(`ws://localhost:${port}/__hmr`);
+        ws.onmessage = (e) => {
+          const msg = JSON.parse(e.data);
+          // connected 메시지는 스킵, update 또는 full-reload 대기
+          if (msg.type === "update" || msg.type === "full-reload") {
+            ws.close();
+            resolve(msg.type);
+          }
+        };
+        ws.onerror = () => resolve("error");
+        setTimeout(() => resolve("timeout"), 8000);
+      });
+    }, TEST_PORT);
+
+    // watch가 감지할 수 있도록 잠시 대기 후 파일 변경
+    await new Promise((r) => setTimeout(r, 1000));
+    await writeFile(
+      join(fixtureDir, "app.ts"),
+      'const msg: string = "updated"; console.log(msg); var el = document.getElementById("root"); if (el) { el.textContent = msg; }',
+    );
+
+    const msgType = await updatePromise;
+    // update 또는 full-reload 중 하나 (accept 없으면 서버가 update 보내고 클라이언트가 reload)
+    expect(msgType === "update" || msgType === "full-reload").toBe(true);
+
+    // 파일 원복
+    await writeFile(
+      join(fixtureDir, "app.ts"),
+      'const msg: string = "hello from zts"; console.log(msg); var el = document.getElementById("root"); if (el) { el.textContent = msg; }',
+    );
+    await new Promise((r) => setTimeout(r, 1500));
+  });
+
   test("빌드 에러 시 에러 오버레이가 표시된다", async ({ page }) => {
     await page.goto(`http://localhost:${TEST_PORT}/`);
 
