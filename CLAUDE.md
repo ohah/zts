@@ -255,7 +255,7 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
        7. ✅ 소스맵 서빙 — PR #272
        8. ✅ SPA 폴백 — PR #269
        9. ✅ import.meta.hot API (모듈 래핑 + accept/dispose + 모듈 단위 교체) — PR #270, #271
-       10. React Fast Refresh ($RefreshReg$/$RefreshSig$ 주입)
+       10. ✅ React Fast Refresh ($RefreshReg$ 주입 + 런타임 통합) — PR #273, #274
        11. CSS 핫 리로드 (link tag swap, 페이지 새로고침 없이)
      - **추가 의사결정 (D059-D060):**
        - D059. 동시성: `std.Thread.spawn` per-connection (esbuild goroutine과 유사)
@@ -327,7 +327,7 @@ Phase B1: 기반 (✅ 완료)          Phase B2: 핵심 (✅ 대부분 완료) P
   └ CJS 호환 래핑                   ├ ✅ HTTP + WS + Live Reload
 ✅ Tree-shaking (모듈 수준)         ├ ✅ 모듈 그래프 파일 감시
   ├ export 사용 추적                 ├ ✅ 에러 오버레이 + 소스맵
-  ├ @__PURE__ / @__NO_SIDE_EFFECTS__├ ✅ import.meta.hot + Fast Refresh (미완)
+  ├ @__PURE__ / @__NO_SIDE_EFFECTS__├ ✅ import.meta.hot + Fast Refresh
   ├ sideEffects 필드                 └ CSS 핫 리로드
   ├ sideEffects 필드
   └ cross-module 전파
@@ -569,7 +569,7 @@ HMR API 비교:
 
 핵심 HMR (큰 작업):
   9. ✅ import.meta.hot API — PR #270 (모듈 래핑 dev 번들), PR #271 (모듈 단위 WS update)
-  10. React Fast Refresh — 컴포넌트 감지 + $RefreshReg$/$RefreshSig$ 주입
+  10. ✅ React Fast Refresh — PR #273 ($RefreshReg$ 주입), PR #274 (런타임 통합 + hot.accept)
   11. CSS 핫 리로드 — link tag swap (페이지 새로고침 없이)
 ```
 
