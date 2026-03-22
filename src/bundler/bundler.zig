@@ -5400,6 +5400,172 @@ test "JSX: deeply nested components" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"deep\"") != null);
 }
 
+test "JSX: self-closing with attributes between siblings" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "app.tsx",
+        \\function App() { return <div><input type="text" /><input type="password" /><button>go</button></div>; }
+        \\console.log(App);
+    );
+
+    const entry = try absPath(&tmp, "app.tsx");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"text\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"password\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"go\"") != null);
+}
+
+test "JSX: component with children + self-closing sibling" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "app.tsx",
+        \\function App() { return <div><p>hello</p><br /><p>world</p></div>; }
+        \\console.log(App);
+    );
+
+    const entry = try absPath(&tmp, "app.tsx");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"hello\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"world\"") != null);
+}
+
+test "JSX: fragment with mixed children types" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "app.tsx",
+        \\function App() { return <><h1>title</h1>{42}<br /><p>body</p></>; }
+        \\console.log(App);
+    );
+
+    const entry = try absPath(&tmp, "app.tsx");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"title\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "42") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"body\"") != null);
+}
+
+test "JSX: nested components with props and children" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "app.tsx",
+        \\import { Card } from './Card';
+        \\import { Badge } from './Badge';
+        \\function App() { return <div><Card title="hello"><Badge count={3} /><p>content</p></Card></div>; }
+        \\console.log(App);
+    );
+    try writeFile(tmp.dir, "Card.tsx", "export function Card(props) { return <div>{props.children}</div>; }");
+    try writeFile(tmp.dir, "Badge.tsx", "export function Badge(props) { return <span>{props.count}</span>; }");
+
+    const entry = try absPath(&tmp, "app.tsx");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function Card") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function Badge") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"hello\"") != null);
+}
+
+test "JSX: five siblings stress test" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "app.tsx",
+        \\function App() { return <ul><li>1</li><li>2</li><li>3</li><li>4</li><li>5</li></ul>; }
+        \\console.log(App);
+    );
+
+    const entry = try absPath(&tmp, "app.tsx");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    for ([_][]const u8{ "\"1\"", "\"2\"", "\"3\"", "\"4\"", "\"5\"" }) |needle| {
+        try std.testing.expect(std.mem.indexOf(u8, result.output, needle) != null);
+    }
+}
+
+test "JSX: conditional expression inside element" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "app.tsx",
+        \\function App(props) { return <div>{props.show ? <span>yes</span> : <span>no</span>}</div>; }
+        \\console.log(App);
+    );
+
+    const entry = try absPath(&tmp, "app.tsx");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"yes\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"no\"") != null);
+}
+
+test "JSX: spread attributes" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "app.tsx",
+        \\function App(props) { return <div {...props}><span>child</span></div>; }
+        \\console.log(App);
+    );
+
+    const entry = try absPath(&tmp, "app.tsx");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"child\"") != null);
+}
+
+test "JSX: self-closing after text content" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "app.tsx",
+        \\function App() { return <p>hello<br />world</p>; }
+        \\console.log(App);
+    );
+
+    const entry = try absPath(&tmp, "app.tsx");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "createElement") != null);
+}
+
 // ============================================================
 // Complex TypeScript: type guards, mapped types, overloads, tuples
 // ============================================================
