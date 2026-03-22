@@ -41,9 +41,15 @@ const WsClients = struct {
     fn broadcast(self: *WsClients, data: []const u8) void {
         self.mutex.lock();
         defer self.mutex.unlock();
-        for (self.items[0..self.len]) |writer| {
-            // WebSocket text frame: FIN + opcode=text, then length, then payload
-            writeWsFrame(writer, data) catch {};
+        var i: usize = 0;
+        while (i < self.len) {
+            writeWsFrame(self.items[i], data) catch {
+                // 전송 실패 → dead client 제거 (swap-remove)
+                self.len -= 1;
+                self.items[i] = self.items[self.len];
+                continue;
+            };
+            i += 1;
         }
     }
 };
@@ -166,7 +172,7 @@ pub const DevServer = struct {
                 getLog().print("zts: accept failed: {}\n", .{err}) catch {};
                 continue;
             };
-            const thread = std.Thread.spawn(.{}, handleConnection, .{ self, connection }) catch {
+            const thread = std.Thread.spawn(.{ .stack_size = 64 * 1024 }, handleConnection, .{ self, connection }) catch {
                 connection.stream.close();
                 continue;
             };
@@ -268,6 +274,7 @@ pub const DevServer = struct {
         getLog().print("  [ws] client disconnected\n", .{}) catch {};
     }
 
+    // TODO: entry 파일만 감시. 번들러 모듈 그래프의 모든 import 파일을 감시해야 함 (5단계)
     fn watchLoop(self: *DevServer) void {
         getLog().print("  [watch] watching for changes...\n", .{}) catch {};
 
