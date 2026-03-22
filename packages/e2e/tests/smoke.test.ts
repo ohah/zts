@@ -16,6 +16,7 @@ test.beforeAll(async () => {
     join(fixtureDir, "app.ts"),
     'const msg: string = "hello from zts"; console.log(msg); var el = document.getElementById("root"); if (el) { el.textContent = msg; }',
   );
+  await writeFile(join(fixtureDir, "style.css"), "body { background: white; }");
 
   server = spawn(
     ZTS_BIN,
@@ -173,5 +174,37 @@ test.describe("Dev Server E2E", () => {
     // full-reload가 발생하면 페이지가 새로고침되어 오버레이가 사라짐
     await expect(page.locator("#zts-error-overlay")).not.toBeVisible({ timeout: 5000 });
     await expect(page.locator("#root")).toHaveText("hello from zts", { timeout: 5000 });
+  });
+
+  test("CSS 변경 시 css-update 메시지를 수신한다", async ({ page }) => {
+    await page.goto(`http://localhost:${TEST_PORT}/`);
+
+    // WS 연결 + css-update 메시지 대기 설정
+    const updatePromise = page.evaluate((port: number) => {
+      return new Promise<string>((resolve) => {
+        const ws = new WebSocket(`ws://localhost:${port}/__hmr`);
+        ws.onmessage = (e) => {
+          const msg = JSON.parse(e.data);
+          if (msg.type === "css-update") {
+            ws.close();
+            resolve(JSON.stringify(msg));
+          }
+        };
+        ws.onerror = () => resolve("error");
+        setTimeout(() => resolve("timeout"), 8000);
+      });
+    }, TEST_PORT);
+
+    // watch가 감지할 수 있도록 잠시 대기 후 CSS 변경
+    await new Promise((r) => setTimeout(r, 1000));
+    await writeFile(join(fixtureDir, "style.css"), "body { background: red; }");
+
+    const result = await updatePromise;
+    expect(result).not.toBe("timeout");
+    expect(result).not.toBe("error");
+
+    const msg = JSON.parse(result);
+    expect(msg.type).toBe("css-update");
+    expect(msg.file).toContain("style.css");
   });
 });

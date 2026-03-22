@@ -301,10 +301,28 @@ pub const DevServer = struct {
         var watch_paths = collectModulePaths(self.allocator, abs_entry) orelse return;
         defer freeWatchPaths(self.allocator, &watch_paths);
 
+        // root_dir의 CSS 파일을 watch 대상에 추가
+        var css_paths: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (css_paths.items) |p| self.allocator.free(p);
+            css_paths.deinit(self.allocator);
+        }
+        {
+            const root_real = std.fs.cwd().realpathAlloc(self.allocator, self.root_path) catch null;
+            defer if (root_real) |r| self.allocator.free(r);
+            if (root_real) |root| {
+                collectCssFiles(self.allocator, self.root_dir, root, &css_paths);
+            }
+        }
+
         // 초기 mtime 맵 구축
         var mtime_map = std.StringHashMap(i128).init(self.allocator);
         defer mtime_map.deinit();
         for (watch_paths) |p| {
+            const stat = std.fs.cwd().statFile(p) catch continue;
+            mtime_map.put(p, stat.mtime) catch continue;
+        }
+        for (css_paths.items) |p| {
             const stat = std.fs.cwd().statFile(p) catch continue;
             mtime_map.put(p, stat.mtime) catch continue;
         }
@@ -318,21 +336,59 @@ pub const DevServer = struct {
             var changed_paths: std.ArrayList([]const u8) = .empty;
             defer changed_paths.deinit(self.allocator);
 
-            for (watch_paths) |p| {
-                const stat = std.fs.cwd().statFile(p) catch continue;
-                const prev = mtime_map.get(p) orelse {
-                    mtime_map.put(p, stat.mtime) catch {};
-                    changed_paths.append(self.allocator, p) catch {};
-                    continue;
-                };
-                if (stat.mtime != prev) {
-                    mtime_map.put(p, stat.mtime) catch {};
-                    getLog().print("  [watch] changed: {s}\n", .{std.fs.path.basename(p)}) catch {};
-                    changed_paths.append(self.allocator, p) catch {};
+            // JS 모듈 + CSS 파일 변경 감지
+            const all_paths = [_][]const []const u8{ watch_paths, css_paths.items };
+            for (all_paths) |paths| {
+                for (paths) |p| {
+                    const stat = std.fs.cwd().statFile(p) catch continue;
+                    const prev = mtime_map.get(p) orelse {
+                        mtime_map.put(p, stat.mtime) catch {};
+                        changed_paths.append(self.allocator, p) catch {};
+                        continue;
+                    };
+                    if (stat.mtime != prev) {
+                        mtime_map.put(p, stat.mtime) catch {};
+                        getLog().print("  [watch] changed: {s}\n", .{std.fs.path.basename(p)}) catch {};
+                        changed_paths.append(self.allocator, p) catch {};
+                    }
                 }
             }
 
             if (changed_paths.items.len == 0) continue;
+
+            // CSS 변경 → 번들 재빌드 없이 css-update 전송 (link tag swap)
+            var has_css = false;
+            for (changed_paths.items) |cp| {
+                if (std.mem.endsWith(u8, cp, ".css")) {
+                    has_css = true;
+                    // 상대 경로 계산: root_dir prefix 제거
+                    const rel = blk: {
+                        const root_real = std.fs.cwd().realpathAlloc(self.allocator, self.root_path) catch break :blk std.fs.path.basename(cp);
+                        defer self.allocator.free(root_real);
+                        if (std.mem.startsWith(u8, cp, root_real)) {
+                            var r = cp[root_real.len..];
+                            if (r.len > 0 and r[0] == '/') r = r[1..];
+                            break :blk r;
+                        }
+                        break :blk std.fs.path.basename(cp);
+                    };
+
+                    var msg_buf: [512]u8 = undefined;
+                    const css_msg = std.fmt.bufPrint(&msg_buf, "{{\"type\":\"css-update\",\"file\":\"/{s}\"}}", .{rel}) catch continue;
+                    self.ws_clients.broadcast(css_msg);
+                    getLog().print("  [hmr] css update: {s}\n", .{std.fs.path.basename(cp)}) catch {};
+                }
+            }
+
+            // CSS만 변경되었으면 JS 재빌드 스킵
+            var has_non_css = false;
+            for (changed_paths.items) |cp| {
+                if (!std.mem.endsWith(u8, cp, ".css")) {
+                    has_non_css = true;
+                    break;
+                }
+            }
+            if (has_css and !has_non_css) continue;
 
             // 재번들 시도 → 에러면 에러 오버레이, 성공이면 HMR update (폴백: full-reload)
             const rebuild_result = tryRebuild(self.allocator, abs_entry);
@@ -505,6 +561,25 @@ pub const DevServer = struct {
     fn freeWatchPaths(allocator: std.mem.Allocator, paths: *[]const []const u8) void {
         for (paths.*) |p| allocator.free(p);
         allocator.free(paths.*);
+    }
+
+    /// root_dir에서 .css 파일을 재귀 탐색하여 절대 경로 목록에 추가.
+    fn collectCssFiles(allocator: std.mem.Allocator, dir: std.fs.Dir, dir_path: []const u8, out: *std.ArrayList([]const u8)) void {
+        var iter = dir.iterate();
+        while (iter.next() catch null) |entry| {
+            if (entry.kind == .directory) {
+                if (std.mem.eql(u8, entry.name, "node_modules")) continue;
+                if (entry.name.len > 0 and entry.name[0] == '.') continue;
+                var sub_dir = dir.openDir(entry.name, .{ .iterate = true }) catch continue;
+                defer sub_dir.close();
+                const sub_path = std.fs.path.join(allocator, &.{ dir_path, entry.name }) catch continue;
+                defer allocator.free(sub_path);
+                collectCssFiles(allocator, sub_dir, sub_path, out);
+            } else if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".css")) {
+                const full_path = std.fs.path.join(allocator, &.{ dir_path, entry.name }) catch continue;
+                out.append(allocator, full_path) catch {};
+            }
+        }
     }
 
     fn handleRequest(self: *DevServer, request: *http.Server.Request) !void {
@@ -770,6 +845,16 @@ pub const DevServer = struct {
             \\          hideOverlay();
             \\          __zts_apply_update(msg.modules);
             \\        } else { hideOverlay(); location.reload(); }
+            \\      }
+            \\      if (msg.type === 'css-update') {
+            \\        var links = document.querySelectorAll('link[rel="stylesheet"]');
+            \\        for (var j = 0; j < links.length; j++) {
+            \\          var href = links[j].getAttribute('href');
+            \\          if (href && href.split('?')[0] === msg.file) {
+            \\            links[j].href = msg.file + '?t=' + Date.now();
+            \\            console.log('[zts] CSS updated:', msg.file);
+            \\          }
+            \\        }
             \\      }
             \\      if (msg.type === 'error') { showOverlay(msg.errors); }
             \\    };
