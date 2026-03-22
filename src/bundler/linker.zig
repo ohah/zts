@@ -630,7 +630,7 @@ pub const Linker = struct {
 
     /// re-export 체인을 따라가서 canonical export를 찾는다.
     /// 깊이 제한 100 (순환 re-export 방지).
-    fn resolveExportChain(
+    pub fn resolveExportChain(
         self: *const Linker,
         module_idx: ModuleIndex,
         name: []const u8,
@@ -716,24 +716,8 @@ pub const Linker = struct {
         }) catch {};
     }
 
-    /// export 맵 키 생성 (할당). "module_index\x00name"
-    fn makeExportKey(allocator: std.mem.Allocator, module_index: u32, name: []const u8) ![]const u8 {
-        var buf = try allocator.alloc(u8, 4 + 1 + name.len);
-        @memcpy(buf[0..4], std.mem.asBytes(&module_index));
-        buf[4] = 0;
-        @memcpy(buf[5..], name);
-        return buf;
-    }
-
-    /// export 맵 키 생성 (스택 버퍼, 조회용).
-    fn makeExportKeyBuf(buf: *[4096]u8, module_index: u32, name: []const u8) []const u8 {
-        const total = 5 + name.len;
-        if (total > 4096) return "";
-        @memcpy(buf[0..4], std.mem.asBytes(&module_index));
-        buf[4] = 0;
-        @memcpy(buf[5 .. 5 + name.len], name);
-        return buf[0..total];
-    }
+    const makeExportKey = types.makeModuleKey;
+    const makeExportKeyBuf = types.makeModuleKeyBuf;
 };
 
 // ============================================================

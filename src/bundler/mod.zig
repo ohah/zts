@@ -24,6 +24,7 @@ pub const graph = @import("graph.zig");
 pub const emitter = @import("emitter.zig");
 pub const binding_scanner = @import("binding_scanner.zig");
 pub const linker = @import("linker.zig");
+pub const tree_shaker = @import("tree_shaker.zig");
 pub const bundler_core = @import("bundler.zig");
 
 // 공개 타입 re-export
@@ -41,6 +42,7 @@ pub const Module = module.Module;
 pub const ModuleGraph = graph.ModuleGraph;
 pub const Linker = linker.Linker;
 pub const LinkingMetadata = linker.LinkingMetadata;
+pub const TreeShaker = tree_shaker.TreeShaker;
 pub const Bundler = bundler_core.Bundler;
 pub const BundleOptions = bundler_core.BundleOptions;
 pub const BundleResult = bundler_core.BundleResult;
@@ -56,5 +58,6 @@ test {
     _ = emitter;
     _ = binding_scanner;
     _ = linker;
+    _ = tree_shaker;
     _ = bundler_core;
 }
