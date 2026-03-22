@@ -1024,3 +1024,143 @@ test "generateChunks: no modules" {
 
     try std.testing.expectEqual(@as(usize, 0), cg.chunkCount());
 }
+
+test "generateChunks: circular dependency stays in same chunk" {
+    // 구조: entry(a.ts) → b.ts → c.ts → b.ts (순환)
+    // 기대: 모두 같은 엔트리 청크 (순환이 BitSet에 영향 없음)
+    const alloc = std.testing.allocator;
+
+    var modules: [3]Module = .{
+        makeTestModule(alloc, 0, "a.ts"),
+        makeTestModule(alloc, 1, "b.ts"),
+        makeTestModule(alloc, 2, "c.ts"),
+    };
+    // a → b, b → c, c → b (순환)
+    try modules[0].addDependency(alloc, @enumFromInt(1), &modules);
+    try modules[1].addDependency(alloc, @enumFromInt(2), &modules);
+    try modules[2].addDependency(alloc, @enumFromInt(1), &modules);
+    defer for (&modules) |*m| m.deinit(alloc);
+
+    var cg = try generateChunks(alloc, &modules, &.{"a.ts"}, null);
+    defer cg.deinit();
+
+    // 1 엔트리 청크, 모든 모듈 포함
+    try std.testing.expectEqual(@as(usize, 1), cg.chunkCount());
+    for (0..3) |i| {
+        try std.testing.expect(!cg.getModuleChunk(@enumFromInt(@as(u32, @intCast(i)))).isNone());
+    }
+}
+
+test "generateChunks: static + dynamic import same module" {
+    // 구조: entry(a.ts) → static b.ts, a.ts → dynamic b.ts
+    // 기대: b.ts는 static import 경로로 엔트리 청크에 포함 (dynamic 엔트리도 생성되지만 b가 이미 엔트리 청크에 있음)
+    const alloc = std.testing.allocator;
+
+    var modules: [2]Module = .{
+        makeTestModule(alloc, 0, "a.ts"),
+        makeTestModule(alloc, 1, "b.ts"),
+    };
+    try modules[0].addDependency(alloc, @enumFromInt(1), &modules);
+    try modules[0].addDynamicImport(alloc, @enumFromInt(1));
+    defer for (&modules) |*m| m.deinit(alloc);
+
+    var cg = try generateChunks(alloc, &modules, &.{"a.ts"}, null);
+    defer cg.deinit();
+
+    // b.ts는 엔트리 청크에 포함 (static이 우선)
+    const b_chunk = cg.getModuleChunk(@enumFromInt(1));
+    try std.testing.expect(!b_chunk.isNone());
+}
+
+test "generateChunks: three entries sharing a module" {
+    // 구조: a.ts, b.ts, c.ts 모두 → shared.ts
+    // 기대: 3개 엔트리 청크 + 1개 공통 청크 (shared.ts: BitSet = {0,1,2})
+    const alloc = std.testing.allocator;
+
+    var modules: [4]Module = .{
+        makeTestModule(alloc, 0, "a.ts"),
+        makeTestModule(alloc, 1, "b.ts"),
+        makeTestModule(alloc, 2, "c.ts"),
+        makeTestModule(alloc, 3, "shared.ts"),
+    };
+    // 3개 엔트리가 모두 dynamic import로 생성됨
+    // a→shared, b→shared, c→shared (static deps)
+    try modules[0].addDependency(alloc, @enumFromInt(3), &modules);
+    try modules[1].addDependency(alloc, @enumFromInt(3), &modules);
+    try modules[2].addDependency(alloc, @enumFromInt(3), &modules);
+    defer for (&modules) |*m| m.deinit(alloc);
+
+    var cg = try generateChunks(alloc, &modules, &.{ "a.ts", "b.ts", "c.ts" }, null);
+    defer cg.deinit();
+
+    // 3 엔트리 + 1 공통 = 4 청크
+    try std.testing.expectEqual(@as(usize, 4), cg.chunkCount());
+
+    // shared.ts는 공통 청크에 할당
+    const shared_chunk_idx = cg.getModuleChunk(@enumFromInt(3));
+    try std.testing.expect(!shared_chunk_idx.isNone());
+    const shared_chunk = cg.getChunk(shared_chunk_idx);
+    try std.testing.expect(shared_chunk.kind == .common);
+    // 3개 엔트리에서 모두 도달 가능
+    try std.testing.expectEqual(@as(u32, 3), shared_chunk.bits.bitCount());
+}
+
+test "generateChunks: entry imports another entry statically" {
+    // 구조: a.ts (엔트리) → b.ts (엔트리)
+    // 기대: 각 엔트리는 자신의 청크를 가짐. b.ts는 두 엔트리에서 도달 가능 → 공통 청크 또는 b 엔트리 청크에 포함
+    const alloc = std.testing.allocator;
+
+    var modules: [2]Module = .{
+        makeTestModule(alloc, 0, "a.ts"),
+        makeTestModule(alloc, 1, "b.ts"),
+    };
+    try modules[0].addDependency(alloc, @enumFromInt(1), &modules);
+    defer for (&modules) |*m| m.deinit(alloc);
+
+    var cg = try generateChunks(alloc, &modules, &.{ "a.ts", "b.ts" }, null);
+    defer cg.deinit();
+
+    // 2개 엔트리 청크 생성
+    try std.testing.expect(cg.chunkCount() >= 2);
+    // 두 모듈 모두 할당됨
+    try std.testing.expect(!cg.getModuleChunk(@enumFromInt(0)).isNone());
+    try std.testing.expect(!cg.getModuleChunk(@enumFromInt(1)).isNone());
+}
+
+test "generateChunks: deep chain with dynamic import at middle" {
+    // 구조: a.ts → b.ts → dynamic c.ts → d.ts
+    // 기대: a,b는 엔트리 청크, c,d는 dynamic 엔트리 청크
+    const alloc = std.testing.allocator;
+
+    var modules: [4]Module = .{
+        makeTestModule(alloc, 0, "a.ts"),
+        makeTestModule(alloc, 1, "b.ts"),
+        makeTestModule(alloc, 2, "c.ts"),
+        makeTestModule(alloc, 3, "d.ts"),
+    };
+    try modules[0].addDependency(alloc, @enumFromInt(1), &modules);
+    try modules[1].addDynamicImport(alloc, @enumFromInt(2));
+    try modules[2].addDependency(alloc, @enumFromInt(3), &modules);
+    defer for (&modules) |*m| m.deinit(alloc);
+
+    var cg = try generateChunks(alloc, &modules, &.{"a.ts"}, null);
+    defer cg.deinit();
+
+    // 2개 청크: a엔트리(a,b), c엔트리(c,d)
+    try std.testing.expectEqual(@as(usize, 2), cg.chunkCount());
+
+    // a,b는 같은 청크 (엔트리)
+    const a_chunk = cg.getModuleChunk(@enumFromInt(0));
+    const b_chunk = cg.getModuleChunk(@enumFromInt(1));
+    try std.testing.expect(!a_chunk.isNone());
+    try std.testing.expectEqual(a_chunk, b_chunk);
+
+    // c,d는 같은 청크 (dynamic 엔트리)
+    const c_chunk = cg.getModuleChunk(@enumFromInt(2));
+    const d_chunk = cg.getModuleChunk(@enumFromInt(3));
+    try std.testing.expect(!c_chunk.isNone());
+    try std.testing.expectEqual(c_chunk, d_chunk);
+
+    // a,b 청크와 c,d 청크는 다름
+    try std.testing.expect(a_chunk != c_chunk);
+}
