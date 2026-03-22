@@ -559,13 +559,7 @@ pub const Scanner = struct {
         const c = self.advance();
         self.token.kind = switch (c) {
             '>' => .r_angle,
-            '/' => blk: {
-                if (self.peek() == '>') {
-                    self.current += 1;
-                    break :blk .slash; // /> — 파서가 slash + r_angle로 해석
-                }
-                break :blk .slash;
-            },
+            '/' => .slash,
             '=' => .eq,
             '{' => blk: {
                 self.brace_depth += 1;

@@ -5238,10 +5238,7 @@ test "JSX: component composition" {
 
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "function Header") != null);
-    // NOTE: Footer는 JSX children 파싱 버그로 reference_count가 증가하지 않음.
-    // children_len=1로 잘못 파싱되어 두 번째 자식(Footer)이 누락됨.
-    // JSX children 파서 수정 후 이 assertion을 복원해야 함.
-    // try std.testing.expect(std.mem.indexOf(u8, result.output, "function Footer") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function Footer") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "<div>") == null);
 }
 
