@@ -554,36 +554,67 @@ fn containsAwait(ast: *const Ast, idx: NodeIndex, depth: u32) bool {
     // 모든 자식 노드를 일반적으로 순회 — 데이터 레이아웃별 분기
     return switch (node.tag) {
         // 자식 없음 (리터럴, 식별자 등)
-        .invalid, .elision, .boolean_literal, .null_literal, .numeric_literal,
-        .string_literal, .bigint_literal, .regexp_literal, .this_expression,
-        .identifier_reference, .private_identifier, .empty_statement,
-        .break_statement, .continue_statement, .debugger_statement,
-        .import_declaration, .export_all_declaration,
+        .invalid,
+        .elision,
+        .boolean_literal,
+        .null_literal,
+        .numeric_literal,
+        .string_literal,
+        .bigint_literal,
+        .regexp_literal,
+        .this_expression,
+        .identifier_reference,
+        .private_identifier,
+        .empty_statement,
+        .break_statement,
+        .continue_statement,
+        .debugger_statement,
+        .import_declaration,
+        .export_all_declaration,
         => false,
 
         // unary: operand
-        .expression_statement, .parenthesized_expression, .yield_expression,
-        .spread_element, .return_statement, .throw_statement,
-        .export_default_declaration, .unary_expression, .update_expression,
-        .decorator, .import_expression,
+        .expression_statement,
+        .parenthesized_expression,
+        .yield_expression,
+        .spread_element,
+        .return_statement,
+        .throw_statement,
+        .export_default_declaration,
+        .unary_expression,
+        .update_expression,
+        .decorator,
+        .import_expression,
         => containsAwait(ast, node.data.unary.operand, depth + 1),
 
         // binary: left + right
-        .binary_expression, .logical_expression, .assignment_expression,
-        .while_statement, .do_while_statement, .labeled_statement,
-        .with_statement, .catch_clause, .for_in_statement, .for_of_statement,
+        .binary_expression,
+        .logical_expression,
+        .assignment_expression,
+        .while_statement,
+        .do_while_statement,
+        .labeled_statement,
+        .with_statement,
+        .catch_clause,
+        .for_in_statement,
+        .for_of_statement,
         => containsAwait(ast, node.data.binary.left, depth + 1) or
             containsAwait(ast, node.data.binary.right, depth + 1),
 
         // ternary: a + b + c
-        .if_statement, .try_statement, .conditional_expression,
+        .if_statement,
+        .try_statement,
+        .conditional_expression,
         .for_await_of_statement,
         => containsAwait(ast, node.data.ternary.a, depth + 1) or
             containsAwait(ast, node.data.ternary.b, depth + 1) or
             containsAwait(ast, node.data.ternary.c, depth + 1),
 
         // list: extra_data 인덱스 배열
-        .program, .block_statement, .array_expression, .sequence_expression,
+        .program,
+        .block_statement,
+        .array_expression,
+        .sequence_expression,
         .object_expression,
         => blk: {
             const list = node.data.list;
