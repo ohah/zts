@@ -37,6 +37,11 @@ pub const BundleOptions = struct {
     /// code splitting 활성화. true이면 dynamic import 경계에서 청크를 분리하고
     /// 공유 모듈을 공통 청크로 추출한다. 결과는 BundleResult.outputs에 다중 파일로 반환.
     code_splitting: bool = false,
+    /// dev mode: 각 모듈을 __zts_register() 팩토리로 래핑하고
+    /// HMR 런타임을 주입한다. import.meta.hot API 지원.
+    dev_mode: bool = false,
+    /// dev mode에서 모듈 ID 생성 시 기준 경로 (상대 경로 계산용).
+    root_dir: ?[]const u8 = null,
 };
 
 pub const BundleResult = struct {
@@ -124,12 +129,14 @@ pub const Bundler = struct {
         try graph.build(self.options.entry_points);
 
         // 2. 링킹 (scope hoisting)
+        // dev_mode: link()만 실행 (import→export 바인딩 해석), rename은 스킵.
+        //           dev mode는 모듈별 스코프 유지이므로 변수 이름 충돌 해결 불필요.
         // code_splitting=true일 때는 글로벌 computeRenames를 건너뛴다.
         // 각 청크가 독립된 네임스페이스이므로 emitChunks에서 per-chunk로 처리.
-        var linker: ?Linker = if (self.options.scope_hoist) blk: {
+        var linker: ?Linker = if (self.options.scope_hoist or self.options.dev_mode) blk: {
             var l = Linker.init(self.allocator, graph.modules.items);
             try l.link();
-            if (!self.options.code_splitting) {
+            if (!self.options.dev_mode and !self.options.code_splitting) {
                 try l.computeRenames();
             }
             break :blk l;
@@ -137,7 +144,8 @@ pub const Bundler = struct {
         defer if (linker) |*l| l.deinit();
 
         // 2.5. Tree-shaking (scope_hoist + tree_shaking 둘 다 켜져 있을 때)
-        var shaker: ?TreeShaker = if (self.options.scope_hoist and self.options.tree_shaking) blk: {
+        // dev_mode에서는 tree-shaking 스킵 (개발 중 모든 코드 필요)
+        var shaker: ?TreeShaker = if (!self.options.dev_mode and self.options.scope_hoist and self.options.tree_shaking) blk: {
             var s = try TreeShaker.init(self.allocator, graph.modules.items, &(linker.?));
             try s.analyze(self.options.entry_points);
             break :blk s;
@@ -148,7 +156,20 @@ pub const Bundler = struct {
         var output: []const u8 = "";
         var outputs: ?[]OutputFile = null;
 
-        if (self.options.code_splitting) {
+        if (self.options.dev_mode) {
+            // Dev mode: 모듈 래핑 + HMR 런타임 주입
+            output = try emitter.emitDevBundle(
+                self.allocator,
+                &graph,
+                .{
+                    .format = self.options.format,
+                    .minify = self.options.minify,
+                    .dev_mode = true,
+                    .root_dir = self.options.root_dir,
+                },
+                if (linker) |*l| l else null,
+            );
+        } else if (self.options.code_splitting) {
             // Code splitting 경로: 청크 그래프 생성 → 다중 파일 출력
             var chunk_graph = try chunk_mod.generateChunks(
                 self.allocator,
@@ -9256,4 +9277,93 @@ test "CodeSplitting: CJS module in shared chunk" {
         }
     }
     try std.testing.expect(has_commonjs);
+}
+
+// ============================================================
+// Dev Mode Tests
+// ============================================================
+
+test "Bundler: dev mode single file" {
+    // dev mode에서 단일 파일이 __zts_register로 래핑되는지 확인
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 42;\nexport default x;");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // HMR 런타임이 주입되었는지
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_modules") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_register") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_make_hot") != null);
+    // 모듈이 register로 래핑되었는지
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_register(\"") != null);
+    // export가 __zts_exports로 변환되었는지
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_exports.default") != null);
+}
+
+test "Bundler: dev mode two files with import" {
+    // dev mode에서 두 파일 간 import가 __zts_require로 변환되는지 확인
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "utils.ts", "export const add = (a, b) => a + b;");
+    try writeFile(tmp.dir, "index.ts", "import { add } from './utils';\nconsole.log(add(1, 2));");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 두 모듈이 각각 __zts_register로 래핑
+    const output = result.output;
+    const first = std.mem.indexOf(u8, output, "__zts_register(\"") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, output[first + 1 ..], "__zts_register(\"") != null);
+    // __zts_require 호출이 있는지
+    try std.testing.expect(std.mem.indexOf(u8, output, "__zts_require(\"") != null);
+    // utils.ts의 export가 __zts_exports.add로 변환
+    try std.testing.expect(std.mem.indexOf(u8, output, "__zts_exports.add") != null);
+}
+
+test "Bundler: dev mode default import" {
+    // dev mode에서 default import가 __zts_require(...).default로 변환되는지 확인
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "greet.ts", "export default function greet() { return 'hi'; }");
+    try writeFile(tmp.dir, "index.ts", "import greet from './greet';\nconsole.log(greet());");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // default import → .default
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ".default") != null);
+    // greet.ts의 default export
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_exports.default") != null);
 }

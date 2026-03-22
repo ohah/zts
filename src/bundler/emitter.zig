@@ -28,6 +28,69 @@ const CJS_RUNTIME_MIN = "var __commonJS=(cb,mod)=>function __require(){return mo
 /// 아니면 { ...mod, default: mod } 형태로 namespace 객체 생성.
 const TOESM_RUNTIME = "var __toESM = (mod) => mod && mod.__esModule ? mod : { ...mod, default: mod };\n";
 const TOESM_RUNTIME_MIN = "var __toESM=(mod)=>mod&&mod.__esModule?mod:{...mod,default:mod};";
+/// HMR 런타임: 모듈 레지스트리 + __zts_require + import.meta.hot API.
+/// dev mode 번들 상단에 주입된다.
+///
+/// 구조:
+///   __zts_modules[id] = { factory, exports, hot }
+///   __zts_require(id) → 모듈의 exports 반환
+///   __zts_make_hot(id) → import.meta.hot 호환 API 객체
+///   __zts_apply_update(id, code) → 모듈 재실행 (WS에서 호출)
+const HMR_RUNTIME =
+    \\var __zts_modules = {};
+    \\var __zts_hot_cbs = {};
+    \\var __zts_hot_data = {};
+    \\function __zts_require(id) {
+    \\  var m = __zts_modules[id];
+    \\  if (!m) throw new Error("[zts] Module not found: " + id);
+    \\  return m.exports;
+    \\}
+    \\function __zts_make_hot(id) {
+    \\  if (!__zts_hot_cbs[id]) __zts_hot_cbs[id] = {};
+    \\  return {
+    \\    get data() { return __zts_hot_data[id]; },
+    \\    accept: function(deps, cb) {
+    \\      if (typeof deps === "function") { cb = deps; deps = undefined; }
+    \\      __zts_hot_cbs[id].accept = cb || true;
+    \\      if (Array.isArray(deps)) __zts_hot_cbs[id].acceptDeps = deps;
+    \\    },
+    \\    dispose: function(cb) { __zts_hot_cbs[id].dispose = cb; },
+    \\    prune: function(cb) { __zts_hot_cbs[id].prune = cb; },
+    \\    invalidate: function() { location.reload(); }
+    \\  };
+    \\}
+    \\function __zts_register(id, factory) {
+    \\  var prev = __zts_modules[id];
+    \\  var mod = { exports: {}, hot: __zts_make_hot(id), factory: factory };
+    \\  __zts_modules[id] = mod;
+    \\  factory(mod, mod.exports);
+    \\  if (prev) {
+    \\    var cbs = __zts_hot_cbs[id];
+    \\    if (cbs && cbs.dispose) {
+    \\      __zts_hot_data[id] = {};
+    \\      cbs.dispose(__zts_hot_data[id]);
+    \\    }
+    \\  }
+    \\}
+    \\function __zts_apply_update(updates) {
+    \\  for (var i = 0; i < updates.length; i++) {
+    \\    var id = updates[i].id;
+    \\    var cbs = __zts_hot_cbs[id];
+    \\    if (!cbs || !cbs.accept) { location.reload(); return; }
+    \\    try {
+    \\      var fn = new Function("__zts_register", "__zts_require", "__zts_make_hot", updates[i].code);
+    \\      fn(__zts_register, __zts_require, __zts_make_hot);
+    \\      if (typeof cbs.accept === "function") cbs.accept();
+    \\    } catch(e) { console.error("[zts] HMR update failed:", e); location.reload(); }
+    \\  }
+    \\}
+    \\
+;
+
+const HMR_RUNTIME_MIN =
+    \\var __zts_modules={},__zts_hot_cbs={},__zts_hot_data={};function __zts_require(id){var m=__zts_modules[id];if(!m)throw new Error("[zts] Module not found: "+id);return m.exports}function __zts_make_hot(id){if(!__zts_hot_cbs[id])__zts_hot_cbs[id]={};return{get data(){return __zts_hot_data[id]},accept:function(d,c){if(typeof d==="function"){c=d;d=void 0}__zts_hot_cbs[id].accept=c||true;if(Array.isArray(d))__zts_hot_cbs[id].acceptDeps=d},dispose:function(c){__zts_hot_cbs[id].dispose=c},prune:function(c){__zts_hot_cbs[id].prune=c},invalidate:function(){location.reload()}}}function __zts_register(id,f){var p=__zts_modules[id];var m={exports:{},hot:__zts_make_hot(id),factory:f};__zts_modules[id]=m;f(m,m.exports);if(p){var c=__zts_hot_cbs[id];if(c&&c.dispose){__zts_hot_data[id]={};c.dispose(__zts_hot_data[id])}}}function __zts_apply_update(u){for(var i=0;i<u.length;i++){var id=u[i].id;var c=__zts_hot_cbs[id];if(!c||!c.accept){location.reload();return}try{var fn=new Function("__zts_register","__zts_require","__zts_make_hot",u[i].code);fn(__zts_register,__zts_require,__zts_make_hot);if(typeof c.accept==="function")c.accept()}catch(e){console.error("[zts] HMR update failed:",e);location.reload()}}}
+;
+
 const chunk_mod = @import("chunk.zig");
 const ChunkGraph = chunk_mod.ChunkGraph;
 const Chunk = chunk_mod.Chunk;
@@ -45,6 +108,12 @@ const TreeShaker = @import("tree_shaker.zig").TreeShaker;
 pub const EmitOptions = struct {
     format: Format = .esm,
     minify: bool = false,
+    /// dev mode: 각 모듈을 __zts_register() 팩토리로 래핑하고
+    /// HMR 런타임을 주입한다. import.meta.hot API 지원.
+    dev_mode: bool = false,
+    /// dev mode에서 모듈 ID 생성 시 기준 경로 (상대 경로 계산용).
+    /// null이면 절대 경로를 그대로 사용.
+    root_dir: ?[]const u8 = null,
 
     pub const Format = enum {
         esm,
@@ -170,6 +239,169 @@ pub fn emitWithTreeShaking(
     }
 
     return output.toOwnedSlice(allocator);
+}
+
+/// Dev mode 번들 출력.
+///
+/// 각 모듈을 `__zts_register(id, factory)` 팩토리로 래핑하고
+/// HMR 런타임을 번들 상단에 주입한다.
+/// 스코프 호이스팅 대신 모듈 레지스트리 기반 import/export를 사용.
+///
+/// 출력 형태:
+/// ```js
+/// // HMR Runtime
+/// var __zts_modules = {}; ...
+///
+/// // Module: ./src/utils.ts
+/// __zts_register("./src/utils.ts", function(__zts_module, __zts_exports) {
+///   var { add } = __zts_require("./src/math.ts");
+///   const result = add(1, 2);
+///   __zts_exports.result = result;
+/// });
+/// ```
+pub fn emitDevBundle(
+    allocator: std.mem.Allocator,
+    graph: *const ModuleGraph,
+    options: EmitOptions,
+    linker: ?*const Linker,
+) ![]const u8 {
+    // 1. JS 모듈만 필터 + exec_index 순 정렬
+    var sorted: std.ArrayList(*const Module) = .empty;
+    defer sorted.deinit(allocator);
+
+    for (graph.modules.items) |*m| {
+        if (m.module_type == .javascript and m.ast != null) {
+            try sorted.append(allocator, m);
+        }
+    }
+
+    std.mem.sort(*const Module, sorted.items, {}, struct {
+        fn lessThan(_: void, a: *const Module, b: *const Module) bool {
+            return a.exec_index < b.exec_index;
+        }
+    }.lessThan);
+
+    // 2. 출력 빌드
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
+
+    // HMR 런타임 주입
+    if (options.minify) {
+        try output.appendSlice(allocator, HMR_RUNTIME_MIN);
+    } else {
+        try output.appendSlice(allocator, HMR_RUNTIME);
+    }
+
+    // 3. 각 모듈을 __zts_register로 래핑
+    for (sorted.items) |m| {
+        const module_id = makeModuleId(m.path, options.root_dir);
+        const code = try emitDevModule(allocator, m, options, linker) orelse continue;
+        defer allocator.free(code);
+
+        if (!options.minify) {
+            try output.appendSlice(allocator, "// --- ");
+            try output.appendSlice(allocator, std.fs.path.basename(m.path));
+            try output.appendSlice(allocator, " ---\n");
+        }
+
+        // __zts_register("module_id", function(__zts_module, __zts_exports) { ... });
+        try output.appendSlice(allocator, "__zts_register(\"");
+        try output.appendSlice(allocator, module_id);
+        if (options.minify) {
+            try output.appendSlice(allocator, "\",function(__zts_module,__zts_exports){");
+        } else {
+            try output.appendSlice(allocator, "\", function(__zts_module, __zts_exports) {\n");
+        }
+
+        // 모듈 코드 (들여쓰기)
+        if (!options.minify) {
+            for (code) |c| {
+                try output.append(allocator, c);
+                if (c == '\n') try output.append(allocator, '\t');
+            }
+            try output.appendSlice(allocator, "\n});\n\n");
+        } else {
+            try output.appendSlice(allocator, code);
+            try output.appendSlice(allocator, "});");
+        }
+    }
+
+    return output.toOwnedSlice(allocator);
+}
+
+/// Dev mode용 단일 모듈 변환.
+/// 프로덕션 emitModule과의 차이:
+///   - buildDevMetadataForAst 사용 (rename 없음, __zts_require preamble)
+///   - final_exports → __zts_exports.x = x; 형태
+fn emitDevModule(
+    allocator: std.mem.Allocator,
+    module: *const Module,
+    options: EmitOptions,
+    linker: ?*const Linker,
+) !?[]const u8 {
+    const ast = &(module.ast orelse return null);
+
+    var emit_arena = std.heap.ArenaAllocator.init(allocator);
+    defer emit_arena.deinit();
+    const arena_alloc = emit_arena.allocator();
+
+    var transformer = Transformer.init(arena_alloc, ast, .{});
+    if (module.semantic) |sem| {
+        transformer.old_symbol_ids = sem.symbol_ids;
+    }
+    const root = try transformer.transform();
+
+    // Dev mode 메타데이터: rename 없음, __zts_require preamble, __zts_exports epilogue
+    var metadata: ?LinkingMetadata = null;
+    defer if (metadata) |*md| md.deinit();
+
+    if (linker) |l| {
+        var md = try l.buildDevMetadataForAst(
+            &transformer.new_ast,
+            @intFromEnum(module.index),
+        );
+        if (transformer.new_symbol_ids.items.len > 0) {
+            md.symbol_ids = transformer.new_symbol_ids.items;
+        }
+        metadata = md;
+    }
+
+    var cg = Codegen.initWithOptions(arena_alloc, &transformer.new_ast, .{
+        .minify = options.minify,
+        .module_format = .esm, // dev mode는 항상 ESM 스타일 (export 키워드만 생략)
+        .linking_metadata = if (metadata) |*md| md else null,
+    });
+    const code = try cg.generate(root);
+
+    // preamble (__zts_require) + code + epilogue (__zts_exports)
+    const preamble = if (metadata) |md| md.cjs_import_preamble else null;
+    const final_exports = if (metadata) |md| md.final_exports else null;
+
+    if (preamble != null or final_exports != null) {
+        return try std.mem.concat(allocator, u8, &.{
+            preamble orelse "",
+            code,
+            final_exports orelse "",
+        });
+    }
+
+    return try allocator.dupe(u8, code);
+}
+
+/// 모듈 경로를 dev bundle용 ID로 변환.
+/// root_dir이 있으면 상대 경로, 없으면 절대 경로 그대로 사용.
+fn makeModuleId(path: []const u8, root_dir: ?[]const u8) []const u8 {
+    const root = root_dir orelse return path;
+    if (root.len == 0) return path;
+
+    // root_dir prefix를 제거하여 상대 경로 생성
+    if (std.mem.startsWith(u8, path, root)) {
+        var rel = path[root.len..];
+        // 선행 '/' 제거
+        if (rel.len > 0 and rel[0] == '/') rel = rel[1..];
+        if (rel.len > 0) return rel;
+    }
+    return path;
 }
 
 /// 청크 그래프를 기반으로 다중 출력 파일을 생성한다 (code splitting).
