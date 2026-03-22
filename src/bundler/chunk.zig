@@ -357,6 +357,8 @@ pub fn generateChunks(
     // 모듈별 도달 가능성 BitSet — splitting_info[module_index]는
     // 그 모듈이 어떤 엔트리들에서 도달 가능한지를 나타낸다.
     var splitting_info = try allocator.alloc(BitSet, modules.len);
+    // 안전한 초기값 — init 실패 시 defer에서 deinit 호출해도 안전
+    @memset(splitting_info, .{ .entries = &.{} });
     defer {
         for (splitting_info) |*bs| bs.deinit(allocator);
         allocator.free(splitting_info);
@@ -368,6 +370,7 @@ pub fn generateChunks(
     // Phase 1c: 엔트리별 Chunk 생성
     for (entries.items, 0..) |entry, bit_idx| {
         var bits = try BitSet.init(allocator, @intCast(entry_count));
+        errdefer bits.deinit(allocator);
         bits.setBit(@intCast(bit_idx));
 
         // 출력 파일명 = 모듈 파일명의 stem (확장자 제거)
@@ -397,7 +400,7 @@ pub fn generateChunks(
         try queue.append(allocator, entry.module_idx);
 
         while (queue.items.len > 0) {
-            const mod_idx = queue.orderedRemove(0);
+            const mod_idx = queue.pop() orelse break;
             const mi = @intFromEnum(mod_idx);
             if (mi >= modules.len) continue;
 
@@ -454,7 +457,8 @@ pub fn generateChunks(
 
         const chunk_idx = if (found_chunk) |ci| ci else blk: {
             // 기존 청크와 일치하지 않는 새로운 BitSet 패턴 → 공통 청크 생성
-            const bits = try splitting_info[mi].clone(allocator);
+            var bits = try splitting_info[mi].clone(allocator);
+            errdefer bits.deinit(allocator);
             const new_chunk = Chunk.init(.none, .common, bits);
             break :blk try chunk_graph.addChunk(new_chunk);
         };
