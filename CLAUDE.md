@@ -219,22 +219,18 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
    - ✅ cross-module `@__NO_SIDE_EFFECTS__` 전파: import한 함수의 호출에 `/* @__PURE__ */` 자동 출력 (re-export chain, default export, async function 포함)
    - ✅ 통합 테스트 강화: barrel file, diamond re-export, class extends, export star 등 8개 실전 패턴
 4. **번들러 Phase B2 (핵심)** — CJS interop → TLA → Code splitting → HMR
-   - 4a. **CJS interop (입력)** — node_modules 대부분이 CJS이므로 실전 사용의 필수 전제
-     - require() 호출 감지 + CommonJS 래핑 (__require, module, exports)
-     - module.exports / exports.x 패턴 인식
-     - ESM import cjs → default import = module.exports
-     - ESM import { named } from cjs → named 추출 (정적 분석)
-     - 동적 require (조건부) → 보수적으로 전부 포함
-     - 참고: esbuild `pkg/js_parser/js_parser.go` (CJS 감지), rolldown `crates/rolldown/src/module_loader/`
-   - 4b. **Top-level await** — 모듈 실행 순서에 영향, code splitting 전에 해결 필요
-     - TLA 있는 모듈의 동적 import → 정적 의존성으로 승격
-     - 비-ESM 출력(CJS/IIFE) 시 TLA 에러 또는 async 래핑
-   - 4c. **Code splitting** — 동적 import 기준 청크 분할
-     - 동적 import (`import('./page')`) → 별도 청크
-     - 공통 모듈 추출: 여러 진입점이 공유하는 모듈 → 별도 청크
-     - 순환 참조 → 같은 청크로 묶기
-     - 런타임 로더: 청크를 동적 로드하는 코드 생성 (ESM 기반)
-   - 4d. **Dev server + HMR** — watch 모드(✅) 위에 확장
+   - ✅ 4a. **CJS interop (입력)** — PR #248-250
+     - require() 감지 + __commonJS 래핑 + __toESM 브릿지
+     - ExportsKind 승격 (소비 방식 기반), module.exports 파서 수정
+   - ✅ 4b. **Top-level await** — PR #251
+     - semantic analyzer 기반 감지 (스코프 체인 추적, for_await_of_statement 태그)
+     - 전이적 전파 (static import 체인), 비-ESM 경고
+   - ✅ 4c. **Code splitting** — PR #252-255
+     - BitSet 도달 가능성 알고리즘 (rolldown 패턴)
+     - generateChunks (엔트리 초기화 + BFS 마킹 + 청크 할당)
+     - computeCrossChunkLinks (청크 간 의존성 추적)
+     - 멀티 파일 emitter + CLI --splitting + --outdir
+   - 4d. **Dev server + HMR** — 다음, watch 모드(✅) 위에 확장
      - HTTP + WebSocket 내장 서버
      - import.meta.hot API 주입
      - React Fast Refresh 연동
@@ -275,31 +271,31 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
 3. ✅ 단일 파일 번들 (연결만)
 4. ✅ 스코프 호이스팅 (변수 충돌 해결)
 5. ✅ Tree-shaking (모듈 수준, @__PURE__/@__NO_SIDE_EFFECTS__, sideEffects)
-6. Code splitting                ← 다음 (청크 분할, 런타임 로더)
+6. ✅ Code splitting (BitSet 도달 가능성, 공통 청크 자동 추출, 멀티 파일 emitter)
 ```
 
 ##### 번들러 Phase별 기능 분류
 ```
-Phase B1: 기반 (✅ 완료)          Phase B2: 핵심 (다음)     Phase B3: 고급
-─────────────────                 ──────────────           ──────────────
-✅ 모듈 해석 (Node/TS)            CJS interop (입력)       플러그인 시스템
-  ├ node_modules 탐색              ├ require() 감지/래핑     ├ resolve/load/transform 훅
-  ├ package.json exports           ├ module.exports 인식     ├ Rollup 플러그인 호환
-  ├ tsconfig paths/baseUrl         ├ ESM↔CJS 브릿지         └ Vite 플러그인 호환
-  └ 조건부 exports                 └ named 추출 (정적)     React Native 지원
-✅ 모듈 그래프                    Top-level await           ├ Metro 호환 해석
-  ├ 정적 import/export             ├ 실행 순서 보장          ├ 플랫폼 확장자 (.ios/.android)
-  ├ 순환 참조 감지                 └ 동적→정적 승격          ├ polyfill 주입
-  └ 동적 import                   Code splitting            └ Hermes 타겟 최적화
-✅ 단일 파일 번들 생성             ├ 동적 import 분할       CSS 번들링
-  └ 진입점 → 단일 출력              ├ 공통 청크 추출         ├ 별도 파서
-✅ 스코프 호이스팅                 └ 런타임 로더            └ CSS modules
-  ├ 변수 이름 충돌 해결            개발 서버 + HMR
-  ├ ESM 실행 순서 보장              ├ HTTP + WebSocket
-  └ CJS 호환 래핑                  ├ import.meta.hot
-✅ Tree-shaking (모듈 수준)        ├ React Fast Refresh
-  ├ export 사용 추적                └ 증분 재빌드
-  ├ @__PURE__ / @__NO_SIDE_EFFECTS__
+Phase B1: 기반 (✅ 완료)          Phase B2: 핵심 (✅ 대부분 완료) Phase B3: 고급
+─────────────────                 ──────────────────          ──────────────
+✅ 모듈 해석 (Node/TS)            ✅ CJS interop (입력)        플러그인 시스템
+  ├ node_modules 탐색              ├ require() 감지/래핑        ├ resolve/load/transform 훅
+  ├ package.json exports           ├ __commonJS/__toESM         ├ Rollup 플러그인 호환
+  ├ tsconfig paths/baseUrl         └ ExportsKind 승격           └ Vite 플러그인 호환
+  └ 조건부 exports                ✅ Top-level await           React Native 지원
+✅ 모듈 그래프                     ├ semantic analyzer 감지     ├ Metro 호환 해석
+  ├ 정적 import/export              ├ 전이적 전파               ├ 플랫폼 확장자 (.ios/.android)
+  ├ 순환 참조 감지                  └ 비-ESM 경고               ├ polyfill 주입
+  └ 동적 import                   ✅ Code splitting             └ Hermes 타겟 최적화
+✅ 단일 파일 번들 생성              ├ BitSet 도달 가능성        CSS 번들링
+  └ 진입점 → 단일 출력               ├ 공통 청크 자동 추출       ├ 별도 파서
+✅ 스코프 호이스팅                  ├ 멀티 파일 emitter         └ CSS modules
+  ├ 변수 이름 충돌 해결              └ CLI --splitting
+  ├ ESM 실행 순서 보장             개발 서버 + HMR (다음)
+  └ CJS 호환 래핑                   ├ HTTP + WebSocket
+✅ Tree-shaking (모듈 수준)         ├ import.meta.hot
+  ├ export 사용 추적                 ├ React Fast Refresh
+  ├ @__PURE__ / @__NO_SIDE_EFFECTS__└ 증분 재빌드
   ├ sideEffects 필드
   └ cross-module 전파
 ```
