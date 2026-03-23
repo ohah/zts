@@ -5,22 +5,9 @@
 ## 번들러 런타임 에러 (scope hoisting)
 
 ### ~~zod — `z is not defined`~~ ✅ PR #313에서 해결
-- namespace re-export에서 resolveExportChain이 "*"를 찾아 null 반환하는 버그 수정
-
 ### ~~rxjs — `require_rxjs_dist_cjs_index is not defined`~~ ✅ PR #313에서 해결
-- CJS 모듈이 sideEffects:false로 tree-shaking 제거되는 버그 수정
-
-### vue — 런타임 에러
-- **증상**: vue 번들 (1593KB) 빌드 성공, 실행 시 `ref is not defined`
-- **원인**: `export * from './index.js'` (CJS) — ESM→CJS export * chain에서 named export를 해석 못함
-- **필요**: `__reExport` 런타임 헬퍼 또는 CJS namespace 객체 preamble 생성
-- **esbuild**: `__reExport(vue_exports, __toESM(require_vue()))` 패턴으로 처리
-- **참고**: esbuild `pkg/js_parser/js_parser_lower.go`, rolldown `crates/rolldown/src/utils/`
-
-### supabase — 런타임 에러
-- **증상**: tslib(CJS)의 `__awaiter` 등이 정의되지 않음
-- **원인**: vue와 동일 — ESM 모듈이 CJS를 `import default`로 가져올 때 scope hoisting이 올바르게 처리 못함
-- **esbuild/rolldown**: 정상
+### ~~vue — 런타임 에러~~ ✅ PR #314에서 해결
+### ~~supabase — 런타임 에러~~ ✅ PR #314에서 해결
 
 ## ~~CLI 기능 부재~~ ✅
 
@@ -30,6 +17,31 @@
 
 ### ~~package_json.zig — sideEffects 배열 메모리 릭~~ ✅ PR #313에서 해결
 
+## 브라우저 호환성
+
+### scope hoisting에서 글로벌 변수 충돌 (effect)
+- **증상**: `Identifier 'window' has already been declared`
+- **원인**: deconflict에서 `window`, `document` 등 브라우저 글로벌을 예약하지 않음
+- **esbuild**: `SymbolUnbound`(미해석 참조)를 자동 수집하여 예약 — 하드코딩 목록 없음
+- **rolldown**: `GLOBAL_OBJECTS` 하드코딩 + 중첩 스코프 확인 (2중 방어)
+- **수정 방향**: esbuild 방식(unbound 자동 수집) + rolldown 방식(중첩 스코프 확인)
+- **참고**: `references/esbuild/internal/renamer/renamer.go:15` (ComputeReservedNames)
+- **참고**: `references/rolldown/crates/rolldown/src/utils/renamer.rs:42`
+
+### `import.meta` outside module (jotai, valtio, fp-ts)
+- **증상**: IIFE/script 출력에서 `import.meta` 사용 시 브라우저 에러
+- **esbuild/rolldown**: ESM은 유지, CJS는 `require('url').pathToFileURL(__filename).href`로 polyfill
+- **rolldown 추가 확장**: `import.meta.dirname`, `import.meta.filename`, `ROLLUP_FILE_URL_*`
+- **수정 방향**: ESM 유지, CJS/IIFE에서 platform별 polyfill + rolldown 확장도 지원
+
+### `--platform=browser`에서 `process.env.NODE_ENV` 자동 치환 미구현
+- **증상**: vue, react, immer, mobx 등이 브라우저에서 `process is not defined` 에러
+- **현재**: 매번 `--define:process.env.NODE_ENV="production"` 수동 전달 필요
+- **esbuild**: `--platform=browser`이면 자동으로 `process.env.NODE_ENV`를 치환
+- **rolldown/vite**: `mode` 옵션으로 자동 치환
+- **webpack**: `DefinePlugin` + `mode: "production"`으로 자동 치환
+- **수정 방향**: `--platform=browser`이면 `process.env.NODE_ENV`를 `"production"`으로 자동 define
+
 ## 구조적 개선 (후순위)
 
 ### binding_scanner — barrel re-export를 `.local`로 오분류
@@ -38,7 +50,4 @@
 - **개선**: binding_scanner에서 `.re_export`로 정확히 분류하면 linker의 탐색 불필요
 - **PR #308에서 workaround 적용 완료** (linker에서 import binding 확인)
 
-### ESM→CJS `export *` 지원 (vue, supabase 해결에 필요)
-- **현상**: `export * from CJS_MODULE` 에서 CJS의 export를 정적으로 알 수 없어 scope hoisting 실패
-- **필요**: esbuild 방식의 `__reExport` 런타임 헬퍼 구현
-- **범위**: emitter에 런타임 헬퍼 코드 생성 + linker에서 CJS export * 감지
+### ~~ESM→CJS `export *` 지원~~ ✅ PR #314에서 해결
