@@ -23,14 +23,19 @@ const WrapKind = types.WrapKind;
 const CJS_RUNTIME = "var __commonJS = (cb, mod) => function __require() {\n\treturn mod || (0, cb[Object.keys(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;\n};\n";
 const CJS_RUNTIME_MIN = "var __commonJS=(cb,mod)=>function __require(){return mod||(0,cb[Object.keys(cb)[0]])((mod={exports:{}}).exports,mod),mod.exports};";
 
-/// __toESM 런타임 헬퍼: CJS 모듈을 ESM namespace로 변환.
-/// __esModule=true이면 원본 사용하되, "default" 프로퍼티가 없으면 모듈 자체를 default로 설정.
-/// tslib 등 __esModule=true이지만 default export가 없는 CJS 모듈에 대응.
+/// __toESM 런타임 헬퍼: CJS 모듈을 ESM namespace로 변환 (esbuild/rolldown 호환).
+/// isNodeMode=true(--platform=node)이면 항상 default: mod를 설정.
+/// __esModule=true이면 원본 프로퍼티를 사용하되 default는 추가하지 않음.
+/// 참고: references/esbuild/internal/runtime/runtime.go:231
+///       references/rolldown/crates/rolldown/src/runtime/index.js:86
 const TOESM_RUNTIME =
-    \\var __toESM = (mod) => !mod || !mod.__esModule ? { ...mod, default: mod } : "default" in mod ? mod : { ...mod, default: mod };
+    \\var __getProtoOf = Object.getPrototypeOf;
+    \\var __defProp = Object.defineProperty;
+    \\var __copyProps = (to, from) => { for (var key in from) if (Object.prototype.hasOwnProperty.call(from, key)) __defProp(to, key, { get: () => from[key], enumerable: true }); return to; };
+    \\var __toESM = (mod, isNodeMode, target) => (target = mod != null ? Object.create(__getProtoOf(mod)) : {}, __copyProps(isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target, mod));
     \\
 ;
-const TOESM_RUNTIME_MIN = "var __toESM=(mod)=>!mod||!mod.__esModule?{...mod,default:mod}:\"default\"in mod?mod:{...mod,default:mod};";
+const TOESM_RUNTIME_MIN = "var __getProtoOf=Object.getPrototypeOf;var __defProp=Object.defineProperty;var __copyProps=(to,from)=>{for(var key in from)if(Object.prototype.hasOwnProperty.call(from,key))__defProp(to,key,{get:()=>from[key],enumerable:true});return to};var __toESM=(mod,isNodeMode,target)=>(target=mod!=null?Object.create(__getProtoOf(mod)):{},__copyProps(isNodeMode||!mod||!mod.__esModule?__defProp(target,\"default\",{value:mod,enumerable:true}):target,mod));";
 /// HMR 런타임: 모듈 레지스트리 + __zts_require + import.meta.hot API.
 /// dev mode 번들 상단에 주입된다.
 ///

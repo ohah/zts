@@ -1769,14 +1769,15 @@ fn appendCjsImportPreamble(
 ) !void {
     try buf.appendSlice(allocator, "var ");
     try buf.appendSlice(allocator, local_name);
+    // isNodeMode=1: --platform=node에서 __esModule=true인 CJS도 default: mod를 설정 (esbuild 호환)
     if (is_namespace) {
         try buf.appendSlice(allocator, " = __toESM(");
         try buf.appendSlice(allocator, req_var);
-        try buf.appendSlice(allocator, "());\n");
+        try buf.appendSlice(allocator, "(), 1);\n");
     } else if (std.mem.eql(u8, imported_name, "default")) {
         try buf.appendSlice(allocator, " = __toESM(");
         try buf.appendSlice(allocator, req_var);
-        try buf.appendSlice(allocator, "()).default;\n");
+        try buf.appendSlice(allocator, "(), 1).default;\n");
     } else {
         try buf.appendSlice(allocator, " = ");
         try buf.appendSlice(allocator, req_var);
