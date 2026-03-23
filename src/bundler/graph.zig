@@ -74,17 +74,8 @@ pub const ModuleGraph = struct {
             self.allocator.free(key.*);
         }
         self.path_to_module.deinit();
-        // 캐시된 sideEffects patterns의 dupe된 문자열 해제
         var se_it = self.side_effects_cache.valueIterator();
-        while (se_it.next()) |se| {
-            switch (se.*) {
-                .patterns => |patterns| {
-                    for (patterns) |p| self.allocator.free(p);
-                    self.allocator.free(patterns);
-                },
-                else => {},
-            }
-        }
+        while (se_it.next()) |se| se.deinit(self.allocator);
         self.side_effects_cache.deinit();
         self.diagnostics.deinit(self.allocator);
     }
@@ -307,6 +298,7 @@ pub const ModuleGraph = struct {
             module_path[pkg_dir_path.len + 1 ..] // +1 for separator
         else
             module_path;
+        const base = std.fs.path.basename(relative);
 
         for (patterns) |pattern| {
             // "./" 접두사 제거: "./src/polyfill.js" → "src/polyfill.js"
@@ -315,12 +307,10 @@ pub const ModuleGraph = struct {
             else
                 pattern;
 
-            // 패턴이 확장자만 매칭 (*.css) → 파일명/경로 전체에 대해 매칭
             if (matchGlob(normalized, relative)) return true;
-
-            // 파일명만으로도 매칭 시도: "*.css"는 "src/style.css"도 매칭해야 함
-            if (std.fs.path.basename(relative).len != relative.len) {
-                if (matchGlob(normalized, std.fs.path.basename(relative))) return true;
+            // basename 폴백: "*.css"는 "src/style.css"도 매칭해야 함
+            if (base.len != relative.len) {
+                if (matchGlob(normalized, base)) return true;
             }
         }
         return false;
