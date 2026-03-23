@@ -52,6 +52,8 @@ pub const CodegenOptions = struct {
     ascii_only: bool = false,
     /// 번들러 linker 메타데이터. 설정 시 import 스킵 + 식별자 리네임 적용.
     linking_metadata: ?*const LinkingMetadata = null,
+    /// 번들 모드에서 ESM이 아닐 때 import.meta → {} 치환 (esbuild 호환)
+    replace_import_meta: bool = false,
 };
 
 const SourceMapBuilder = @import("sourcemap.zig").SourceMapBuilder;
@@ -979,13 +981,20 @@ pub const Codegen = struct {
         try self.emitNode(@enumFromInt(extras[e + 1]));
     }
 
-    /// import.meta → CJS에서 치환
+    /// import.meta → CJS에서 치환, 번들 모드(non-ESM)에서 {} 치환
     fn emitMetaProperty(self: *Codegen, node: Node) !void {
+        const text = self.ast.source[node.span.start..node.span.end];
         if (self.options.module_format == .cjs) {
             // import.meta → { url: require('url').pathToFileURL(__filename).href }
-            const text = self.ast.source[node.span.start..node.span.end];
             if (std.mem.eql(u8, text, "import.meta")) {
                 try self.write("{url:require('url').pathToFileURL(__filename).href}");
+                return;
+            }
+        } else if (self.options.replace_import_meta) {
+            // 번들 모드(non-ESM scope hoisting): import.meta → {} (esbuild 호환)
+            // Node.js는 import.meta를 보면 ESM으로 재파싱하므로 제거 필요
+            if (std.mem.eql(u8, text, "import.meta")) {
+                try self.write("{}");
                 return;
             }
         }
