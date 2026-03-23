@@ -133,11 +133,11 @@ fn shouldSkip(sym: Symbol, name: []const u8) bool {
 // 이름 생성기 (순차: a, b, ..., z, A, ..., Z, aa, ab, ...)
 // ============================================================
 
-const NameGenerator = struct {
+pub const NameGenerator = struct {
     counter: u32 = 0,
     buf: [8]u8 = undefined,
 
-    fn next(self: *NameGenerator) []const u8 {
+    pub fn next(self: *NameGenerator) []const u8 {
         const result = encode(self.counter, &self.buf);
         self.counter += 1;
         return result;
@@ -184,7 +184,7 @@ const NameGenerator = struct {
 // 예약어/글로벌 체크
 // ============================================================
 
-fn isReservedOrGlobal(name: []const u8) bool {
+pub fn isReservedOrGlobal(name: []const u8) bool {
     // JS 예약어 (2~3글자만 체크 — 1글자와 4글자+는 충돌 없음)
     const reserved = [_][]const u8{
         "do",  "if",  "in",  "as",  "is",

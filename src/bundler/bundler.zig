@@ -166,6 +166,9 @@ pub const Bundler = struct {
             try l.link();
             if (!self.options.dev_mode and !self.options.code_splitting) {
                 try l.computeRenames();
+                if (self.options.minify) {
+                    try l.computeMangling();
+                }
             }
             break :blk l;
         } else null;
