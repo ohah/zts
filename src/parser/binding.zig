@@ -18,26 +18,28 @@ const ParseError2 = @import("parser.zig").ParseError2;
 pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
     // TS parameter property: public x, private x, protected x, readonly x
     // flags 비트: 0x01=public, 0x02=private, 0x04=protected, 0x08=readonly
+    // readonly는 contextual keyword (identifier로 토큰화됨)
+    const is_readonly = self.isContextual("readonly");
     if (self.current() == .kw_public or self.current() == .kw_private or
-        self.current() == .kw_protected or self.current() == .kw_readonly)
+        self.current() == .kw_protected or is_readonly)
     {
         const modifier_span = self.currentSpan();
         const next = try self.peekNextKind();
         // modifier 뒤에 식별자가 오면 parameter property
-        if (next == .identifier or next == .l_bracket or next == .l_curly or
-            next == .kw_readonly) // public readonly x
-        {
-            var modifier_flags: u16 = switch (self.current()) {
+        // readonly는 이제 identifier로 토큰화되므로 next == .identifier에 포함됨
+        if (next == .identifier or next == .l_bracket or next == .l_curly) {
+            var modifier_flags: u16 = if (is_readonly)
+                0x08
+            else switch (self.current()) {
                 .kw_public => 0x01,
                 .kw_private => 0x02,
                 .kw_protected => 0x04,
-                .kw_readonly => 0x08,
                 else => 0,
             };
             try self.advance(); // skip first modifier
 
             // 두 번째 modifier: public readonly x
-            if (self.current() == .kw_readonly) {
+            if (self.isContextual("readonly")) {
                 modifier_flags |= 0x08;
                 try self.advance();
             }

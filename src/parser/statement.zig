@@ -172,38 +172,42 @@ pub fn parseStatement(self: *Parser) ParseError2!NodeIndex {
         .kw_export => self.parseExportDeclaration(),
         // Decorator: @expr class Foo {}
         .at => self.parseDecoratedStatement(),
-        // TypeScript declarations
-        .kw_type => blk: {
-            // type Foo = ... → TS type alias declaration
-            // type = 1, type.x, type() → expression statement (변수로 사용)
-            const next = try self.peekNextKind();
-            if (next == .identifier or next == .l_curly or next == .string_literal) {
-                break :blk self.parseTsTypeAliasDeclaration();
+        // TypeScript contextual keyword declarations
+        // type, namespace, module, declare, abstract는 identifier로 토큰화되므로
+        // 문자열 비교로 판별한다.
+        .identifier => blk: {
+            const text = self.tokenText();
+            if (std.mem.eql(u8, text, "type")) {
+                // type Foo = ... → TS type alias declaration
+                // type = 1, type.x, type() → expression statement (변수로 사용)
+                const next = try self.peekNextKind();
+                if (next == .identifier or next == .l_curly or next == .string_literal) {
+                    break :blk self.parseTsTypeAliasDeclaration();
+                }
+            } else if (std.mem.eql(u8, text, "namespace")) {
+                // namespace Name { } → TS module declaration
+                // namespace = 2 → expression statement (변수로 사용)
+                const next = try self.peekNextKind();
+                if (next == .identifier or next == .l_curly or next == .string_literal) {
+                    break :blk self.parseTsModuleDeclaration();
+                }
+            } else if (std.mem.eql(u8, text, "module")) {
+                // module.exports = ... (CJS) → expression statement
+                // module Foo { } (TS namespace) → TS module declaration
+                const next = try self.peekNextKind();
+                if (next != .dot) {
+                    break :blk self.parseTsModuleDeclaration();
+                }
+            } else if (std.mem.eql(u8, text, "declare")) {
+                break :blk self.parseTsDeclareStatement();
+            } else if (std.mem.eql(u8, text, "abstract")) {
+                break :blk self.parseTsAbstractClass();
             }
-            break :blk self.parseExpressionStatement();
+            // 위 조건에 매치되지 않으면 expression 또는 labeled statement로 파싱
+            break :blk parseExpressionOrLabeledStatement(self);
         },
         .kw_interface => self.parseTsInterfaceDeclaration(),
         .kw_enum => self.parseTsEnumDeclaration(),
-        .kw_namespace => blk: {
-            // namespace Name { } → TS module declaration
-            // namespace = 2 → expression statement (변수로 사용)
-            const next = try self.peekNextKind();
-            if (next == .identifier or next == .l_curly or next == .string_literal) {
-                break :blk self.parseTsModuleDeclaration();
-            }
-            break :blk self.parseExpressionStatement();
-        },
-        .kw_module => blk: {
-            // module.exports = ... (CJS) → expression statement
-            // module Foo { } (TS namespace) → TS module declaration
-            const next = try self.peekNextKind();
-            break :blk if (next == .dot)
-                parseExpressionStatement(self)
-            else
-                self.parseTsModuleDeclaration();
-        },
-        .kw_declare => self.parseTsDeclareStatement(),
-        .kw_abstract => self.parseTsAbstractClass(),
         .kw_with => parseWithStatement(self),
         else => parseExpressionOrLabeledStatement(self),
     };

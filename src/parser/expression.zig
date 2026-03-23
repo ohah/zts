@@ -592,9 +592,9 @@ fn parsePostfixExpression(self: *Parser) ParseError2!NodeIndex {
     // (체이닝 지원: foo()!.bar!.baz)
 
     // TS: as Type / satisfies Type (체이닝 가능: x as A as B)
-    while (self.current() == .kw_as or self.current() == .kw_satisfies) {
+    while (self.isContextual("as") or self.isContextual("satisfies")) {
         const expr_start = self.ast.getNode(expr).span.start;
-        const is_satisfies = self.current() == .kw_satisfies;
+        const is_satisfies = self.isContextual("satisfies");
         try self.advance();
         const ty = try self.parseType();
         expr = try self.ast.addNode(.{
