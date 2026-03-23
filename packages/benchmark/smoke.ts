@@ -185,6 +185,51 @@ const projects = [
     pkg: "react",
     entry: `import React from 'react';\nconst el = React.createElement('div', {id:'t'}, 'hi');\nconsole.log(el.type, el.props.id);`,
   },
+  {
+    name: "commander",
+    pkg: "commander",
+    entry: `import { Command } from 'commander';\nconst p = new Command();\np.option('-n, --name <str>', 'name').parse(['node', 'test', '--name', 'hello']);\nconsole.log(p.opts().name);`,
+  },
+  {
+    name: "eventemitter3",
+    pkg: "eventemitter3",
+    entry: `import EE from 'eventemitter3';\nconst e = new EE();\nlet v = 0;\ne.on('x', (n: number) => v = n);\ne.emit('x', 42);\nconsole.log(v);`,
+  },
+  {
+    name: "ms",
+    pkg: "ms",
+    entry: `import ms from 'ms';\nconsole.log(ms('2 days'), ms(60000));`,
+  },
+  {
+    name: "dotenv",
+    pkg: "dotenv",
+    entry: `import dotenv from 'dotenv';\nconsole.log(typeof dotenv.config, typeof dotenv.parse);`,
+  },
+  {
+    name: "jsonwebtoken",
+    pkg: "jsonwebtoken",
+    entry: `import jwt from 'jsonwebtoken';\nconst t = jwt.sign({uid:1},'secret');\nconst d = jwt.verify(t,'secret') as any;\nconsole.log(d.uid);`,
+  },
+  {
+    name: "bcryptjs",
+    pkg: "bcryptjs",
+    entry: `import bcrypt from 'bcryptjs';\nconst h = bcrypt.hashSync('pw', 4);\nconsole.log(bcrypt.compareSync('pw', h));`,
+  },
+  {
+    name: "clsx",
+    pkg: "clsx",
+    entry: `import { clsx } from 'clsx';\nconsole.log(clsx('a', false, 'b', {c:true, d:false}, ['e']));`,
+  },
+  {
+    name: "tiny-invariant",
+    pkg: "tiny-invariant",
+    entry: `import invariant from 'tiny-invariant';\ninvariant(true, 'ok');\nconsole.log('pass');`,
+  },
+  {
+    name: "tanstack-query",
+    pkg: "@tanstack/query-core",
+    entry: `import { QueryClient } from '@tanstack/query-core';\nconst qc = new QueryClient();\nqc.fetchQuery({queryKey:['t'],queryFn:()=>Promise.resolve(42)}).then(r=>{console.log(r);qc.clear();});`,
+  },
 ];
 
 // ============================================================
