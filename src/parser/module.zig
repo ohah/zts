@@ -18,6 +18,7 @@ const Kind = token_mod.Kind;
 const Span = token_mod.Span;
 const Parser = @import("parser.zig").Parser;
 const ParseError2 = @import("parser.zig").ParseError2;
+const binding_mod = @import("binding.zig");
 
 /// import() / import.source() / import.defer() 호출의 인자를 파싱한다.
 /// `(` 를 소비하고, 1~2개 인자를 파싱하고, `)` 를 기대한다.
@@ -154,7 +155,11 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
         try self.advance(); // skip *
         try self.expect(.kw_as);
         const local_span = self.currentSpan();
-        try self.expect(.identifier);
+        // TS contextual keywords (number, string, object 등)도 유효한 바인딩 이름이므로
+        // expect(.identifier) 대신 parseSimpleIdentifier를 사용한다.
+        // 예: import * as number from "effect/Number"
+        const binding = try binding_mod.parseSimpleIdentifier(self);
+        _ = binding;
         const spec = try self.ast.addNode(.{
             .tag = .import_namespace_specifier,
             .span = local_span,
