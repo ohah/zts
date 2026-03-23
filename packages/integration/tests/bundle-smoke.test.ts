@@ -60,6 +60,21 @@ describe("번들 스모크 테스트", () => {
     expect(result.runOutput).toBe("test");
   });
 
+  test("forward reference — 같은 이름 변수의 올바른 참조", async () => {
+    // 두 모듈이 같은 이름의 top-level 변수(helper)를 갖고,
+    // forward reference(helper가 greet보다 뒤에 선언)가 있을 때
+    // scope hoisting 후 각 greet이 자기 모듈의 helper를 호출해야 한다.
+    const result = await bundleAndRun({
+      "index.ts": `import { greet as a } from "./a"; import { greet as b } from "./b"; console.log(a(), b());`,
+      "a.ts": `export const greet = () => helper(); export const helper = () => "from_a";`,
+      "b.ts": `export const greet = () => helper(); export const helper = () => "from_b";`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("from_a from_b");
+  });
+
   test("tree-shaking으로 미사용 모듈 제거", async () => {
     const { dir, cleanup: c } = await createFixture({
       "index.ts": `import { used } from "./used"; console.log(used);`,
