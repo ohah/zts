@@ -286,9 +286,12 @@ pub const ModuleGraph = struct {
         defer parsed.deinit();
 
         // 캐시에 저장 (patterns는 parseSideEffects가 allocator로 dupe 완료)
-        self.side_effects_cache.put(pkg_dir_path, parsed.pkg.side_effects) catch {};
+        const se = parsed.pkg.side_effects;
+        self.side_effects_cache.put(pkg_dir_path, se) catch {};
+        // 소유권을 캐시로 이전했으므로 parsed.deinit()에서 이중 해제 방지
+        parsed.pkg.side_effects = .unknown;
 
-        switch (parsed.pkg.side_effects) {
+        switch (se) {
             .all => |val| module.side_effects = val,
             .patterns => |patterns| {
                 module.side_effects = matchSideEffectsPatterns(module.path, pkg_dir_path, patterns);

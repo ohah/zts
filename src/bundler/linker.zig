@@ -1375,6 +1375,15 @@ pub const Linker = struct {
                     if (ib.import_record_index < m_local.import_records.len) {
                         const source_mod = m_local.import_records[ib.import_record_index].resolved;
                         if (!source_mod.isNone()) {
+                            // namespace import (`import * as ns from './dep'; export { ns }`)인 경우
+                            // 소스 모듈에서 "*"를 named export로 찾을 수 없으므로,
+                            // 현재 모듈의 로컬 바인딩을 그대로 반환한다 (namespace 객체는 linker가 생성).
+                            if (std.mem.eql(u8, ib.imported_name, "*")) {
+                                return .{
+                                    .module_index = module_idx,
+                                    .export_name = name,
+                                };
+                            }
                             return self.resolveExportChain(source_mod, ib.imported_name, depth + 1);
                         }
                     }

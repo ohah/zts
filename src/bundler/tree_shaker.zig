@@ -184,8 +184,12 @@ pub const TreeShaker = struct {
                     const target = @intFromEnum(rec.resolved);
                     if (target >= self.modules.len) continue;
                     if (self.included.isSet(target)) continue;
-                    // CJS require()로 참조되는 모듈은 항상 포함 (tree-shaking 불가)
-                    if (rec.kind == .require or self.modules[target].side_effects) {
+                    // CJS 모듈은 항상 포함: require() 대상이거나, wrap_kind가 CJS인 모듈은
+                    // 정적 export 분석이 불가능하므로 tree-shaking에서 제외해야 한다.
+                    // (rxjs, tslib 등 sideEffects:false인 CJS 모듈이 제거되는 버그 수정)
+                    if (rec.kind == .require or self.modules[target].side_effects or
+                        self.modules[target].wrap_kind == .cjs)
+                    {
                         self.included.set(target);
                         changed = true;
                     }
