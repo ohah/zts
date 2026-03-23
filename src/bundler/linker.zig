@@ -657,7 +657,7 @@ pub const Linker = struct {
                     });
 
                     // 값으로 사용되는 경우: 인라인 객체 문자열 생성 (재귀 — 중첩 namespace 포함)
-                    if (isNamespaceUsedAsValue(new_ast, effective_syms, @intCast(ns_sym_id))) {
+                    if (isNamespaceUsedAsValue(self.allocator, new_ast, effective_syms, @intCast(ns_sym_id))) {
                         const obj_str = try self.buildInlineObjectStr(@intCast(canonical_mod), 0);
                         try ns_inline_list.append(self.allocator, .{
                             .symbol_id = @intCast(ns_sym_id),
@@ -1313,12 +1313,12 @@ pub const Linker = struct {
     /// resolveExportChain → getExportLocalName → getCanonicalName 3단계를 캡슐화.
     /// namespace 식별자가 member access 이외의 위치에서 사용되는지 판별.
     /// `ns.prop`만 사용되면 false (직접 치환 가능), `console.log(ns)` 등이면 true (객체 필요).
-    fn isNamespaceUsedAsValue(new_ast: *const Ast, symbol_ids: []const ?u32, ns_sym_id: u32) bool {
+    fn isNamespaceUsedAsValue(allocator: std.mem.Allocator, new_ast: *const Ast, symbol_ids: []const ?u32, ns_sym_id: u32) bool {
         const node_count = new_ast.nodes.items.len;
         if (node_count == 0) return false;
 
         // 1. member access의 object 위치를 비트셋으로 수집 — O(N) 스캔, O(1) 조회
-        var safe = std.DynamicBitSet.initEmpty(std.heap.page_allocator, node_count) catch return true;
+        var safe = std.DynamicBitSet.initEmpty(allocator, node_count) catch return true;
         defer safe.deinit();
 
         for (new_ast.nodes.items) |node| {
@@ -1415,42 +1415,6 @@ pub const Linker = struct {
         return try self.allocator.dupe(u8, buf.items);
     }
 
-    fn buildNamespacePreamble(
-        self: *const Linker,
-        buf: *std.ArrayList(u8),
-        local_name: []const u8,
-        target_mod_idx: u32,
-    ) !void {
-        if (target_mod_idx >= self.modules.len) return;
-
-        var exports: std.ArrayList(NsExportPair) = .empty;
-        defer exports.deinit(self.allocator);
-        var seen = std.StringHashMap(void).init(self.allocator);
-        defer seen.deinit();
-        var visited = std.AutoHashMap(u32, void).init(self.allocator);
-        defer visited.deinit();
-
-        try self.collectExportsRecursive(&exports, &seen, &visited, @enumFromInt(target_mod_idx), 0);
-
-        if (exports.items.len == 0) return;
-
-        // var X = {a: a, b: b};
-        try buf.appendSlice(self.allocator, "var ");
-        try buf.appendSlice(self.allocator, local_name);
-        try buf.appendSlice(self.allocator, " = {");
-        for (exports.items, 0..) |exp, idx| {
-            if (idx > 0) try buf.appendSlice(self.allocator, ", ");
-            if (std.mem.eql(u8, exp.exported, "default")) {
-                try buf.appendSlice(self.allocator, "\"default\": ");
-            } else {
-                try buf.appendSlice(self.allocator, exp.exported);
-                try buf.appendSlice(self.allocator, ": ");
-            }
-            try buf.appendSlice(self.allocator, exp.local);
-        }
-        try buf.appendSlice(self.allocator, "};\n");
-    }
-
     /// 모듈의 모든 export를 재귀적으로 수집 (export * 체인 포함).
     /// seen: export 이름 dedup, visited: 모듈 수준 dedup (diamond export * 방지).
     fn collectExportsRecursive(
@@ -1470,10 +1434,9 @@ pub const Linker = struct {
         const m = self.modules[mod_i];
 
         for (m.export_bindings) |eb| {
-            // 일반 export * from (exported_name == "*") 만 skip — 재귀로 처리
-            // export * as ns (exported_name != "*") 는 named export로 포함
+            // 일반 export * from (exported_name == "*") → 재귀로 처리 (skip)
+            // export * as ns (exported_name != "*") → named export로 포함
             if (eb.kind == .re_export_all and std.mem.eql(u8, eb.exported_name, "*")) continue;
-            if (std.mem.eql(u8, eb.exported_name, "*")) continue;
             if (seen.contains(eb.exported_name)) continue;
             try seen.put(eb.exported_name, {});
 
@@ -2643,4 +2606,35 @@ test "export * as: does not pollute parent seen (name collision)" {
     const entry = r.graph.modules.items[0];
     try std.testing.expect(entry.import_bindings.len > 0);
     try std.testing.expectEqual(ImportBinding.Kind.namespace, entry.import_bindings[0].kind);
+}
+
+test "semantic: non-shorthand {x: y} does not reference x" {
+    // {x: y} — x는 property name (변수 참조 아님), y는 변수 참조
+    const source = "const x = 1;\nconst y = 2;\nconst obj = {x: y};";
+    const Sem = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const Scanner = @import("../lexer/scanner.zig").Scanner;
+    const Parser = @import("../parser/parser.zig").Parser;
+
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var analyzer = Sem.init(std.testing.allocator, &parser.ast);
+    defer analyzer.deinit();
+    _ = analyzer.analyze() catch {};
+
+    if (analyzer.scope_maps.items.len > 0) {
+        if (analyzer.scope_maps.items[0].get("x")) |sym_idx| {
+            if (sym_idx < analyzer.symbols.items.len) {
+                try std.testing.expectEqual(@as(u32, 0), analyzer.symbols.items[sym_idx].reference_count);
+            }
+        }
+        if (analyzer.scope_maps.items[0].get("y")) |sym_idx| {
+            if (sym_idx < analyzer.symbols.items.len) {
+                try std.testing.expect(analyzer.symbols.items[sym_idx].reference_count > 0);
+            }
+        }
+    }
 }
