@@ -141,7 +141,6 @@ fn transpileFile(
                 analyzer.symbol_ids.items
             else
                 &.{},
-            .require_rewrites = std.StringHashMap([]const u8).init(arena_alloc),
             .allocator = arena_alloc,
         };
     }

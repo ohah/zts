@@ -50,7 +50,7 @@ pub const LinkingMetadata = struct {
     /// CJS 모듈 내부 require() 호출 치환 맵.
     /// require specifier 문자열 → require_xxx() 함수명.
     /// codegen이 require('path') 호출을 만나면 이 맵으로 치환.
-    require_rewrites: std.StringHashMap([]const u8),
+    require_rewrites: std.StringHashMapUnmanaged([]const u8) = .{},
     allocator: std.mem.Allocator,
 
     pub const NsMemberRewrites = struct {
@@ -92,11 +92,11 @@ pub const LinkingMetadata = struct {
         self.renames.deinit();
         if (self.final_exports) |fe| self.allocator.free(fe);
         if (self.cjs_import_preamble) |p| self.allocator.free(p);
-        // require_rewrites 해제
+        // require_rewrites 해제 (keys는 import record 소유, values만 해제)
         {
             var vit = self.require_rewrites.valueIterator();
             while (vit.next()) |v| self.allocator.free(v.*);
-            self.require_rewrites.deinit();
+            self.require_rewrites.deinit(self.allocator);
         }
         // ns_member_rewrites의 inner map과 entries 배열 해제
         if (self.ns_member_rewrites.entries.len > 0) {
@@ -573,7 +573,6 @@ pub const Linker = struct {
                 .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
                 .final_exports = null,
                 .symbol_ids = &.{},
-                .require_rewrites = std.StringHashMap([]const u8).init(self.allocator),
                 .allocator = self.allocator,
             };
         }
@@ -584,7 +583,7 @@ pub const Linker = struct {
         // 단, 내부 require() 호출은 번들된 require_xxx()로 치환해야 함.
         if (m.wrap_kind == .cjs) {
             const node_count = new_ast.nodes.items.len;
-            var require_rewrites = std.StringHashMap([]const u8).init(self.allocator);
+            var require_rewrites: std.StringHashMapUnmanaged([]const u8) = .{};
             for (m.import_records) |rec| {
                 if (rec.resolved.isNone()) continue;
                 const target = @intFromEnum(rec.resolved);
@@ -592,7 +591,7 @@ pub const Linker = struct {
                 // 번들된 CJS 모듈을 가리키는 require() → require_xxx()로 치환
                 if (self.modules[target].wrap_kind == .cjs) {
                     const var_name = try types.makeRequireVarName(self.allocator, self.modules[target].path);
-                    try require_rewrites.put(rec.specifier, var_name);
+                    try require_rewrites.put(self.allocator, rec.specifier, var_name);
                 }
             }
             return .{
@@ -617,7 +616,6 @@ pub const Linker = struct {
             .renames = renames,
             .final_exports = null,
             .symbol_ids = &.{},
-            .require_rewrites = std.StringHashMap([]const u8).init(self.allocator),
             .allocator = self.allocator,
         };
 
@@ -857,7 +855,6 @@ pub const Linker = struct {
             .default_export_name = default_export_name,
             .ns_member_rewrites = ns_rewrites,
             .ns_inline_objects = ns_inlines,
-            .require_rewrites = std.StringHashMap([]const u8).init(self.allocator),
             .allocator = self.allocator,
         };
     }
@@ -879,7 +876,6 @@ pub const Linker = struct {
                 .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
                 .final_exports = null,
                 .symbol_ids = &.{},
-                .require_rewrites = std.StringHashMap([]const u8).init(self.allocator),
                 .allocator = self.allocator,
             };
         }
@@ -895,7 +891,6 @@ pub const Linker = struct {
                 .final_exports = null,
                 .symbol_ids = if (m.semantic) |sem| sem.symbol_ids else &.{},
                 .cjs_import_preamble = null,
-                .require_rewrites = std.StringHashMap([]const u8).init(self.allocator),
                 .allocator = self.allocator,
             };
         }
@@ -1039,7 +1034,6 @@ pub const Linker = struct {
             .final_exports = final_exports,
             .symbol_ids = &.{},
             .cjs_import_preamble = cjs_import_preamble,
-            .require_rewrites = std.StringHashMap([]const u8).init(self.allocator),
             .allocator = self.allocator,
         };
 
@@ -1049,7 +1043,6 @@ pub const Linker = struct {
             .final_exports = final_exports,
             .symbol_ids = sem.symbol_ids,
             .cjs_import_preamble = cjs_import_preamble,
-            .require_rewrites = std.StringHashMap([]const u8).init(self.allocator),
             .allocator = self.allocator,
         };
     }
@@ -1062,7 +1055,6 @@ pub const Linker = struct {
                 .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
                 .final_exports = null,
                 .symbol_ids = &.{},
-                .require_rewrites = std.StringHashMap([]const u8).init(self.allocator),
                 .allocator = self.allocator,
             };
         }
@@ -1074,7 +1066,6 @@ pub const Linker = struct {
                 .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
                 .final_exports = null,
                 .symbol_ids = &.{},
-                .require_rewrites = std.StringHashMap([]const u8).init(self.allocator),
                 .allocator = self.allocator,
             };
         };
@@ -1136,7 +1127,6 @@ pub const Linker = struct {
             .renames = renames,
             .final_exports = null,
             .symbol_ids = &.{},
-            .require_rewrites = std.StringHashMap([]const u8).init(self.allocator),
             .allocator = self.allocator,
         };
 
@@ -1212,7 +1202,6 @@ pub const Linker = struct {
             .renames = renames,
             .final_exports = final_exports,
             .symbol_ids = sem.symbol_ids,
-            .require_rewrites = std.StringHashMap([]const u8).init(self.allocator),
             .allocator = self.allocator,
         };
     }
