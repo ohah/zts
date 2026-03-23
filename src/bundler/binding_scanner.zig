@@ -266,18 +266,34 @@ pub fn extractExportBindings(
             },
             .export_all_declaration => {
                 // binary { left=exported_name, right=source_node }
+                const exported_name_idx = node.data.binary.left;
                 const source_idx = node.data.binary.right;
                 if (source_idx.isNone()) continue;
                 const src_node = ast.getNode(source_idx);
                 const rec_idx = source_to_record.get(types.spanKey(src_node.span));
 
-                try bindings.append(allocator, .{
-                    .exported_name = "*",
-                    .local_name = "*",
-                    .local_span = node.span,
-                    .kind = .re_export_all,
-                    .import_record_index = rec_idx,
-                });
+                if (!exported_name_idx.isNone()) {
+                    // export * as ns from './mod' — namespace re-export
+                    // exported_name = "ns", local_name = "ns" (preamble에서 var ns = {...} 생성)
+                    const name_node = ast.getNode(exported_name_idx);
+                    const name_text = ast.source[name_node.data.string_ref.start..name_node.data.string_ref.end];
+                    try bindings.append(allocator, .{
+                        .exported_name = name_text,
+                        .local_name = name_text,
+                        .local_span = node.span,
+                        .kind = .re_export_all,
+                        .import_record_index = rec_idx,
+                    });
+                } else {
+                    // export * from './mod' — 일반 re-export all
+                    try bindings.append(allocator, .{
+                        .exported_name = "*",
+                        .local_name = "*",
+                        .local_span = node.span,
+                        .kind = .re_export_all,
+                        .import_record_index = rec_idx,
+                    });
+                }
             },
             else => {},
         }

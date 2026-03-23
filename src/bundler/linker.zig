@@ -644,10 +644,36 @@ pub const Linker = struct {
 
                 // resolveImports()에서 이미 해결한 바인딩을 조회하거나, 직접 해결
                 const resolved = self.getResolvedBinding(module_index, ib.local_span);
-                const target_name = if (resolved) |rb|
-                    self.resolveToLocalName(rb.canonical)
-                else
-                    ib.imported_name;
+                const target_name = blk: {
+                    if (resolved) |rb| {
+                        const local = self.resolveToLocalName(rb.canonical);
+                        // namespace re-export 감지: export * as X → local_name == exported_name
+                        // 이 경우 소스 모듈의 namespace 객체 preamble을 importer에 생성
+                        const cmod: u32 = @intCast(@intFromEnum(rb.canonical.module_index));
+                        if (cmod < self.modules.len) {
+                            for (self.modules[cmod].export_bindings) |eb| {
+                                if (eb.kind == .re_export_all and
+                                    std.mem.eql(u8, eb.exported_name, rb.canonical.export_name) and
+                                    !std.mem.eql(u8, eb.exported_name, "*"))
+                                {
+                                    // namespace re-export: preamble 생성
+                                    if (eb.import_record_index) |rec_idx| {
+                                        if (rec_idx < self.modules[cmod].import_records.len) {
+                                            const src = self.modules[cmod].import_records[rec_idx].resolved;
+                                            if (!src.isNone()) {
+                                                const ns_name = self.getCanonicalName(cmod, eb.exported_name) orelse eb.exported_name;
+                                                try self.buildNamespacePreamble(&cjs_preamble_buf, ns_name, @intFromEnum(src));
+                                                break :blk ns_name;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        break :blk local;
+                    }
+                    break :blk ib.imported_name;
+                };
 
                 if (!std.mem.eql(u8, ib.local_name, target_name)) {
                     if (module_scope.get(ib.local_name)) |sym_idx| {
@@ -663,6 +689,26 @@ pub const Linker = struct {
                 if (self.getCanonicalName(module_index, sym_name)) |renamed| {
                     const sym_idx = scope_entry.value_ptr.*;
                     try renames.put(@intCast(sym_idx), renamed);
+                }
+            }
+        }
+
+        // export * as ns from './mod' — namespace re-export 객체 생성
+        for (m.export_bindings) |eb| {
+            if (eb.kind != .re_export_all) continue;
+            if (std.mem.eql(u8, eb.exported_name, "*")) continue;
+            // exported_name이 "*"가 아니면 `export * as <name>` 패턴
+            if (eb.import_record_index) |rec_idx| {
+                if (rec_idx < m.import_records.len) {
+                    const source_mod = m.import_records[rec_idx].resolved;
+                    if (!source_mod.isNone()) {
+                        const ns_name = self.getCanonicalName(module_index, eb.exported_name) orelse eb.exported_name;
+                        try self.buildNamespacePreamble(
+                            &cjs_preamble_buf,
+                            ns_name,
+                            @intFromEnum(source_mod),
+                        );
+                    }
                 }
             }
         }

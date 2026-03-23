@@ -139,6 +139,23 @@ pub const TreeShaker = struct {
                 try self.processModuleImports(m);
             }
 
+            // include된 모듈의 사용된 re-export 소스도 include
+            for (self.modules, 0..) |m, i| {
+                if (!self.included.isSet(i)) continue;
+                for (m.export_bindings) |eb| {
+                    if (eb.kind != .re_export and eb.kind != .re_export_all) continue;
+                    if (!self.isExportUsed(@intCast(i), eb.exported_name)) continue;
+                    if (eb.import_record_index) |rec_idx| {
+                        if (rec_idx < m.import_records.len) {
+                            const src = @intFromEnum(m.import_records[rec_idx].resolved);
+                            if (src < self.modules.len and !self.included.isSet(src)) {
+                                self.included.set(src);
+                            }
+                        }
+                    }
+                }
+            }
+
             var changed = false;
 
             // 미사용 sideEffects=false 모듈 제거
