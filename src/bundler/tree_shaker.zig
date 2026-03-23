@@ -386,6 +386,17 @@ pub const TreeShaker = struct {
                         newly_included = true;
                     }
                 }
+                // barrel re-export 중간 모듈도 포함: import 대상 모듈이 canonical과
+                // 다르면 경유 모듈(barrel)도 포함시키고 해당 export를 사용됨으로 마킹.
+                // 예: entry → mid(barrel) → leaf 에서 mid도 포함되어야 함.
+                // mid의 export "x"도 사용됨으로 마킹해야 fixpoint에서 제거되지 않음.
+                if (canon_idx != target_mod) {
+                    try self.markExportUsed(@intCast(target_mod), ib.imported_name);
+                    if (!self.included.isSet(target_mod)) {
+                        self.included.set(target_mod);
+                        newly_included = true;
+                    }
+                }
             } else if (ib.kind == .namespace) {
                 try self.markAllExportsUsed(@intCast(target_mod));
                 if (!self.included.isSet(target_mod)) {
