@@ -190,7 +190,7 @@ pub const Transformer = struct {
         // --------------------------------------------------------
         if (self.options.define.len > 0) {
             if (self.tryDefineReplace(node)) |new_node| {
-                return new_node;
+                return try new_node;
             }
         }
 
@@ -593,12 +593,13 @@ pub const Transformer = struct {
 
         for (self.options.define) |entry| {
             if (std.mem.eql(u8, text, entry.key)) {
-                // 치환 문자열을 string_literal로 생성
-                // 값을 소스에서 참조할 수 없으므로 span은 원본 노드의 span 사용
+                // 값을 string_table에 저장하여 codegen이 올바른 텍스트를 출력하도록 한다.
+                // codegen의 writeNodeSpan은 node.span을 사용하므로 span에 string_table 참조를 넣는다.
+                const value_span = self.new_ast.addString(entry.value) catch return Error.OutOfMemory;
                 return self.new_ast.addNode(.{
                     .tag = .string_literal,
-                    .span = node.span,
-                    .data = .{ .string_ref = node.span },
+                    .span = value_span,
+                    .data = .{ .string_ref = value_span },
                 });
             }
         }

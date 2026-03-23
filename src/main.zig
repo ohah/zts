@@ -12,6 +12,8 @@ const Bundler = lib.bundler.Bundler;
 
 /// 트랜스파일 옵션을 담는 구조체.
 /// CLI에서 파싱한 옵션들을 transpileFile / walkAndTranspile에 전달한다.
+const DefineEntry = lib.transformer.DefineEntry;
+
 const TranspileOptions = struct {
     module_format: lib.codegen.codegen.ModuleFormat = .esm,
     minify: bool = false,
@@ -19,6 +21,7 @@ const TranspileOptions = struct {
     drop_debugger: bool = false,
     sourcemap: bool = false,
     ascii_only: bool = false,
+    define: []const DefineEntry = &.{},
 };
 
 /// 단일 파일을 트랜스파일한다.
@@ -115,6 +118,7 @@ fn transpileFile(
     var transformer = Transformer.init(arena_alloc, &parser.ast, .{
         .drop_console = options.drop_console,
         .drop_debugger = options.drop_debugger,
+        .define = options.define,
     });
     const root = transformer.transform() catch |err| {
         try stderr.print("zts: transform error in '{s}': {}\n", .{ file_path, err });
@@ -314,6 +318,8 @@ pub fn main() !void {
     var splitting = false;
     var external_list: std.ArrayList([]const u8) = .empty;
     defer external_list.deinit(allocator);
+    var define_list: std.ArrayList(DefineEntry) = .empty;
+    defer define_list.deinit(allocator);
     var platform: lib.bundler.Platform = .browser;
     var bundle_format: lib.bundler.emitter.EmitOptions.Format = .esm;
     var test262_dir: ?[]const u8 = null;
@@ -352,6 +358,15 @@ pub fn main() !void {
             drop_console = true;
         } else if (std.mem.eql(u8, arg, "--drop=debugger")) {
             drop_debugger = true;
+        } else if (std.mem.startsWith(u8, arg, "--define:")) {
+            // --define:KEY=VALUE (esbuild 호환 문법)
+            const kv = arg["--define:".len..];
+            if (std.mem.indexOf(u8, kv, "=")) |eq_pos| {
+                try define_list.append(allocator, .{
+                    .key = kv[0..eq_pos],
+                    .value = kv[eq_pos + 1 ..],
+                });
+            }
         } else if (std.mem.eql(u8, arg, "--ascii-only")) {
             ascii_only = true;
         } else if (std.mem.eql(u8, arg, "--sourcemap")) {
@@ -496,6 +511,7 @@ pub fn main() !void {
             .external = external_list.items,
             .minify = minify,
             .code_splitting = splitting,
+            .define = define_list.items,
         });
         defer bundler.deinit();
 
@@ -594,6 +610,7 @@ pub fn main() !void {
         .drop_debugger = drop_debugger,
         .sourcemap = sourcemap,
         .ascii_only = ascii_only,
+        .define = define_list.items,
     };
 
     const is_stdin = std.mem.eql(u8, input_path_str, "-");
@@ -924,6 +941,7 @@ fn printUsage(writer: anytype) !void {
         \\  --format=esm|cjs|iife            Module format (default: esm)
         \\  --drop=console                   Remove console.* calls
         \\  --drop=debugger                  Remove debugger statements
+        \\  --define:KEY=VALUE               Replace KEY with VALUE globally
         \\  --sourcemap                      Generate source map (.js.map)
         \\  --ascii-only                     Escape non-ASCII to \uXXXX
         \\  -w, --watch                      Watch for file changes

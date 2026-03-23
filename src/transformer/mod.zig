@@ -14,6 +14,7 @@
 
 pub const transformer = @import("transformer.zig");
 pub const Transformer = transformer.Transformer;
+pub const DefineEntry = transformer.DefineEntry;
 
 test {
     _ = transformer;

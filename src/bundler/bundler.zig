@@ -44,6 +44,8 @@ pub const BundleOptions = struct {
     root_dir: ?[]const u8 = null,
     /// React Fast Refresh 활성화. $RefreshReg$/$RefreshSig$ 주입.
     react_refresh: bool = false,
+    /// define 글로벌 치환 (--define:KEY=VALUE)
+    define: []const @import("../transformer/transformer.zig").DefineEntry = &.{},
 };
 
 pub const BundleResult = struct {
@@ -203,6 +205,7 @@ pub const Bundler = struct {
                     .dev_mode = true,
                     .root_dir = self.options.root_dir,
                     .react_refresh = self.options.react_refresh,
+                    .define = self.options.define,
                 },
                 if (linker) |*l| l else null,
             );
@@ -225,7 +228,7 @@ pub const Bundler = struct {
                 self.allocator,
                 graph.modules.items,
                 &chunk_graph,
-                .{ .format = self.options.format, .minify = self.options.minify },
+                .{ .format = self.options.format, .minify = self.options.minify, .define = self.options.define },
                 if (linker) |*l| l else null,
             );
             errdefer if (outputs) |outs| {
@@ -243,7 +246,7 @@ pub const Bundler = struct {
             output = try emitter.emitWithTreeShaking(
                 self.allocator,
                 &graph,
-                .{ .format = self.options.format, .minify = self.options.minify },
+                .{ .format = self.options.format, .minify = self.options.minify, .define = self.options.define },
                 if (linker) |*l| l else null,
                 if (shaker) |*s| s else null,
             );
