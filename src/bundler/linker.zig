@@ -1113,7 +1113,7 @@ pub const Linker = struct {
 
     /// SymbolRef를 scope hoisting 후 최종 로컬 이름으로 해결.
     /// resolveExportChain → getExportLocalName → getCanonicalName 3단계를 캡슐화.
-    fn resolveToLocalName(self: *const Linker, ref: SymbolRef) []const u8 {
+    pub fn resolveToLocalName(self: *const Linker, ref: SymbolRef) []const u8 {
         const cmod: u32 = @intCast(@intFromEnum(ref.module_index));
         const local = self.getExportLocalName(cmod, ref.export_name) orelse ref.export_name;
         return self.getCanonicalName(cmod, local) orelse local;
@@ -1133,8 +1133,10 @@ pub const Linker = struct {
         defer exports.deinit(self.allocator);
         var seen = std.StringHashMap(void).init(self.allocator);
         defer seen.deinit();
+        var visited = std.AutoHashMap(u32, void).init(self.allocator);
+        defer visited.deinit();
 
-        try self.collectExportsRecursive(&exports, &seen, @enumFromInt(target_mod_idx), 0);
+        try self.collectExportsRecursive(&exports, &seen, &visited, @enumFromInt(target_mod_idx), 0);
 
         if (exports.items.len == 0) return;
 
@@ -1156,17 +1158,21 @@ pub const Linker = struct {
     }
 
     /// 모듈의 모든 export를 재귀적으로 수집 (export * 체인 포함).
-    /// seen: O(1) 중복 검사용 해시맵 (앞선 export가 우선).
+    /// seen: export 이름 dedup, visited: 모듈 수준 dedup (diamond export * 방지).
     fn collectExportsRecursive(
         self: *const Linker,
         exports: *std.ArrayList(NsExportPair),
         seen: *std.StringHashMap(void),
+        visited: *std.AutoHashMap(u32, void),
         module_idx: ModuleIndex,
         depth: u32,
     ) !void {
         if (depth > max_chain_depth) return;
         const mod_i = @intFromEnum(module_idx);
         if (mod_i >= self.modules.len) return;
+        // diamond export * 패턴에서 동일 모듈 재방문 방지
+        if (visited.contains(mod_i)) return;
+        try visited.put(mod_i, {});
         const m = self.modules[mod_i];
 
         for (m.export_bindings) |eb| {
@@ -1195,7 +1201,7 @@ pub const Linker = struct {
                 if (rec_idx < m.import_records.len) {
                     const source_mod = m.import_records[rec_idx].resolved;
                     if (!source_mod.isNone()) {
-                        try self.collectExportsRecursive(exports, seen, source_mod, depth + 1);
+                        try self.collectExportsRecursive(exports, seen, visited, source_mod, depth + 1);
                     }
                 }
             }
@@ -1308,6 +1314,22 @@ pub const Linker = struct {
                     entry.value_ptr.* = .empty;
                 }
                 try entry.value_ptr.append(self.allocator, .{
+                    .module_index = @intCast(i),
+                    .exec_index = m.exec_index,
+                });
+            }
+
+            // export default의 합성 _default 이름도 수집 (computeRenames와 동일)
+            for (m.export_bindings) |eb| {
+                if (eb.kind != .local) continue;
+                if (!std.mem.eql(u8, eb.exported_name, "default")) continue;
+                if (std.mem.eql(u8, eb.local_name, "default")) continue;
+                if (module_scope.get(eb.local_name) != null) continue;
+                const def_entry = try name_to_owners.getOrPut(eb.local_name);
+                if (!def_entry.found_existing) {
+                    def_entry.value_ptr.* = .empty;
+                }
+                try def_entry.value_ptr.append(self.allocator, .{
                     .module_index = @intCast(i),
                     .exec_index = m.exec_index,
                 });
@@ -1809,4 +1831,143 @@ test "clearCanonicalNames: 초기화 후 비어있음" {
     // 초기화 후 비어있어야 함
     linker.clearCanonicalNames();
     try std.testing.expectEqual(@as(usize, 0), linker.canonical_names.count());
+}
+
+// ============================================================
+// Issue #282: namespace import (import * as X) scope hoisting
+// ============================================================
+
+test "namespace: import * as creates namespace object preamble" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import * as utils from './utils';\nconsole.log(utils.add(1,2));");
+    try writeFile(tmp.dir, "utils.ts", "export function add(a: number, b: number) { return a + b; }\nexport function mul(a: number, b: number) { return a * b; }");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    // namespace import는 resolved_bindings에 등록되지 않음 (resolveImports에서 skip)
+    // 대신 buildMetadataForAst에서 preamble로 처리
+    const entry = r.graph.modules.items[0];
+    try std.testing.expect(entry.import_bindings.len > 0);
+    try std.testing.expectEqual(ImportBinding.Kind.namespace, entry.import_bindings[0].kind);
+}
+
+test "namespace: export * from re-exports collected in namespace" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import * as all from './barrel';\nconsole.log(all);");
+    try writeFile(tmp.dir, "barrel.ts", "export * from './a';\nexport * from './b';");
+    try writeFile(tmp.dir, "a.ts", "export const x = 1;");
+    try writeFile(tmp.dir, "b.ts", "export const y = 2;");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    // barrel 모듈에서 export * 로 a, b의 export를 수집
+    const entry = r.graph.modules.items[0];
+    try std.testing.expect(entry.import_bindings.len > 0);
+    try std.testing.expectEqual(ImportBinding.Kind.namespace, entry.import_bindings[0].kind);
+}
+
+// ============================================================
+// Issue #283: re-export alias 바인딩 해결
+// ============================================================
+
+test "re-export alias: export { J as render } resolves to J" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // preact 패턴: 함수를 다른 이름으로 re-export
+    try writeFile(tmp.dir, "entry.ts", "import { render } from './reexport';");
+    try writeFile(tmp.dir, "reexport.ts", "export { J as render } from './impl';");
+    try writeFile(tmp.dir, "impl.ts", "export function J() { return 42; }");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    // entry의 import { render }가 impl.ts의 J에 연결
+    const entry = r.graph.modules.items[0];
+    const binding = r.linker.getResolvedBinding(0, entry.import_bindings[0].local_span);
+    try std.testing.expect(binding != null);
+    // canonical은 impl.ts의 "J" — re-export 체인을 따라 최종 모듈의 export 이름
+    const canon = binding.?.canonical;
+    try std.testing.expectEqualStrings("J", canon.export_name);
+    // resolveToLocalName도 "J" (impl.ts에서 함수명과 export명이 동일)
+    const local = r.linker.resolveToLocalName(canon);
+    try std.testing.expectEqualStrings("J", local);
+}
+
+test "re-export alias: export { default as groupBy } — function declaration" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // export default <function_declaration> → binding_scanner가 함수 이름 추출
+    try writeFile(tmp.dir, "entry.ts", "import { greet } from './barrel';");
+    try writeFile(tmp.dir, "barrel.ts", "export { default as greet } from './impl';");
+    try writeFile(tmp.dir, "impl.ts", "export default function hello() { return 'hi'; }");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    const entry = r.graph.modules.items[0];
+    const binding = r.linker.getResolvedBinding(0, entry.import_bindings[0].local_span);
+    try std.testing.expect(binding != null);
+    // canonical은 impl.ts의 "default" → local_name = "hello" (함수명)
+    const local = r.linker.resolveToLocalName(binding.?.canonical);
+    try std.testing.expectEqualStrings("hello", local);
+}
+
+test "re-export alias: export { default as X } — expression defaults to _default" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // export default <expression> → binding_scanner가 _default 폴백
+    try writeFile(tmp.dir, "entry.ts", "import { groupBy } from './barrel';");
+    try writeFile(tmp.dir, "barrel.ts", "export { default as groupBy } from './groupBy';");
+    try writeFile(tmp.dir, "groupBy.ts", "function groupBy(arr: any) { return arr; }\nexport default groupBy;");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    const entry = r.graph.modules.items[0];
+    const binding = r.linker.getResolvedBinding(0, entry.import_bindings[0].local_span);
+    try std.testing.expect(binding != null);
+    // export default <identifier> → local_name = "_default" (expression 폴백)
+    const local = r.linker.resolveToLocalName(binding.?.canonical);
+    try std.testing.expectEqualStrings("_default", local);
+}
+
+// ============================================================
+// Issue #284: _default 이름 충돌 해결
+// ============================================================
+
+test "rename: multiple export default expressions get unique _default names" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // 여러 모듈이 export default <expression> → 모두 _default로 변환 → 충돌
+    try writeFile(tmp.dir, "entry.ts", "import './a';\nimport './b';\nimport './c';");
+    try writeFile(tmp.dir, "a.ts", "const x = 1;\nexport default x;");
+    try writeFile(tmp.dir, "b.ts", "const y = 2;\nexport default y;");
+    try writeFile(tmp.dir, "c.ts", "const z = 3;\nexport default z;");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    // _default가 3개 모듈에서 충돌 → 2개가 _default$1, _default$2로 리네임
+    var rename_count: u32 = 0;
+    var cit = r.linker.canonical_names.valueIterator();
+    while (cit.next()) |val| {
+        if (std.mem.startsWith(u8, val.*, "_default$")) rename_count += 1;
+    }
+    try std.testing.expectEqual(@as(u32, 2), rename_count);
 }

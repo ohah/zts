@@ -1467,12 +1467,8 @@ pub const Codegen = struct {
                         try self.emitNode(inner);
                     },
                     else => {
-                        // export default 42 → var _default = 42;
                         // 이름 충돌 시 linker가 _default$1 등으로 리네임
-                        const def_name = if (self.options.linking_metadata) |meta|
-                            meta.default_export_name
-                        else
-                            "_default";
+                        const def_name = self.options.linking_metadata.?.default_export_name;
                         if (self.options.minify) {
                             try self.write("var ");
                             try self.write(def_name);
