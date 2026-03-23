@@ -109,7 +109,7 @@ pub const ResolveCache = struct {
         //    예: is-promise의 exports { "import": "./esm.mjs", "require": "./cjs.js" }
         const saved_conditions = self.resolver.conditions;
         if (kind == .require) {
-            self.resolver.conditions = &.{ "require", "module", "browser", "default" };
+            self.resolver.conditions = &.{ "require", "browser", "default" };
         }
         defer self.resolver.conditions = saved_conditions;
 
