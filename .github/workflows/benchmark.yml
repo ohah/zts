@@ -77,9 +77,9 @@ jobs:
             echo "<details>" >> "$BODY_FILE"
             echo "<summary><b>${os}</b></summary>" >> "$BODY_FILE"
             echo "" >> "$BODY_FILE"
-            echo '```' >> "$BODY_FILE"
-            cat "${dir}bench-output.txt" >> "$BODY_FILE"
-            echo '```' >> "$BODY_FILE"
+            # 마크다운 테이블 부분만 추출 (### 또는 | 로 시작하는 줄)
+            grep -E '^(\||###|$)' "${dir}bench-output.txt" >> "$BODY_FILE"
+            echo "" >> "$BODY_FILE"
             echo "</details>" >> "$BODY_FILE"
             echo "" >> "$BODY_FILE"
           done
