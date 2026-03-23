@@ -20,6 +20,9 @@ const Span = token_mod.Span;
 const Parser = @import("parser.zig").Parser;
 const ParseError2 = @import("parser.zig").ParseError2;
 
+/// TS class member modifier (contextual keywords). parseClassMember에서 2번 사용.
+const ts_class_modifiers: []const []const u8 = &.{ "readonly", "abstract", "override", "declare" };
+
 pub fn parseFunctionDeclaration(self: *Parser) ParseError2!NodeIndex {
     return parseFunctionDeclarationWithFlags(self, 0);
 }
@@ -424,7 +427,7 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
     // TS 접근 제어자 (public/private/protected) + readonly + abstract + override + declare
     while (self.current() == .kw_public or self.current() == .kw_private or
         self.current() == .kw_protected or
-        self.isContextualAny(&.{ "readonly", "abstract", "override", "declare" }))
+        self.isContextualAny(ts_class_modifiers))
     {
         try self.advance(); // skip modifier (스트리핑 대상이므로 AST에 저장 불필요)
     }
@@ -483,7 +486,7 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
     // static 뒤의 TS modifier도 소비 (static readonly x 등)
     while (self.current() == .kw_public or self.current() == .kw_private or
         self.current() == .kw_protected or
-        self.isContextualAny(&.{ "readonly", "abstract", "override", "declare" }))
+        self.isContextualAny(ts_class_modifiers))
     {
         try self.advance();
     }

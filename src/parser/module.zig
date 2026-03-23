@@ -56,10 +56,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     // import defer / import source — Stage 3 proposals
     // defer/source를 스킵하고 나머지는 일반 import로 처리
     var has_phase_modifier = false;
-    if (self.current() == .kw_defer or
-        (self.current() == .identifier and
-            std.mem.eql(u8, self.ast.source[self.currentSpan().start..self.currentSpan().end], "source")))
-    {
+    if (self.current() == .kw_defer or self.isContextual("source")) {
         has_phase_modifier = true;
         try self.advance(); // skip defer/source
     }

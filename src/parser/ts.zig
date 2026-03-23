@@ -13,6 +13,20 @@ const ast_mod = @import("ast.zig");
 const Node = ast_mod.Node;
 const Tag = Node.Tag;
 const NodeIndex = ast_mod.NodeIndex;
+
+/// TS 키워드 타입 이름 → AST Tag 매핑 (parsePrimaryType에서 사용)
+const ts_type_keywords = std.StaticStringMap(Tag).initComptime(.{
+    .{ "any", .ts_any_keyword },
+    .{ "string", .ts_string_keyword },
+    .{ "number", .ts_number_keyword },
+    .{ "boolean", .ts_boolean_keyword },
+    .{ "bigint", .ts_bigint_keyword },
+    .{ "symbol", .ts_symbol_keyword },
+    .{ "object", .ts_object_keyword },
+    .{ "never", .ts_never_keyword },
+    .{ "unknown", .ts_unknown_keyword },
+    .{ "undefined", .ts_undefined_keyword },
+});
 const Parser = @import("parser.zig").Parser;
 const ParseError2 = @import("parser.zig").ParseError2;
 
@@ -410,20 +424,7 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
 
     // TS 키워드 타입 (contextual keywords — 렉서에서 .identifier로 토큰화됨)
     if (self.current() == .identifier) {
-        const ts_keyword_tag: ?Tag = blk: {
-            const text = self.tokenText();
-            if (std.mem.eql(u8, text, "any")) break :blk .ts_any_keyword;
-            if (std.mem.eql(u8, text, "string")) break :blk .ts_string_keyword;
-            if (std.mem.eql(u8, text, "number")) break :blk .ts_number_keyword;
-            if (std.mem.eql(u8, text, "boolean")) break :blk .ts_boolean_keyword;
-            if (std.mem.eql(u8, text, "bigint")) break :blk .ts_bigint_keyword;
-            if (std.mem.eql(u8, text, "symbol")) break :blk .ts_symbol_keyword;
-            if (std.mem.eql(u8, text, "object")) break :blk .ts_object_keyword;
-            if (std.mem.eql(u8, text, "never")) break :blk .ts_never_keyword;
-            if (std.mem.eql(u8, text, "unknown")) break :blk .ts_unknown_keyword;
-            if (std.mem.eql(u8, text, "undefined")) break :blk .ts_undefined_keyword;
-            break :blk null;
-        };
+        const ts_keyword_tag = ts_type_keywords.get(self.tokenText());
         if (ts_keyword_tag) |tag| {
             try self.advance();
             return try self.ast.addNode(.{
