@@ -176,7 +176,15 @@ pub fn parseStatement(self: *Parser) ParseError2!NodeIndex {
         .kw_type => self.parseTsTypeAliasDeclaration(),
         .kw_interface => self.parseTsInterfaceDeclaration(),
         .kw_enum => self.parseTsEnumDeclaration(),
-        .kw_namespace => self.parseTsModuleDeclaration(),
+        .kw_namespace => blk: {
+            // namespace Name { } → TS module declaration
+            // namespace = 2 → expression statement (변수로 사용)
+            const next = try self.peekNextKind();
+            if (next == .identifier or next == .l_curly or next == .string_literal) {
+                break :blk self.parseTsModuleDeclaration();
+            }
+            break :blk self.parseExpressionStatement();
+        },
         .kw_module => blk: {
             // module.exports = ... (CJS) → expression statement
             // module Foo { } (TS namespace) → TS module declaration
