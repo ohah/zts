@@ -1047,6 +1047,10 @@ pub fn emitModule(
         propagateCrossModulePurity(l, module, &transformer.new_ast, sym_ids, arena_alloc);
     }
 
+    // Identifier mangling은 단일 파일 트랜스파일(main.zig)에서만 적용.
+    // 번들 모드에서는 linker의 scope hoisting과 이름 충돌 해결이 먼저 필요하므로
+    // 별도 통합이 필요 (후속 PR).
+
     // Codegen: AST → JS 문자열
     var cg = Codegen.initWithOptions(arena_alloc, &transformer.new_ast, .{
         .minify = options.minify,
