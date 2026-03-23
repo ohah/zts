@@ -9689,3 +9689,41 @@ test "Scope hoisting: arrow param shadow should not be renamed when namespace im
     // checks$1.map 또는 checks$2.map가 있으면 안 됨 — parameter shadow가 rename되지 않아야
     try std.testing.expect(std.mem.indexOf(u8, result.output, "checks$") == null);
 }
+
+test "Bundler: sideEffects glob pattern — matched file kept, unmatched tree-shaken" {
+    // sideEffects: ["./src/polyfill.js"] — polyfill.js는 유지, 나머지 미사용 JS 제거
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "node_modules/pkg/package.json",
+        \\{"name":"pkg","sideEffects":["./src/polyfill.js"]}
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/index.js",
+        \\export { setup } from './src/polyfill.js';
+        \\export function unused() { return 42; }
+    );
+    try writeFile(tmp.dir, "node_modules/pkg/src/polyfill.js",
+        \\export function setup() { globalThis.__POLYFILL__ = true; }
+        \\setup();
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import './node_modules/pkg/index.js';
+        \\console.log('app');
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // polyfill.js는 sideEffects 패턴 매칭 → side_effects=true → 번들에 포함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__POLYFILL__") != null);
+    // entry의 console.log 포함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log") != null);
+}
