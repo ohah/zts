@@ -1180,8 +1180,7 @@ pub const Linker = struct {
                     self.resolveToLocalName(canonical)
                 else
                     eb.local_name;
-            } else
-                self.getCanonicalName(@intCast(mod_i), eb.local_name) orelse eb.local_name;
+            } else self.getCanonicalName(@intCast(mod_i), eb.local_name) orelse eb.local_name;
 
             try exports.append(self.allocator, .{
                 .exported = eb.exported_name,
