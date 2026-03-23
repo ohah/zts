@@ -586,7 +586,6 @@ pub const Linker = struct {
                     else
                         effective_name;
 
-
                     if (!std.mem.eql(u8, ib.local_name, target_name)) {
                         if (module_scope.get(ib.local_name)) |sym_idx| {
                             try renames.put(@intCast(sym_idx), target_name);
