@@ -911,36 +911,7 @@ pub const Codegen = struct {
         const is_pure = (flags & CallFlags.is_pure) != 0;
 
         // CJS require() 치환: require('specifier') → require_xxx()
-        if (self.options.linking_metadata) |meta| {
-            if (meta.require_rewrites.count() > 0 and !callee.isNone() and args_len == 1) {
-                const callee_node = self.ast.getNode(callee);
-                if (callee_node.tag == .identifier_reference) {
-                    const callee_text = self.ast.source[callee_node.data.string_ref.start..callee_node.data.string_ref.end];
-                    if (std.mem.eql(u8, callee_text, "require")) {
-                        // 인자의 문자열 리터럴 추출
-                        if (args_start < self.ast.extra_data.items.len) {
-                            const arg_idx: ast_mod.NodeIndex = @enumFromInt(self.ast.extra_data.items[args_start]);
-                            if (!arg_idx.isNone()) {
-                                const arg_node = self.ast.getNode(arg_idx);
-                                if (arg_node.tag == .string_literal) {
-                                    // 따옴표 제거: "path" 또는 'path' → path
-                                    const raw = self.ast.source[arg_node.data.string_ref.start..arg_node.data.string_ref.end];
-                                    const specifier = if (raw.len >= 2 and (raw[0] == '"' or raw[0] == '\''))
-                                        raw[1 .. raw.len - 1]
-                                    else
-                                        raw;
-                                    if (meta.require_rewrites.get(specifier)) |req_var| {
-                                        try self.write(req_var);
-                                        try self.write("()");
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        if (try self.tryRewriteRequire(callee, args_start, args_len)) return;
 
         if (is_pure and !self.options.minify) try self.write("/* @__PURE__ */ ");
         try self.emitNode(callee);
@@ -948,6 +919,37 @@ pub const Codegen = struct {
         try self.writeByte('(');
         try self.emitNodeList(args_start, args_len, if (self.options.minify) "," else ", ");
         try self.writeByte(')');
+    }
+
+    /// CJS require('specifier') → require_xxx() 치환. 성공 시 true.
+    fn tryRewriteRequire(self: *Codegen, callee: ast_mod.NodeIndex, args_start: u32, args_len: u32) !bool {
+        const meta = self.options.linking_metadata orelse return false;
+        if (meta.require_rewrites.count() == 0 or callee.isNone() or args_len != 1) return false;
+
+        const callee_node = self.ast.getNode(callee);
+        if (callee_node.tag != .identifier_reference) return false;
+
+        const callee_text = self.ast.source[callee_node.data.string_ref.start..callee_node.data.string_ref.end];
+        if (!std.mem.eql(u8, callee_text, "require")) return false;
+
+        if (args_start >= self.ast.extra_data.items.len) return false;
+        const arg_idx: ast_mod.NodeIndex = @enumFromInt(self.ast.extra_data.items[args_start]);
+        if (arg_idx.isNone()) return false;
+
+        const arg_node = self.ast.getNode(arg_idx);
+        if (arg_node.tag != .string_literal) return false;
+
+        // 따옴표 제거: "path" 또는 'path' → path
+        const raw = self.ast.source[arg_node.data.string_ref.start..arg_node.data.string_ref.end];
+        const specifier = if (raw.len >= 2 and (raw[0] == '"' or raw[0] == '\''))
+            raw[1 .. raw.len - 1]
+        else
+            raw;
+
+        const req_var = meta.require_rewrites.get(specifier) orelse return false;
+        try self.write(req_var);
+        try self.write("()");
+        return true;
     }
 
     fn emitNew(self: *Codegen, node: Node) !void {
