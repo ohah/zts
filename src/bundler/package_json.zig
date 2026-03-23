@@ -85,7 +85,7 @@ pub fn parsePackageJson(allocator: std.mem.Allocator, dir: std.fs.Dir) !ParsedPa
             .module = getStr(obj, "module"),
             .type_field = getStr(obj, "type"),
             .exports = obj.get("exports"),
-            .side_effects = parseSideEffects(obj),
+            .side_effects = parseSideEffects(obj, allocator),
         },
         .parsed = parsed,
     };
@@ -211,11 +211,30 @@ fn getStr(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
     return null;
 }
 
-fn parseSideEffects(obj: std.json.ObjectMap) PackageJson.SideEffects {
+fn parseSideEffects(obj: std.json.ObjectMap, allocator: std.mem.Allocator) PackageJson.SideEffects {
     const val = obj.get("sideEffects") orelse return .unknown;
     switch (val) {
         .bool => |b| return .{ .all = b },
-        // 배열 패턴은 추후 지원 (["*.css", "./src/polyfill.js"])
+        .array => |arr| {
+            // ["*.css", "./src/polyfill.js"] — 문자열 배열.
+            // 빈 배열은 sideEffects: false와 동일.
+            if (arr.items.len == 0) return .{ .all = false };
+            // allocator로 패턴을 dupe — JSON parse tree 해제 후에도 유효.
+            const patterns = allocator.alloc([]const u8, arr.items.len) catch return .unknown;
+            for (arr.items, 0..) |item, i| {
+                if (item != .string) {
+                    allocator.free(patterns[0..i]);
+                    allocator.free(patterns);
+                    return .unknown;
+                }
+                patterns[i] = allocator.dupe(u8, item.string) catch {
+                    for (patterns[0..i]) |p| allocator.free(p);
+                    allocator.free(patterns);
+                    return .unknown;
+                };
+            }
+            return .{ .patterns = patterns };
+        },
         else => return .unknown,
     }
 }
@@ -264,6 +283,61 @@ test "parsePackageJson: sideEffects false" {
     var result = try parsePackageJson(std.testing.allocator, tmp.dir);
     defer result.deinit();
 
+    switch (result.pkg.side_effects) {
+        .all => |b| try std.testing.expect(!b),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parsePackageJson: sideEffects array" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "package.json",
+        .data =
+        \\{"name":"css-pkg","sideEffects":["*.css","./src/polyfill.js"]}
+        ,
+    });
+
+    var result = try parsePackageJson(std.testing.allocator, tmp.dir);
+    defer {
+        // patterns는 allocator로 dupe되었으므로 해제 필요
+        switch (result.pkg.side_effects) {
+            .patterns => |patterns| {
+                for (patterns) |p| std.testing.allocator.free(p);
+                std.testing.allocator.free(patterns);
+            },
+            else => {},
+        }
+        result.deinit();
+    }
+
+    switch (result.pkg.side_effects) {
+        .patterns => |patterns| {
+            try std.testing.expectEqual(@as(usize, 2), patterns.len);
+            try std.testing.expectEqualStrings("*.css", patterns[0]);
+            try std.testing.expectEqualStrings("./src/polyfill.js", patterns[1]);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parsePackageJson: sideEffects empty array" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "package.json",
+        .data =
+        \\{"name":"empty-pkg","sideEffects":[]}
+        ,
+    });
+
+    var result = try parsePackageJson(std.testing.allocator, tmp.dir);
+    defer result.deinit();
+
+    // 빈 배열은 sideEffects: false와 동일
     switch (result.pkg.side_effects) {
         .all => |b| try std.testing.expect(!b),
         else => return error.TestUnexpectedResult,

@@ -74,6 +74,17 @@ pub const ModuleGraph = struct {
             self.allocator.free(key.*);
         }
         self.path_to_module.deinit();
+        // 캐시된 sideEffects patterns의 dupe된 문자열 해제
+        var se_it = self.side_effects_cache.valueIterator();
+        while (se_it.next()) |se| {
+            switch (se.*) {
+                .patterns => |patterns| {
+                    for (patterns) |p| self.allocator.free(p);
+                    self.allocator.free(patterns);
+                },
+                else => {},
+            }
+        }
         self.side_effects_cache.deinit();
         self.diagnostics.deinit(self.allocator);
     }
@@ -258,7 +269,10 @@ pub const ModuleGraph = struct {
         if (self.side_effects_cache.get(pkg_dir_path)) |cached| {
             switch (cached) {
                 .all => |val| module.side_effects = val,
-                .patterns, .unknown => {},
+                .patterns => |patterns| {
+                    module.side_effects = matchSideEffectsPatterns(module.path, pkg_dir_path, patterns);
+                },
+                .unknown => {},
             }
             return;
         }
@@ -269,14 +283,47 @@ pub const ModuleGraph = struct {
         var parsed = pkg_json.parsePackageJson(self.allocator, pkg_dir) catch return;
         defer parsed.deinit();
 
-        // 캐시에 저장
+        // 캐시에 저장 (patterns는 parseSideEffects가 allocator로 dupe 완료)
         self.side_effects_cache.put(pkg_dir_path, parsed.pkg.side_effects) catch {};
 
         switch (parsed.pkg.side_effects) {
             .all => |val| module.side_effects = val,
-            .patterns => {},
+            .patterns => |patterns| {
+                module.side_effects = matchSideEffectsPatterns(module.path, pkg_dir_path, patterns);
+            },
             .unknown => {},
         }
+    }
+
+    /// sideEffects 글롭 패턴 매칭.
+    /// 모듈의 패키지 내 상대 경로를 각 패턴과 비교하여,
+    /// 하나라도 매칭되면 side_effects=true (해당 파일은 제거하면 안 됨).
+    /// 아무 패턴도 매칭되지 않으면 side_effects=false (순수 모듈, 제거 가능).
+    fn matchSideEffectsPatterns(module_path: []const u8, pkg_dir_path: []const u8, patterns: []const []const u8) bool {
+        const matchGlob = @import("resolve_cache.zig").matchGlob;
+
+        // 패키지 디렉토리 기준 상대 경로 추출: /abs/node_modules/pkg/src/foo.js → src/foo.js
+        const relative = if (module_path.len > pkg_dir_path.len + 1)
+            module_path[pkg_dir_path.len + 1 ..] // +1 for separator
+        else
+            module_path;
+
+        for (patterns) |pattern| {
+            // "./" 접두사 제거: "./src/polyfill.js" → "src/polyfill.js"
+            const normalized = if (std.mem.startsWith(u8, pattern, "./"))
+                pattern[2..]
+            else
+                pattern;
+
+            // 패턴이 확장자만 매칭 (*.css) → 파일명/경로 전체에 대해 매칭
+            if (matchGlob(normalized, relative)) return true;
+
+            // 파일명만으로도 매칭 시도: "*.css"는 "src/style.css"도 매칭해야 함
+            if (std.fs.path.basename(relative).len != relative.len) {
+                if (matchGlob(normalized, std.fs.path.basename(relative))) return true;
+            }
+        }
+        return false;
     }
 
     /// Phase 1: 모듈의 import들을 resolve하고 의존성 모듈을 등록한다.
@@ -1027,4 +1074,53 @@ test "determineExportsKind: .mts extension" {
         .has_exports_dot = false,
     };
     try std.testing.expectEqual(types.ExportsKind.esm, determineExportsKind(scan, "lib.mts"));
+}
+
+// ============================================================
+// sideEffects glob 패턴 매칭 테스트
+// ============================================================
+
+test "matchSideEffectsPatterns: *.css matches css files" {
+    const patterns = &[_][]const u8{"*.css"};
+    // CSS 파일은 side_effects=true (제거하면 안 됨)
+    try std.testing.expect(ModuleGraph.matchSideEffectsPatterns(
+        "/app/node_modules/pkg/style.css",
+        "/app/node_modules/pkg",
+        patterns,
+    ));
+    // 하위 디렉토리 CSS도 매칭 (basename 폴백)
+    try std.testing.expect(ModuleGraph.matchSideEffectsPatterns(
+        "/app/node_modules/pkg/src/theme.css",
+        "/app/node_modules/pkg",
+        patterns,
+    ));
+    // JS 파일은 매칭 안 됨 → side_effects=false (제거 가능)
+    try std.testing.expect(!ModuleGraph.matchSideEffectsPatterns(
+        "/app/node_modules/pkg/index.js",
+        "/app/node_modules/pkg",
+        patterns,
+    ));
+}
+
+test "matchSideEffectsPatterns: exact path match" {
+    const patterns = &[_][]const u8{ "./src/polyfill.js", "*.css" };
+    try std.testing.expect(ModuleGraph.matchSideEffectsPatterns(
+        "/app/node_modules/pkg/src/polyfill.js",
+        "/app/node_modules/pkg",
+        patterns,
+    ));
+    try std.testing.expect(!ModuleGraph.matchSideEffectsPatterns(
+        "/app/node_modules/pkg/src/utils.js",
+        "/app/node_modules/pkg",
+        patterns,
+    ));
+}
+
+test "matchSideEffectsPatterns: no patterns = no side effects" {
+    const patterns = &[_][]const u8{};
+    try std.testing.expect(!ModuleGraph.matchSideEffectsPatterns(
+        "/app/node_modules/pkg/index.js",
+        "/app/node_modules/pkg",
+        patterns,
+    ));
 }
