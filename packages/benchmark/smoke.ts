@@ -117,7 +117,7 @@ function testProject(
       }
     }
 
-    // esbuild bundle
+    // esbuild bundle + 실행 검증
     if (existsSync(ESBUILD_BIN)) {
       const es = exec(ESBUILD_BIN, [
         join(dir, "index.ts"),
@@ -131,9 +131,16 @@ function testProject(
         size: fileSize(esOut),
         time: es.time,
       };
+      if (es.ok) {
+        const run = exec("node", [esOut]);
+        if (!run.ok) {
+          result.esbuild.build = false;
+          result.errors.push(`esbuild run: ${run.stderr.slice(0, 300)}`);
+        }
+      }
     }
 
-    // rolldown bundle
+    // rolldown bundle + 실행 검증
     if (existsSync(ROLLDOWN_BIN)) {
       const rd = exec(ROLLDOWN_BIN, [
         join(dir, "index.ts"),
@@ -149,6 +156,13 @@ function testProject(
         size: fileSize(rdOut),
         time: rd.time,
       };
+      if (rd.ok) {
+        const run = exec("node", [rdOut]);
+        if (!run.ok) {
+          result.rolldown.build = false;
+          result.errors.push(`rolldown run: ${run.stderr.slice(0, 300)}`);
+        }
+      }
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
