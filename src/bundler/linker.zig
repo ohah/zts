@@ -153,6 +153,11 @@ pub const Linker = struct {
     /// 충돌 없으면 원본 이름 유지 (엔트리 없음).
     canonical_names: std.StringHashMap([]const u8),
 
+    /// 자동 수집된 예약 글로벌 이름. 모든 모듈의 unresolved references를 합친 것.
+    /// scope hoisting 시 모듈 top-level 변수가 이 이름을 shadowing하면 리네임.
+    /// Rolldown 방식: 하드코딩 목록 대신 실제 사용된 글로벌만 예약.
+    reserved_globals: std.StringHashMap(void),
+
     const ExportEntry = struct {
         binding: ExportBinding,
         module_index: ModuleIndex,
@@ -183,6 +188,7 @@ pub const Linker = struct {
             .resolved_bindings = std.AutoHashMap(BindingKey, ResolvedBinding).init(allocator),
             .diagnostics = .empty,
             .canonical_names = std.StringHashMap([]const u8).init(allocator),
+            .reserved_globals = std.StringHashMap(void).init(allocator),
         };
     }
 
@@ -200,6 +206,7 @@ pub const Linker = struct {
             self.allocator.free(entry.value_ptr.*);
         }
         self.canonical_names.deinit();
+        self.reserved_globals.deinit();
         self.diagnostics.deinit(self.allocator);
     }
 
@@ -288,10 +295,10 @@ pub const Linker = struct {
             const name = entry.key_ptr.*;
             const owners = entry.value_ptr.items;
 
-            // 단일 소유자라도 well-known global을 shadowing하면 리네임 필요.
+            // 단일 소유자라도 예약어/글로벌을 shadowing하면 리네임 필요.
             // scope hoisting 후 const/let 선언이 TDZ를 만들어 다른 모듈의 전역 참조가 실패.
             if (owners.len == 1) {
-                if (isReservedName(name)) {
+                if (self.isReservedOrGlobal(name)) {
                     const owner = owners[0];
                     const candidate = try std.fmt.allocPrint(self.allocator, "{s}$1", .{name});
                     const key = try makeExportKey(self.allocator, owner.module_index, name);
@@ -312,9 +319,9 @@ pub const Linker = struct {
             }.lessThan);
 
             // 첫 번째는 원본 유지, 나머지는 $1, $2, ...
-            // 단, 예약어(require, module 등)는 첫 번째도 리네임해야 한다.
+            // 단, 예약어/글로벌은 첫 번째도 리네임해야 한다.
             // 그렇지 않으면 scope hoisting 후 TDZ가 발생한다.
-            const name_is_reserved = isReservedName(name);
+            const name_is_reserved = self.isReservedOrGlobal(name);
             var suffix: u32 = 1;
             const start_idx: usize = if (name_is_reserved) 0 else 1;
             for (owners[start_idx..]) |owner| {
@@ -325,7 +332,7 @@ pub const Linker = struct {
                 var candidate = try std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, suffix });
 
                 // 후보 이름이 예약어, 다른 모듈의 top-level 이름, 또는 nested scope에 있으면 다음 번호
-                while (isReservedName(candidate) or name_to_owners.contains(candidate) or self.hasNestedBinding(owner.module_index, candidate)) {
+                while (self.isReservedOrGlobal(candidate) or name_to_owners.contains(candidate) or self.hasNestedBinding(owner.module_index, candidate)) {
                     self.allocator.free(candidate);
                     suffix += 1;
                     candidate = try std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, suffix });
@@ -343,9 +350,25 @@ pub const Linker = struct {
         }
     }
 
+    /// 모든 모듈의 unresolved references를 수집하여 reserved_globals에 합친다.
+    /// Rolldown 방식: 하드코딩 목록 대신 실제 사용된 글로벌만 예약.
+    pub fn collectReservedGlobals(self: *Linker) !void {
+        self.reserved_globals.clearRetainingCapacity();
+        for (self.modules) |m| {
+            const sem = m.semantic orelse continue;
+            var it = sem.unresolved_references.iterator();
+            while (it.next()) |entry| {
+                try self.reserved_globals.put(entry.key_ptr.*, {});
+            }
+        }
+    }
+
     /// 이름 충돌 감지 + 리네임 계산 (Rolldown renamer 패턴).
     /// exec_index가 가장 낮은 모듈이 원본 이름 유지, 나머지는 $1, $2, ...
     pub fn computeRenames(self: *Linker) !void {
+        // 0. 모든 모듈의 미해결 참조를 수집 → reserved_globals
+        try self.collectReservedGlobals();
+
         // 1. 모든 모듈의 top-level export 이름 수집
         var name_to_owners = NameToOwnersMap.init(self.allocator);
         defer {
@@ -496,48 +519,39 @@ pub const Linker = struct {
         return false;
     }
 
-    /// JS 예약어 + 글로벌 객체 이름인지 확인 (Rolldown renamer.rs 참고).
+    /// ECMAScript 예약어인지 확인 (키워드 + strict mode 예약어만).
+    /// 글로벌 객체 이름은 포함하지 않음 — reserved_globals에서 자동 수집.
     /// comptime StaticStringMap으로 O(1) 조회.
     fn isReservedName(name: []const u8) bool {
         const map = comptime std.StaticStringMap(void).initComptime(.{
-            // ECMAScript 예약어
-            .{ "break", {} },          .{ "case", {} },            .{ "catch", {} },           .{ "class", {} },
-            .{ "const", {} },          .{ "continue", {} },        .{ "debugger", {} },        .{ "default", {} },
-            .{ "delete", {} },         .{ "do", {} },              .{ "else", {} },            .{ "enum", {} },
-            .{ "export", {} },         .{ "extends", {} },         .{ "false", {} },           .{ "finally", {} },
-            .{ "for", {} },            .{ "function", {} },        .{ "if", {} },              .{ "import", {} },
-            .{ "in", {} },             .{ "instanceof", {} },      .{ "new", {} },             .{ "null", {} },
-            .{ "return", {} },         .{ "super", {} },           .{ "switch", {} },          .{ "this", {} },
-            .{ "throw", {} },          .{ "true", {} },            .{ "try", {} },             .{ "typeof", {} },
-            .{ "var", {} },            .{ "void", {} },            .{ "while", {} },           .{ "with", {} },
-            .{ "yield", {} },          .{ "let", {} },             .{ "static", {} },          .{ "implements", {} },
-            .{ "interface", {} },      .{ "package", {} },         .{ "private", {} },         .{ "protected", {} },
-            .{ "public", {} },         .{ "await", {} },
-            // ECMAScript 글로벌 객체
-                      .{ "undefined", {} },       .{ "NaN", {} },
-            .{ "Infinity", {} },       .{ "arguments", {} },       .{ "eval", {} },            .{ "Array", {} },
-            .{ "Object", {} },         .{ "Function", {} },        .{ "String", {} },          .{ "Number", {} },
-            .{ "Boolean", {} },        .{ "Symbol", {} },          .{ "Date", {} },            .{ "Math", {} },
-            .{ "JSON", {} },           .{ "Promise", {} },         .{ "RegExp", {} },          .{ "Error", {} },
-            .{ "Map", {} },            .{ "Set", {} },             .{ "WeakMap", {} },         .{ "WeakSet", {} },
-            .{ "Proxy", {} },          .{ "Reflect", {} },         .{ "console", {} },         .{ "globalThis", {} },
-            .{ "window", {} },         .{ "document", {} },        .{ "require", {} },         .{ "module", {} },
-            .{ "exports", {} },        .{ "__filename", {} },      .{ "__dirname", {} },
-            // Web API globals — scope hoisting 시 shadowing 방지
-                  .{ "TextEncoder", {} },
-            .{ "TextDecoder", {} },    .{ "URL", {} },             .{ "URLSearchParams", {} }, .{ "ReadableStream", {} },
-            .{ "WritableStream", {} }, .{ "TransformStream", {} }, .{ "Request", {} },         .{ "Response", {} },
-            .{ "Headers", {} },        .{ "FormData", {} },        .{ "Blob", {} },            .{ "File", {} },
-            .{ "FileReader", {} },     .{ "AbortController", {} }, .{ "AbortSignal", {} },     .{ "Event", {} },
-            .{ "EventTarget", {} },    .{ "CustomEvent", {} },     .{ "setTimeout", {} },      .{ "setInterval", {} },
-            .{ "clearTimeout", {} },   .{ "clearInterval", {} },   .{ "fetch", {} },           .{ "crypto", {} },
-            .{ "performance", {} },    .{ "navigator", {} },       .{ "atob", {} },            .{ "btoa", {} },
-            .{ "queueMicrotask", {} }, .{ "structuredClone", {} },
-            // Node.js globals
-            .{ "Buffer", {} },          .{ "process", {} },
-            .{ "global", {} },         .{ "__global", {} },
+            // ECMAScript 예약어 (keywords + future reserved words)
+            .{ "break", {} },     .{ "case", {} },       .{ "catch", {} },      .{ "class", {} },
+            .{ "const", {} },     .{ "continue", {} },   .{ "debugger", {} },   .{ "default", {} },
+            .{ "delete", {} },    .{ "do", {} },         .{ "else", {} },       .{ "enum", {} },
+            .{ "export", {} },    .{ "extends", {} },    .{ "false", {} },      .{ "finally", {} },
+            .{ "for", {} },       .{ "function", {} },   .{ "if", {} },         .{ "import", {} },
+            .{ "in", {} },        .{ "instanceof", {} }, .{ "new", {} },        .{ "null", {} },
+            .{ "return", {} },    .{ "super", {} },      .{ "switch", {} },     .{ "this", {} },
+            .{ "throw", {} },     .{ "true", {} },       .{ "try", {} },        .{ "typeof", {} },
+            .{ "var", {} },       .{ "void", {} },       .{ "while", {} },      .{ "with", {} },
+            .{ "yield", {} },     .{ "let", {} },        .{ "static", {} },     .{ "implements", {} },
+            .{ "interface", {} }, .{ "package", {} },    .{ "private", {} },    .{ "protected", {} },
+            .{ "public", {} },    .{ "await", {} },
+            // ECMAScript 특수 식별자 (키워드는 아니지만 변수명으로 사용하면 문제)
+                 .{ "undefined", {} },  .{ "NaN", {} },
+            .{ "Infinity", {} },  .{ "arguments", {} },  .{ "eval", {} },
+            // CJS 런타임 식별자 — 번들러가 합성하는 __commonJS/__require에서 사용.
+            // semantic analyzer의 unresolved에 잡히지 않으므로 항상 예약.
+                  .{ "require", {} },
+            .{ "module", {} },    .{ "exports", {} },    .{ "__filename", {} }, .{ "__dirname", {} },
         });
         return map.has(name);
+    }
+
+    /// JS 예약어이거나 자동 수집된 글로벌 이름인지 확인.
+    /// scope hoisting 시 이름 충돌 판별에 사용. isReservedName(키워드) + reserved_globals(미해결 참조).
+    fn isReservedOrGlobal(self: *const Linker, name: []const u8) bool {
+        return isReservedName(name) or self.reserved_globals.contains(name);
     }
 
     /// export의 실제 local_name을 조회. default export에서 "default" → "greet" 등.
@@ -1667,6 +1681,19 @@ pub const Linker = struct {
         // 이전 청크의 리네임 결과 제거
         self.clearCanonicalNames();
 
+        // 미해결 참조 수집 (해당 청크의 모듈만)
+        self.reserved_globals.clearRetainingCapacity();
+        for (module_indices) |mod_idx| {
+            const i = @intFromEnum(mod_idx);
+            if (i >= self.modules.len) continue;
+            const m = self.modules[i];
+            const sem = m.semantic orelse continue;
+            var urit = sem.unresolved_references.iterator();
+            while (urit.next()) |entry| {
+                try self.reserved_globals.put(entry.key_ptr.*, {});
+            }
+        }
+
         // 1. 지정된 모듈의 top-level 심볼 이름 수집
         var name_to_owners = NameToOwnersMap.init(self.allocator);
         defer {
@@ -2070,11 +2097,17 @@ test "isReservedName: JS reserved words" {
     try std.testing.expect(!Linker.isReservedName("count$1"));
 }
 
-test "isReservedName: global objects" {
-    try std.testing.expect(Linker.isReservedName("Array"));
-    try std.testing.expect(Linker.isReservedName("Object"));
-    try std.testing.expect(Linker.isReservedName("console"));
+test "isReservedName: special identifiers" {
+    // undefined, NaN, Infinity, arguments, eval은 예약어급 (키워드 목록에 유지)
     try std.testing.expect(Linker.isReservedName("undefined"));
+    try std.testing.expect(Linker.isReservedName("arguments"));
+    try std.testing.expect(Linker.isReservedName("eval"));
+    try std.testing.expect(Linker.isReservedName("NaN"));
+    try std.testing.expect(Linker.isReservedName("Infinity"));
+    // 글로벌 객체는 더 이상 정적 목록에 없음 (unresolved references로 자동 수집)
+    try std.testing.expect(!Linker.isReservedName("Array"));
+    try std.testing.expect(!Linker.isReservedName("Object"));
+    try std.testing.expect(!Linker.isReservedName("console"));
     try std.testing.expect(Linker.isReservedName("require"));
     try std.testing.expect(Linker.isReservedName("module"));
     try std.testing.expect(!Linker.isReservedName("myVar"));
