@@ -668,13 +668,14 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                     }
                 }
                 {
+                    const prop_end = if (!prop.isNone()) self.ast.getNode(prop).span.end else self.currentSpan().start;
                     const me = try self.ast.addExtras(&.{ @intFromEnum(expr), @intFromEnum(prop), 0 });
                     expr = try self.ast.addNode(.{
                         .tag = if (!prop.isNone() and self.ast.getNode(prop).tag == .private_identifier)
                             .private_field_expression
                         else
                             .static_member_expression,
-                        .span = .{ .start = expr_start, .end = self.currentSpan().start },
+                        .span = .{ .start = expr_start, .end = prop_end },
                         .data = .{ .extra = me },
                     });
                 }
@@ -734,10 +735,11 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                     // a?.b
                     const prop = try parseIdentifierName(self);
                     {
+                        const oc_prop_end = if (!prop.isNone()) self.ast.getNode(prop).span.end else self.currentSpan().start;
                         const me = try self.ast.addExtras(&.{ @intFromEnum(expr), @intFromEnum(prop), 1 }); // 1 = optional
                         expr = try self.ast.addNode(.{
                             .tag = .static_member_expression,
-                            .span = .{ .start = expr_start, .end = self.currentSpan().start },
+                            .span = .{ .start = expr_start, .end = oc_prop_end },
                             .data = .{ .extra = me },
                         });
                     }
@@ -885,10 +887,11 @@ fn parseNewCallee(self: *Parser) ParseError2!NodeIndex {
                 try self.advance();
                 const prop = try parseIdentifierName(self);
                 {
+                    const lup_prop_end = if (!prop.isNone()) self.ast.getNode(prop).span.end else self.currentSpan().start;
                     const me = try self.ast.addExtras(&.{ @intFromEnum(expr), @intFromEnum(prop), 0 });
                     expr = try self.ast.addNode(.{
                         .tag = .static_member_expression,
-                        .span = .{ .start = expr_start, .end = self.currentSpan().start },
+                        .span = .{ .start = expr_start, .end = lup_prop_end },
                         .data = .{ .extra = me },
                     });
                 }
