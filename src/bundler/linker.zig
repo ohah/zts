@@ -92,6 +92,11 @@ pub const LinkingMetadata = struct {
         if (self.ns_member_rewrites.entries.len > 0) {
             for (self.ns_member_rewrites.entries) |*e| {
                 var m = @constCast(&e.map);
+                // 인라인 객체 문자열 (allocator에서 할당됨) 해제
+                var vit = m.valueIterator();
+                while (vit.next()) |v| {
+                    if (v.*.len > 0 and v.*[0] == '{') self.allocator.free(v.*);
+                }
                 m.deinit();
             }
             self.allocator.free(self.ns_member_rewrites.entries);
