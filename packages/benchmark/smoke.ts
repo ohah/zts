@@ -250,6 +250,16 @@ const projects = [
     pkg: "debug",
     entry: `import debug from 'debug';\nconst log = debug('test');\nconsole.log(typeof log);`,
   },
+  {
+    name: "chalk",
+    pkg: "chalk@5",
+    entry: `import chalk from 'chalk';\nconsole.log(chalk.red('hello'));`,
+  },
+  {
+    name: "yaml",
+    pkg: "yaml",
+    entry: `import { parse } from 'yaml';\nconsole.log(JSON.stringify(parse('a: 1\\nb: 2')));`,
+  },
 ];
 
 // ============================================================

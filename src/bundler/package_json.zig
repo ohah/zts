@@ -31,6 +31,7 @@ pub const PackageJson = struct {
     module: ?[]const u8 = null,
     type_field: ?[]const u8 = null,
     exports: ?std.json.Value = null,
+    imports: ?std.json.Value = null,
     side_effects: SideEffects = .unknown,
 
     pub const SideEffects = union(enum) {
@@ -96,6 +97,7 @@ pub fn parsePackageJson(allocator: std.mem.Allocator, dir: std.fs.Dir) !ParsedPa
             .module = getStr(obj, "module"),
             .type_field = getStr(obj, "type"),
             .exports = obj.get("exports"),
+            .imports = obj.get("imports"),
             .side_effects = parseSideEffects(obj, allocator),
         },
         .parsed = parsed,
@@ -133,6 +135,58 @@ pub fn resolveExports(
                     return .{ .path = path, .allocated = false };
                 }
             }
+            return null;
+        },
+        else => return null,
+    }
+}
+
+/// imports 필드에서 `#specifier`에 맞는 경로를 찾는다.
+/// Node.js subpath imports: package.json "imports" 필드로 패키지 내부 import 매핑.
+/// 전체 specifier가 키이며, 와일드카드(`*`)도 지원한다.
+/// https://nodejs.org/api/packages.html#subpath-imports
+pub fn resolveImports(
+    allocator: std.mem.Allocator,
+    imports: std.json.Value,
+    specifier: []const u8,
+    conditions: []const []const u8,
+) ?ExportsResult {
+    switch (imports) {
+        .object => |obj| {
+            // 1. 정확한 매칭
+            if (obj.get(specifier)) |value| {
+                if (resolveConditions(value, conditions)) |path| {
+                    return .{ .path = path, .allocated = false };
+                }
+            }
+
+            // 2. 와일드카드 매칭 (#foo/* 패턴)
+            var it = obj.iterator();
+            while (it.next()) |entry| {
+                const pattern = entry.key_ptr.*;
+                if (std.mem.indexOf(u8, pattern, "*")) |star_pos| {
+                    const prefix = pattern[0..star_pos];
+                    const suffix = pattern[star_pos + 1 ..];
+
+                    if (specifier.len >= prefix.len + suffix.len and
+                        std.mem.startsWith(u8, specifier, prefix) and
+                        std.mem.endsWith(u8, specifier, suffix))
+                    {
+                        const matched = specifier[prefix.len .. specifier.len - suffix.len];
+                        const resolved = resolveConditions(entry.value_ptr.*, conditions) orelse continue;
+
+                        // 결과에서 * 를 매칭된 부분으로 치환
+                        if (std.mem.indexOf(u8, resolved, "*")) |res_star| {
+                            const before = resolved[0..res_star];
+                            const after = resolved[res_star + 1 ..];
+                            const substituted = std.mem.concat(allocator, u8, &.{ before, matched, after }) catch return null;
+                            return .{ .path = substituted, .allocated = true };
+                        }
+                        return .{ .path = resolved, .allocated = false };
+                    }
+                }
+            }
+
             return null;
         },
         else => return null,
@@ -476,4 +530,77 @@ test "isSubpathMap" {
     const parsed2 = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, source2, .{});
     defer parsed2.deinit();
     try std.testing.expect(!isSubpathMap(parsed2.value.object));
+}
+
+test "resolveImports: exact match" {
+    const source =
+        \\{"#ansi-styles":"./source/vendor/ansi-styles/index.js"}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, source, .{});
+    defer parsed.deinit();
+
+    const result = resolveImports(std.testing.allocator, parsed.value, "#ansi-styles", &.{ "import", "default" });
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("./source/vendor/ansi-styles/index.js", result.?.path);
+    try std.testing.expect(!result.?.allocated);
+}
+
+test "resolveImports: condition object" {
+    const source =
+        \\{"#supports-color":{"node":"./source/vendor/supports-color/index.js","default":"./source/vendor/supports-color/browser.js"}}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, source, .{});
+    defer parsed.deinit();
+
+    // node 조건 매칭
+    const node_result = resolveImports(std.testing.allocator, parsed.value, "#supports-color", &.{ "node", "default" });
+    try std.testing.expect(node_result != null);
+    try std.testing.expectEqualStrings("./source/vendor/supports-color/index.js", node_result.?.path);
+
+    // default 폴백
+    const browser_result = resolveImports(std.testing.allocator, parsed.value, "#supports-color", &.{ "import", "browser" });
+    try std.testing.expect(browser_result != null);
+    try std.testing.expectEqualStrings("./source/vendor/supports-color/browser.js", browser_result.?.path);
+}
+
+test "resolveImports: wildcard pattern" {
+    const source =
+        \\{"#utils/*":"./src/utils/*.js"}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, source, .{});
+    defer parsed.deinit();
+
+    const result = resolveImports(std.testing.allocator, parsed.value, "#utils/string", &.{"default"});
+    try std.testing.expect(result != null);
+    defer if (result.?.allocated) std.testing.allocator.free(result.?.path);
+    try std.testing.expectEqualStrings("./src/utils/string.js", result.?.path);
+    try std.testing.expect(result.?.allocated);
+}
+
+test "resolveImports: no match returns null" {
+    const source =
+        \\{"#foo":"./foo.js"}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, source, .{});
+    defer parsed.deinit();
+
+    const result = resolveImports(std.testing.allocator, parsed.value, "#bar", &.{"default"});
+    try std.testing.expect(result == null);
+}
+
+test "parsePackageJson: imports field" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "package.json",
+        .data =
+        \\{"name":"chalk","imports":{"#ansi-styles":"./source/vendor/ansi-styles/index.js"}}
+        ,
+    });
+
+    var result = try parsePackageJson(std.testing.allocator, tmp.dir);
+    defer result.deinit();
+
+    try std.testing.expect(result.pkg.imports != null);
 }

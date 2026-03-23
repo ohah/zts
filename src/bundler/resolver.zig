@@ -63,6 +63,11 @@ pub const Resolver = struct {
     }
 
     pub fn resolve(self: *Resolver, source_dir: []const u8, specifier: []const u8) ResolveError!ResolveResult {
+        // #specifier → package.json "imports" 필드 (Node.js subpath imports)
+        if (specifier.len > 0 and specifier[0] == '#') {
+            return self.resolveSubpathImports(source_dir, specifier);
+        }
+
         // bare specifier → node_modules 탐색
         if (!isRelativeOrAbsolute(specifier)) {
             return self.resolveNodeModules(source_dir, specifier);
@@ -261,6 +266,49 @@ pub const Resolver = struct {
 
         // 4. index 파일 폴백
         return self.tryDirectoryIndex(pkg_dir_path);
+    }
+
+    /// Node.js subpath imports: `#specifier`를 package.json "imports" 필드에서 해석한다.
+    /// source_dir에서 시작하여 상위 디렉토리로 올라가며 "imports" 필드가 있는 package.json을 찾는다.
+    /// https://nodejs.org/api/packages.html#subpath-imports
+    fn resolveSubpathImports(self: *Resolver, source_dir: []const u8, specifier: []const u8) ResolveError!ResolveResult {
+        var current_dir = source_dir;
+        while (true) {
+            // package.json 찾기
+            var dir = std.fs.cwd().openDir(current_dir, .{}) catch break;
+            defer dir.close();
+
+            if (pkg_json.parsePackageJson(self.allocator, dir)) |*parsed_result| {
+                var parsed = parsed_result.*;
+                defer parsed.deinit();
+
+                if (parsed.pkg.imports) |imports| {
+                    if (pkg_json.resolveImports(self.allocator, imports, specifier, self.conditions)) |imports_result| {
+                        defer if (imports_result.allocated) self.allocator.free(imports_result.path);
+
+                        // imports 결과는 패키지 디렉토리 기준 상대 경로
+                        const abs_path = std.fs.path.resolve(self.allocator, &.{ current_dir, imports_result.path }) catch
+                            return error.OutOfMemory;
+                        defer self.allocator.free(abs_path);
+
+                        if (self.fileExists(abs_path)) {
+                            return (try self.makeResult(abs_path)).?;
+                        }
+                        // 확장자 탐색
+                        if (try self.tryExtensions(abs_path)) |result| return result;
+                        if (try self.tryTsExtensionMapping(abs_path)) |result| return result;
+                        if (try self.tryDirectoryIndex(abs_path)) |result| return result;
+                    }
+                }
+            } else |_| {}
+
+            // 상위 디렉토리로 이동
+            const parent = std.fs.path.dirname(current_dir) orelse break;
+            if (std.mem.eql(u8, parent, current_dir)) break;
+            current_dir = parent;
+        }
+
+        return error.ModuleNotFound;
     }
 
     fn makeResult(self: *Resolver, path: []const u8) ResolveError!?ResolveResult {
@@ -687,4 +735,58 @@ test "resolve: exact .js file exists (no TS mapping)" {
 
     // 정확한 .js가 있으면 TS 매핑하지 않음
     try std.testing.expect(pathEndsWith(result.path, "lib.js"));
+}
+
+test "resolve: subpath imports (#specifier)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "package.json",
+        \\{"name":"my-app","imports":{"#utils":"./src/utils.js"}}
+    );
+    try createFile(tmp.dir, "src/utils.js");
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var resolver = Resolver.init(std.testing.allocator);
+    const result = try resolver.resolve(dir_path, "#utils");
+    defer std.testing.allocator.free(result.path);
+
+    try std.testing.expect(pathEndsWith(result.path, "src/utils.js"));
+}
+
+test "resolve: subpath imports with conditions" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "package.json",
+        \\{"name":"my-app","imports":{"#dep":{"node":"./src/node.js","default":"./src/browser.js"}}}
+    );
+    try createFile(tmp.dir, "src/node.js");
+    try createFile(tmp.dir, "src/browser.js");
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    // 기본 conditions에 "browser"가 있으므로 browser.js 우선 (import > module > browser)
+    var resolver = Resolver.init(std.testing.allocator);
+    resolver.conditions = &.{ "node", "import", "default" };
+    const result = try resolver.resolve(dir_path, "#dep");
+    defer std.testing.allocator.free(result.path);
+
+    try std.testing.expect(pathEndsWith(result.path, "src/node.js"));
+}
+
+test "resolve: subpath imports not found" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "package.json",
+        \\{"name":"my-app","imports":{"#foo":"./foo.js"}}
+    );
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var resolver = Resolver.init(std.testing.allocator);
+    const result = resolver.resolve(dir_path, "#bar");
+    try std.testing.expectError(error.ModuleNotFound, result);
 }

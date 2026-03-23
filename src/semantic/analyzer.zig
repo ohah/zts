@@ -771,11 +771,16 @@ pub const SemanticAnalyzer = struct {
                 const extra_start = node.data.extra;
                 const extras = self.ast.extra_data.items;
                 if (extra_start + 3 < extras.len) {
-                    // key 순회 — 객체 리터럴의 private name 메서드 검출에 필요
-                    // (class body에서는 collectPrivateNames가 이미 선언을 등록하므로
-                    //  여기서 usePrivateName이 호출되어도 정상 통과)
+                    // key 순회 — computed property ([expr])와 private name (#name) 검출에 필요.
+                    // non-computed key는 단순한 이름이므로 순회하지 않는다.
+                    // 순회하면 identifier_reference로 방문되어 namespace import 이름이
+                    // 잘못 resolve되는 버그가 발생한다 (예: fiberRefs 메서드 이름이
+                    // `import * as fiberRefs`의 namespace 객체로 치환됨).
                     const key_idx: NodeIndex = @enumFromInt(extras[extra_start]);
-                    try self.visitNode(key_idx);
+                    const key_node = self.ast.getNode(key_idx);
+                    if (key_node.tag == .computed_property_key or key_node.tag == .private_identifier) {
+                        try self.visitNode(key_idx);
+                    }
 
                     // getter/setter 파라미터 개수 검증
                     try checker.checkGetterSetterParams(self.ast, node, &self.errors, self.allocator);
@@ -794,10 +799,16 @@ pub const SemanticAnalyzer = struct {
             },
             .property_definition, .accessor_property => {
                 // extra: [key, init_val, flags, deco_start, deco_len]
-                // key도 순회 (computed property의 표현식, class 밖 private name 검출)
+                // key는 computed property([expr])나 private name(#name)일 때만 순회.
+                // non-computed key는 단순 이름이므로 순회하면 namespace import가
+                // 잘못 resolve되는 버그가 발생한다.
                 const e = node.data.extra;
                 if (e + 1 < self.ast.extra_data.items.len) {
-                    try self.visitNode(@enumFromInt(self.ast.extra_data.items[e]));
+                    const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+                    const key_node = self.ast.getNode(key_idx);
+                    if (key_node.tag == .computed_property_key or key_node.tag == .private_identifier) {
+                        try self.visitNode(key_idx);
+                    }
                     try self.visitNode(@enumFromInt(self.ast.extra_data.items[e + 1]));
                 }
             },
