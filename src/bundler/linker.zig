@@ -510,26 +510,26 @@ pub const Linker = struct {
         };
         // 글로벌 객체 (ECMAScript + Web API + Node.js)
         const globals = [_][]const u8{
-            "undefined",      "NaN",            "Infinity",       "arguments",
-            "eval",           "Array",          "Object",         "Function",
-            "String",         "Number",         "Boolean",        "Symbol",
-            "Date",           "Math",           "JSON",           "Promise",
-            "RegExp",         "Error",          "Map",            "Set",
-            "WeakMap",        "WeakSet",        "Proxy",          "Reflect",
-            "console",        "globalThis",     "window",         "document",
-            "require",        "module",         "exports",        "__filename",
+            "undefined",       "NaN",            "Infinity",       "arguments",
+            "eval",            "Array",          "Object",         "Function",
+            "String",          "Number",         "Boolean",        "Symbol",
+            "Date",            "Math",           "JSON",           "Promise",
+            "RegExp",          "Error",          "Map",            "Set",
+            "WeakMap",         "WeakSet",        "Proxy",          "Reflect",
+            "console",         "globalThis",     "window",         "document",
+            "require",         "module",         "exports",        "__filename",
             "__dirname",
             // Web API globals — scope hoisting 시 shadowing 방지
-            "TextEncoder",    "TextDecoder",    "URL",            "URLSearchParams",
-            "ReadableStream", "WritableStream", "TransformStream",
-            "Request",        "Response",       "Headers",        "FormData",
-            "Blob",           "File",           "FileReader",     "AbortController",
-            "AbortSignal",    "Event",          "EventTarget",    "CustomEvent",
-            "setTimeout",     "setInterval",    "clearTimeout",   "clearInterval",
-            "fetch",          "crypto",         "performance",    "navigator",
-            "atob",           "btoa",           "queueMicrotask", "structuredClone",
+                  "TextEncoder",    "TextDecoder",    "URL",
+            "URLSearchParams", "ReadableStream", "WritableStream", "TransformStream",
+            "Request",         "Response",       "Headers",        "FormData",
+            "Blob",            "File",           "FileReader",     "AbortController",
+            "AbortSignal",     "Event",          "EventTarget",    "CustomEvent",
+            "setTimeout",      "setInterval",    "clearTimeout",   "clearInterval",
+            "fetch",           "crypto",         "performance",    "navigator",
+            "atob",            "btoa",           "queueMicrotask", "structuredClone",
             // Node.js globals
-            "Buffer",         "process",        "global",         "__global",
+            "Buffer",          "process",        "global",         "__global",
         };
         for (reserved) |r| {
             if (std.mem.eql(u8, name, r)) return true;
