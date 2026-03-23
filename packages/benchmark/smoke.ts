@@ -3,7 +3,7 @@
  * ZTS Smoke Test — 실제 프로젝트 빌드 검증
  *
  * npm에서 실제 라이브러리를 설치하고 ZTS로 번들링하여
- * 1) 빌드 성공 여부  2) 출력 크기  3) esbuild 대비 비교
+ * 1) 빌드 성공 여부  2) 출력 크기  3) esbuild/rolldown 대비 비교
  */
 
 import { spawnSync } from "node:child_process";
@@ -14,15 +14,19 @@ import { join, resolve } from "node:path";
 const ROOT = resolve(__dirname, "../..");
 const ZTS_BIN = join(ROOT, "zig-out/bin/zts");
 const ESBUILD_BIN = join(__dirname, "node_modules/.bin/esbuild");
+const ROLLDOWN_BIN = join(__dirname, "node_modules/.bin/rolldown");
+
+interface BundlerResult {
+  build: boolean;
+  size: number;
+  time: number;
+}
 
 interface SmokeResult {
   project: string;
-  ztsBuild: boolean;
-  ztsSize: number;
-  ztsTime: number;
-  esbuildBuild: boolean;
-  esbuildSize: number;
-  esbuildTime: number;
+  zts: BundlerResult;
+  esbuild: BundlerResult;
+  rolldown: BundlerResult;
   errors: string[];
 }
 
@@ -32,7 +36,7 @@ function exec(
   cwd?: string,
 ): { ok: boolean; stderr: string; time: number } {
   const start = performance.now();
-  const r = spawnSync(bin, args, { cwd, stdio: "pipe", timeout: 60000 });
+  const r = spawnSync(bin, args, { cwd, stdio: "pipe", timeout: 120000 });
   const time = Math.round(performance.now() - start);
   const stderr = r.stderr?.toString() ?? "";
   return { ok: r.status === 0, stderr, time };
@@ -46,6 +50,8 @@ function fileSize(path: string): number {
   }
 }
 
+const emptyResult: BundlerResult = { build: false, size: 0, time: 0 };
+
 function testProject(
   name: string,
   npmPkg: string,
@@ -55,12 +61,9 @@ function testProject(
   const dir = mkdtempSync(join(tmpdir(), `zts-smoke-${name}-`));
   const result: SmokeResult = {
     project: name,
-    ztsBuild: false,
-    ztsSize: 0,
-    ztsTime: 0,
-    esbuildBuild: false,
-    esbuildSize: 0,
-    esbuildTime: 0,
+    zts: { ...emptyResult },
+    esbuild: { ...emptyResult },
+    rolldown: { ...emptyResult },
     errors: [],
   };
 
@@ -73,7 +76,7 @@ function testProject(
     const install = spawnSync("npm", ["install", npmPkg, "--save"], {
       cwd: dir,
       stdio: "pipe",
-      timeout: 60000,
+      timeout: 120000,
     });
     if (install.status !== 0) {
       result.errors.push(`npm install failed: ${install.stderr?.toString().slice(0, 200)}`);
@@ -85,6 +88,7 @@ function testProject(
 
     const ztsOut = join(dir, "dist-zts.js");
     const esOut = join(dir, "dist-esbuild.js");
+    const rdOut = join(dir, "dist-rolldown.js");
 
     // ZTS bundle
     const zts = exec(ZTS_BIN, [
@@ -95,9 +99,11 @@ function testProject(
       "--platform=node",
       ...extraArgs,
     ]);
-    result.ztsBuild = zts.ok;
-    result.ztsSize = fileSize(ztsOut);
-    result.ztsTime = zts.time;
+    result.zts = {
+      build: zts.ok,
+      size: fileSize(ztsOut),
+      time: zts.time,
+    };
     if (!zts.ok) {
       result.errors.push(`ZTS build: ${zts.stderr.slice(0, 500)}`);
     }
@@ -106,12 +112,12 @@ function testProject(
     if (zts.ok) {
       const run = exec("node", [ztsOut]);
       if (!run.ok) {
-        result.ztsBuild = false; // 실행 실패 = 빌드 실패로 간주
+        result.zts.build = false;
         result.errors.push(`ZTS run: ${run.stderr.slice(0, 300)}`);
       }
     }
 
-    // esbuild bundle (baseline)
+    // esbuild bundle
     if (existsSync(ESBUILD_BIN)) {
       const es = exec(ESBUILD_BIN, [
         join(dir, "index.ts"),
@@ -120,9 +126,29 @@ function testProject(
         "--loader:.ts=ts",
         "--platform=node",
       ]);
-      result.esbuildBuild = es.ok;
-      result.esbuildSize = fileSize(esOut);
-      result.esbuildTime = es.time;
+      result.esbuild = {
+        build: es.ok,
+        size: fileSize(esOut),
+        time: es.time,
+      };
+    }
+
+    // rolldown bundle
+    if (existsSync(ROLLDOWN_BIN)) {
+      const rd = exec(ROLLDOWN_BIN, [
+        join(dir, "index.ts"),
+        "-o",
+        rdOut,
+        "--format",
+        "cjs",
+        "--platform",
+        "node",
+      ]);
+      result.rolldown = {
+        build: rd.ok,
+        size: fileSize(rdOut),
+        time: rd.time,
+      };
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -297,9 +323,9 @@ for (const p of projects) {
   const r = testProject(p.name, p.pkg, p.entry, (p as any).extraArgs);
   results.push(r);
 
-  const status = r.ztsBuild ? "OK" : "FAIL";
-  const sizeKB = r.ztsSize > 0 ? `${Math.round(r.ztsSize / 1024)}KB` : "-";
-  console.log(`${status} (${sizeKB}, ${r.ztsTime}ms)`);
+  const status = r.zts.build ? "OK" : "FAIL";
+  const sizeKB = r.zts.size > 0 ? `${Math.round(r.zts.size / 1024)}KB` : "-";
+  console.log(`${status} (${sizeKB}, ${r.zts.time}ms)`);
 
   if (r.errors.length > 0) {
     for (const e of r.errors) {
@@ -309,20 +335,23 @@ for (const p of projects) {
 }
 
 // Summary table
+function fmtSize(size: number): string {
+  return size > 0 ? `${Math.round(size / 1024)}KB` : "-";
+}
+function fmtStatus(build: boolean): string {
+  return build ? "OK" : "FAIL";
+}
+
 console.log("\n### Smoke Test Results\n");
-console.log("| Project | ZTS | ZTS Size | ZTS Time | esbuild | esbuild Size | esbuild Time |");
-console.log("|---------|-----|----------|----------|---------|--------------|--------------|");
+console.log("| Project | ZTS | Size | Time | esbuild | Size | Time | rolldown | Size | Time |");
+console.log("|---------|-----|------|------|---------|------|------|----------|------|------|");
 for (const r of results) {
-  const zStatus = r.ztsBuild ? "OK" : "FAIL";
-  const eStatus = r.esbuildBuild ? "OK" : "FAIL";
-  const zSize = r.ztsSize > 0 ? `${Math.round(r.ztsSize / 1024)}KB` : "-";
-  const eSize = r.esbuildSize > 0 ? `${Math.round(r.esbuildSize / 1024)}KB` : "-";
   console.log(
-    `| ${r.project} | ${zStatus} | ${zSize} | ${r.ztsTime}ms | ${eStatus} | ${eSize} | ${r.esbuildTime}ms |`,
+    `| ${r.project} | ${fmtStatus(r.zts.build)} | ${fmtSize(r.zts.size)} | ${r.zts.time}ms | ${fmtStatus(r.esbuild.build)} | ${fmtSize(r.esbuild.size)} | ${r.esbuild.time}ms | ${fmtStatus(r.rolldown.build)} | ${fmtSize(r.rolldown.size)} | ${r.rolldown.time}ms |`,
   );
 }
 
-const passed = results.filter((r) => r.ztsBuild).length;
+const passed = results.filter((r) => r.zts.build).length;
 const total = results.length;
 console.log(`\n${passed}/${total} projects built successfully.`);
 

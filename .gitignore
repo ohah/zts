@@ -5,7 +5,6 @@ zig-cache/
 
 # Node/Bun
 node_modules/
-bun.lock
 
 # Playwright
 test-results/

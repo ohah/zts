@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "workspaces": [
     "./packages/integration",
-    "./packages/e2e"
+    "./packages/e2e",
+    "./packages/benchmark"
   ],
   "scripts": {
     "test": "bun run test:integration",
