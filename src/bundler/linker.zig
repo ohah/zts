@@ -287,7 +287,22 @@ pub const Linker = struct {
         while (nit.next()) |entry| {
             const name = entry.key_ptr.*;
             const owners = entry.value_ptr.items;
-            if (owners.len <= 1) continue; // 충돌 없음
+
+            // 단일 소유자라도 well-known global을 shadowing하면 리네임 필요.
+            // scope hoisting 후 const/let 선언이 TDZ를 만들어 다른 모듈의 전역 참조가 실패.
+            if (owners.len == 1) {
+                if (isReservedName(name)) {
+                    const owner = owners[0];
+                    const candidate = try std.fmt.allocPrint(self.allocator, "{s}$1", .{name});
+                    const key = try makeExportKey(self.allocator, owner.module_index, name);
+                    if (self.canonical_names.fetchRemove(key)) |old| {
+                        self.allocator.free(old.key);
+                        self.allocator.free(old.value);
+                    }
+                    try self.canonical_names.put(key, candidate);
+                }
+                continue;
+            }
 
             // exec_index 순으로 정렬 — 가장 낮은 게 원본 유지
             std.mem.sort(NameOwner, entry.value_ptr.items, {}, struct {
@@ -493,17 +508,28 @@ pub const Linker = struct {
             "interface", "package",    "private",  "protected", "public",
             "await",
         };
-        // 글로벌 객체
+        // 글로벌 객체 (ECMAScript + Web API + Node.js)
         const globals = [_][]const u8{
-            "undefined", "NaN",        "Infinity", "arguments",
-            "eval",      "Array",      "Object",   "Function",
-            "String",    "Number",     "Boolean",  "Symbol",
-            "Date",      "Math",       "JSON",     "Promise",
-            "RegExp",    "Error",      "Map",      "Set",
-            "WeakMap",   "WeakSet",    "Proxy",    "Reflect",
-            "console",   "globalThis", "window",   "document",
-            "require",   "module",     "exports",  "__filename",
+            "undefined",      "NaN",            "Infinity",       "arguments",
+            "eval",           "Array",          "Object",         "Function",
+            "String",         "Number",         "Boolean",        "Symbol",
+            "Date",           "Math",           "JSON",           "Promise",
+            "RegExp",         "Error",          "Map",            "Set",
+            "WeakMap",        "WeakSet",        "Proxy",          "Reflect",
+            "console",        "globalThis",     "window",         "document",
+            "require",        "module",         "exports",        "__filename",
             "__dirname",
+            // Web API globals — scope hoisting 시 shadowing 방지
+            "TextEncoder",    "TextDecoder",    "URL",            "URLSearchParams",
+            "ReadableStream", "WritableStream", "TransformStream",
+            "Request",        "Response",       "Headers",        "FormData",
+            "Blob",           "File",           "FileReader",     "AbortController",
+            "AbortSignal",    "Event",          "EventTarget",    "CustomEvent",
+            "setTimeout",     "setInterval",    "clearTimeout",   "clearInterval",
+            "fetch",          "crypto",         "performance",    "navigator",
+            "atob",           "btoa",           "queueMicrotask", "structuredClone",
+            // Node.js globals
+            "Buffer",         "process",        "global",         "__global",
         };
         for (reserved) |r| {
             if (std.mem.eql(u8, name, r)) return true;
@@ -651,7 +677,32 @@ pub const Linker = struct {
             for (m.import_bindings) |ib| {
                 if (ib.import_record_index >= m.import_records.len) continue;
                 const rec = m.import_records[ib.import_record_index];
-                if (rec.resolved.isNone()) continue;
+
+                // External 모듈 (Node.js 빌트인, --external): resolved가 없지만
+                // import 바인딩이 존재 → preamble에 require() 호출을 생성하여 변수 바인딩 유지.
+                // 예: import url from 'url' → var url = require("url")
+                if (rec.resolved.isNone()) {
+                    if (rec.kind == .static_import or rec.kind == .side_effect or rec.kind == .re_export) {
+                        if (ib.kind == .namespace or std.mem.eql(u8, ib.imported_name, "default")) {
+                            // namespace 또는 default import: var <local> = require("<specifier>")
+                            try cjs_preamble_buf.appendSlice(self.allocator, "var ");
+                            try cjs_preamble_buf.appendSlice(self.allocator, ib.local_name);
+                            try cjs_preamble_buf.appendSlice(self.allocator, " = require(\"");
+                            try cjs_preamble_buf.appendSlice(self.allocator, rec.specifier);
+                            try cjs_preamble_buf.appendSlice(self.allocator, "\");\n");
+                        } else {
+                            // named import: var <local> = require("<specifier>").<imported>
+                            try cjs_preamble_buf.appendSlice(self.allocator, "var ");
+                            try cjs_preamble_buf.appendSlice(self.allocator, ib.local_name);
+                            try cjs_preamble_buf.appendSlice(self.allocator, " = require(\"");
+                            try cjs_preamble_buf.appendSlice(self.allocator, rec.specifier);
+                            try cjs_preamble_buf.appendSlice(self.allocator, "\").");
+                            try cjs_preamble_buf.appendSlice(self.allocator, ib.imported_name);
+                            try cjs_preamble_buf.appendSlice(self.allocator, ";\n");
+                        }
+                    }
+                    continue;
+                }
 
                 const canonical_mod = @intFromEnum(rec.resolved);
 

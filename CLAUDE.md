@@ -431,14 +431,14 @@ src/bundler/
 - **픽스처 테스트**: `tests/bundler/fixtures/` — 입력 파일 → 기대 출력 비교
 - **실행 비교 테스트 (핵심)**: 번들 결과를 실행해서 동작 확인 (출력 형태보다 실행 결과가 중요)
 - **호환 테스트**: 같은 입력으로 Rollup과 실행 결과 비교 (Rolldown 방식)
-- ✅ **스모크 테스트**: lodash-es, preact, date-fns, uuid, zod 빌드+실행 검증 (CI 통합, packages/benchmark/smoke.ts)
+- ✅ **스모크 테스트**: lodash-es, preact, date-fns, uuid, zod, axios, @reduxjs/toolkit 빌드+실행 검증 (CI 통합, packages/benchmark/smoke.ts)
 - **도입 순서**: B1에서 유닛+픽스처 → B2에서 실행 비교+호환 → ✅ 프로덕션 전 스모크
 
 ##### 실전 검증 로드맵
 - **1단계 (지금 가능)**: 실제 .ts/.tsx 파일을 ZTS로 변환, esbuild/SWC 출력과 비교
 - **2단계 (Arena 후)**: `hyperfine`으로 대형 파일 벤치마크 (ZTS vs esbuild vs SWC). Arena 없이 벤치마크는 의미 없음
 - **3단계 (N-API 후)**: `vite-plugin-zts`로 실제 React/Vue 프로젝트 개발 서버. 첫 실전 사용자 검증
-- ✅ **4단계 (번들러 MVP)**: 실제 프로젝트 빌드 스모크 테스트 — 5/5 통과 (lodash-es, preact, date-fns, uuid, zod), CI 통합 완료
+- ✅ **4단계 (번들러 MVP)**: 실제 프로젝트 빌드 스모크 테스트 — 7/7 통과 (lodash-es, preact, date-fns, uuid, zod, axios, @reduxjs/toolkit), CI 통합 완료
 
 **Module에 필요한 정보 (Rollup 분석 결과):**
 ```zig
@@ -493,6 +493,16 @@ const Module = struct {
 - ⬜ **3단계**: 깊은 사이드 이펙트 분석 — getter/proxy/global 변수 판단 (후순위)
 - **문장 수준 tree-shaking은 구현하지 않음** — esbuild/Bun과 동일하게 모듈 수준만 (Rollup만 문장 수준 지원)
 - ZTS 유리점: semantic analyzer의 스코프/심볼이 이미 있고, `@__PURE__` 렉서 지원, 인덱스 기반 AST로 노드 제거가 태그 변경만으로 가능
+
+##### 스코프 호이스팅 deconflict 개선 (TODO — 구조적 수정 필요)
+현재: well-known global 이름 목록(`isReservedName`)을 상수로 관리. 모듈의 top-level 변수가 글로벌을 shadowing하면 리네임.
+- **문제**: 목록이 환경마다 다르고 (브라우저 vs Node.js), 수동 관리 필요. 누락 시 TDZ 버그.
+- **목표**: Rolldown 방식 — `root_unresolved_references()` (실제 사용된 글로벌)를 자동 수집하여 예약. 상수 목록 불필요.
+  - esbuild: `SymbolUnbound` (미해석 참조 = 글로벌)를 자동 예약 + 모듈 래핑으로 TDZ 방지
+  - Rolldown: 2-phase renaming — root scope 글로벌 예약 → nested scope 캡처 방지 리네임
+  - 참고: `references/rolldown/crates/rolldown/src/utils/renamer.rs`, `references/rolldown/crates/rolldown/src/utils/chunk/deconflict_chunk_symbols.rs`
+  - 참고: `references/esbuild/internal/renamer/renamer.go` (ComputeReservedNames)
+- **구현 시점**: semantic analyzer의 스코프/심볼 데이터가 이미 있으므로, 번들러 안정화 후 진행
 
 ##### Code splitting 구현 전략
 - 동적 import (`import('./page')`) 기준 청크 분할

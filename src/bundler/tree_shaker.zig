@@ -173,13 +173,19 @@ pub const TreeShaker = struct {
                 }
             }
 
-            // 포함된 모듈이 import하는 side_effects=true 모듈 전파
+            // 포함된 모듈이 import하는 모듈 전파:
+            // - side_effects=true 모듈: 항상 포함
+            // - CJS require() 타겟: ESM import binding으로 추적 불가하므로 무조건 포함
+            //   (CJS는 모듈 전체를 로드하므로 개별 export 추적이 불가능)
             for (self.modules, 0..) |m, i| {
                 if (!self.included.isSet(i)) continue;
                 for (m.import_records) |rec| {
                     if (rec.resolved.isNone()) continue;
                     const target = @intFromEnum(rec.resolved);
-                    if (target < self.modules.len and !self.included.isSet(target) and self.modules[target].side_effects) {
+                    if (target >= self.modules.len) continue;
+                    if (self.included.isSet(target)) continue;
+                    // CJS require()로 참조되는 모듈은 항상 포함 (tree-shaking 불가)
+                    if (rec.kind == .require or self.modules[target].side_effects) {
                         self.included.set(target);
                         changed = true;
                     }
