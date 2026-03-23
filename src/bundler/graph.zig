@@ -508,12 +508,7 @@ fn createFile(dir: std.fs.Dir, path: []const u8) !void {
     file.close();
 }
 
-fn writeFile(dir: std.fs.Dir, path: []const u8, data: []const u8) !void {
-    if (std.fs.path.dirname(path)) |parent| {
-        dir.makePath(parent) catch {};
-    }
-    dir.writeFile(.{ .sub_path = path, .data = data }) catch |err| return err;
-}
+const writeFile = @import("test_helpers.zig").writeFile;
 
 fn dirPath(tmp: *std.testing.TmpDir) ![]const u8 {
     return try tmp.dir.realpathAlloc(std.testing.allocator, ".");

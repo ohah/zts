@@ -199,73 +199,80 @@ pub const Linker = struct {
         try self.resolveImports();
     }
 
-    /// 이름 충돌 감지 + 리네임 계산 (Rolldown renamer 패턴).
-    /// exec_index가 가장 낮은 모듈이 원본 이름 유지, 나머지는 $1, $2, ...
-    pub fn computeRenames(self: *Linker) !void {
-        // 1. 모든 모듈의 top-level export 이름 수집
-        const NameOwner = struct {
-            module_index: u32,
-            exec_index: u32,
-        };
-        var name_to_owners = std.StringHashMap(std.ArrayList(NameOwner)).init(self.allocator);
-        defer {
-            var vit = name_to_owners.valueIterator();
-            while (vit.next()) |list| list.deinit(self.allocator);
-            name_to_owners.deinit();
-        }
+    /// 이름 충돌 감지 + 리네임에 사용하는 소유자 정보.
+    const NameOwner = struct {
+        module_index: u32,
+        exec_index: u32,
+    };
 
-        for (self.modules, 0..) |m, i| {
-            const sem = m.semantic orelse continue;
-            // C1 수정: export뿐 아니라 모듈 스코프의 모든 top-level 심볼을 수집.
-            // scope_maps[0]이 보통 모듈/글로벌 스코프.
-            if (sem.scope_maps.len == 0) continue;
-            const module_scope = sem.scope_maps[0];
+    /// name_to_owners HashMap의 타입 별칭.
+    const NameToOwnersMap = std.StringHashMap(std.ArrayList(NameOwner));
 
-            var scope_it = module_scope.iterator();
-            while (scope_it.next()) |scope_entry| {
-                const sym_name = scope_entry.key_ptr.*;
-                if (std.mem.eql(u8, sym_name, "default")) continue;
+    /// 단일 모듈의 top-level 심볼 이름을 name_to_owners에 수집한다.
+    /// 모듈 스코프의 모든 심볼 + export default 합성 _default 이름을 등록.
+    /// import binding은 다른 모듈의 심볼을 참조하므로 건너뛴다.
+    fn collectModuleNames(
+        self: *Linker,
+        m: Module,
+        module_index: u32,
+        name_to_owners: *NameToOwnersMap,
+    ) !void {
+        const sem = m.semantic orelse return;
+        if (sem.scope_maps.len == 0) return;
+        const module_scope = sem.scope_maps[0];
 
-                // import binding은 다른 모듈의 심볼을 참조하므로 충돌 대상 아님.
-                // namespace import도 인라인(ns.prop → prop)되어 preamble 변수가 생성되지 않으므로
-                // 충돌 대상이 아님. (이전에는 namespace import를 예외로 포함했지만,
-                // 이 경우 내부 스코프의 같은 이름 파라미터/변수가 잘못 rename되는 버그 발생)
-                const sym_idx = scope_entry.value_ptr.*;
-                if (sym_idx < sem.symbols.len and sem.symbols[sym_idx].decl_flags.is_import) {
-                    continue;
-                }
+        var scope_it = module_scope.iterator();
+        while (scope_it.next()) |scope_entry| {
+            const sym_name = scope_entry.key_ptr.*;
+            if (std.mem.eql(u8, sym_name, "default")) continue;
 
-                const entry = try name_to_owners.getOrPut(sym_name);
-                if (!entry.found_existing) {
-                    entry.value_ptr.* = .empty;
-                }
-                try entry.value_ptr.append(self.allocator, .{
-                    .module_index = @intCast(i),
-                    .exec_index = m.exec_index,
-                });
+            // import binding은 다른 모듈의 심볼을 참조하므로 충돌 대상 아님.
+            // namespace import도 인라인(ns.prop → prop)되어 preamble 변수가 생성되지 않으므로
+            // 충돌 대상이 아님.
+            const sym_idx = scope_entry.value_ptr.*;
+            if (sym_idx < sem.symbols.len and sem.symbols[sym_idx].decl_flags.is_import) {
+                continue;
             }
 
-            // export default의 합성 _default 이름도 수집.
-            // codegen에서 `export default X` → `var _default = X;`를 생성하는데,
-            // 이 이름이 semantic scope에 없으므로 별도로 수집한다.
-            for (m.export_bindings) |eb| {
-                if (eb.kind != .local) continue;
-                if (!std.mem.eql(u8, eb.exported_name, "default")) continue;
-                if (std.mem.eql(u8, eb.local_name, "default")) continue;
-                // scope에 이미 있으면 중복 추가 방지
-                if (module_scope.get(eb.local_name) != null) continue;
-                const entry = try name_to_owners.getOrPut(eb.local_name);
-                if (!entry.found_existing) {
-                    entry.value_ptr.* = .empty;
-                }
-                try entry.value_ptr.append(self.allocator, .{
-                    .module_index = @intCast(i),
-                    .exec_index = m.exec_index,
-                });
+            const entry = try name_to_owners.getOrPut(sym_name);
+            if (!entry.found_existing) {
+                entry.value_ptr.* = .empty;
             }
+            try entry.value_ptr.append(self.allocator, .{
+                .module_index = module_index,
+                .exec_index = m.exec_index,
+            });
         }
 
-        // 2. 충돌하는 이름에 대해 리네임 계산
+        // export default의 합성 _default 이름도 수집.
+        // codegen에서 `export default X` → `var _default = X;`를 생성하는데,
+        // 이 이름이 semantic scope에 없으므로 별도로 수집한다.
+        for (m.export_bindings) |eb| {
+            if (eb.kind != .local) continue;
+            if (!std.mem.eql(u8, eb.exported_name, "default")) continue;
+            if (std.mem.eql(u8, eb.local_name, "default")) continue;
+            // scope에 이미 있으면 중복 추가 방지
+            if (module_scope.get(eb.local_name) != null) continue;
+            const entry = try name_to_owners.getOrPut(eb.local_name);
+            if (!entry.found_existing) {
+                entry.value_ptr.* = .empty;
+            }
+            try entry.value_ptr.append(self.allocator, .{
+                .module_index = module_index,
+                .exec_index = m.exec_index,
+            });
+        }
+    }
+
+    /// name_to_owners에서 충돌하는 이름을 찾아 리네임을 계산한다.
+    /// exec_index가 가장 낮은 소유자가 원본 이름 유지, 나머지는 $1, $2, ...
+    /// skip_max_module_index가 true이면 module_index == maxInt(u32)인 항목(cross-chunk
+    /// import 점유 마커)은 rename 대상에서 제외한다.
+    fn calculateRenames(
+        self: *Linker,
+        name_to_owners: *NameToOwnersMap,
+        skip_max_module_index: bool,
+    ) !void {
         var nit = name_to_owners.iterator();
         while (nit.next()) |entry| {
             const name = entry.key_ptr.*;
@@ -282,6 +289,9 @@ pub const Linker = struct {
             // 첫 번째는 원본 유지, 나머지는 $1, $2, ...
             var suffix: u32 = 1;
             for (owners[1..]) |owner| {
+                // 점유 마커 (cross-chunk import)는 rename 대상이 아님
+                if (skip_max_module_index and owner.module_index == std.math.maxInt(u32)) continue;
+
                 // 후보 이름 생성
                 var candidate = try std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, suffix });
 
@@ -302,6 +312,25 @@ pub const Linker = struct {
                 suffix += 1;
             }
         }
+    }
+
+    /// 이름 충돌 감지 + 리네임 계산 (Rolldown renamer 패턴).
+    /// exec_index가 가장 낮은 모듈이 원본 이름 유지, 나머지는 $1, $2, ...
+    pub fn computeRenames(self: *Linker) !void {
+        // 1. 모든 모듈의 top-level export 이름 수집
+        var name_to_owners = NameToOwnersMap.init(self.allocator);
+        defer {
+            var vit = name_to_owners.valueIterator();
+            while (vit.next()) |list| list.deinit(self.allocator);
+            name_to_owners.deinit();
+        }
+
+        for (self.modules, 0..) |m, i| {
+            try self.collectModuleNames(m, @intCast(i), &name_to_owners);
+        }
+
+        // 2. 충돌하는 이름에 대해 리네임 계산
+        try self.calculateRenames(&name_to_owners, false);
     }
 
     /// minify 활성화 시, scope hoisting 후 모든 top-level 이름을 짧은 이름으로 교체.
@@ -1554,11 +1583,7 @@ pub const Linker = struct {
         self.clearCanonicalNames();
 
         // 1. 지정된 모듈의 top-level 심볼 이름 수집
-        const NameOwner = struct {
-            module_index: u32,
-            exec_index: u32,
-        };
-        var name_to_owners = std.StringHashMap(std.ArrayList(NameOwner)).init(self.allocator);
+        var name_to_owners = NameToOwnersMap.init(self.allocator);
         defer {
             var vit = name_to_owners.valueIterator();
             while (vit.next()) |list| list.deinit(self.allocator);
@@ -1582,86 +1607,11 @@ pub const Linker = struct {
         for (module_indices) |mod_idx| {
             const i = @intFromEnum(mod_idx);
             if (i >= self.modules.len) continue;
-            const m = self.modules[i];
-            const sem = m.semantic orelse continue;
-            if (sem.scope_maps.len == 0) continue;
-            const module_scope = sem.scope_maps[0];
-
-            var scope_it = module_scope.iterator();
-            while (scope_it.next()) |scope_entry| {
-                const sym_name = scope_entry.key_ptr.*;
-                if (std.mem.eql(u8, sym_name, "default")) continue;
-
-                // import binding은 충돌 대상 아님 (namespace 포함 — 인라인되므로 변수 미생성)
-                const sym_idx = scope_entry.value_ptr.*;
-                if (sym_idx < sem.symbols.len and sem.symbols[sym_idx].decl_flags.is_import) {
-                    continue;
-                }
-
-                const entry = try name_to_owners.getOrPut(sym_name);
-                if (!entry.found_existing) {
-                    entry.value_ptr.* = .empty;
-                }
-                try entry.value_ptr.append(self.allocator, .{
-                    .module_index = @intCast(i),
-                    .exec_index = m.exec_index,
-                });
-            }
-
-            // export default의 합성 _default 이름도 수집 (computeRenames와 동일)
-            for (m.export_bindings) |eb| {
-                if (eb.kind != .local) continue;
-                if (!std.mem.eql(u8, eb.exported_name, "default")) continue;
-                if (std.mem.eql(u8, eb.local_name, "default")) continue;
-                if (module_scope.get(eb.local_name) != null) continue;
-                const def_entry = try name_to_owners.getOrPut(eb.local_name);
-                if (!def_entry.found_existing) {
-                    def_entry.value_ptr.* = .empty;
-                }
-                try def_entry.value_ptr.append(self.allocator, .{
-                    .module_index = @intCast(i),
-                    .exec_index = m.exec_index,
-                });
-            }
+            try self.collectModuleNames(self.modules[i], @intCast(i), &name_to_owners);
         }
 
-        // 2. 충돌하는 이름에 대해 리네임 계산
-        var nit = name_to_owners.iterator();
-        while (nit.next()) |entry| {
-            const name = entry.key_ptr.*;
-            const owners = entry.value_ptr.items;
-            if (owners.len <= 1) continue; // 충돌 없음
-
-            // exec_index 순으로 정렬 — 가장 낮은 게 원본 유지
-            std.mem.sort(NameOwner, entry.value_ptr.items, {}, struct {
-                fn lessThan(_: void, a: NameOwner, b: NameOwner) bool {
-                    return a.exec_index < b.exec_index;
-                }
-            }.lessThan);
-
-            // 첫 번째는 원본 유지, 나머지는 $1, $2, ...
-            var suffix: u32 = 1;
-            for (owners[1..]) |owner| {
-                // 점유 마커 (cross-chunk import)는 rename 대상이 아님
-                if (owner.module_index == std.math.maxInt(u32)) continue;
-
-                var candidate = try std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, suffix });
-
-                while (isReservedName(candidate) or self.hasNestedBinding(owner.module_index, candidate)) {
-                    self.allocator.free(candidate);
-                    suffix += 1;
-                    candidate = try std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, suffix });
-                }
-
-                const key = try makeExportKey(self.allocator, owner.module_index, name);
-                if (self.canonical_names.fetchRemove(key)) |old| {
-                    self.allocator.free(old.key);
-                    self.allocator.free(old.value);
-                }
-                try self.canonical_names.put(key, candidate);
-                suffix += 1;
-            }
-        }
+        // 2. 충돌하는 이름에 대해 리네임 계산 (cross-chunk 점유 마커는 skip)
+        try self.calculateRenames(&name_to_owners, true);
     }
 
     const makeExportKey = types.makeModuleKey;
@@ -1675,12 +1625,7 @@ pub const Linker = struct {
 const resolve_cache_mod = @import("resolve_cache.zig");
 const ModuleGraph = @import("graph.zig").ModuleGraph;
 
-fn writeFile(dir: std.fs.Dir, path: []const u8, data: []const u8) !void {
-    if (std.fs.path.dirname(path)) |parent| {
-        dir.makePath(parent) catch {};
-    }
-    try dir.writeFile(.{ .sub_path = path, .data = data });
-}
+const writeFile = @import("test_helpers.zig").writeFile;
 
 fn dirPath(tmp: *std.testing.TmpDir) ![]const u8 {
     return try tmp.dir.realpathAlloc(std.testing.allocator, ".");
