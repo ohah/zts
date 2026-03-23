@@ -295,8 +295,8 @@ pub const Linker = struct {
                 // 후보 이름 생성
                 var candidate = try std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, suffix });
 
-                // 후보 이름이 예약어, 글로벌 객체, 또는 nested scope에 있으면 다음 번호
-                while (isReservedName(candidate) or self.hasNestedBinding(owner.module_index, candidate)) {
+                // 후보 이름이 예약어, 다른 모듈의 top-level 이름, 또는 nested scope에 있으면 다음 번호
+                while (isReservedName(candidate) or name_to_owners.contains(candidate) or self.hasNestedBinding(owner.module_index, candidate)) {
                     self.allocator.free(candidate);
                     suffix += 1;
                     candidate = try std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, suffix });
@@ -642,14 +642,22 @@ pub const Linker = struct {
                         break :blk name;
                     };
 
-                    if (ib.kind == .namespace or std.mem.eql(u8, ib.imported_name, "default")) {
-                        // default/namespace import: var <local> = __toESM(require_xxx());
+                    if (ib.kind == .namespace) {
+                        // namespace import: var <local> = __toESM(require_xxx());
                         // __toESM이 __esModule 플래그를 확인하여 적절한 namespace 객체 생성
                         try cjs_preamble_buf.appendSlice(self.allocator, "var ");
                         try cjs_preamble_buf.appendSlice(self.allocator, ib.local_name);
                         try cjs_preamble_buf.appendSlice(self.allocator, " = __toESM(");
                         try cjs_preamble_buf.appendSlice(self.allocator, req_var);
                         try cjs_preamble_buf.appendSlice(self.allocator, "());\n");
+                    } else if (std.mem.eql(u8, ib.imported_name, "default")) {
+                        // default import: var <local> = __toESM(require_xxx()).default;
+                        // __toESM이 { default: module.exports, ... }를 반환하므로 .default 필요
+                        try cjs_preamble_buf.appendSlice(self.allocator, "var ");
+                        try cjs_preamble_buf.appendSlice(self.allocator, ib.local_name);
+                        try cjs_preamble_buf.appendSlice(self.allocator, " = __toESM(");
+                        try cjs_preamble_buf.appendSlice(self.allocator, req_var);
+                        try cjs_preamble_buf.appendSlice(self.allocator, "()).default;\n");
                     } else {
                         // named import: var <local> = require_xxx().<imported>;
                         try cjs_preamble_buf.appendSlice(self.allocator, "var ");
@@ -740,7 +748,10 @@ pub const Linker = struct {
                     break :blk ib.imported_name;
                 };
 
-                if (!std.mem.eql(u8, ib.local_name, target_name)) {
+                // "default"는 JS 예약어이므로 rename target으로 사용 불가
+                if (!std.mem.eql(u8, ib.local_name, target_name) and
+                    !std.mem.eql(u8, target_name, "default"))
+                {
                     if (module_scope.get(ib.local_name)) |sym_idx| {
                         try renames.put(@intCast(sym_idx), target_name);
                     }

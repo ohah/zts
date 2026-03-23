@@ -230,7 +230,11 @@ pub fn parseFunctionExpressionWithFlags(self: *Parser, extra_flags: u32) ParseEr
     const saved_ctx = self.enterFunctionContext(is_async, is_generator);
 
     var name = NodeIndex.none;
-    if (self.current() == .identifier or self.current() == .kw_yield or self.current() == .kw_await) {
+    // 함수 표현식의 이름: identifier + contextual keyword (get, set, async, from, of 등)
+    // ECMAScript에서 reserved keyword만 함수 이름으로 사용 불가
+    if (self.current() == .identifier or self.current() == .kw_yield or self.current() == .kw_await or
+        (self.current().isKeyword() and !self.current().isReservedKeyword()))
+    {
         name = try self.parseBindingIdentifier();
     }
 
