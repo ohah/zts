@@ -608,6 +608,9 @@ pub const Linker = struct {
 
                     if (isNamespaceUsedAsValue(new_ast, effective_syms, @intCast(ns_sym_id))) {
                         // 폴백: ns 자체가 값으로 사용됨 → 기존 preamble 방식
+                        // TODO: preamble의 변수명이 renames를 거치지 않아 다른 모듈의
+                        // 같은 이름과 충돌할 수 있음. esbuild는 이 경우에도 프로퍼티 치환을
+                        // 사용하고 namespace 객체를 인라인 생성하여 해결.
                         const ns_name = self.getCanonicalName(module_index, ib.local_name) orelse ib.local_name;
                         try self.buildNamespacePreamble(
                             &cjs_preamble_buf,

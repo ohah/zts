@@ -1642,7 +1642,8 @@ pub const Parser = struct {
 
     /// TS typed arrow function을 직접 파싱: `(a: Type, b?: Type): ReturnType => body`
     /// save/restore로 실패 시 원래 위치로 복원할 수 있도록 호출부에서 관리.
-    pub fn parseTypedArrowParams(self: *Parser, start: u32, is_async: bool) ParseError2!NodeIndex {
+    /// TS typed arrow function 파싱 시도. 성공하면 arrow 노드, 실패하면 null (호출부가 폴백).
+    pub fn parseTypedArrowParams(self: *Parser, start: u32, is_async: bool) ParseError2!?NodeIndex {
         const saved = self.saveState();
         const errors_before = self.errors.items.len;
 
@@ -1660,16 +1661,10 @@ pub const Parser = struct {
 
         self.in_formal_parameters = false;
         if (self.current() != .r_paren) {
-            // 파싱 실패 — 복원
             self.restoreScratch(scratch_top);
             self.errors.shrinkRetainingCapacity(errors_before);
             self.restoreState(saved);
-            // 더미 노드 반환 (호출부에서 tag 체크)
-            return try self.ast.addNode(.{
-                .tag = .parenthesized_expression,
-                .span = .{ .start = start, .end = self.currentSpan().start },
-                .data = .{ .none = 0 },
-            });
+            return null;
         }
         try self.advance(); // skip )
 
@@ -1678,15 +1673,10 @@ pub const Parser = struct {
 
         // => 확인
         if (self.current() != .arrow or self.scanner.token.has_newline_before) {
-            // arrow가 아님 — 복원
             self.restoreScratch(scratch_top);
             self.errors.shrinkRetainingCapacity(errors_before);
             self.restoreState(saved);
-            return try self.ast.addNode(.{
-                .tag = .parenthesized_expression,
-                .span = .{ .start = start, .end = self.currentSpan().start },
-                .data = .{ .none = 0 },
-            });
+            return null;
         }
 
         // 파라미터 노드 리스트 생성
