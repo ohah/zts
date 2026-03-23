@@ -47,7 +47,7 @@ fn transpileFile(
     // 파일당 Arena allocator: 모든 내부 할당을 Arena에서 수행하고,
     // 함수 끝에서 일괄 해제한다. backing allocator(GPA)는 debug leak detection용.
     var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit(); // 함수 끝에서 모든 메모리 일괄 해제
+    defer arena.deinit();
     const arena_alloc = arena.allocator();
 
     // 소스 읽기 — Arena에서 할당하므로 별도 free 불필요
@@ -61,6 +61,13 @@ fn transpileFile(
     // 파싱 — 모든 모듈이 arena_alloc을 사용하므로 개별 deinit 불필요
     var scanner = try Scanner.init(arena_alloc, source);
     var parser = Parser.init(arena_alloc, &scanner);
+    // .ts/.mts/.tsx/.mjs/.js(type=module) → ESM module mode
+    const ext = std.fs.path.extension(file_path);
+    if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx") or
+        std.mem.eql(u8, ext, ".mts") or std.mem.eql(u8, ext, ".mjs"))
+    {
+        parser.is_module = true;
+    }
     _ = parser.parse() catch |err| {
         try stderr.print("zts: parse error in '{s}': {}\n", .{ file_path, err });
         return;
