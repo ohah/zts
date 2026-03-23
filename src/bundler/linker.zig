@@ -314,9 +314,9 @@ pub const Linker = struct {
             // 첫 번째는 원본 유지, 나머지는 $1, $2, ...
             // 단, 예약어(require, module 등)는 첫 번째도 리네임해야 한다.
             // 그렇지 않으면 scope hoisting 후 TDZ가 발생한다.
-            const first_is_reserved = isReservedName(name);
+            const name_is_reserved = isReservedName(name);
             var suffix: u32 = 1;
-            const start_idx: usize = if (first_is_reserved) 0 else 1;
+            const start_idx: usize = if (name_is_reserved) 0 else 1;
             for (owners[start_idx..]) |owner| {
                 // 점유 마커 (cross-chunk import)는 rename 대상이 아님
                 if (skip_max_module_index and owner.module_index == std.math.maxInt(u32)) continue;
