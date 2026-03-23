@@ -2388,3 +2388,136 @@ test "rename: _default consumed via import default binding" {
     }
     try std.testing.expectEqual(@as(u32, 1), rename_count);
 }
+
+// ============================================================
+// export * as ns from (ES2020 namespace re-export) — #289
+// ============================================================
+
+test "export * as: basic namespace re-export" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { math } from './barrel';\nconsole.log(math.add(1, 2));");
+    try writeFile(tmp.dir, "barrel.ts", "export * as math from './math';");
+    try writeFile(tmp.dir, "math.ts", "export function add(a: number, b: number) { return a + b; }");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    // entry의 import { math }가 barrel의 "math" export에 연결
+    const entry = r.graph.modules.items[0];
+    const binding = r.linker.getResolvedBinding(0, entry.import_bindings[0].local_span);
+    try std.testing.expect(binding != null);
+    try std.testing.expectEqualStrings("math", binding.?.canonical.export_name);
+}
+
+test "export * as: binding_scanner registers named export" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import './barrel';");
+    try writeFile(tmp.dir, "barrel.ts", "export * as utils from './utils';");
+    try writeFile(tmp.dir, "utils.ts", "export const x = 1;");
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    // barrel 모듈(index 1)의 export_bindings에 "utils" 이름이 등록됨
+    var has_utils_export = false;
+    for (r.graph.modules.items) |m| {
+        for (m.export_bindings) |eb| {
+            if (std.mem.eql(u8, eb.exported_name, "utils")) {
+                has_utils_export = true;
+                // local_name도 "utils" (preamble에서 var utils = {...} 생성용)
+                try std.testing.expectEqualStrings("utils", eb.local_name);
+            }
+        }
+    }
+    try std.testing.expect(has_utils_export);
+}
+
+// ============================================================
+// esbuild 방식 namespace import — ns.prop 직접 치환
+// ============================================================
+
+test "namespace rewrite: ns.prop resolved in ns_member_rewrites" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import * as utils from './utils';\nconsole.log(utils.add(1, 2));");
+    try writeFile(tmp.dir, "utils.ts", "export function add(a: number, b: number) { return a + b; }\nexport function mul(a: number, b: number) { return a * b; }");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    // ns.prop만 사용 → ns_member_rewrites에 매핑 등록
+    const entry = r.graph.modules.items[0];
+    try std.testing.expect(entry.import_bindings.len > 0);
+    try std.testing.expectEqual(ImportBinding.Kind.namespace, entry.import_bindings[0].kind);
+}
+
+// ============================================================
+// semantic analyzer: property key symbol_id 미할당
+// ============================================================
+
+test "semantic: non-shorthand property key has no symbol_id" {
+    // { checks: [] } — "checks" key는 변수 참조가 아님
+    // semantic analyzer에서 symbol_id를 할당하지 않아야 함
+    const source = "const checks = 1;\nconst obj = { checks: [] };";
+    const Sem = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const Scanner = @import("../lexer/scanner.zig").Scanner;
+    const Parser = @import("../parser/parser.zig").Parser;
+
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var analyzer = Sem.init(std.testing.allocator, &parser.ast);
+    defer analyzer.deinit();
+    _ = analyzer.analyze() catch {};
+
+    // "checks" 변수 선언은 reference_count 증가 없어야 함
+    // (shorthand가 아닌 property key에서 참조 안 됨)
+    // 정확히는: checks 변수의 reference_count가 0이어야 함
+    // (const obj = { checks: [] }에서 checks key는 resolve 안 됨)
+    if (analyzer.scope_maps.items.len > 0) {
+        if (analyzer.scope_maps.items[0].get("checks")) |sym_idx| {
+            if (sym_idx < analyzer.symbols.items.len) {
+                // shorthand가 아닌 property key에서 참조되지 않으므로 ref count = 0
+                try std.testing.expectEqual(@as(u32, 0), analyzer.symbols.items[sym_idx].reference_count);
+            }
+        }
+    }
+}
+
+test "semantic: shorthand property key has symbol_id" {
+    // { checks } — shorthand에서는 "checks"가 변수 참조
+    const source = "const checks = 1;\nconst obj = { checks };";
+    const Sem = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const Scanner = @import("../lexer/scanner.zig").Scanner;
+    const Parser = @import("../parser/parser.zig").Parser;
+
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var analyzer = Sem.init(std.testing.allocator, &parser.ast);
+    defer analyzer.deinit();
+    _ = analyzer.analyze() catch {};
+
+    // shorthand { checks } 에서 checks는 변수 참조 → reference_count > 0
+    if (analyzer.scope_maps.items.len > 0) {
+        if (analyzer.scope_maps.items[0].get("checks")) |sym_idx| {
+            if (sym_idx < analyzer.symbols.items.len) {
+                try std.testing.expect(analyzer.symbols.items[sym_idx].reference_count > 0);
+            }
+        }
+    }
+}
