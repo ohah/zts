@@ -184,8 +184,10 @@ fn resolveSubpathMap(
     return null;
 }
 
-/// 조건 객체 또는 문자열에서 매칭되는 경로를 찾는다.
+/// 조건 객체, 문자열, 또는 폴백 배열에서 매칭되는 경로를 찾는다.
 /// conditions 순서대로 매칭 (첫 번째 매칭이 승리).
+/// 배열(fallback array)은 Node.js 스펙에서 지원하며, 순서대로 시도하여 첫 번째 성공을 반환한다.
+/// 예: "./shams": [{"types":"./shams.d.ts","default":"./shams.js"}, "./shams.js"]
 fn resolveConditions(value: std.json.Value, conditions: []const []const u8) ?[]const u8 {
     switch (value) {
         .string => |s| return s,
@@ -199,6 +201,15 @@ fn resolveConditions(value: std.json.Value, conditions: []const []const u8) ?[]c
             // "default"는 항상 마지막 폴백 (Node.js 스펙)
             if (obj.get("default")) |v| {
                 return resolveConditions(v, conditions);
+            }
+            return null;
+        },
+        .array => |arr| {
+            // 폴백 배열: 각 요소를 순서대로 시도, 첫 번째 매칭 반환
+            for (arr.items) |item| {
+                if (resolveConditions(item, conditions)) |result| {
+                    return result;
+                }
             }
             return null;
         },

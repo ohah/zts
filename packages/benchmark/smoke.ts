@@ -150,6 +150,16 @@ const projects = [
     pkg: "zod",
     entry: `import { z } from 'zod';\nconst schema = z.string().email();\nconsole.log(schema.parse('test@test.com'));`,
   },
+  {
+    name: "axios",
+    pkg: "axios",
+    entry: `import axios from 'axios';\nconsole.log(typeof axios.get);`,
+  },
+  {
+    name: "toolkit",
+    pkg: "@reduxjs/toolkit",
+    entry: `import { configureStore, createSlice } from '@reduxjs/toolkit';\nconsole.log(typeof configureStore, typeof createSlice);`,
+  },
 ];
 
 // ============================================================

@@ -227,8 +227,11 @@ pub const Resolver = struct {
         }
 
         // 서브패스가 있으면 패키지 내부 파일 직접 해석
+        // subpath는 "/shams" 형태 (leading /) — resolve()는 절대 경로로 취급하므로
+        // leading /를 제거하여 상대 경로로 만든다.
         if (!std.mem.eql(u8, subpath, ".")) {
-            const sub_file = std.fs.path.resolve(self.allocator, &.{ pkg_dir_path, subpath }) catch
+            const relative_subpath = if (subpath.len > 0 and subpath[0] == '/') subpath[1..] else subpath;
+            const sub_file = std.fs.path.resolve(self.allocator, &.{ pkg_dir_path, relative_subpath }) catch
                 return error.OutOfMemory;
             defer self.allocator.free(sub_file);
 
