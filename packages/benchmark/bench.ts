@@ -185,6 +185,13 @@ function benchTranspile(): BenchResult[] {
       }),
     );
 
+    // Bun (transpile via bun build --no-bundle)
+    results.push(
+      runBench("Bun", "transpile", scale.name, () => {
+        execBin("bun", ["build", inputFile, "--no-bundle", "--outfile", join(dir, "out-bun.js")]);
+      }),
+    );
+
     rmSync(dir, { recursive: true, force: true });
   }
 
@@ -235,6 +242,13 @@ function benchBundle(): BenchResult[] {
         }),
       );
     }
+
+    // Bun bundle
+    results.push(
+      runBench("Bun", "bundle", scale.name, () => {
+        execBin("bun", ["build", entry, "--outfile", join(outDir, "bun.js")]);
+      }),
+    );
 
     if (rolldownBin) {
       results.push(

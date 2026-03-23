@@ -63,6 +63,7 @@ console.log(`  Platform: ${process.platform} ${process.arch}\n`);
 // Header
 const tools = ["ZTS"];
 if (esbuildBin) tools.push("esbuild");
+tools.push("Bun");
 if (swcBin) tools.push("SWC");
 tools.push("oxc (node)");
 
@@ -91,6 +92,17 @@ for (const lines of scales) {
       ]),
     );
   }
+
+  // Bun
+  row.push(
+    measure("bun", [
+      "build",
+      inputFile,
+      "--no-bundle",
+      "--outfile",
+      join(dir, `out_bun_${lines}.js`),
+    ]),
+  );
 
   // SWC
   if (swcBin) {
