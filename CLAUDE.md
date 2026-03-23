@@ -431,14 +431,14 @@ src/bundler/
 - **픽스처 테스트**: `tests/bundler/fixtures/` — 입력 파일 → 기대 출력 비교
 - **실행 비교 테스트 (핵심)**: 번들 결과를 실행해서 동작 확인 (출력 형태보다 실행 결과가 중요)
 - **호환 테스트**: 같은 입력으로 Rollup과 실행 결과 비교 (Rolldown 방식)
-- ✅ **스모크 테스트**: 21개 패키지 빌드+실행 검증 (lodash-es, preact, date-fns, uuid, zod, axios, @reduxjs/toolkit, rxjs, immer, superjson, express, react, commander, eventemitter3, ms, dotenv, jsonwebtoken, bcryptjs, clsx, tiny-invariant, @tanstack/query-core) (CI 통합, packages/benchmark/smoke.ts)
+- ✅ **스모크 테스트**: 29개 패키지 빌드+실행 검증 (CI 통합, packages/benchmark/smoke.ts)
 - **도입 순서**: B1에서 유닛+픽스처 → B2에서 실행 비교+호환 → ✅ 프로덕션 전 스모크
 
 ##### 실전 검증 로드맵
 - **1단계 (지금 가능)**: 실제 .ts/.tsx 파일을 ZTS로 변환, esbuild/SWC 출력과 비교
 - **2단계 (Arena 후)**: `hyperfine`으로 대형 파일 벤치마크 (ZTS vs esbuild vs SWC). Arena 없이 벤치마크는 의미 없음
 - **3단계 (N-API 후)**: `vite-plugin-zts`로 실제 React/Vue 프로젝트 개발 서버. 첫 실전 사용자 검증
-- ✅ **4단계 (번들러 MVP)**: 실제 프로젝트 빌드 스모크 테스트 — 21/21 통과, CI 통합 완료
+- ✅ **4단계 (번들러 MVP)**: 실제 프로젝트 빌드 스모크 테스트 — 29/29 통과, CI 통합 완료
 
 **Module에 필요한 정보 (Rollup 분석 결과):**
 ```zig
