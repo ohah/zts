@@ -399,22 +399,43 @@ pub const TreeShaker = struct {
 
     fn markAllExportsUsed(self: *TreeShaker, module_index: u32) !void {
         if (module_index >= self.modules.len) return;
+        // 순환 방지: 이미 처리한 모듈은 skip
+        if (self.isExportUsed(module_index, "*")) return;
+        try self.markExportUsed(module_index, "*"); // sentinel
+
         const m = self.modules[module_index];
         for (m.export_bindings) |eb| {
-            if (eb.kind == .re_export_all) {
-                // export * from './dep' → dep 모듈의 모든 export도 마킹 + include
+            if (std.mem.eql(u8, eb.exported_name, "*")) continue;
+
+            if (eb.kind == .re_export_all or eb.kind == .re_export) {
+                // re-export (named + all): 소스 모듈도 include + 재귀
                 if (eb.import_record_index) |rec_idx| {
                     if (rec_idx < m.import_records.len) {
                         const source_mod = @intFromEnum(m.import_records[rec_idx].resolved);
                         if (source_mod < self.modules.len) {
                             if (!self.included.isSet(source_mod)) self.included.set(source_mod);
-                            try self.markAllExportsUsed(@intCast(source_mod));
+                            if (eb.kind == .re_export_all) {
+                                try self.markAllExportsUsed(@intCast(source_mod));
+                            } else {
+                                // named re-export: canonical 모듈도 include
+                                if (self.linker.resolveExportChain(
+                                    m.import_records[rec_idx].resolved,
+                                    eb.local_name,
+                                    0,
+                                )) |canonical| {
+                                    const canon_idx = @intFromEnum(canonical.module_index);
+                                    if (canon_idx < self.modules.len) {
+                                        if (!self.included.isSet(canon_idx)) self.included.set(canon_idx);
+                                        try self.markExportUsed(@intCast(canon_idx), canonical.export_name);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
-                continue;
+                if (eb.kind == .re_export_all) continue;
             }
-            if (std.mem.eql(u8, eb.exported_name, "*")) continue;
+
             try self.markExportUsed(module_index, eb.exported_name);
         }
     }
