@@ -19,11 +19,8 @@ const ResolveError = resolver_mod.ResolveError;
 const types = @import("types.zig");
 const ImportKind = types.ImportKind;
 
-pub const Platform = enum {
-    browser,
-    node,
-    neutral,
-};
+/// 타겟 플랫폼. codegen.Platform을 번들러 전체에서 공유.
+pub const Platform = @import("../codegen/codegen.zig").Platform;
 
 /// Node.js 빌트인 모듈 목록 (node: 프리픽스 없이).
 /// platform=node일 때 자동 external로 처리.

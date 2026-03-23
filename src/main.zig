@@ -421,9 +421,10 @@ pub fn main() !void {
         }
     }
 
-    // --platform=browser이면 process.env.NODE_ENV를 자동 define (esbuild 호환).
+    // --bundle + --platform=browser이면 process.env.NODE_ENV를 자동 define (esbuild 호환).
+    // 트랜스파일 모드에서는 적용하지 않음 (esbuild와 동일).
     // 사용자가 이미 --define:process.env.NODE_ENV=... 를 지정한 경우 덮어쓰지 않음.
-    if (platform == .browser) {
+    if (is_bundle and platform == .browser) {
         var has_node_env = false;
         for (define_list.items) |d| {
             if (std.mem.eql(u8, d.key, "process.env.NODE_ENV")) {
@@ -626,11 +627,6 @@ pub fn main() !void {
     }
 
     // 트랜스파일 옵션 구성
-    const cg_platform: lib.codegen.codegen.Platform = switch (platform) {
-        .browser => .browser,
-        .node => .node,
-        .neutral => .neutral,
-    };
     const options = TranspileOptions{
         .module_format = module_format,
         .minify = minify,
@@ -639,7 +635,7 @@ pub fn main() !void {
         .sourcemap = sourcemap,
         .ascii_only = ascii_only,
         .define = define_list.items,
-        .platform = cg_platform,
+        .platform = platform,
     };
 
     const is_stdin = std.mem.eql(u8, input_path_str, "-");
