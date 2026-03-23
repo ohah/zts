@@ -55,9 +55,19 @@ pub const ResolveCache = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator, platform: Platform, external_patterns: []const []const u8) ResolveCache {
+        var r = Resolver.init(allocator);
+        // 플랫폼별 package.json exports 조건 세트 설정.
+        // node: "node" 조건 포함, "browser" 제외 (react-dom/server 등이 올바른 엔트리 선택)
+        // browser: "browser" 조건 포함, "node" 제외
+        // neutral: 플랫폼 특정 조건 없이 "import", "module", "default"만
+        r.conditions = switch (platform) {
+            .node => &.{ "node", "import", "module", "default" },
+            .browser => &.{ "browser", "import", "module", "default" },
+            .neutral => &.{ "import", "module", "default" },
+        };
         return .{
             .allocator = allocator,
-            .resolver = Resolver.init(allocator),
+            .resolver = r,
             .cache = std.StringHashMap(CachedResult).init(allocator),
             .external_patterns = external_patterns,
             .platform = platform,
@@ -109,7 +119,12 @@ pub const ResolveCache = struct {
         //    예: is-promise의 exports { "import": "./esm.mjs", "require": "./cjs.js" }
         const saved_conditions = self.resolver.conditions;
         if (kind == .require) {
-            self.resolver.conditions = &.{ "require", "browser", "default" };
+            // require()는 "require" 조건 + 플랫폼별 조건
+            self.resolver.conditions = switch (self.platform) {
+                .node => &.{ "require", "node", "default" },
+                .browser => &.{ "require", "browser", "default" },
+                .neutral => &.{ "require", "default" },
+            };
         }
         defer self.resolver.conditions = saved_conditions;
 
