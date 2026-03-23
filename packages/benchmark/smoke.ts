@@ -117,7 +117,6 @@ function testProject(
         join(dir, "index.ts"),
         "--bundle",
         `--outfile=${esOut}`,
-        "--minify",
         "--loader:.ts=ts",
         "--platform=node",
       ]);
