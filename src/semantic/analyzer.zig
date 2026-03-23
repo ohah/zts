@@ -94,6 +94,12 @@ pub const SemanticAnalyzer = struct {
     /// key는 소스 코드 슬라이스 (zero-copy), value는 symbols 배열의 인덱스.
     scope_maps: std.ArrayList(std.StringHashMap(usize)),
 
+    /// Forward reference 지원을 위한 pre-declaration 스코프.
+    /// visitProgram에서 첫 번째 패스로 top-level 바인딩 이름을 미리 등록한 후,
+    /// 두 번째 패스(본 순회)에서 이 스코프의 variable_declaration은 registerBinding을 건너뛴다.
+    /// (이미 등록된 이름을 다시 등록하면 재선언 에러가 발생하므로)
+    predeclared_scope: ScopeId = .none,
+
     /// 노드 인덱스 → 심볼 인덱스 매핑. 번들러 linker가 codegen에서 식별자 리네임에 사용.
     /// 식별자 참조/선언 노드만 유효한 값을 가지고, 나머지는 null.
     /// resolveIdentifier/declareSymbol에서 채워진다.
@@ -1036,8 +1042,209 @@ pub const SemanticAnalyzer = struct {
         // module이면 module 스코프 (항상 strict), 아니면 global 스코프
         const scope_kind: ScopeKind = if (self.is_module) .module else .global;
         const saved = try self.enterScope(scope_kind, self.is_strict_mode);
+
+        // Forward reference 지원: 2-pass 접근.
+        // 1st pass — top-level 바인딩 이름만 스코프에 등록 (initializer는 순회하지 않음).
+        //   예: const foo = () => bar();  // bar가 아직 스코프에 없어도
+        //       const bar = () => "hello"; // 여기서 선언된 bar를 1st pass에서 미리 등록
+        // 2nd pass — 기존 visitNodeList로 전체 순회 (initializer 포함).
+        try self.predeclareTopLevelBindings(node.data.list);
+        self.predeclared_scope = self.current_scope;
         try self.visitNodeList(node.data.list);
+        self.predeclared_scope = .none;
+
         self.exitScope(saved);
+    }
+
+    /// Forward reference를 위한 1st pass: top-level 문(statement)에서 바인딩 이름만 추출하여
+    /// 현재 스코프에 등록한다. initializer 표현식은 순회하지 않는다.
+    ///
+    /// 처리하는 선언:
+    ///   - variable_declaration (const/let/var)
+    ///   - function_declaration (이미 호이스팅되지만, 일관성을 위해)
+    ///   - class_declaration
+    ///   - export_named_declaration 내부의 위 선언들
+    ///   - export_default_declaration 내부의 위 선언들
+    fn predeclareTopLevelBindings(self: *SemanticAnalyzer, list: NodeList) AllocError!void {
+        if (list.len == 0) return;
+        if (list.start + list.len > self.ast.extra_data.items.len) return;
+
+        const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+        for (indices) |raw_idx| {
+            const idx: NodeIndex = @enumFromInt(raw_idx);
+            if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
+
+            const node = self.ast.getNode(idx);
+            switch (node.tag) {
+                .variable_declaration => try self.predeclareVarDecl(node),
+                .function_declaration => try self.predeclareFuncDecl(node),
+                .class_declaration => try self.predeclareClassDecl(node),
+                .export_named_declaration => {
+                    // export const x = ..., export function f() {}, export class C {}
+                    const extra_start = node.data.extra;
+                    const extras = self.ast.extra_data.items;
+                    if (extra_start + 3 >= extras.len) continue;
+                    const decl_idx: NodeIndex = @enumFromInt(extras[extra_start]);
+                    if (decl_idx.isNone() or @intFromEnum(decl_idx) >= self.ast.nodes.items.len) continue;
+                    const decl_node = self.ast.getNode(decl_idx);
+                    switch (decl_node.tag) {
+                        .variable_declaration => try self.predeclareVarDecl(decl_node),
+                        .function_declaration => try self.predeclareFuncDecl(decl_node),
+                        .class_declaration => try self.predeclareClassDecl(decl_node),
+                        else => {},
+                    }
+                },
+                .export_default_declaration => {
+                    // export default function f() {}, export default class C {}
+                    const inner_idx = node.data.unary.operand;
+                    if (inner_idx.isNone() or @intFromEnum(inner_idx) >= self.ast.nodes.items.len) continue;
+                    const inner_node = self.ast.getNode(inner_idx);
+                    switch (inner_node.tag) {
+                        .function_declaration => try self.predeclareFuncDecl(inner_node),
+                        .class_declaration => try self.predeclareClassDecl(inner_node),
+                        else => {},
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+
+    /// variable_declaration에서 바인딩 이름만 추출하여 등록 (initializer 무시).
+    fn predeclareVarDecl(self: *SemanticAnalyzer, node: Node) AllocError!void {
+        const extra_start = node.data.extra;
+        const extras = self.ast.extra_data.items;
+        if (extra_start + 2 >= extras.len) return;
+        const kind_flags = extras[extra_start];
+        const decl_start = extras[extra_start + 1];
+        const decl_len = extras[extra_start + 2];
+
+        const sym_kind: SymbolKind = switch (kind_flags) {
+            0 => .variable_var,
+            1 => .variable_let,
+            2 => .variable_const,
+            else => .variable_var,
+        };
+
+        if (decl_start + decl_len > extras.len) return;
+        const decl_indices = extras[decl_start .. decl_start + decl_len];
+        for (decl_indices) |raw_idx| {
+            const decl_idx: NodeIndex = @enumFromInt(raw_idx);
+            if (decl_idx.isNone() or @intFromEnum(decl_idx) >= self.ast.nodes.items.len) continue;
+            const decl_node = self.ast.getNode(decl_idx);
+            if (decl_node.tag == .variable_declarator) {
+                const binding_idx: NodeIndex = @enumFromInt(extras[decl_node.data.extra]);
+                // 이름만 등록 — registerBinding 대신 predeclareBindingNames를 사용하여
+                // default value 표현식을 순회하지 않는다.
+                try self.predeclareBindingNames(binding_idx, sym_kind);
+            }
+        }
+    }
+
+    /// 바인딩 패턴에서 이름만 추출하여 심볼로 등록한다 (표현식은 순회하지 않음).
+    /// registerBinding과 동일한 구조이지만, assignment_pattern의 default value 등
+    /// 표현식 노드를 visitNode하지 않는다. forward reference pre-declaration 전용.
+    fn predeclareBindingNames(self: *SemanticAnalyzer, idx: NodeIndex, kind: SymbolKind) AllocError!void {
+        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        const node = self.ast.getNode(idx);
+        switch (node.tag) {
+            .binding_identifier, .assignment_target_identifier => {
+                try self.declareSymbolWithNode(node.span, kind, node.span, @intFromEnum(idx));
+            },
+            .array_pattern, .array_assignment_target, .object_pattern, .object_assignment_target => {
+                const list = node.data.list;
+                if (list.len == 0) return;
+                if (list.start + list.len > self.ast.extra_data.items.len) return;
+                const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+                for (indices) |raw_idx| {
+                    try self.predeclareBindingNames(@enumFromInt(raw_idx), kind);
+                }
+            },
+            .binding_property, .assignment_target_property_identifier, .assignment_target_property_property => {
+                try self.predeclareBindingNames(node.data.binary.right, kind);
+            },
+            .assignment_pattern, .assignment_target_with_default => {
+                // default value(right)는 순회하지 않고, 바인딩 이름(left)만 추출
+                try self.predeclareBindingNames(node.data.binary.left, kind);
+            },
+            .binding_rest_element, .rest_element, .assignment_target_rest => {
+                try self.predeclareBindingNames(node.data.unary.operand, kind);
+            },
+            else => {},
+        }
+    }
+
+    /// predeclared 스코프에서 registerBinding을 건너뛸 때, destructuring 패턴 내부의
+    /// default value 표현식을 순회한다. 이름 등록은 하지 않음 (이미 pre-declared).
+    /// 예: const { x = someExpr } = obj; 에서 someExpr를 visitNode한다.
+    fn visitBindingPatternExpressions(self: *SemanticAnalyzer, idx: NodeIndex) AllocError!void {
+        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        const node = self.ast.getNode(idx);
+        switch (node.tag) {
+            .binding_identifier, .assignment_target_identifier => {
+                // 단순 식별자 — 표현식 없음
+            },
+            .array_pattern, .array_assignment_target, .object_pattern, .object_assignment_target => {
+                const list = node.data.list;
+                if (list.len == 0) return;
+                if (list.start + list.len > self.ast.extra_data.items.len) return;
+                const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+                for (indices) |raw_idx| {
+                    try self.visitBindingPatternExpressions(@enumFromInt(raw_idx));
+                }
+            },
+            .binding_property, .assignment_target_property_identifier, .assignment_target_property_property => {
+                try self.visitBindingPatternExpressions(node.data.binary.right);
+            },
+            .assignment_pattern, .assignment_target_with_default => {
+                // default value(right)를 순회
+                try self.visitBindingPatternExpressions(node.data.binary.left);
+                try self.visitNode(node.data.binary.right);
+            },
+            .binding_rest_element, .rest_element, .assignment_target_rest => {
+                try self.visitBindingPatternExpressions(node.data.unary.operand);
+            },
+            else => {},
+        }
+    }
+
+    /// function_declaration의 이름만 등록.
+    fn predeclareFuncDecl(self: *SemanticAnalyzer, node: Node) AllocError!void {
+        const extra_start = node.data.extra;
+        const extras = self.ast.extra_data.items;
+        if (extra_start + 5 >= extras.len) return;
+        const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
+        const flags = extras[extra_start + 4];
+
+        if (!name_idx.isNone()) {
+            const FnFlags = ast_mod.FunctionFlags;
+            const is_async = (flags & FnFlags.is_async) != 0;
+            const is_generator = (flags & FnFlags.is_generator) != 0;
+            const symbol_kind: SymbolKind = if (is_async and is_generator)
+                .async_generator_decl
+            else if (is_async)
+                .async_function_decl
+            else if (is_generator)
+                .generator_decl
+            else
+                .function_decl;
+
+            const name_node = self.ast.getNode(name_idx);
+            try self.declareSymbolWithNode(name_node.span, symbol_kind, node.span, @intFromEnum(name_idx));
+        }
+    }
+
+    /// class_declaration의 이름만 등록.
+    fn predeclareClassDecl(self: *SemanticAnalyzer, node: Node) AllocError!void {
+        const extra_start = node.data.extra;
+        const extras = self.ast.extra_data.items;
+        if (extra_start + 2 >= extras.len) return;
+        const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
+
+        if (!name_idx.isNone()) {
+            const name_node = self.ast.getNode(name_idx);
+            try self.declareSymbolWithNode(name_node.span, .class_decl, node.span, @intFromEnum(name_idx));
+        }
     }
 
     fn visitBlockStatement(self: *SemanticAnalyzer, node: Node) AllocError!void {
@@ -1071,12 +1278,16 @@ pub const SemanticAnalyzer = struct {
         const has_no_side_effects = (flags & FnFlags.no_side_effects) != 0;
 
         // 함수 이름을 현재 스코프(외부)에 등록
+        // predeclared_scope에서는 이미 1st pass에서 등록했으므로 건너뛴다.
         if (!name_idx.isNone()) {
-            const name_node = self.ast.getNode(name_idx);
-            try self.declareSymbolWithNode(name_node.span, symbol_kind, node.span, @intFromEnum(name_idx));
+            if (@intFromEnum(self.predeclared_scope) != @intFromEnum(self.current_scope)) {
+                const name_node = self.ast.getNode(name_idx);
+                try self.declareSymbolWithNode(name_node.span, symbol_kind, node.span, @intFromEnum(name_idx));
+            }
 
-            // @__NO_SIDE_EFFECTS__ → symbol에 전파
+            // @__NO_SIDE_EFFECTS__ → symbol에 전파 (predeclared 여부와 무관하게 항상 수행)
             if (has_no_side_effects) {
+                const name_node = self.ast.getNode(name_idx);
                 self.markSymbolNoSideEffects(name_node.span);
             }
         }
@@ -1271,7 +1482,8 @@ pub const SemanticAnalyzer = struct {
         const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
 
         // 클래스 이름을 현재 스코프(외부)에 등록
-        if (!name_idx.isNone()) {
+        // predeclared_scope에서는 이미 1st pass에서 등록했으므로 건너뛴다.
+        if (!name_idx.isNone() and @intFromEnum(self.predeclared_scope) != @intFromEnum(self.current_scope)) {
             const name_node = self.ast.getNode(name_idx);
             try self.declareSymbolWithNode(name_node.span, .class_decl, node.span, @intFromEnum(name_idx));
         }
@@ -1640,7 +1852,15 @@ pub const SemanticAnalyzer = struct {
                 const binding_idx: NodeIndex = @enumFromInt(decl_extras[decl_extra]);
                 const init_idx: NodeIndex = @enumFromInt(decl_extras[decl_extra + 2]);
 
-                try self.registerBinding(binding_idx, sym_kind);
+                // predeclared_scope에서는 이미 1st pass에서 바인딩이 등록되었으므로 건너뛴다.
+                // 다시 registerBinding을 호출하면 let/const 재선언 에러가 발생한다.
+                if (@intFromEnum(self.predeclared_scope) != @intFromEnum(self.current_scope)) {
+                    try self.registerBinding(binding_idx, sym_kind);
+                } else {
+                    // predeclared인 경우에도, destructuring 패턴 내부의 default value
+                    // 표현식은 순회해야 한다 (registerBinding이 수행하던 visitNode 호출 대체).
+                    try self.visitBindingPatternExpressions(binding_idx);
+                }
                 // init 표현식도 순회 (내부에 함수 표현식 등이 있을 수 있음)
                 try self.visitNode(init_idx);
 

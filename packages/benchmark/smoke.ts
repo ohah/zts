@@ -278,6 +278,11 @@ const projects = [
     entry: `import yargs from 'yargs';\nconsole.log(typeof yargs);`,
     extraArgs: ["--format=cjs"],
   },
+  {
+    name: "effect",
+    pkg: "effect",
+    entry: `import { Effect, pipe } from 'effect';\nconst p = pipe(Effect.succeed(42), Effect.map((n: number) => n + 1));\nEffect.runPromise(p).then(r => console.log(r));`,
+  },
 ];
 
 // ============================================================
