@@ -32,6 +32,9 @@ pub const ModuleSemanticData = struct {
     exported_names: std.StringHashMap(Span),
     /// 노드 인덱스 → 심볼 인덱스 매핑. 식별자 노드만 유효값.
     symbol_ids: []const ?u32,
+    /// 미해결 참조 (unresolved references). 스코프 체인에서 선언을 찾지 못한 이름.
+    /// 번들러 linker가 scope hoisting 시 이 이름들을 예약하여 shadowing 방지.
+    unresolved_references: std.StringHashMap(void),
 };
 
 pub const Module = struct {

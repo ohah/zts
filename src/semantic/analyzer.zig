@@ -94,6 +94,12 @@ pub const SemanticAnalyzer = struct {
     /// key는 소스 코드 슬라이스 (zero-copy), value는 symbols 배열의 인덱스.
     scope_maps: std.ArrayList(std.StringHashMap(usize)),
 
+    /// 미해결 참조 (unresolved references). resolveIdentifier에서 스코프 체인을 다 올라가도
+    /// 선언을 찾지 못한 이름. 번들러 linker가 scope hoisting 시 이 이름들을 예약하여
+    /// 모듈 top-level 변수가 글로벌을 shadowing하지 않도록 한다 (Rolldown 방식).
+    /// key는 소스 코드 슬라이스 (zero-copy).
+    unresolved_references: std.StringHashMap(void),
+
     /// Forward reference 지원을 위한 pre-declaration 스코프.
     /// visitProgram에서 첫 번째 패스로 top-level 바인딩 이름을 미리 등록한 후,
     /// 두 번째 패스(본 순회)에서 이 스코프의 variable_declaration은 registerBinding을 건너뛴다.
@@ -141,6 +147,7 @@ pub const SemanticAnalyzer = struct {
             .labels = .empty,
             .resolved_names = .empty,
             .scope_maps = .empty,
+            .unresolved_references = std.StringHashMap(void).init(allocator),
             .symbol_ids = .empty,
             .errors = .empty,
             .allocator = allocator,
@@ -157,6 +164,7 @@ pub const SemanticAnalyzer = struct {
         for (self.scope_maps.items) |*m| m.deinit();
         self.scope_maps.deinit(self.allocator);
         self.exported_names.deinit();
+        self.unresolved_references.deinit();
         self.labels.deinit(self.allocator);
         // resolvePrivateName에서 할당된 문자열 해제
         for (self.resolved_names.items) |name| {
@@ -629,6 +637,10 @@ pub const SemanticAnalyzer = struct {
             // 부모 스코프로 이동
             scope_id = self.scopes.items[idx].parent;
         }
+
+        // 스코프 체인을 전부 올라갔는데 선언을 찾지 못함 → 미해결 참조 (글로벌).
+        // 번들러 linker가 이 이름들을 예약하여 scope hoisting 시 shadowing을 방지.
+        self.unresolved_references.put(name, {}) catch {};
     }
 
     /// 노드가 식별자 참조이면 resolveIdentifier를 호출하고 true를 반환한다.
