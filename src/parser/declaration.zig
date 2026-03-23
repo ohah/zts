@@ -506,12 +506,22 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
     }
 
     // get/set (선택)
-    if (self.current() == .kw_get and try self.peekNextKind() != .l_paren) {
-        flags |= 0x02; // getter
-        try self.advance();
-    } else if (self.current() == .kw_set and try self.peekNextKind() != .l_paren) {
-        flags |= 0x04; // setter
-        try self.advance();
+    // get/set 다음에 ;, =, }, EOF, ( 가 오면 프로퍼티 이름이지 getter/setter가 아님.
+    // 예: class C { get; } — "get"이라는 이름의 필드
+    // 예: class C { get = 1; } — "get"이라는 이름의 필드 (초기화)
+    // 예: class C { get foo() {} } — getter 선언
+    if (self.current() == .kw_get) {
+        const peek = try self.peekNextKind();
+        if (peek != .l_paren and peek != .semicolon and peek != .eq and peek != .r_curly and peek != .eof) {
+            flags |= 0x02; // getter
+            try self.advance();
+        }
+    } else if (self.current() == .kw_set) {
+        const peek = try self.peekNextKind();
+        if (peek != .l_paren and peek != .semicolon and peek != .eq and peek != .r_curly and peek != .eof) {
+            flags |= 0x04; // setter
+            try self.advance();
+        }
     }
 
     // async (선택): async [no LineTerminator here] MethodName

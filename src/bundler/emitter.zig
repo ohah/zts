@@ -1067,10 +1067,9 @@ pub fn emitModule(
     // Codegen: AST → JS 문자열
     var cg = Codegen.initWithOptions(arena_alloc, &transformer.new_ast, .{
         .minify = options.minify,
-        .module_format = switch (options.format) {
-            .cjs => .cjs,
-            else => .esm,
-        },
+        // scope-hoisted 모듈은 항상 ESM codegen 사용 (bare declarations).
+        // __commonJS 래핑 모듈만 CJS codegen (module.exports = ...).
+        .module_format = if (module.wrap_kind == .cjs) .cjs else .esm,
         .linking_metadata = if (metadata) |*m| m else null,
         // 번들 모드에서 ESM이 아니면 import.meta → {} 치환 (esbuild 호환)
         // Node.js는 import.meta를 보면 ESM으로 재파싱하려 해서 에러 발생
