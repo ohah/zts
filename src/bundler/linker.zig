@@ -157,14 +157,24 @@ pub const Linker = struct {
             if (sem.scope_maps.len == 0) continue;
             const module_scope = sem.scope_maps[0];
 
+            // namespace import의 local_name을 미리 수집 (is_import skip 예외 처리용)
+            var ns_names = std.StringHashMap(void).init(self.allocator);
+            defer ns_names.deinit();
+            for (m.import_bindings) |ib| {
+                if (ib.kind == .namespace) try ns_names.put(ib.local_name, {});
+            }
+
             var scope_it = module_scope.iterator();
             while (scope_it.next()) |scope_entry| {
                 const sym_name = scope_entry.key_ptr.*;
                 if (std.mem.eql(u8, sym_name, "default")) continue;
 
-                // import binding은 다른 모듈의 심볼을 참조하므로 충돌 대상 아님
+                // import binding은 다른 모듈의 심볼을 참조하므로 충돌 대상 아님.
+                // 단, namespace import는 preamble에서 var로 선언되므로 충돌 대상.
                 const sym_idx = scope_entry.value_ptr.*;
-                if (sym_idx < sem.symbols.len and sem.symbols[sym_idx].decl_flags.is_import) continue;
+                if (sym_idx < sem.symbols.len and sem.symbols[sym_idx].decl_flags.is_import) {
+                    if (!ns_names.contains(sym_name)) continue;
+                }
 
                 const entry = try name_to_owners.getOrPut(sym_name);
                 if (!entry.found_existing) {
@@ -554,12 +564,19 @@ pub const Linker = struct {
                 // namespace import 처리: preamble에서 namespace 객체 생성
                 // (e.g. `import * as utils from './mod'` → `var utils = {add: add, mul: mul};`)
                 if (ib.kind == .namespace) {
+                    // 이름 충돌 시 리네임된 이름 사용
+                    const ns_name = self.getCanonicalName(module_index, ib.local_name) orelse ib.local_name;
                     try self.buildNamespacePreamble(
                         &cjs_preamble_buf,
-                        ib.local_name,
+                        ns_name,
                         @intCast(canonical_mod),
                     );
-                    // namespace 로컬 이름을 renames에서 제거 방지 (skip)
+                    // renames에 등록하여 코드 내 참조도 리네임
+                    if (!std.mem.eql(u8, ib.local_name, ns_name)) {
+                        if (module_scope.get(ib.local_name)) |sym_idx| {
+                            try renames.put(@intCast(sym_idx), ns_name);
+                        }
+                    }
                     continue;
                 }
 
@@ -1300,14 +1317,22 @@ pub const Linker = struct {
             if (sem.scope_maps.len == 0) continue;
             const module_scope = sem.scope_maps[0];
 
+            // namespace import local_name 수집 (is_import skip 예외)
+            var ns_names = std.StringHashMap(void).init(self.allocator);
+            defer ns_names.deinit();
+            for (m.import_bindings) |ib| {
+                if (ib.kind == .namespace) try ns_names.put(ib.local_name, {});
+            }
+
             var scope_it = module_scope.iterator();
             while (scope_it.next()) |scope_entry| {
                 const sym_name = scope_entry.key_ptr.*;
                 if (std.mem.eql(u8, sym_name, "default")) continue;
 
-                // import binding은 다른 모듈의 심볼을 참조하므로 충돌 대상 아님
                 const sym_idx = scope_entry.value_ptr.*;
-                if (sym_idx < sem.symbols.len and sem.symbols[sym_idx].decl_flags.is_import) continue;
+                if (sym_idx < sem.symbols.len and sem.symbols[sym_idx].decl_flags.is_import) {
+                    if (!ns_names.contains(sym_name)) continue;
+                }
 
                 const entry = try name_to_owners.getOrPut(sym_name);
                 if (!entry.found_existing) {
