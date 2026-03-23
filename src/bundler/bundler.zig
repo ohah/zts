@@ -9692,8 +9692,5 @@ test "Scope hoisting: arrow param shadow should not be renamed when namespace im
     defer result.deinit(std.testing.allocator);
 
     // checks$1.map 또는 checks$2.map가 있으면 안 됨 — parameter shadow가 rename되지 않아야
-    if (std.mem.indexOf(u8, result.output, "checks$") != null) {
-        std.debug.print("\n=== BUNDLE OUTPUT ===\n{s}\n=== END ===\n", .{result.output});
-        return error.TestUnexpectedResult;
-    }
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "checks$") == null);
 }

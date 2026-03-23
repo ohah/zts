@@ -107,7 +107,7 @@ function testProject(name: string, npmPkg: string, entryCode: string): SmokeResu
         `--outfile=${esOut}`,
         "--minify",
         "--loader:.ts=ts",
-        "--platform=browser",
+        "--platform=node",
       ]);
       result.esbuildBuild = es.ok;
       result.esbuildSize = fileSize(esOut);
