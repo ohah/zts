@@ -426,10 +426,8 @@ pub const TreeShaker = struct {
         try self.markExportUsed(module_index, "*"); // sentinel
         const m = self.modules[module_index];
         for (m.export_bindings) |eb| {
-            if (std.mem.eql(u8, eb.exported_name, "*")) continue;
-
+            // re-export 소스 include는 "*" skip 전에 처리
             if (eb.kind == .re_export_all or eb.kind == .re_export) {
-                // re-export (named + all): 소스 모듈도 include + 재귀
                 if (eb.import_record_index) |rec_idx| {
                     if (rec_idx < m.import_records.len) {
                         const source_mod = @intFromEnum(m.import_records[rec_idx].resolved);
@@ -456,6 +454,7 @@ pub const TreeShaker = struct {
                 }
                 if (eb.kind == .re_export_all) continue;
             }
+            if (std.mem.eql(u8, eb.exported_name, "*")) continue;
 
             try self.markExportUsed(module_index, eb.exported_name);
         }
