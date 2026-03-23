@@ -285,6 +285,38 @@ pub const Linker = struct {
     /// exec_index가 가장 낮은 소유자가 원본 이름 유지, 나머지는 $1, $2, ...
     /// skip_max_module_index가 true이면 module_index == maxInt(u32)인 항목(cross-chunk
     /// import 점유 마커)은 rename 대상에서 제외한다.
+    /// 후보 이름이 사용 가능한지 확인.
+    /// 예약어/글로벌, 다른 모듈의 top-level 이름, 해당 모듈의 중첩 스코프 바인딩과 충돌하면 불가.
+    fn isCandidateAvailable(
+        self: *const Linker,
+        candidate: []const u8,
+        module_index: u32,
+        name_to_owners: *const NameToOwnersMap,
+    ) bool {
+        if (self.isReservedOrGlobal(candidate)) return false;
+        if (name_to_owners.contains(candidate)) return false;
+        if (self.hasNestedBinding(module_index, candidate)) return false;
+        return true;
+    }
+
+    /// 충돌 없는 후보 이름을 찾아 반환. suffix를 증가시키며 검색.
+    /// 반환된 문자열은 allocator로 할당되었으므로 호출자가 소유.
+    fn findAvailableCandidate(
+        self: *const Linker,
+        base_name: []const u8,
+        module_index: u32,
+        suffix_ptr: *u32,
+        name_to_owners: *const NameToOwnersMap,
+    ) ![]const u8 {
+        var candidate = try std.fmt.allocPrint(self.allocator, "{s}${d}", .{ base_name, suffix_ptr.* });
+        while (!self.isCandidateAvailable(candidate, module_index, name_to_owners)) {
+            self.allocator.free(candidate);
+            suffix_ptr.* += 1;
+            candidate = try std.fmt.allocPrint(self.allocator, "{s}${d}", .{ base_name, suffix_ptr.* });
+        }
+        return candidate;
+    }
+
     fn calculateRenames(
         self: *Linker,
         name_to_owners: *NameToOwnersMap,
@@ -300,7 +332,9 @@ pub const Linker = struct {
             if (owners.len == 1) {
                 if (self.isReservedOrGlobal(name)) {
                     const owner = owners[0];
-                    const candidate = try std.fmt.allocPrint(self.allocator, "{s}$1", .{name});
+                    // 후보 이름도 예약어/다른 top-level/nested scope와 충돌할 수 있으므로 검증.
+                    var suffix: u32 = 1;
+                    const candidate = try self.findAvailableCandidate(name, owner.module_index, &suffix, name_to_owners);
                     const key = try makeExportKey(self.allocator, owner.module_index, name);
                     if (self.canonical_names.fetchRemove(key)) |old| {
                         self.allocator.free(old.key);
@@ -328,15 +362,8 @@ pub const Linker = struct {
                 // 점유 마커 (cross-chunk import)는 rename 대상이 아님
                 if (skip_max_module_index and owner.module_index == std.math.maxInt(u32)) continue;
 
-                // 후보 이름 생성
-                var candidate = try std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, suffix });
-
-                // 후보 이름이 예약어, 다른 모듈의 top-level 이름, 또는 nested scope에 있으면 다음 번호
-                while (self.isReservedOrGlobal(candidate) or name_to_owners.contains(candidate) or self.hasNestedBinding(owner.module_index, candidate)) {
-                    self.allocator.free(candidate);
-                    suffix += 1;
-                    candidate = try std.fmt.allocPrint(self.allocator, "{s}${d}", .{ name, suffix });
-                }
+                // 충돌 없는 후보 이름 검색
+                const candidate = try self.findAvailableCandidate(name, owner.module_index, &suffix, name_to_owners);
 
                 const key = try makeExportKey(self.allocator, owner.module_index, name);
                 // M4 수정: 중복 키 시 이전 키/값 해제
@@ -2236,6 +2263,55 @@ test "isReservedName: JS reserved words" {
     try std.testing.expect(Linker.isReservedName("yield"));
     try std.testing.expect(!Linker.isReservedName("foo"));
     try std.testing.expect(!Linker.isReservedName("count$1"));
+}
+
+test "isCandidateAvailable: 예약어/글로벌/nested 통합 확인" {
+    // isCandidateAvailable은 Linker 인스턴스 필요 → 최소 셋업
+    var linker = Linker.init(std.testing.allocator, &.{});
+    defer linker.deinit();
+
+    var name_to_owners = Linker.NameToOwnersMap.init(std.testing.allocator);
+    defer name_to_owners.deinit();
+
+    // 예약어는 불가
+    try std.testing.expect(!linker.isCandidateAvailable("class", 0, &name_to_owners));
+    // 일반 이름은 가능
+    try std.testing.expect(linker.isCandidateAvailable("foo", 0, &name_to_owners));
+    // name_to_owners에 있는 이름은 불가
+    try name_to_owners.put("bar", .empty);
+    try std.testing.expect(!linker.isCandidateAvailable("bar", 0, &name_to_owners));
+    // reserved_globals에 있는 이름은 불가
+    try linker.reserved_globals.put("console", {});
+    try std.testing.expect(!linker.isCandidateAvailable("console", 0, &name_to_owners));
+}
+
+test "single-owner reserved name: candidate skips nested binding" {
+    // 모듈 b.ts에서 console.log 사용 → console이 unresolved_references에 수집.
+    // 모듈 a.ts에서 const console 선언 (단일 소유자) + nested scope에 console$1 존재.
+    // scope hoisting 시 a.ts의 console이 b.ts의 글로벌 참조를 가리므로 리네임 필요.
+    // 후보 console$1은 nested scope에 있으므로 건너뛰고 console$2가 되어야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts",
+        \\import './b';
+        \\const console = { log: () => {} };
+        \\function f() { const console$1 = 1; return console$1; }
+    );
+    try writeFile(tmp.dir, "b.ts",
+        \\console.log("hello");
+    );
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "a.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    // b.ts의 console.log → console이 reserved_globals에 수집됨.
+    // a.ts의 const console은 단일 소유자이지만 글로벌 shadowing → 리네임됨.
+    const renamed = r.linker.getCanonicalName(0, "console");
+    try std.testing.expect(renamed != null);
+    // nested scope에 console$1이 있으므로 console$2가 되어야 함
+    try std.testing.expectEqualStrings("console$2", renamed.?);
 }
 
 test "isReservedName: special identifiers" {

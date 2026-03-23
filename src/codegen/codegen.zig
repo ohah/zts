@@ -26,6 +26,13 @@ pub const ModuleFormat = enum {
     cjs, // CommonJS (require/exports 변환)
 };
 
+/// 타겟 플랫폼 (import.meta polyfill 등에 사용)
+pub const Platform = enum {
+    browser,
+    node,
+    neutral,
+};
+
 /// 들여쓰기 문자 (D044)
 pub const IndentChar = enum {
     tab,
@@ -54,6 +61,11 @@ pub const CodegenOptions = struct {
     linking_metadata: ?*const LinkingMetadata = null,
     /// 번들 모드에서 ESM이 아닐 때 import.meta → {} 치환 (esbuild 호환)
     replace_import_meta: bool = false,
+    /// 타겟 플랫폼. import.meta polyfill 방식을 결정한다.
+    /// - node: import.meta.url → require("url").pathToFileURL(__filename).href,
+    ///         import.meta.dirname → __dirname, import.meta.filename → __filename
+    /// - browser/neutral: import.meta.url → "", import.meta.dirname → "", import.meta.filename → ""
+    platform: Platform = .browser,
 };
 
 const SourceMapBuilder = @import("sourcemap.zig").SourceMapBuilder;
@@ -876,6 +888,41 @@ pub const Codegen = struct {
             }
         }
 
+        // import.meta.* polyfill: CJS/non-ESM에서 import.meta 프로퍼티 접근을 플랫폼별로 치환
+        if (self.options.module_format == .cjs or self.options.replace_import_meta) {
+            const obj_node = self.ast.getNode(object);
+            if (obj_node.tag == .meta_property) {
+                const obj_text = self.ast.source[obj_node.span.start..obj_node.span.end];
+                if (std.mem.eql(u8, obj_text, "import.meta")) {
+                    const prop_node = self.ast.getNode(property);
+                    const prop_text = self.ast.source[prop_node.data.string_ref.start..prop_node.data.string_ref.end];
+                    if (self.options.platform == .node) {
+                        // Node.js CJS polyfill
+                        if (std.mem.eql(u8, prop_text, "url")) {
+                            try self.write("require(\"url\").pathToFileURL(__filename).href");
+                            return;
+                        } else if (std.mem.eql(u8, prop_text, "dirname")) {
+                            try self.write("__dirname");
+                            return;
+                        } else if (std.mem.eql(u8, prop_text, "filename")) {
+                            try self.write("__filename");
+                            return;
+                        }
+                    } else {
+                        // browser/neutral: 빈 문자열
+                        if (std.mem.eql(u8, prop_text, "url") or
+                            std.mem.eql(u8, prop_text, "dirname") or
+                            std.mem.eql(u8, prop_text, "filename"))
+                        {
+                            try self.write("\"\"");
+                            return;
+                        }
+                    }
+                    // 알려지지 않은 프로퍼티 → 기본 import.meta polyfill + .prop
+                }
+            }
+        }
+
         try self.emitNode(object);
         if (flags & MemberFlags.optional_chain != 0) {
             try self.write("?.");
@@ -981,13 +1028,20 @@ pub const Codegen = struct {
         try self.emitNode(@enumFromInt(extras[e + 1]));
     }
 
-    /// import.meta → CJS/번들 non-ESM: __filename 기반 polyfill
+    /// import.meta → 플랫폼별 polyfill.
+    /// - ESM 출력: 그대로 유지
+    /// - CJS/번들 non-ESM + node: {url:require("url").pathToFileURL(__filename).href,dirname:__dirname,filename:__filename}
+    /// - CJS/번들 non-ESM + browser/neutral: {}
     /// Node.js는 import.meta를 보면 ESM으로 재파싱하므로 제거 필요
     fn emitMetaProperty(self: *Codegen, node: Node) !void {
         const text = self.ast.source[node.span.start..node.span.end];
         if (std.mem.eql(u8, text, "import.meta")) {
             if (self.options.module_format == .cjs or self.options.replace_import_meta) {
-                try self.write("{url:require('url').pathToFileURL(__filename).href}");
+                if (self.options.platform == .node) {
+                    try self.write("{url:require(\"url\").pathToFileURL(__filename).href,dirname:__dirname,filename:__filename}");
+                } else {
+                    try self.write("{}");
+                }
                 return;
             }
         }
@@ -2483,4 +2537,109 @@ test "Codegen formatted: spaces indent" {
     var r = try e2eWithOptions(std.testing.allocator, "if (x) { return 1; }", .{ .indent_char = .space, .indent_width = 2 });
     defer r.deinit();
     try std.testing.expectEqualStrings("if(x) {\n  return 1;\n}\n", r.output);
+}
+
+// ================================================================
+// import.meta polyfill tests
+// ================================================================
+
+test "import.meta: ESM keeps import.meta as-is" {
+    var r = try e2eWithOptions(std.testing.allocator, "const m = import.meta;", .{ .minify = true, .module_format = .esm });
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const m=import.meta;", r.output);
+}
+
+test "import.meta: CJS node — standalone import.meta" {
+    var r = try e2eWithOptions(std.testing.allocator, "const m = import.meta;", .{ .minify = true, .module_format = .cjs, .platform = .node });
+    defer r.deinit();
+    // CJS node: import.meta → full polyfill object
+    try std.testing.expectEqualStrings(
+        "const m={url:require(\"url\").pathToFileURL(__filename).href,dirname:__dirname,filename:__filename};",
+        r.output,
+    );
+}
+
+test "import.meta: CJS browser — standalone import.meta" {
+    var r = try e2eWithOptions(std.testing.allocator, "const m = import.meta;", .{ .minify = true, .module_format = .cjs, .platform = .browser });
+    defer r.deinit();
+    // CJS browser: import.meta → {}
+    try std.testing.expectEqualStrings("const m={};", r.output);
+}
+
+test "import.meta.url: CJS node" {
+    var r = try e2eWithOptions(std.testing.allocator, "const u = import.meta.url;", .{ .minify = true, .module_format = .cjs, .platform = .node });
+    defer r.deinit();
+    try std.testing.expectEqualStrings(
+        "const u=require(\"url\").pathToFileURL(__filename).href;",
+        r.output,
+    );
+}
+
+test "import.meta.url: CJS browser" {
+    var r = try e2eWithOptions(std.testing.allocator, "const u = import.meta.url;", .{ .minify = true, .module_format = .cjs, .platform = .browser });
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const u=\"\";", r.output);
+}
+
+test "import.meta.dirname: CJS node" {
+    var r = try e2eWithOptions(std.testing.allocator, "const d = import.meta.dirname;", .{ .minify = true, .module_format = .cjs, .platform = .node });
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const d=__dirname;", r.output);
+}
+
+test "import.meta.dirname: CJS browser" {
+    var r = try e2eWithOptions(std.testing.allocator, "const d = import.meta.dirname;", .{ .minify = true, .module_format = .cjs, .platform = .browser });
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const d=\"\";", r.output);
+}
+
+test "import.meta.filename: CJS node" {
+    var r = try e2eWithOptions(std.testing.allocator, "const f = import.meta.filename;", .{ .minify = true, .module_format = .cjs, .platform = .node });
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const f=__filename;", r.output);
+}
+
+test "import.meta.filename: CJS browser" {
+    var r = try e2eWithOptions(std.testing.allocator, "const f = import.meta.filename;", .{ .minify = true, .module_format = .cjs, .platform = .browser });
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const f=\"\";", r.output);
+}
+
+test "import.meta.url: ESM keeps as-is" {
+    var r = try e2eWithOptions(std.testing.allocator, "const u = import.meta.url;", .{ .minify = true, .module_format = .esm });
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const u=import.meta.url;", r.output);
+}
+
+test "import.meta: replace_import_meta with node platform" {
+    // 번들러가 replace_import_meta를 설정하는 경우 (non-ESM 번들)
+    var r = try e2eWithOptions(std.testing.allocator, "const u = import.meta.url;", .{ .minify = true, .replace_import_meta = true, .platform = .node });
+    defer r.deinit();
+    try std.testing.expectEqualStrings(
+        "const u=require(\"url\").pathToFileURL(__filename).href;",
+        r.output,
+    );
+}
+
+test "import.meta: replace_import_meta with browser platform" {
+    var r = try e2eWithOptions(std.testing.allocator, "const u = import.meta.url;", .{ .minify = true, .replace_import_meta = true, .platform = .browser });
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const u=\"\";", r.output);
+}
+
+test "import.meta: unknown property CJS node falls through to polyfill" {
+    // import.meta.env 등 알려지지 않은 프로퍼티 → import.meta polyfill + .env
+    var r = try e2eWithOptions(std.testing.allocator, "const e = import.meta.env;", .{ .minify = true, .module_format = .cjs, .platform = .node });
+    defer r.deinit();
+    // 알려지지 않은 프로퍼티는 import.meta 폴리필 뒤에 .prop이 붙어야 함
+    try std.testing.expectEqualStrings(
+        "const e={url:require(\"url\").pathToFileURL(__filename).href,dirname:__dirname,filename:__filename}.env;",
+        r.output,
+    );
+}
+
+test "import.meta: unknown property CJS browser" {
+    var r = try e2eWithOptions(std.testing.allocator, "const e = import.meta.env;", .{ .minify = true, .module_format = .cjs, .platform = .browser });
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const e={}.env;", r.output);
 }

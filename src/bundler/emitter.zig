@@ -31,11 +31,12 @@ const CJS_RUNTIME_MIN = "var __commonJS=(cb,mod)=>function __require(){return mo
 const TOESM_RUNTIME =
     \\var __getProtoOf = Object.getPrototypeOf;
     \\var __defProp = Object.defineProperty;
-    \\var __copyProps = (to, from) => { for (var key in from) if (Object.prototype.hasOwnProperty.call(from, key)) __defProp(to, key, { get: () => from[key], enumerable: true }); return to; };
+    \\var __hasOwn = Object.prototype.hasOwnProperty;
+    \\var __copyProps = (to, from) => { for (var key in from) if (__hasOwn.call(from, key) && !__hasOwn.call(to, key)) __defProp(to, key, { get: () => from[key], enumerable: true }); return to; };
     \\var __toESM = (mod, isNodeMode, target) => (target = mod != null ? Object.create(__getProtoOf(mod)) : {}, __copyProps(isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target, mod));
     \\
 ;
-const TOESM_RUNTIME_MIN = "var __getProtoOf=Object.getPrototypeOf;var __defProp=Object.defineProperty;var __copyProps=(to,from)=>{for(var key in from)if(Object.prototype.hasOwnProperty.call(from,key))__defProp(to,key,{get:()=>from[key],enumerable:true});return to};var __toESM=(mod,isNodeMode,target)=>(target=mod!=null?Object.create(__getProtoOf(mod)):{},__copyProps(isNodeMode||!mod||!mod.__esModule?__defProp(target,\"default\",{value:mod,enumerable:true}):target,mod));";
+const TOESM_RUNTIME_MIN = "var __getProtoOf=Object.getPrototypeOf;var __defProp=Object.defineProperty;var __hasOwn=Object.prototype.hasOwnProperty;var __copyProps=(to,from)=>{for(var key in from)if(__hasOwn.call(from,key)&&!__hasOwn.call(to,key))__defProp(to,key,{get:()=>from[key],enumerable:true});return to};var __toESM=(mod,isNodeMode,target)=>(target=mod!=null?Object.create(__getProtoOf(mod)):{},__copyProps(isNodeMode||!mod||!mod.__esModule?__defProp(target,\"default\",{value:mod,enumerable:true}):target,mod));";
 /// HMR 런타임: 모듈 레지스트리 + __zts_require + import.meta.hot API.
 /// dev mode 번들 상단에 주입된다.
 ///
@@ -139,6 +140,10 @@ pub const EmitOptions = struct {
     react_refresh: bool = false,
     /// define 글로벌 치환 (--define:KEY=VALUE)
     define: []const @import("../transformer/transformer.zig").DefineEntry = &.{},
+    /// 타겟 플랫폼. import.meta polyfill 방식을 결정한다.
+    platform: CgPlatform = .browser,
+
+    pub const CgPlatform = @import("../codegen/codegen.zig").Platform;
 
     pub const Format = enum {
         esm,
@@ -535,6 +540,7 @@ pub fn emitDevModule(
         .module_format = .esm,
         .sourcemap = options.sourcemap,
         .linking_metadata = if (metadata) |*md| md else null,
+        .platform = options.platform,
     });
     // 소스맵용: line_offsets와 소스 파일 등록
     if (options.sourcemap) {
@@ -1087,6 +1093,7 @@ pub fn emitModule(
         // 번들 모드에서 ESM이 아니면 import.meta → {} 치환 (esbuild 호환)
         // Node.js는 import.meta를 보면 ESM으로 재파싱하려 해서 에러 발생
         .replace_import_meta = options.format != .esm,
+        .platform = options.platform,
     });
     const code = try cg.generate(root);
 
