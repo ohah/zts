@@ -3567,3 +3567,57 @@ test "ReservedWord: escaped keyword as property access is OK" {
     // member expression에서 escaped keyword는 허용
     try expectNoParseError("obj.\\u0066or;");
 }
+
+// ============================================================
+// TS Arrow Function with Type Annotations (#286)
+// ============================================================
+
+test "TS arrow: basic typed params" {
+    try expectNoParseError("const add = (a: number, b: number) => a + b;");
+}
+
+test "TS arrow: return type annotation" {
+    try expectNoParseError("const f = (x: string): string => x.toUpperCase();");
+}
+
+test "TS arrow: optional param" {
+    try expectNoParseError("const g = (a: number, b?: string) => a;");
+}
+
+test "TS arrow: destructuring with type" {
+    try expectNoParseError("const f = ({x}: {x: number}) => x;");
+}
+
+test "TS arrow: rest param with type" {
+    try expectNoParseError("const f = (...args: number[]) => args;");
+}
+
+test "TS arrow: async with types" {
+    try expectNoParseError("const f = async (a: number): Promise<number> => a;");
+}
+
+test "TS arrow: empty params with return type" {
+    try expectNoParseError("const f = (): void => {};");
+}
+
+test "TS arrow: contextual keyword as param name (get/set/number)" {
+    // contextual keyword는 import default specifier와 arrow param 모두에서 식별자로 유효
+    try expectNoParseError("const f = (get: number) => get;");
+    try expectNoParseError("const f = (set: string) => set;");
+    try expectNoParseError("const f = (number: number) => number;");
+    try expectNoParseError("const f = (string: string) => string;");
+    try expectNoParseError("const f = (object: any) => object;");
+}
+
+test "TS arrow: non-arrow parenthesized expression still works" {
+    // TS arrow가 아닌 일반 괄호 표현식 — 기존 동작 유지
+    try expectNoParseError("const x = (1 + 2) * 3;");
+    try expectNoParseError("const x = (a);");
+    try expectNoParseError("const x = (a, b);");
+}
+
+test "TS arrow: plain JS arrow still works" {
+    try expectNoParseError("const f = (x, y) => x + y;");
+    try expectNoParseError("const f = x => x;");
+    try expectNoParseError("const f = () => 42;");
+}

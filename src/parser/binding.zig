@@ -80,6 +80,21 @@ pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
             // default value: pattern = expr
             return tryWrapDefaultValue(self, node);
         },
+        // contextual keyword (get/set/from/number/string/object/type 등)는
+        // binding 위치에서 일반 식별자로 유효 (ECMAScript BindingIdentifier).
+        // 예: function f(get: number) { }, (set: string) => set
+        .kw_get, .kw_set, .kw_from, .kw_of, .kw_as, .kw_type, .kw_async, .kw_accessor, .kw_using, .kw_require, .kw_meta, .kw_target, .kw_abstract, .kw_asserts, .kw_any, .kw_boolean, .kw_constructor, .kw_declare, .kw_infer, .kw_intrinsic, .kw_is, .kw_keyof, .kw_module, .kw_namespace, .kw_never, .kw_out, .kw_number, .kw_object, .kw_string, .kw_symbol, .kw_undefined, .kw_unique, .kw_unknown, .kw_override => {
+            const span = self.currentSpan();
+            try self.advance();
+            const node = try self.ast.addNode(.{
+                .tag = .binding_identifier,
+                .span = span,
+                .data = .{ .string_ref = span },
+            });
+            _ = try self.eat(.question);
+            _ = try self.tryParseTypeAnnotation();
+            return tryWrapDefaultValue(self, node);
+        },
         .l_bracket => {
             const pat = try parseArrayPattern(self);
             _ = try self.eat(.question);
