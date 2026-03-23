@@ -139,6 +139,8 @@ pub const TreeShaker = struct {
                 try self.processModuleImports(m);
             }
 
+            var changed = false;
+
             // include된 모듈의 사용된 re-export 소스도 include
             for (self.modules, 0..) |m, i| {
                 if (!self.included.isSet(i)) continue;
@@ -150,13 +152,16 @@ pub const TreeShaker = struct {
                             const src = @intFromEnum(m.import_records[rec_idx].resolved);
                             if (src < self.modules.len and !self.included.isSet(src)) {
                                 self.included.set(src);
+                                changed = true;
+                            }
+                            // export * as ns: 소스 모듈의 모든 export도 마킹
+                            if (eb.kind == .re_export_all and !std.mem.eql(u8, eb.exported_name, "*")) {
+                                try self.markAllExportsUsed(@intCast(src));
                             }
                         }
                     }
                 }
             }
-
-            var changed = false;
 
             // 미사용 sideEffects=false 모듈 제거
             for (self.modules, 0..) |m, i| {
