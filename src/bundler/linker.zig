@@ -656,25 +656,12 @@ pub const Linker = struct {
                         .map = inner_map,
                     });
 
-                    // 값으로 사용되는 경우: 인라인 객체 문자열 생성
+                    // 값으로 사용되는 경우: 인라인 객체 문자열 생성 (재귀 — 중첩 namespace 포함)
                     if (isNamespaceUsedAsValue(new_ast, effective_syms, @intCast(ns_sym_id))) {
-                        var obj_buf: std.ArrayList(u8) = .empty;
-                        defer obj_buf.deinit(self.allocator);
-                        try obj_buf.appendSlice(self.allocator, "{");
-                        for (exports.items, 0..) |exp, idx| {
-                            if (idx > 0) try obj_buf.appendSlice(self.allocator, ", ");
-                            if (std.mem.eql(u8, exp.exported, "default")) {
-                                try obj_buf.appendSlice(self.allocator, "\"default\": ");
-                            } else {
-                                try obj_buf.appendSlice(self.allocator, exp.exported);
-                                try obj_buf.appendSlice(self.allocator, ": ");
-                            }
-                            try obj_buf.appendSlice(self.allocator, exp.local);
-                        }
-                        try obj_buf.appendSlice(self.allocator, "}");
+                        const obj_str = try self.buildInlineObjectStr(@intCast(canonical_mod), 0);
                         try ns_inline_list.append(self.allocator, .{
                             .symbol_id = @intCast(ns_sym_id),
-                            .object_literal = try self.allocator.dupe(u8, obj_buf.items),
+                            .object_literal = obj_str,
                         });
                     }
                     continue;
@@ -699,41 +686,32 @@ pub const Linker = struct {
                                         if (rec_idx < self.modules[cmod].import_records.len) {
                                             const src = self.modules[cmod].import_records[rec_idx].resolved;
                                             if (!src.isNone()) {
-                                                // 소스 모듈의 export 수집
-                                                var ns_exports: std.ArrayList(NsExportPair) = .empty;
-                                                defer ns_exports.deinit(self.allocator);
-                                                var ns_seen: std.StringHashMap(void) = std.StringHashMap(void).init(self.allocator);
-                                                defer ns_seen.deinit();
-                                                var ns_visited: std.AutoHashMap(u32, void) = std.AutoHashMap(u32, void).init(self.allocator);
-                                                defer ns_visited.deinit();
-                                                try self.collectExportsRecursive(&ns_exports, &ns_seen, &ns_visited, src, 0);
-
-                                                // ns_member_rewrites에 등록 (ns.prop → canonical_name)
+                                                const src_mod_idx = @intFromEnum(src);
                                                 const import_sym_id = module_scope.get(ib.local_name) orelse break :blk ib.imported_name;
+
+                                                // ns_member_rewrites 등록
+                                                var ns_exports2: std.ArrayList(NsExportPair) = .empty;
+                                                defer ns_exports2.deinit(self.allocator);
+                                                var ns_seen2 = std.StringHashMap(void).init(self.allocator);
+                                                defer ns_seen2.deinit();
+                                                var ns_visited2 = std.AutoHashMap(u32, void).init(self.allocator);
+                                                defer ns_visited2.deinit();
+                                                try self.collectExportsRecursive(&ns_exports2, &ns_seen2, &ns_visited2, src, 0);
                                                 var ns_inner = std.StringHashMap([]const u8).init(self.allocator);
-                                                for (ns_exports.items) |exp| {
+                                                for (ns_exports2.items) |exp| {
                                                     try ns_inner.put(exp.exported, exp.local);
                                                 }
                                                 try ns_rewrite_list.append(self.allocator, .{
                                                     .symbol_id = @intCast(import_sym_id),
                                                     .map = ns_inner,
                                                 });
-                                                // 인라인 객체도 생성
-                                                var ns_obj: std.ArrayList(u8) = .empty;
-                                                defer ns_obj.deinit(self.allocator);
-                                                try ns_obj.appendSlice(self.allocator, "{");
-                                                for (ns_exports.items, 0..) |exp, j| {
-                                                    if (j > 0) try ns_obj.appendSlice(self.allocator, ", ");
-                                                    try ns_obj.appendSlice(self.allocator, exp.exported);
-                                                    try ns_obj.appendSlice(self.allocator, ": ");
-                                                    try ns_obj.appendSlice(self.allocator, exp.local);
-                                                }
-                                                try ns_obj.appendSlice(self.allocator, "}");
+                                                // 재귀 인라인 객체 생성
+                                                const obj_str = try self.buildInlineObjectStr(@intCast(src_mod_idx), 0);
                                                 try ns_inline_list.append(self.allocator, .{
                                                     .symbol_id = @intCast(import_sym_id),
-                                                    .object_literal = try self.allocator.dupe(u8, ns_obj.items),
+                                                    .object_literal = obj_str,
                                                 });
-                                                break :blk ib.local_name; // 리네임 불필요
+                                                break :blk ib.local_name;
                                             }
                                         }
                                     }
@@ -1346,6 +1324,65 @@ pub const Linker = struct {
 
     /// ESM namespace import를 위한 namespace 객체 preamble 생성.
     /// `import * as X from './mod'` → `var X = {a: a, b: b};`
+    /// 모듈의 모든 export를 인라인 객체 문자열로 생성 (재귀적).
+    /// `export * as ns` export는 소스 모듈의 인라인 객체로 중첩.
+    fn buildInlineObjectStr(
+        self: *const Linker,
+        target_mod_idx: u32,
+        depth: u32,
+    ) std.mem.Allocator.Error![]const u8 {
+        if (depth > max_chain_depth) return try self.allocator.dupe(u8, "{}");
+        if (target_mod_idx >= self.modules.len) return try self.allocator.dupe(u8, "{}");
+
+        var exports: std.ArrayList(NsExportPair) = .empty;
+        defer exports.deinit(self.allocator);
+        var seen = std.StringHashMap(void).init(self.allocator);
+        defer seen.deinit();
+        var visited = std.AutoHashMap(u32, void).init(self.allocator);
+        defer visited.deinit();
+        try self.collectExportsRecursive(&exports, &seen, &visited, @enumFromInt(target_mod_idx), 0);
+
+        // export * as ns 패턴 수집 (별도 처리 — 재귀 인라인 필요)
+        const target = self.modules[target_mod_idx];
+        var ns_re_exports = std.StringHashMap(u32).init(self.allocator); // exported_name → source_mod
+        defer ns_re_exports.deinit();
+        for (target.export_bindings) |eb| {
+            if (eb.kind == .re_export_all and !std.mem.eql(u8, eb.exported_name, "*")) {
+                if (eb.import_record_index) |rec_idx| {
+                    if (rec_idx < target.import_records.len) {
+                        const src = target.import_records[rec_idx].resolved;
+                        if (!src.isNone()) {
+                            try ns_re_exports.put(eb.exported_name, @intFromEnum(src));
+                        }
+                    }
+                }
+            }
+        }
+
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+        try buf.appendSlice(self.allocator, "{");
+        for (exports.items, 0..) |exp, idx| {
+            if (idx > 0) try buf.appendSlice(self.allocator, ", ");
+            if (std.mem.eql(u8, exp.exported, "default")) {
+                try buf.appendSlice(self.allocator, "\"default\": ");
+            } else {
+                try buf.appendSlice(self.allocator, exp.exported);
+                try buf.appendSlice(self.allocator, ": ");
+            }
+            // export * as ns 패턴이면 재귀 인라인
+            if (ns_re_exports.get(exp.exported)) |src_mod| {
+                const nested = try self.buildInlineObjectStr(src_mod, depth + 1);
+                defer self.allocator.free(nested);
+                try buf.appendSlice(self.allocator, nested);
+            } else {
+                try buf.appendSlice(self.allocator, exp.local);
+            }
+        }
+        try buf.appendSlice(self.allocator, "}");
+        return try self.allocator.dupe(u8, buf.items);
+    }
+
     fn buildNamespacePreamble(
         self: *const Linker,
         buf: *std.ArrayList(u8),
@@ -1391,7 +1428,7 @@ pub const Linker = struct {
         visited: *std.AutoHashMap(u32, void),
         module_idx: ModuleIndex,
         depth: u32,
-    ) !void {
+    ) std.mem.Allocator.Error!void {
         if (depth > max_chain_depth) return;
         const mod_i = @intFromEnum(module_idx);
         if (mod_i >= self.modules.len) return;
@@ -1408,13 +1445,41 @@ pub const Linker = struct {
             if (seen.contains(eb.exported_name)) continue;
             try seen.put(eb.exported_name, {});
 
-            const actual_local = if (eb.kind == .re_export or
-                (eb.kind == .re_export_all and !std.mem.eql(u8, eb.exported_name, "*")))
-            blk: {
-                break :blk if (self.resolveExportChain(module_idx, eb.exported_name, 0)) |canonical|
-                    self.resolveToLocalName(canonical)
-                else
-                    eb.local_name;
+            const actual_local = if (eb.kind == .re_export_all and !std.mem.eql(u8, eb.exported_name, "*")) blk: {
+                // export * as ns — 소스 모듈의 인라인 객체를 생성 (재귀)
+                if (eb.import_record_index) |rec_idx| {
+                    if (rec_idx < m.import_records.len) {
+                        const src = m.import_records[rec_idx].resolved;
+                        if (!src.isNone()) {
+                            break :blk try self.buildInlineObjectStr(@intFromEnum(src), depth + 1);
+                        }
+                    }
+                }
+                break :blk eb.local_name;
+            } else if (eb.kind == .re_export) blk: {
+                if (self.resolveExportChain(module_idx, eb.exported_name, 0)) |canonical| {
+                    // canonical이 export * as ns 패턴인지 확인
+                    const cmod_i = @intFromEnum(canonical.module_index);
+                    if (cmod_i < self.modules.len) {
+                        for (self.modules[cmod_i].export_bindings) |ceb| {
+                            if (ceb.kind == .re_export_all and
+                                std.mem.eql(u8, ceb.exported_name, canonical.export_name) and
+                                !std.mem.eql(u8, ceb.exported_name, "*"))
+                            {
+                                if (ceb.import_record_index) |rec_idx| {
+                                    if (rec_idx < self.modules[cmod_i].import_records.len) {
+                                        const src = self.modules[cmod_i].import_records[rec_idx].resolved;
+                                        if (!src.isNone()) {
+                                            break :blk try self.buildInlineObjectStr(@intFromEnum(src), depth + 1);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    break :blk self.resolveToLocalName(canonical);
+                }
+                break :blk eb.local_name;
             } else self.getCanonicalName(@intCast(mod_i), eb.local_name) orelse eb.local_name;
 
             try exports.append(self.allocator, .{
