@@ -613,6 +613,10 @@ pub const Linker = struct {
                 // 번들된 모듈을 가리키는 require() → require_xxx()로 치환
                 // __commonJS로 래핑되는 모듈만 대상 (CJS, JSON 모두 wrap_kind=.cjs)
                 if (self.modules[target].wrap_kind == .cjs) {
+                    // 동일 specifier의 기존 값이 있으면 해제 (중복 require 방지)
+                    if (require_rewrites.get(rec.specifier)) |old| {
+                        self.allocator.free(old);
+                    }
                     const var_name = try types.makeRequireVarName(self.allocator, self.modules[target].path);
                     try require_rewrites.put(self.allocator, rec.specifier, var_name);
                 }
