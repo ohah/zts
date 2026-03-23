@@ -147,6 +147,9 @@ pub const Linker = struct {
     const NsExportPair = struct {
         exported: []const u8,
         local: []const u8,
+        /// buildInlineObjectStr에서 할당된 문자열인 경우 true.
+        /// exports ArrayList 해제 시 owned=true인 local만 free.
+        owned: bool = false,
     };
 
     /// re-export 체인 순환 방지 깊이 제한.
@@ -638,32 +641,13 @@ pub const Linker = struct {
                     const effective_syms = override_symbol_ids orelse sem.symbol_ids;
 
                     // esbuild 방식: ns.prop → 직접 치환, ns 값 사용 → 인라인 객체
-                    var exports: std.ArrayList(NsExportPair) = .empty;
-                    defer exports.deinit(self.allocator);
-                    var seen_exports = std.StringHashMap(void).init(self.allocator);
-                    defer seen_exports.deinit();
-                    var visited_mods = std.AutoHashMap(u32, void).init(self.allocator);
-                    defer visited_mods.deinit();
-                    try self.collectExportsRecursive(&exports, &seen_exports, &visited_mods, @enumFromInt(canonical_mod), 0);
-
-                    // member access 치환 맵
-                    var inner_map = std.StringHashMap([]const u8).init(self.allocator);
-                    for (exports.items) |exp| {
-                        try inner_map.put(exp.exported, exp.local);
-                    }
-                    try ns_rewrite_list.append(self.allocator, .{
-                        .symbol_id = @intCast(ns_sym_id),
-                        .map = inner_map,
-                    });
-
-                    // 값으로 사용되는 경우: 인라인 객체 문자열 생성 (재귀 — 중첩 namespace 포함)
-                    if (isNamespaceUsedAsValue(self.allocator, new_ast, effective_syms, @intCast(ns_sym_id))) {
-                        const obj_str = try self.buildInlineObjectStr(@intCast(canonical_mod), 0);
-                        try ns_inline_list.append(self.allocator, .{
-                            .symbol_id = @intCast(ns_sym_id),
-                            .object_literal = obj_str,
-                        });
-                    }
+                    const need_inline = isNamespaceUsedAsValue(self.allocator, new_ast, effective_syms, @intCast(ns_sym_id));
+                    try self.registerNamespaceRewrites(
+                        &ns_rewrite_list,
+                        if (need_inline) &ns_inline_list else null,
+                        @intCast(ns_sym_id),
+                        @intCast(canonical_mod),
+                    );
                     continue;
                 }
 
@@ -686,31 +670,13 @@ pub const Linker = struct {
                                         if (rec_idx < self.modules[cmod].import_records.len) {
                                             const src = self.modules[cmod].import_records[rec_idx].resolved;
                                             if (!src.isNone()) {
-                                                const src_mod_idx = @intFromEnum(src);
                                                 const import_sym_id = module_scope.get(ib.local_name) orelse break :blk ib.imported_name;
-
-                                                // ns_member_rewrites 등록
-                                                var ns_exports2: std.ArrayList(NsExportPair) = .empty;
-                                                defer ns_exports2.deinit(self.allocator);
-                                                var ns_seen2 = std.StringHashMap(void).init(self.allocator);
-                                                defer ns_seen2.deinit();
-                                                var ns_visited2 = std.AutoHashMap(u32, void).init(self.allocator);
-                                                defer ns_visited2.deinit();
-                                                try self.collectExportsRecursive(&ns_exports2, &ns_seen2, &ns_visited2, src, 0);
-                                                var ns_inner = std.StringHashMap([]const u8).init(self.allocator);
-                                                for (ns_exports2.items) |exp| {
-                                                    try ns_inner.put(exp.exported, exp.local);
-                                                }
-                                                try ns_rewrite_list.append(self.allocator, .{
-                                                    .symbol_id = @intCast(import_sym_id),
-                                                    .map = ns_inner,
-                                                });
-                                                // 재귀 인라인 객체 생성
-                                                const obj_str = try self.buildInlineObjectStr(@intCast(src_mod_idx), 0);
-                                                try ns_inline_list.append(self.allocator, .{
-                                                    .symbol_id = @intCast(import_sym_id),
-                                                    .object_literal = obj_str,
-                                                });
+                                                try self.registerNamespaceRewrites(
+                                                    &ns_rewrite_list,
+                                                    &ns_inline_list,
+                                                    @intCast(import_sym_id),
+                                                    @intFromEnum(src),
+                                                );
                                                 break :blk ib.local_name;
                                             }
                                         }
@@ -730,22 +696,12 @@ pub const Linker = struct {
                                         @intFromEnum(self.modules[cmod2].import_records[cib.import_record_index].resolved)
                                     else
                                         break;
-                                    // member rewrite
-                                    var ns_exps: std.ArrayList(NsExportPair) = .empty;
-                                    defer ns_exps.deinit(self.allocator);
-                                    var ns_s = std.StringHashMap(void).init(self.allocator);
-                                    defer ns_s.deinit();
-                                    var ns_v = std.AutoHashMap(u32, void).init(self.allocator);
-                                    defer ns_v.deinit();
-                                    try self.collectExportsRecursive(&ns_exps, &ns_s, &ns_v, @enumFromInt(@as(u32, @intCast(ns_target_mod))), 0);
-                                    var ns_m = std.StringHashMap([]const u8).init(self.allocator);
-                                    for (ns_exps.items) |exp| {
-                                        try ns_m.put(exp.exported, exp.local);
-                                    }
-                                    try ns_rewrite_list.append(self.allocator, .{ .symbol_id = @intCast(imp_sym), .map = ns_m });
-                                    // inline object
-                                    const obj = try self.buildInlineObjectStr(@intCast(ns_target_mod), 0);
-                                    try ns_inline_list.append(self.allocator, .{ .symbol_id = @intCast(imp_sym), .object_literal = obj });
+                                    try self.registerNamespaceRewrites(
+                                        &ns_rewrite_list,
+                                        &ns_inline_list,
+                                        @intCast(imp_sym),
+                                        @intCast(ns_target_mod),
+                                    );
                                     break :blk ib.local_name;
                                 }
                             }
@@ -1355,7 +1311,42 @@ pub const Linker = struct {
     }
 
     /// ESM namespace import를 위한 namespace 객체 preamble 생성.
-    /// `import * as X from './mod'` → `var X = {a: a, b: b};`
+    /// namespace import/re-export에 대해 ns_member_rewrites + ns_inline_objects를 등록.
+    /// buildMetadataForAst 내 3곳에서 동일 패턴을 공유.
+    fn registerNamespaceRewrites(
+        self: *const Linker,
+        ns_rewrite_list: *std.ArrayList(LinkingMetadata.NsMemberRewrites.Entry),
+        ns_inline_list: ?*std.ArrayList(LinkingMetadata.NsInlineObjects.Entry),
+        symbol_id: u32,
+        target_mod_idx: u32,
+    ) std.mem.Allocator.Error!void {
+        var exports: std.ArrayList(NsExportPair) = .empty;
+        // owned 문자열은 inner_map으로 소유권 이동 — 여기서 free하지 않음
+        defer exports.deinit(self.allocator);
+        var seen = std.StringHashMap(void).init(self.allocator);
+        defer seen.deinit();
+        var visited = std.AutoHashMap(u32, void).init(self.allocator);
+        defer visited.deinit();
+        try self.collectExportsRecursive(&exports, &seen, &visited, @enumFromInt(target_mod_idx), 0);
+
+        var inner_map = std.StringHashMap([]const u8).init(self.allocator);
+        for (exports.items) |exp| {
+            try inner_map.put(exp.exported, exp.local);
+        }
+        try ns_rewrite_list.append(self.allocator, .{
+            .symbol_id = symbol_id,
+            .map = inner_map,
+        });
+
+        if (ns_inline_list) |list| {
+            const obj_str = try self.buildInlineObjectStr(target_mod_idx, 0);
+            try list.append(self.allocator, .{
+                .symbol_id = symbol_id,
+                .object_literal = obj_str,
+            });
+        }
+    }
+
     /// 모듈의 모든 export를 인라인 객체 문자열로 생성 (재귀적).
     /// `export * as ns` export는 소스 모듈의 인라인 객체로 중첩.
     fn buildInlineObjectStr(
@@ -1367,7 +1358,12 @@ pub const Linker = struct {
         if (target_mod_idx >= self.modules.len) return try self.allocator.dupe(u8, "{}");
 
         var exports: std.ArrayList(NsExportPair) = .empty;
-        defer exports.deinit(self.allocator);
+        defer {
+            for (exports.items) |exp| {
+                if (exp.owned) self.allocator.free(exp.local);
+            }
+            exports.deinit(self.allocator);
+        }
         var seen = std.StringHashMap(void).init(self.allocator);
         defer seen.deinit();
         var visited = std.AutoHashMap(u32, void).init(self.allocator);
@@ -1480,6 +1476,7 @@ pub const Linker = struct {
             try exports.append(self.allocator, .{
                 .exported = eb.exported_name,
                 .local = actual_local,
+                .owned = actual_local.len > 0 and actual_local[0] == '{',
             });
         }
 
