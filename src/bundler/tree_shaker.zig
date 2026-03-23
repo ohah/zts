@@ -487,12 +487,7 @@ pub const TreeShaker = struct {
 const resolve_cache_mod = @import("resolve_cache.zig");
 const ModuleGraph = @import("graph.zig").ModuleGraph;
 
-fn writeFile(dir: std.fs.Dir, path: []const u8, data: []const u8) !void {
-    if (std.fs.path.dirname(path)) |parent| {
-        dir.makePath(parent) catch {};
-    }
-    try dir.writeFile(.{ .sub_path = path, .data = data });
-}
+const writeFile = @import("test_helpers.zig").writeFile;
 
 const TestResult = struct {
     shaker: TreeShaker,

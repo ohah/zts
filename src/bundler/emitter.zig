@@ -1220,12 +1220,7 @@ fn propagateCrossModulePurity(
 
 const resolve_cache_mod = @import("resolve_cache.zig");
 
-fn writeFile(dir: std.fs.Dir, path: []const u8, data: []const u8) !void {
-    if (std.fs.path.dirname(path)) |parent| {
-        dir.makePath(parent) catch {};
-    }
-    dir.writeFile(.{ .sub_path = path, .data = data }) catch |err| return err;
-}
+const writeFile = @import("test_helpers.zig").writeFile;
 
 fn buildGraph(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_name: []const u8) !struct { graph: ModuleGraph, cache: resolve_cache_mod.ResolveCache } {
     const dp = try tmp.dir.realpathAlloc(allocator, ".");

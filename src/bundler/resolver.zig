@@ -368,13 +368,7 @@ fn pathEndsWith(path: []const u8, expected_suffix: []const u8) bool {
     return true;
 }
 
-/// 테스트용 헬퍼: tmpDir에 파일 생성 + 내용 쓰기 (부모 디렉토리 자동 생성)
-fn writeFile(dir: std.fs.Dir, path: []const u8, data: []const u8) !void {
-    if (std.fs.path.dirname(path)) |parent| {
-        dir.makePath(parent) catch {};
-    }
-    dir.writeFile(.{ .sub_path = path, .data = data }) catch |err| return err;
-}
+const writeFile = @import("test_helpers.zig").writeFile;
 
 test "resolve: exact file" {
     var tmp = std.testing.tmpDir(.{});

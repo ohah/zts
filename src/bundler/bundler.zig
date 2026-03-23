@@ -316,12 +316,7 @@ pub const Bundler = struct {
 // Tests
 // ============================================================
 
-fn writeFile(dir: std.fs.Dir, path: []const u8, data: []const u8) !void {
-    if (std.fs.path.dirname(path)) |parent| {
-        dir.makePath(parent) catch {};
-    }
-    try dir.writeFile(.{ .sub_path = path, .data = data });
-}
+const writeFile = @import("test_helpers.zig").writeFile;
 
 fn absPath(tmp: *std.testing.TmpDir, rel: []const u8) ![]const u8 {
     const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
