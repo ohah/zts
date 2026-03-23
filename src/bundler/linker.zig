@@ -229,23 +229,12 @@ pub const Linker = struct {
         }
 
         // 2. 이름 생성기로 모든 top-level 이름을 짧은 이름으로 매핑
+        // name_map: 원본 이름 → mangled 이름 (duped).
+        // canonical_names에 넣을 때 다시 dupe하므로 name_map 값은 항상 해제.
         var name_map = std.StringHashMap([]const u8).init(self.allocator);
         defer {
-            // name_map의 값(duped 이름)은 canonical_names로 이전되지 않은 것만 해제
-            // canonical_names에 이전된 값은 linker.deinit()에서 해제
             var vit = name_map.valueIterator();
-            while (vit.next()) |v| {
-                // canonical_names에 없으면 우리가 해제해야 함
-                var in_canonical = false;
-                var cnv = self.canonical_names.valueIterator();
-                while (cnv.next()) |cv| {
-                    if (cv.*.ptr == v.*.ptr) {
-                        in_canonical = true;
-                        break;
-                    }
-                }
-                if (!in_canonical) self.allocator.free(v.*);
-            }
+            while (vit.next()) |v| self.allocator.free(v.*);
             name_map.deinit();
         }
 
