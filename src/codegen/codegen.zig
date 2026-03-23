@@ -1481,50 +1481,35 @@ pub const Codegen = struct {
             const inner = node.data.unary.operand;
             if (!inner.isNone()) {
                 const inner_node = self.ast.getNode(inner);
-                switch (inner_node.tag) {
-                    .function_declaration, .class_declaration => {
-                        // anonymous 여부 확인: name이 none이면 var _default = function() {} 로 래핑
-                        const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[inner_node.data.extra]);
-                        if (name_idx.isNone()) {
-                            // export default function() {} → var _default = function() {};
-                            const def_name = self.options.linking_metadata.?.default_export_name;
-                            if (self.options.minify) {
-                                try self.write("var ");
-                                try self.write(def_name);
-                                try self.writeByte('=');
-                            } else {
-                                try self.write("var ");
-                                try self.write(def_name);
-                                try self.write(" = ");
-                            }
-                            try self.emitNode(inner);
-                            try self.writeByte(';');
-                        } else {
-                            // export default function greet() {...} → function greet() {...}
-                            try self.emitNode(inner);
-                        }
-                    },
-                    else => {
-                        // 이름 충돌 시 linker가 _default$1 등으로 리네임
-                        const def_name = self.options.linking_metadata.?.default_export_name;
-                        if (self.options.minify) {
-                            try self.write("var ");
-                            try self.write(def_name);
-                            try self.writeByte('=');
-                        } else {
-                            try self.write("var ");
-                            try self.write(def_name);
-                            try self.write(" = ");
-                        }
-                        try self.emitNode(inner);
-                        try self.writeByte(';');
-                    },
+                // 이름이 있는 function/class → 그대로 출력
+                const is_named_decl = (inner_node.tag == .function_declaration or inner_node.tag == .class_declaration) and
+                    !(@as(NodeIndex, @enumFromInt(self.ast.extra_data.items[inner_node.data.extra]))).isNone();
+                if (is_named_decl) {
+                    try self.emitNode(inner);
+                } else {
+                    // anonymous function/class 또는 expression → var _default = ...;
+                    try self.emitDefaultVarAssignment(self.options.linking_metadata.?.default_export_name, inner);
                 }
             }
             return;
         }
         try self.write("export default ");
         try self.emitNode(node.data.unary.operand);
+        try self.writeByte(';');
+    }
+
+    /// `var <name> = <inner>;` 출력 (export default 변환용).
+    fn emitDefaultVarAssignment(self: *Codegen, name: []const u8, inner: NodeIndex) !void {
+        if (self.options.minify) {
+            try self.write("var ");
+            try self.write(name);
+            try self.writeByte('=');
+        } else {
+            try self.write("var ");
+            try self.write(name);
+            try self.write(" = ");
+        }
+        try self.emitNode(inner);
         try self.writeByte(';');
     }
 

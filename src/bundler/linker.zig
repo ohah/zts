@@ -1200,48 +1200,34 @@ pub const Linker = struct {
     /// namespace 식별자가 member access 이외의 위치에서 사용되는지 판별.
     /// `ns.prop`만 사용되면 false (직접 치환 가능), `console.log(ns)` 등이면 true (객체 필요).
     fn isNamespaceUsedAsValue(new_ast: *const Ast, symbol_ids: []const ?u32, ns_sym_id: u32) bool {
-        // 1. "안전한 위치" 수집: static_member_expression의 object 또는 import 관련 노드
-        var safe_buf: [512]u32 = undefined;
-        var safe_count: usize = 0;
+        const node_count = new_ast.nodes.items.len;
+        if (node_count == 0) return false;
+
+        // 1. member access의 object 위치를 비트셋으로 수집 — O(N) 스캔, O(1) 조회
+        var safe = std.DynamicBitSet.initEmpty(std.heap.page_allocator, node_count) catch return true;
+        defer safe.deinit();
+
         for (new_ast.nodes.items) |node| {
-            switch (node.tag) {
-                // member access의 object 위치 — ns.prop 패턴
-                .static_member_expression, .private_field_expression => {
-                    const e = node.data.extra;
-                    if (new_ast.hasExtra(e, 2)) {
-                        const obj_raw = new_ast.readExtra(e, 0);
-                        if (safe_count < safe_buf.len) {
-                            safe_buf[safe_count] = obj_raw;
-                            safe_count += 1;
-                        }
-                    }
-                },
-                else => {},
+            if (node.tag == .static_member_expression or node.tag == .private_field_expression) {
+                const e = node.data.extra;
+                if (new_ast.hasExtra(e, 2)) {
+                    const obj_idx = new_ast.readExtra(e, 0);
+                    if (obj_idx < node_count) safe.set(obj_idx);
+                }
             }
         }
-        const safe_positions = safe_buf[0..safe_count];
 
-        // 2. ns 심볼 참조 확인 — 안전한 위치가 아닌 참조가 하나라도 있으면 값 사용
+        // 2. ns 심볼 참조 확인 — 안전 위치가 아닌 참조가 하나라도 있으면 값 사용
         for (symbol_ids, 0..) |maybe_sid, node_i| {
             if (maybe_sid) |sid| {
                 if (sid == ns_sym_id) {
-                    // import specifier 등 바인딩 선언 위치는 skip
-                    if (node_i < new_ast.nodes.items.len) {
+                    // import specifier/binding 선언 위치는 skip
+                    if (node_i < node_count) {
                         const tag = new_ast.nodes.items[node_i].tag;
                         if (tag == .import_namespace_specifier or tag == .import_default_specifier or
-                            tag == .import_specifier or tag == .binding_identifier)
-                        {
-                            continue;
-                        }
+                            tag == .import_specifier or tag == .binding_identifier) continue;
                     }
-                    var is_safe = false;
-                    for (safe_positions) |safe_idx| {
-                        if (safe_idx == @as(u32, @intCast(node_i))) {
-                            is_safe = true;
-                            break;
-                        }
-                    }
-                    if (!is_safe) return true;
+                    if (node_i >= node_count or !safe.isSet(node_i)) return true;
                 }
             }
         }
