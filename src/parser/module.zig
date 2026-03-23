@@ -108,8 +108,11 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     const scratch_top = self.saveScratch();
 
     // default import: import foo from "module"
+    // contextual keyword (get/set/number/string/object/type 등)도 import 이름으로 유효
     var has_default = false;
-    if (self.current() == .identifier) {
+    if (self.current() == .identifier or
+        (self.current().isKeyword() and !self.current().isReservedKeyword()))
+    {
         const next = try self.peekNextKind();
         if (next == .comma or next == .kw_from) {
             const spec_span = self.currentSpan();

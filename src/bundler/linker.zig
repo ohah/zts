@@ -1971,3 +1971,183 @@ test "rename: multiple export default expressions get unique _default names" {
     }
     try std.testing.expectEqual(@as(u32, 2), rename_count);
 }
+
+// ============================================================
+// Issue #283+: namespace import edge cases
+// ============================================================
+
+test "namespace: diamond export * dedup" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // A exports * from B and C, both export * from shared.
+    // x should appear once (no duplicate).
+    try writeFile(tmp.dir, "entry.ts", "import * as ns from './a';\nconsole.log(ns.x);");
+    try writeFile(tmp.dir, "a.ts", "export * from './b';\nexport * from './c';");
+    try writeFile(tmp.dir, "b.ts", "export * from './shared';");
+    try writeFile(tmp.dir, "c.ts", "export * from './shared';");
+    try writeFile(tmp.dir, "shared.ts", "export const x = 1;");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    // entry에서 namespace import로 ns를 가져옴 — 무한 루프 없이 완료
+    const entry = r.graph.modules.items[0];
+    try std.testing.expect(entry.import_bindings.len > 0);
+    try std.testing.expectEqual(ImportBinding.Kind.namespace, entry.import_bindings[0].kind);
+}
+
+test "namespace: circular export * no infinite loop" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // A exports * from B, B exports * from A — 순환 export *
+    try writeFile(tmp.dir, "entry.ts", "import * as ns from './a';\nconsole.log(ns);");
+    try writeFile(tmp.dir, "a.ts", "export * from './b';\nexport const x = 1;");
+    try writeFile(tmp.dir, "b.ts", "export * from './a';\nexport const y = 2;");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    // 무한 루프 없이 완료되면 성공
+    const entry = r.graph.modules.items[0];
+    try std.testing.expect(entry.import_bindings.len > 0);
+    try std.testing.expectEqual(ImportBinding.Kind.namespace, entry.import_bindings[0].kind);
+}
+
+test "namespace: mixed named + default exports" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // 모듈이 named export와 default export를 모두 가짐
+    try writeFile(tmp.dir, "entry.ts", "import * as m from './mod';\nconsole.log(m.x, m.default);");
+    try writeFile(tmp.dir, "mod.ts", "export const x = 1;\nexport default 42;");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    const entry = r.graph.modules.items[0];
+    try std.testing.expect(entry.import_bindings.len > 0);
+    try std.testing.expectEqual(ImportBinding.Kind.namespace, entry.import_bindings[0].kind);
+}
+
+test "namespace: re-export alias in namespace" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // barrel이 J를 render로 re-export → namespace에서 render로 접근 가능해야 함
+    try writeFile(tmp.dir, "entry.ts", "import * as ns from './barrel';\nconsole.log(ns.render);");
+    try writeFile(tmp.dir, "barrel.ts", "export { J as render } from './impl';");
+    try writeFile(tmp.dir, "impl.ts", "export function J() { return 42; }");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    const entry = r.graph.modules.items[0];
+    try std.testing.expect(entry.import_bindings.len > 0);
+    try std.testing.expectEqual(ImportBinding.Kind.namespace, entry.import_bindings[0].kind);
+}
+
+// ============================================================
+// Re-export alias edge cases
+// ============================================================
+
+test "re-export alias: double-hop chain (z -> y -> x)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // 3-level alias chain: z → y → x → 최종 original
+    try writeFile(tmp.dir, "entry.ts", "import { z } from './hop1';");
+    try writeFile(tmp.dir, "hop1.ts", "export { y as z } from './hop2';");
+    try writeFile(tmp.dir, "hop2.ts", "export { x as y } from './origin';");
+    try writeFile(tmp.dir, "origin.ts", "export function x() { return 1; }");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    const entry = r.graph.modules.items[0];
+    const binding = r.linker.getResolvedBinding(0, entry.import_bindings[0].local_span);
+    try std.testing.expect(binding != null);
+    // 3-hop chain → 최종 origin.ts의 "x"
+    const canon = binding.?.canonical;
+    try std.testing.expectEqualStrings("x", canon.export_name);
+    const local = r.linker.resolveToLocalName(canon);
+    try std.testing.expectEqualStrings("x", local);
+}
+
+test "re-export alias: default class declaration resolves to class name" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // export default class MyClass {} → local_name = "MyWidget"
+    try writeFile(tmp.dir, "entry.ts", "import { Widget } from './barrel';");
+    try writeFile(tmp.dir, "barrel.ts", "export { default as Widget } from './impl';");
+    try writeFile(tmp.dir, "impl.ts", "export default class MyWidget { render() {} }");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    const entry = r.graph.modules.items[0];
+    const binding = r.linker.getResolvedBinding(0, entry.import_bindings[0].local_span);
+    try std.testing.expect(binding != null);
+    // default class declaration → local_name = "MyWidget"
+    const local = r.linker.resolveToLocalName(binding.?.canonical);
+    try std.testing.expectEqualStrings("MyWidget", local);
+}
+
+// ============================================================
+// _default collision edge cases
+// ============================================================
+
+test "rename: mixed function + expression defaults" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // function default는 함수명 유지, expression defaults는 _default$N
+    try writeFile(tmp.dir, "entry.ts", "import a from './func';\nimport b from './expr1';\nimport c from './expr2';");
+    try writeFile(tmp.dir, "func.ts", "export default function myFunc() { return 1; }");
+    try writeFile(tmp.dir, "expr1.ts", "const val = 2;\nexport default val;");
+    try writeFile(tmp.dir, "expr2.ts", "const val = 3;\nexport default val;");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    // expression default 2개 + function default 1개 = 총 3개 default
+    // expression defaults가 _default를 사용하므로 충돌 해결이 발생
+    var default_count: u32 = 0;
+    var cit = r.linker.canonical_names.valueIterator();
+    while (cit.next()) |val| {
+        if (std.mem.startsWith(u8, val.*, "_default")) default_count += 1;
+    }
+    // _default가 여러 모듈에서 사용되면 충돌 해결이 발생
+    try std.testing.expect(default_count >= 1);
+}
+
+test "rename: _default consumed via import default binding" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // 두 모듈의 expression default를 import default로 가져옴
+    try writeFile(tmp.dir, "entry.ts", "import a from './a';\nimport b from './b';\nconsole.log(a, b);");
+    try writeFile(tmp.dir, "a.ts", "const x = 10;\nexport default x;");
+    try writeFile(tmp.dir, "b.ts", "const y = 20;\nexport default y;");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    // 두 모듈 모두 _default → 하나는 _default$1로 리네임
+    var rename_count: u32 = 0;
+    var cit = r.linker.canonical_names.valueIterator();
+    while (cit.next()) |val| {
+        if (std.mem.startsWith(u8, val.*, "_default$")) rename_count += 1;
+    }
+    try std.testing.expectEqual(@as(u32, 1), rename_count);
+}

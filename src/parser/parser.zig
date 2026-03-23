@@ -3621,3 +3621,57 @@ test "TS arrow: plain JS arrow still works" {
     try expectNoParseError("const f = x => x;");
     try expectNoParseError("const f = () => 42;");
 }
+
+// ============================================================
+// TS arrow function edge cases
+// ============================================================
+
+test "TS arrow: default value with type" {
+    try expectNoParseError("const f = (x: number = 10) => x;");
+}
+
+test "TS arrow: nested arrow with types" {
+    try expectNoParseError("const f = (x: number) => (y: string) => x + y;");
+}
+
+test "TS arrow: trailing comma" {
+    try expectNoParseError("const f = (a: number, b: string,) => a;");
+}
+
+test "TS arrow: complex union type param" {
+    try expectNoParseError("const f = (x: string | number) => x;");
+}
+
+test "TS arrow: IIFE with types" {
+    try expectNoParseError("((a: number) => a + 1)(5);");
+}
+
+test "TS arrow: return type object literal" {
+    try expectNoParseError("const f = (x: number): {a: number} => ({a: x});");
+}
+
+// ============================================================
+// Contextual keyword binding edge cases
+// ============================================================
+
+test "binding: type/from/of/as/async as function params" {
+    try expectNoParseError("function f(type, from, of, as) { return type + from + of + as; }");
+    try expectNoParseError("function f(async) { return async; }");
+}
+
+test "binding: nested destructuring with defaults" {
+    try expectNoParseError("const { a = 1, b = 2 } = {};");
+    try expectNoParseError("const { a: { b } } = { a: { b: 1 } };");
+    try expectNoParseError("const [a, , b] = [1, 2, 3];");
+}
+
+test "binding: contextual keyword as catch param" {
+    try expectNoParseError("try {} catch (type) { console.log(type); }");
+    try expectNoParseError("try {} catch (from) { console.log(from); }");
+}
+
+test "binding: contextual keyword as for-of variable" {
+    // contextual keywords as for-of binding
+    try expectNoParseError("for (const type of [1,2,3]) { console.log(type); }");
+    try expectNoParseError("for (const get of [1,2,3]) { console.log(get); }");
+}
