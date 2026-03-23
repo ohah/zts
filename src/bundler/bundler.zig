@@ -9634,3 +9634,66 @@ test "Profile: pipeline stage timing (dev only, not for CI)" {
         });
     }
 }
+
+test "Scope hoisting: arrow param shadow should not be renamed when namespace import conflicts" {
+    // zod 패턴: import * as checks + (...checks) => { checks.map(...) }
+    // 두 모듈의 namespace import 이름이 충돌해도, arrow 파라미터의 body 참조는 rename 안 됨
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "core/checks.js", "export function refine(x) { return x; }");
+    try writeFile(tmp.dir, "core/schemas.js",
+        \\import * as checks from './checks.js';
+        \\export function $constructor(name, init) {
+        \\    return function(def) { var inst = {}; init(inst, def); return inst; };
+        \\}
+        \\export function $init(inst, def) {
+        \\    const checks = [...(def.checks || [])];
+        \\    for (const ch of checks) { ch; }
+        \\}
+        \\export var util = { mergeDefs: function(a, b) { return Object.assign({}, a, b); } };
+    );
+    try writeFile(tmp.dir, "classic/checks.js",
+        \\export function regex(p) { return { type: "regex", p: p }; }
+        \\export function overwrite(fn) { return { type: "overwrite", fn: fn }; }
+    );
+    try writeFile(tmp.dir, "classic/schemas.js",
+        \\import * as core from '../core/schemas.js';
+        \\import { util } from '../core/schemas.js';
+        \\import * as checks from './checks.js';
+        \\export var ZodType = core.$constructor("ZodType", (inst, def) => {
+        \\    core.$init(inst, def);
+        \\    inst.check = (...checks) => {
+        \\        return inst.clone(util.mergeDefs(def, {
+        \\            checks: checks.map((ch) => typeof ch === "function" ? { check: ch } : ch)
+        \\        }));
+        \\    };
+        \\    inst.clone = (d) => d;
+        \\    inst.overwrite = (fn) => inst.check(checks.overwrite(fn));
+        \\    inst.regex = (...args) => inst.check(checks.regex(...args));
+        \\});
+        \\export function string(params) { return ZodType({ type: "string", checks: [] }); }
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import { string } from './classic/schemas.js';
+        \\var schema = string();
+        \\console.log(typeof schema.check);
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // checks$1.map 또는 checks$2.map가 있으면 안 됨 — parameter shadow가 rename되지 않아야
+    if (std.mem.indexOf(u8, result.output, "checks$") != null) {
+        std.debug.print("\n=== BUNDLE OUTPUT ===\n{s}\n=== END ===\n", .{result.output});
+        return error.TestUnexpectedResult;
+    }
+}
