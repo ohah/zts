@@ -134,12 +134,12 @@ pub const TreeShaker = struct {
                 if (self.entry_set.isSet(i)) try self.markAllExportsUsed(@intCast(i));
             }
 
+            var changed = false;
+
             for (self.modules, 0..) |m, i| {
                 if (!self.included.isSet(i)) continue;
-                try self.processModuleImports(m);
+                if (try self.processModuleImports(m)) changed = true;
             }
-
-            var changed = false;
 
             // include된 모듈의 사용된 re-export 소스도 include
             for (self.modules, 0..) |m, i| {
@@ -356,8 +356,10 @@ pub const TreeShaker = struct {
     // ============================================================
 
     /// 하나의 포함된 모듈에 대해 import binding → export 마킹 + canonical 모듈 포함.
+    /// 새 모듈이 포함되면 true를 반환하여 fixpoint 루프가 계속되도록 한다.
     /// (기존 step 2c와 2f를 합침 — resolveExportChain 중복 호출 제거)
-    fn processModuleImports(self: *TreeShaker, m: Module) !void {
+    fn processModuleImports(self: *TreeShaker, m: Module) !bool {
+        var newly_included = false;
         for (m.import_bindings) |ib| {
             if (ib.import_record_index >= m.import_records.len) continue;
             const rec = m.import_records[ib.import_record_index];
@@ -373,13 +375,20 @@ pub const TreeShaker = struct {
                 if (canon_idx < self.modules.len) {
                     try self.markExportUsed(@intCast(canon_idx), c.export_name);
                     // canonical 모듈도 포함 (step 2f 통합)
-                    if (!self.included.isSet(canon_idx)) self.included.set(canon_idx);
+                    if (!self.included.isSet(canon_idx)) {
+                        self.included.set(canon_idx);
+                        newly_included = true;
+                    }
                 }
             } else if (ib.kind == .namespace) {
                 try self.markAllExportsUsed(@intCast(target_mod));
-                if (!self.included.isSet(target_mod)) self.included.set(target_mod);
+                if (!self.included.isSet(target_mod)) {
+                    self.included.set(target_mod);
+                    newly_included = true;
+                }
             }
         }
+        return newly_included;
     }
 
     /// import binding이 실제로 사용되는지 판별.
@@ -2388,6 +2397,38 @@ test "ref: 10-module fan-out all sideEffects=false — only 3 used" {
     try std.testing.expect(!r.shaker.isIncluded(r.findModule("w7.ts").?));
     try std.testing.expect(!r.shaker.isIncluded(r.findModule("w8.ts").?));
     try std.testing.expect(!r.shaker.isIncluded(r.findModule("w10.ts").?));
+}
+
+// lodash-es 패턴: barrel re-export + sideEffects=false + 전이적 의존성
+// processModuleImports가 새 모듈 포함 시 fixpoint 루프 계속해야 함
+test "fixpoint: sideEffects=false barrel re-export — transitive deps included" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // entry → barrel (re-export) → used → sym → root → freeGlobal
+    try writeFile(tmp.dir, "entry.ts", "import { used } from './barrel'; console.log(used);");
+    try writeFile(tmp.dir, "barrel.ts",
+        \\export { default as used } from './used';
+        \\export { default as unused } from './unused';
+    );
+    try writeFile(tmp.dir, "used.ts", "import sym from './sym'; var used = sym; export default used;");
+    try writeFile(tmp.dir, "sym.ts", "import root from './root'; var sym = root.Symbol; export default sym;");
+    try writeFile(tmp.dir, "root.ts", "import fg from './freeGlobal'; var root = fg || 42; export default root;");
+    try writeFile(tmp.dir, "freeGlobal.ts", "var freeGlobal = typeof globalThis; export default freeGlobal;");
+    try writeFile(tmp.dir, "unused.ts", "export default function unused() { return 99; }");
+
+    var r = try buildAndShakeWithOpts(std.testing.allocator, &tmp, "entry.ts", &.{
+        "barrel.ts", "used.ts", "sym.ts", "root.ts", "freeGlobal.ts", "unused.ts",
+    });
+    defer r.deinit();
+
+    // 전이적 의존성 모두 포함
+    try std.testing.expect(r.shaker.isIncluded(r.findModule("used.ts").?));
+    try std.testing.expect(r.shaker.isIncluded(r.findModule("sym.ts").?));
+    try std.testing.expect(r.shaker.isIncluded(r.findModule("root.ts").?));
+    try std.testing.expect(r.shaker.isIncluded(r.findModule("freeGlobal.ts").?));
+    // unused 제거
+    try std.testing.expect(!r.shaker.isIncluded(r.findModule("unused.ts").?));
 }
 
 // TODO: 자동 순수 판별 테스트는 기능 활성화 시 아래 주석 해제

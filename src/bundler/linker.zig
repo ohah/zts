@@ -221,23 +221,18 @@ pub const Linker = struct {
             if (sem.scope_maps.len == 0) continue;
             const module_scope = sem.scope_maps[0];
 
-            // namespace import의 local_name을 미리 수집 (is_import skip 예외 처리용)
-            var ns_names = std.StringHashMap(void).init(self.allocator);
-            defer ns_names.deinit();
-            for (m.import_bindings) |ib| {
-                if (ib.kind == .namespace) try ns_names.put(ib.local_name, {});
-            }
-
             var scope_it = module_scope.iterator();
             while (scope_it.next()) |scope_entry| {
                 const sym_name = scope_entry.key_ptr.*;
                 if (std.mem.eql(u8, sym_name, "default")) continue;
 
                 // import binding은 다른 모듈의 심볼을 참조하므로 충돌 대상 아님.
-                // 단, namespace import는 preamble에서 var로 선언되므로 충돌 대상.
+                // namespace import도 인라인(ns.prop → prop)되어 preamble 변수가 생성되지 않으므로
+                // 충돌 대상이 아님. (이전에는 namespace import를 예외로 포함했지만,
+                // 이 경우 내부 스코프의 같은 이름 파라미터/변수가 잘못 rename되는 버그 발생)
                 const sym_idx = scope_entry.value_ptr.*;
                 if (sym_idx < sem.symbols.len and sem.symbols[sym_idx].decl_flags.is_import) {
-                    if (!ns_names.contains(sym_name)) continue;
+                    continue;
                 }
 
                 const entry = try name_to_owners.getOrPut(sym_name);
@@ -1592,21 +1587,15 @@ pub const Linker = struct {
             if (sem.scope_maps.len == 0) continue;
             const module_scope = sem.scope_maps[0];
 
-            // namespace import local_name 수집 (is_import skip 예외)
-            var ns_names = std.StringHashMap(void).init(self.allocator);
-            defer ns_names.deinit();
-            for (m.import_bindings) |ib| {
-                if (ib.kind == .namespace) try ns_names.put(ib.local_name, {});
-            }
-
             var scope_it = module_scope.iterator();
             while (scope_it.next()) |scope_entry| {
                 const sym_name = scope_entry.key_ptr.*;
                 if (std.mem.eql(u8, sym_name, "default")) continue;
 
+                // import binding은 충돌 대상 아님 (namespace 포함 — 인라인되므로 변수 미생성)
                 const sym_idx = scope_entry.value_ptr.*;
                 if (sym_idx < sem.symbols.len and sem.symbols[sym_idx].decl_flags.is_import) {
-                    if (!ns_names.contains(sym_name)) continue;
+                    continue;
                 }
 
                 const entry = try name_to_owners.getOrPut(sym_name);
