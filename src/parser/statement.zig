@@ -173,7 +173,15 @@ pub fn parseStatement(self: *Parser) ParseError2!NodeIndex {
         // Decorator: @expr class Foo {}
         .at => self.parseDecoratedStatement(),
         // TypeScript declarations
-        .kw_type => self.parseTsTypeAliasDeclaration(),
+        .kw_type => blk: {
+            // type Foo = ... → TS type alias declaration
+            // type = 1, type.x, type() → expression statement (변수로 사용)
+            const next = try self.peekNextKind();
+            if (next == .identifier or next == .l_curly or next == .string_literal) {
+                break :blk self.parseTsTypeAliasDeclaration();
+            }
+            break :blk self.parseExpressionStatement();
+        },
         .kw_interface => self.parseTsInterfaceDeclaration(),
         .kw_enum => self.parseTsEnumDeclaration(),
         .kw_namespace => blk: {

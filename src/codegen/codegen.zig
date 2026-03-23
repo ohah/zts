@@ -344,7 +344,7 @@ pub const Codegen = struct {
             .for_statement => try self.emitFor(node),
             .for_in_statement => try self.emitForInOf(node, "in"),
             .for_of_statement => try self.emitForInOf(node, "of"),
-            .for_await_of_statement => try self.emitForInOf(node, "await of"),
+            .for_await_of_statement => try self.emitForAwaitOf(node),
             .switch_statement => try self.emitSwitch(node),
             .switch_case => try self.emitSwitchCase(node),
             .break_statement => try self.emitSimpleStmt(node, "break"),
@@ -579,6 +579,18 @@ pub const Codegen = struct {
         try self.emitNode(@enumFromInt(extras[2]));
         try self.writeByte(')');
         try self.emitNode(@enumFromInt(extras[3]));
+    }
+
+    fn emitForAwaitOf(self: *Codegen, node: Node) !void {
+        const t = node.data.ternary;
+        try self.write("for await(");
+        self.in_for_init = true;
+        defer self.in_for_init = false;
+        try self.emitNode(t.a);
+        try self.write(" of ");
+        try self.emitNode(t.b);
+        try self.writeByte(')');
+        try self.emitNode(t.c);
     }
 
     fn emitForInOf(self: *Codegen, node: Node, keyword: []const u8) !void {
@@ -1153,8 +1165,11 @@ pub const Codegen = struct {
 
     fn emitBindingProperty(self: *Codegen, node: Node) !void {
         try self.emitNode(node.data.binary.left);
-        try self.writeByte(':');
-        try self.emitNode(node.data.binary.right);
+        // shorthand: right가 none이면 {key} 형태 — 콜론 생략
+        if (!node.data.binary.right.isNone()) {
+            try self.writeByte(':');
+            try self.emitNode(node.data.binary.right);
+        }
     }
 
     fn emitRest(self: *Codegen, node: Node) !void {
