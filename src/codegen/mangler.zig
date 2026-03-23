@@ -9,9 +9,13 @@
 //! 규칙:
 //!   - export된 심볼은 mangling 하지 않음
 //!   - import 바인딩은 mangling 하지 않음 (번들러가 처리)
-//!   - eval 포함 스코프는 mangling 하지 않음
 //!   - 예약어/글로벌 이름은 건너뜀
 //!   - 함수 파라미터도 mangling 대상
+//!   - 스코프 내 기존 1글자 이름과 충돌 방지 (부모 체인 포함)
+//!
+//! 미구현 (후속):
+//!   - eval 포함 스코프 mangling 스킵
+//!   - 빈도 기반 이름 배정 (oxc Base54)
 
 const std = @import("std");
 const Scope = @import("../semantic/scope.zig").Scope;
@@ -44,16 +48,48 @@ pub fn mangle(
         renames.deinit();
     }
 
-    // 스코프별로 순회하며 mangling 대상 심볼에 짧은 이름 배정
-    var name_gen = NameGenerator{};
-
+    // 스코프별로 순회하며 mangling 대상 심볼에 짧은 이름 배정.
+    // 각 스코프에서 이름 생성기를 리셋하여 스코프 간 이름 재사용.
     for (scope_maps, 0..) |scope_map, scope_idx| {
         if (scope_idx >= scopes.len) break;
         const scope = scopes[scope_idx];
 
-        // 모듈/글로벌 스코프(0)는 export가 있을 수 있으므로 스킵
-        // → export된 심볼은 개별 체크로 처리
-        _ = scope;
+        // 스코프 내 기존 이름 수집 (mangling 안 되는 이름 = 점유 이름)
+        // 생성된 이름이 이들과 충돌하면 건너뜀
+        var occupied = std.StringHashMap(void).init(allocator);
+        defer occupied.deinit();
+
+        // 현재 스코프의 mangling 제외 이름
+        var sit1 = scope_map.iterator();
+        while (sit1.next()) |entry| {
+            const sym_name = entry.key_ptr.*;
+            const sym_idx = entry.value_ptr.*;
+            if (sym_idx < symbols.len and shouldSkip(symbols[sym_idx], sym_name)) {
+                try occupied.put(sym_name, {});
+            }
+        }
+
+        // 부모 스코프 체인의 모든 이름도 점유 (shadowing 방지)
+        var parent_id = scope.parent;
+        while (!parent_id.isNone()) {
+            const pi = parent_id.toIndex();
+            if (pi < scope_maps.len) {
+                var pit = scope_maps[pi].iterator();
+                while (pit.next()) |entry| {
+                    // 부모 스코프에서 mangling 안 되는 이름만 점유
+                    const pname = entry.key_ptr.*;
+                    const pidx = entry.value_ptr.*;
+                    if (pidx < symbols.len and shouldSkip(symbols[pidx], pname)) {
+                        try occupied.put(pname, {});
+                    }
+                }
+            }
+            if (pi < scopes.len) {
+                parent_id = scopes[pi].parent;
+            } else break;
+        }
+
+        var name_gen = NameGenerator{};
 
         var sit = scope_map.iterator();
         while (sit.next()) |entry| {
@@ -63,16 +99,14 @@ pub fn mangle(
             if (sym_idx >= symbols.len) continue;
             const sym = symbols[sym_idx];
 
-            // mangling 제외 조건
             if (shouldSkip(sym, sym_name)) continue;
 
-            // 짧은 이름 생성 (예약어/글로벌 충돌 방지)
+            // 짧은 이름 생성 (예약어 + 점유 이름 충돌 방지)
             var new_name = name_gen.next();
-            while (isReservedOrGlobal(new_name)) {
+            while (isReservedOrGlobal(new_name) or occupied.contains(new_name)) {
                 new_name = name_gen.next();
             }
 
-            // 이미 같은 이름이면 스킵
             if (std.mem.eql(u8, sym_name, new_name)) continue;
 
             try renames.put(@intCast(sym_idx), try allocator.dupe(u8, new_name));
