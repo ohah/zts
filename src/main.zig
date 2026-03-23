@@ -22,6 +22,7 @@ const TranspileOptions = struct {
     sourcemap: bool = false,
     ascii_only: bool = false,
     define: []const DefineEntry = &.{},
+    platform: lib.codegen.codegen.Platform = .browser,
 };
 
 /// 단일 파일을 트랜스파일한다.
@@ -156,6 +157,7 @@ fn transpileFile(
         .sourcemap = options.sourcemap,
         .ascii_only = options.ascii_only,
         .linking_metadata = if (mangle_metadata) |*mm| mm else null,
+        .platform = options.platform,
     });
     cg.comments = scanner.comments.items;
     if (options.sourcemap) {
@@ -419,6 +421,24 @@ pub fn main() !void {
         }
     }
 
+    // --platform=browser이면 process.env.NODE_ENV를 자동 define (esbuild 호환).
+    // 사용자가 이미 --define:process.env.NODE_ENV=... 를 지정한 경우 덮어쓰지 않음.
+    if (platform == .browser) {
+        var has_node_env = false;
+        for (define_list.items) |d| {
+            if (std.mem.eql(u8, d.key, "process.env.NODE_ENV")) {
+                has_node_env = true;
+                break;
+            }
+        }
+        if (!has_node_env) {
+            try define_list.append(allocator, .{
+                .key = "process.env.NODE_ENV",
+                .value = "\"production\"",
+            });
+        }
+    }
+
     // --test262
     if (is_test262) {
         const dir_path = test262_dir orelse {
@@ -606,6 +626,11 @@ pub fn main() !void {
     }
 
     // 트랜스파일 옵션 구성
+    const cg_platform: lib.codegen.codegen.Platform = switch (platform) {
+        .browser => .browser,
+        .node => .node,
+        .neutral => .neutral,
+    };
     const options = TranspileOptions{
         .module_format = module_format,
         .minify = minify,
@@ -614,6 +639,7 @@ pub fn main() !void {
         .sourcemap = sourcemap,
         .ascii_only = ascii_only,
         .define = define_list.items,
+        .platform = cg_platform,
     };
 
     const is_stdin = std.mem.eql(u8, input_path_str, "-");
