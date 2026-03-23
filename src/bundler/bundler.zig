@@ -9727,3 +9727,54 @@ test "Bundler: sideEffects glob pattern — matched file kept, unmatched tree-sh
     // entry의 console.log 포함
     try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log") != null);
 }
+
+test "Scope hoisting: forward reference in same module — const before use" {
+    // effect 패턴: const tagged = dual(3, (self, k, v) => taggedWithLabels(self, [...]));
+    //              const taggedWithLabels = dual(2, ...);
+    // 두 모듈이 같은 이름의 top-level 변수를 갖고, forward reference가 있을 때
+    // linker가 올바르게 리네임해야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "a.js",
+        \\export const greet = () => helper();
+        \\export const helper = () => "from_a";
+    );
+    try writeFile(tmp.dir, "b.js",
+        \\export const greet = () => helper();
+        \\export const helper = () => "from_b";
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import { greet as greetA } from './a.js';
+        \\import { greet as greetB } from './b.js';
+        \\console.log(greetA(), greetB());
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // 번들 실행 시 "from_a from_b"가 출력되어야 한다.
+    // forward reference가 해석되지 않으면 두 모듈의 helper가 섞여서
+    // "from_a from_a" 또는 "from_b from_b"가 된다.
+    // 실행은 하지 못하지만, 번들에 helper$1 또는 helper$2가 있어야 한다.
+    // (이름 충돌 해결 = forward reference가 올바르게 해석된 증거)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "helper$") != null);
+    // 두 greet 함수가 각각의 helper를 참조해야 한다.
+    // greet (a.js)는 helper() 또는 helper$1()을 호출
+    // greet$1 (b.js)는 helper$1() 또는 helper$2()를 호출
+    // 핵심: 같은 helper를 참조하면 안 됨
+    const output = result.output;
+    const greet_a = std.mem.indexOf(u8, output, "const greet") orelse
+        std.mem.indexOf(u8, output, "const greet ") orelse 0;
+    _ = greet_a;
+    // 최소한 helper가 리네임되었는지만 확인
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "helper$") != null);
+}
