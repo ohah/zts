@@ -1065,6 +1065,11 @@ pub const SemanticAnalyzer = struct {
     ///   - class_declaration
     ///   - export_named_declaration 내부의 위 선언들
     ///   - export_default_declaration 내부의 위 선언들
+    /// 현재 스코프가 1st pass에서 바인딩이 미리 등록된 스코프인지 판별.
+    fn isInPredeclaredScope(self: *const SemanticAnalyzer) bool {
+        return self.predeclared_scope == self.current_scope;
+    }
+
     fn predeclareTopLevelBindings(self: *SemanticAnalyzer, list: NodeList) AllocError!void {
         if (list.len == 0) return;
         if (list.start + list.len > self.ast.extra_data.items.len) return;
@@ -1208,29 +1213,31 @@ pub const SemanticAnalyzer = struct {
         }
     }
 
+    /// function flags → SymbolKind 변환.
+    fn functionSymbolKind(flags: u32) SymbolKind {
+        const FnFlags = ast_mod.FunctionFlags;
+        const is_async = (flags & FnFlags.is_async) != 0;
+        const is_generator = (flags & FnFlags.is_generator) != 0;
+        return if (is_async and is_generator)
+            .async_generator_decl
+        else if (is_async)
+            .async_function_decl
+        else if (is_generator)
+            .generator_decl
+        else
+            .function_decl;
+    }
+
     /// function_declaration의 이름만 등록.
     fn predeclareFuncDecl(self: *SemanticAnalyzer, node: Node) AllocError!void {
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (extra_start + 5 >= extras.len) return;
         const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
-        const flags = extras[extra_start + 4];
 
         if (!name_idx.isNone()) {
-            const FnFlags = ast_mod.FunctionFlags;
-            const is_async = (flags & FnFlags.is_async) != 0;
-            const is_generator = (flags & FnFlags.is_generator) != 0;
-            const symbol_kind: SymbolKind = if (is_async and is_generator)
-                .async_generator_decl
-            else if (is_async)
-                .async_function_decl
-            else if (is_generator)
-                .generator_decl
-            else
-                .function_decl;
-
             const name_node = self.ast.getNode(name_idx);
-            try self.declareSymbolWithNode(name_node.span, symbol_kind, node.span, @intFromEnum(name_idx));
+            try self.declareSymbolWithNode(name_node.span, functionSymbolKind(extras[extra_start + 4]), node.span, @intFromEnum(name_idx));
         }
     }
 
@@ -1262,25 +1269,13 @@ pub const SemanticAnalyzer = struct {
         const body_idx: NodeIndex = @enumFromInt(extras[extra_start + 3]);
         const flags = extras[extra_start + 4];
 
-        // flags에서 async/generator 판별하여 적절한 SymbolKind 결정
-        const FnFlags = ast_mod.FunctionFlags;
-        const is_async = (flags & FnFlags.is_async) != 0;
-        const is_generator = (flags & FnFlags.is_generator) != 0;
-        const symbol_kind: SymbolKind = if (is_async and is_generator)
-            .async_generator_decl
-        else if (is_async)
-            .async_function_decl
-        else if (is_generator)
-            .generator_decl
-        else
-            .function_decl;
-
-        const has_no_side_effects = (flags & FnFlags.no_side_effects) != 0;
+        const symbol_kind = functionSymbolKind(flags);
+        const has_no_side_effects = (flags & ast_mod.FunctionFlags.no_side_effects) != 0;
 
         // 함수 이름을 현재 스코프(외부)에 등록
         // predeclared_scope에서는 이미 1st pass에서 등록했으므로 건너뛴다.
         if (!name_idx.isNone()) {
-            if (@intFromEnum(self.predeclared_scope) != @intFromEnum(self.current_scope)) {
+            if (!self.isInPredeclaredScope()) {
                 const name_node = self.ast.getNode(name_idx);
                 try self.declareSymbolWithNode(name_node.span, symbol_kind, node.span, @intFromEnum(name_idx));
             }
@@ -1303,7 +1298,8 @@ pub const SemanticAnalyzer = struct {
 
         // 중복 파라미터 검증: generator/async는 항상 UniqueFormalParameters,
         // 일반 함수는 strict mode에서만 (non-strict sloppy mode는 중복 허용)
-        if (is_async or is_generator or self.isCurrentStrict()) {
+        const FnFlags = ast_mod.FunctionFlags;
+        if ((flags & FnFlags.is_async) != 0 or (flags & FnFlags.is_generator) != 0 or self.isCurrentStrict()) {
             try checker.checkDuplicateParams(self.ast, params_start, params_len, &self.errors, self.allocator);
         }
 
@@ -1483,7 +1479,7 @@ pub const SemanticAnalyzer = struct {
 
         // 클래스 이름을 현재 스코프(외부)에 등록
         // predeclared_scope에서는 이미 1st pass에서 등록했으므로 건너뛴다.
-        if (!name_idx.isNone() and @intFromEnum(self.predeclared_scope) != @intFromEnum(self.current_scope)) {
+        if (!name_idx.isNone() and !self.isInPredeclaredScope()) {
             const name_node = self.ast.getNode(name_idx);
             try self.declareSymbolWithNode(name_node.span, .class_decl, node.span, @intFromEnum(name_idx));
         }
@@ -1854,7 +1850,7 @@ pub const SemanticAnalyzer = struct {
 
                 // predeclared_scope에서는 이미 1st pass에서 바인딩이 등록되었으므로 건너뛴다.
                 // 다시 registerBinding을 호출하면 let/const 재선언 에러가 발생한다.
-                if (@intFromEnum(self.predeclared_scope) != @intFromEnum(self.current_scope)) {
+                if (!self.isInPredeclaredScope()) {
                     try self.registerBinding(binding_idx, sym_kind);
                 } else {
                     // predeclared인 경우에도, destructuring 패턴 내부의 default value
