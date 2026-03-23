@@ -2320,6 +2320,31 @@ test "Parser: export default function" {
     try std.testing.expect(parser.errors.items.len == 0);
 }
 
+// TS contextual keyword를 export default function 이름으로 사용 가능 (d3-array 등)
+test "Parser: export default function with TS contextual keyword names" {
+    // number, string, boolean, symbol, object, type, abstract 등
+    // ECMAScript에서 예약어가 아닌 TS contextual keyword는 함수 이름으로 유효
+    const keywords = [_][]const u8{
+        "number",    "string",   "boolean", "symbol",   "object",
+        "bigint",    "never",    "unknown", "type",     "module",
+        "namespace", "abstract", "declare", "readonly",
+    };
+    for (keywords) |kw| {
+        // "export default function <keyword>(x) { return x; }" 형태의 소스 생성
+        var buf: [256]u8 = undefined;
+        const source = std.fmt.bufPrint(&buf, "export default function {s}(x) {{ return x; }}", .{kw}) catch unreachable;
+        var scanner = try Scanner.init(std.testing.allocator, source);
+        defer scanner.deinit();
+        var parser = Parser.init(std.testing.allocator, &scanner);
+        parser.is_module = true;
+        defer parser.deinit();
+
+        _ = try parser.parse();
+        // 에러 없이 파싱 성공해야 함 — 함수 이름이 올바르게 인식됨
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    }
+}
+
 test "Parser: dynamic import expression" {
     var scanner = try Scanner.init(std.testing.allocator, "const m = import('module');");
     defer scanner.deinit();
