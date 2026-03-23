@@ -910,6 +910,38 @@ pub const Codegen = struct {
         const is_optional = (flags & CallFlags.optional_chain) != 0;
         const is_pure = (flags & CallFlags.is_pure) != 0;
 
+        // CJS require() 치환: require('specifier') → require_xxx()
+        if (self.options.linking_metadata) |meta| {
+            if (meta.require_rewrites.count() > 0 and !callee.isNone() and args_len == 1) {
+                const callee_node = self.ast.getNode(callee);
+                if (callee_node.tag == .identifier_reference) {
+                    const callee_text = self.ast.source[callee_node.data.string_ref.start..callee_node.data.string_ref.end];
+                    if (std.mem.eql(u8, callee_text, "require")) {
+                        // 인자의 문자열 리터럴 추출
+                        if (args_start < self.ast.extra_data.items.len) {
+                            const arg_idx: ast_mod.NodeIndex = @enumFromInt(self.ast.extra_data.items[args_start]);
+                            if (!arg_idx.isNone()) {
+                                const arg_node = self.ast.getNode(arg_idx);
+                                if (arg_node.tag == .string_literal) {
+                                    // 따옴표 제거: "path" 또는 'path' → path
+                                    const raw = self.ast.source[arg_node.data.string_ref.start..arg_node.data.string_ref.end];
+                                    const specifier = if (raw.len >= 2 and (raw[0] == '"' or raw[0] == '\''))
+                                        raw[1 .. raw.len - 1]
+                                    else
+                                        raw;
+                                    if (meta.require_rewrites.get(specifier)) |req_var| {
+                                        try self.write(req_var);
+                                        try self.write("()");
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if (is_pure and !self.options.minify) try self.write("/* @__PURE__ */ ");
         try self.emitNode(callee);
         if (is_optional) try self.write("?.");
