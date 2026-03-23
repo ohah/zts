@@ -1072,6 +1072,9 @@ pub fn emitModule(
             else => .esm,
         },
         .linking_metadata = if (metadata) |*m| m else null,
+        // 번들 모드에서 ESM이 아니면 import.meta → {} 치환 (esbuild 호환)
+        // Node.js는 import.meta를 보면 ESM으로 재파싱하려 해서 에러 발생
+        .replace_import_meta = options.format != .esm,
     });
     const code = try cg.generate(root);
 

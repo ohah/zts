@@ -1198,8 +1198,9 @@ pub const SemanticAnalyzer = struct {
                 }
             },
             .assignment_pattern, .assignment_expression => {
-                // 기본값: x = 1 → left만 파라미터
+                // 기본값: x = 1 → left는 파라미터, right는 기본값 표현식
                 try self.declareArrowParams(node.data.binary.left);
+                try self.visitNode(node.data.binary.right);
             },
             .spread_element, .rest_element, .assignment_target_rest => {
                 // ...rest
