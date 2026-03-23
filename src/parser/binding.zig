@@ -372,9 +372,11 @@ pub fn parseBindingProperty(self: *Parser) ParseError2!NodeIndex {
 
     // shorthand: { x } = { x: x } 또는 { x = defaultVal }
     // 컨텍스트에 따라 식별자로 사용 가능한 키워드도 shorthand로 처리:
+    // - contextual keyword (get/set/type/target/from 등): 항상 식별자 가능
     // - await: async 함수 밖에서 식별자 가능 (ECMAScript 12.1.1)
     // - yield: generator 밖에서 식별자 가능
     const is_shorthand_eligible = self.current() == .identifier or
+        (self.current().isKeyword() and !self.current().isReservedKeyword()) or
         (self.current() == .kw_await and !self.ctx.in_async and (!self.is_module or self.ctx.in_function)) or
         (self.current() == .kw_yield and !self.ctx.in_generator and !self.is_strict_mode);
     if (is_shorthand_eligible) {
