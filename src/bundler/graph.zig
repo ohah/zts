@@ -460,13 +460,55 @@ pub const ModuleGraph = struct {
                         target.wrap_kind = .cjs;
                     }
                 } else if (rec.kind == .static_import or rec.kind == .side_effect or rec.kind == .re_export) {
-                    // ESM import로 소비 → .none이면 .esm으로 승격 (이미 결정된 건 안 건드림)
+                    // ESM import로 소비 → .none이면 승격
                     if (target.exports_kind == .none) {
-                        target.exports_kind = .esm;
+                        // node_modules 내 .js 파일이 ESM/CJS 신호 없으면 CJS로 간주 (Node.js 기본값)
+                        // package.json "type": "module"인 경우만 ESM
+                        if (self.isImplicitCjs(target)) {
+                            target.exports_kind = .commonjs;
+                            target.wrap_kind = .cjs;
+                        } else {
+                            target.exports_kind = .esm;
+                        }
                     }
                 }
             }
         }
+    }
+
+    /// node_modules 내 .js 파일이 ESM/CJS 신호 없으면 CJS로 간주.
+    /// Node.js 규칙: package.json "type": "module"이 없으면 .js는 CJS.
+    fn isImplicitCjs(self: *ModuleGraph, module: *const Module) bool {
+        // node_modules 밖이면 ESM으로 간주 (사용자 코드)
+        const nm = "node_modules" ++ std.fs.path.sep_str;
+        if (std.mem.indexOf(u8, module.path, nm) == null) return false;
+        // .mjs/.mts는 항상 ESM
+        const ext = std.fs.path.extension(module.path);
+        if (std.mem.eql(u8, ext, ".mjs") or std.mem.eql(u8, ext, ".mts")) return false;
+        // package.json "type": "module"이면 ESM
+        if (self.isPackageTypeModule(module.path)) return false;
+        return true;
+    }
+
+    /// 모듈 경로에서 가장 가까운 package.json의 "type" 필드가 "module"인지 확인.
+    fn isPackageTypeModule(self: *ModuleGraph, module_path: []const u8) bool {
+        const nm = "node_modules" ++ std.fs.path.sep_str;
+        const nm_pos = std.mem.lastIndexOf(u8, module_path, nm) orelse return false;
+        const pkg_start = nm_pos + nm.len;
+        var pkg_end = pkg_start;
+        if (pkg_end < module_path.len and module_path[pkg_end] == '@') {
+            if (std.mem.indexOfPos(u8, module_path, pkg_end, std.fs.path.sep_str)) |sep1| {
+                pkg_end = std.mem.indexOfPos(u8, module_path, sep1 + 1, std.fs.path.sep_str) orelse module_path.len;
+            } else pkg_end = module_path.len;
+        } else {
+            pkg_end = std.mem.indexOfPos(u8, module_path, pkg_start, std.fs.path.sep_str) orelse module_path.len;
+        }
+        const pkg_dir_path = module_path[0..pkg_end];
+        var pkg_dir = std.fs.cwd().openDir(pkg_dir_path, .{}) catch return false;
+        defer pkg_dir.close();
+        var parsed = pkg_json.parsePackageJson(self.allocator, pkg_dir) catch return false;
+        defer parsed.deinit();
+        return parsed.pkg.isModule();
     }
 
     /// TLA 전이적 전파: TLA 모듈을 static import하는 모듈도 TLA로 표시.
