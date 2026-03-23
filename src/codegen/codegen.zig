@@ -68,6 +68,10 @@ pub const CodegenOptions = struct {
     platform: Platform = .browser,
 };
 
+// import.meta polyfill 상수 (emitMetaProperty + emitStaticMember에서 공유)
+const IMPORT_META_URL_NODE = "require(\"url\").pathToFileURL(__filename).href";
+const IMPORT_META_NODE_OBJECT = "{url:" ++ IMPORT_META_URL_NODE ++ ",dirname:__dirname,filename:__filename}";
+
 const SourceMapBuilder = @import("sourcemap.zig").SourceMapBuilder;
 const Mapping = @import("sourcemap.zig").Mapping;
 
@@ -899,7 +903,7 @@ pub const Codegen = struct {
                     if (self.options.platform == .node) {
                         // Node.js CJS polyfill
                         if (std.mem.eql(u8, prop_text, "url")) {
-                            try self.write("require(\"url\").pathToFileURL(__filename).href");
+                            try self.write(IMPORT_META_URL_NODE);
                             return;
                         } else if (std.mem.eql(u8, prop_text, "dirname")) {
                             try self.write("__dirname");
@@ -1038,7 +1042,7 @@ pub const Codegen = struct {
         if (std.mem.eql(u8, text, "import.meta")) {
             if (self.options.module_format == .cjs or self.options.replace_import_meta) {
                 if (self.options.platform == .node) {
-                    try self.write("{url:require(\"url\").pathToFileURL(__filename).href,dirname:__dirname,filename:__filename}");
+                    try self.write(IMPORT_META_NODE_OBJECT);
                 } else {
                     try self.write("{}");
                 }

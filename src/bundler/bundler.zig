@@ -148,15 +148,6 @@ pub const Bundler = struct {
         self.resolve_cache.deinit();
     }
 
-    /// bundler Platform → codegen Platform 변환.
-    fn codgenPlatform(self: *const Bundler) EmitOptions.CgPlatform {
-        return switch (self.options.platform) {
-            .browser => .browser,
-            .node => .node,
-            .neutral => .neutral,
-        };
-    }
-
     /// 번들 파이프라인 실행: resolve → graph → emit.
     /// graph는 함수 내에서 생성+해제. &self.resolve_cache 포인터는 self가 살아있는 동안 유효.
     pub fn bundle(self: *Bundler) !BundleResult {
@@ -204,7 +195,6 @@ pub const Bundler = struct {
 
         if (self.options.dev_mode) {
             // Dev mode: 모듈 래핑 + HMR 런타임 주입 + per-module codes + 소스맵 동시 생성
-            const cg_platform = self.codgenPlatform();
             const dev_result = try emitter.emitDevBundle(
                 self.allocator,
                 &graph,
@@ -216,7 +206,7 @@ pub const Bundler = struct {
                     .root_dir = self.options.root_dir,
                     .react_refresh = self.options.react_refresh,
                     .define = self.options.define,
-                    .platform = cg_platform,
+                    .platform = self.options.platform,
                 },
                 if (linker) |*l| l else null,
             );
@@ -239,7 +229,7 @@ pub const Bundler = struct {
                 self.allocator,
                 graph.modules.items,
                 &chunk_graph,
-                .{ .format = self.options.format, .minify = self.options.minify, .define = self.options.define, .platform = self.codgenPlatform() },
+                .{ .format = self.options.format, .minify = self.options.minify, .define = self.options.define, .platform = self.options.platform },
                 if (linker) |*l| l else null,
             );
             errdefer if (outputs) |outs| {
@@ -257,7 +247,7 @@ pub const Bundler = struct {
             output = try emitter.emitWithTreeShaking(
                 self.allocator,
                 &graph,
-                .{ .format = self.options.format, .minify = self.options.minify, .define = self.options.define, .platform = self.codgenPlatform() },
+                .{ .format = self.options.format, .minify = self.options.minify, .define = self.options.define, .platform = self.options.platform },
                 if (linker) |*l| l else null,
                 if (shaker) |*s| s else null,
             );

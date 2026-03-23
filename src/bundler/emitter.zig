@@ -141,9 +141,7 @@ pub const EmitOptions = struct {
     /// define 글로벌 치환 (--define:KEY=VALUE)
     define: []const @import("../transformer/transformer.zig").DefineEntry = &.{},
     /// 타겟 플랫폼. import.meta polyfill 방식을 결정한다.
-    platform: CgPlatform = .browser,
-
-    pub const CgPlatform = @import("../codegen/codegen.zig").Platform;
+    platform: @import("../codegen/codegen.zig").Platform = .browser,
 
     pub const Format = enum {
         esm,

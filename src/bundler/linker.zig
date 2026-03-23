@@ -281,10 +281,6 @@ pub const Linker = struct {
         }
     }
 
-    /// name_to_owners에서 충돌하는 이름을 찾아 리네임을 계산한다.
-    /// exec_index가 가장 낮은 소유자가 원본 이름 유지, 나머지는 $1, $2, ...
-    /// skip_max_module_index가 true이면 module_index == maxInt(u32)인 항목(cross-chunk
-    /// import 점유 마커)은 rename 대상에서 제외한다.
     /// 후보 이름이 사용 가능한지 확인.
     /// 예약어/글로벌, 다른 모듈의 top-level 이름, 해당 모듈의 중첩 스코프 바인딩과 충돌하면 불가.
     fn isCandidateAvailable(
@@ -317,6 +313,10 @@ pub const Linker = struct {
         return candidate;
     }
 
+    /// name_to_owners에서 충돌하는 이름을 찾아 리네임을 계산한다.
+    /// exec_index가 가장 낮은 소유자가 원본 이름 유지, 나머지는 $1, $2, ...
+    /// skip_max_module_index가 true이면 module_index == maxInt(u32)인 항목(cross-chunk
+    /// import 점유 마커)은 rename 대상에서 제외한다.
     fn calculateRenames(
         self: *Linker,
         name_to_owners: *NameToOwnersMap,
