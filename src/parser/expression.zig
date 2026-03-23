@@ -883,11 +883,12 @@ fn parseNewCallee(self: *Parser) ParseError2!NodeIndex {
 fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
     const span = self.currentSpan();
 
-    switch (self.current()) {
-        .identifier => {
-            // class field/static initializer에서 arguments 사용 금지
-            // ECMAScript 15.7.1 (class field), 15.7.14 (static block)
-            // 이 컨텍스트들은 자체 arguments 바인딩이 없다.
+    // contextual keyword도 expression 위치에서 식별자로 유효.
+    // async는 제외 — async function/arrow에서 특수 처리 (아래 switch에서).
+    if (self.current() == .identifier or
+        (self.current().isKeyword() and !self.current().isReservedKeyword() and self.current() != .kw_async))
+    {
+        if (self.current() == .identifier) {
             if (self.in_class_field or self.in_static_initializer) {
                 const text = self.resolveIdentifierText(span);
                 if (std.mem.eql(u8, text, "arguments")) {
@@ -898,13 +899,16 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
                     try self.addError(span, msg);
                 }
             }
-            try self.advance();
-            return try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = span,
-                .data = .{ .string_ref = span },
-            });
-        },
+        }
+        try self.advance();
+        return try self.ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = span,
+            .data = .{ .string_ref = span },
+        });
+    }
+
+    switch (self.current()) {
         .decimal, .float, .hex, .octal, .binary, .positive_exponential, .negative_exponential => {
             // strict mode에서 legacy octal 숫자 금지 (ECMAScript 12.8.3.1)
             if (self.scanner.token.has_legacy_octal and self.is_strict_mode) {
