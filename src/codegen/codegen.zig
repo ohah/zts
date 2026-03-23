@@ -845,7 +845,15 @@ pub const Codegen = struct {
                             const prop_node = self.ast.getNode(property);
                             const prop_text = self.ast.source[prop_node.data.string_ref.start..prop_node.data.string_ref.end];
                             if (inner_map.get(prop_text)) |canonical_name| {
-                                try self.write(canonical_name);
+                                // 인라인 객체({...})는 statement 위치에서 block으로
+                                // 파싱되므로 괄호로 감싸야 함: ({a: a}).prop
+                                if (canonical_name.len > 0 and canonical_name[0] == '{') {
+                                    try self.writeByte('(');
+                                    try self.write(canonical_name);
+                                    try self.writeByte(')');
+                                } else {
+                                    try self.write(canonical_name);
+                                }
                                 return;
                             }
                         }
