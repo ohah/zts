@@ -163,10 +163,10 @@ pub const TreeShaker = struct {
                 }
             }
 
-            // 미사용 sideEffects=false 모듈 제거
+            // 미사용 sideEffects=false 모듈 제거 (CJS는 정적 분석 불가이므로 제외)
             for (self.modules, 0..) |m, i| {
                 if (!self.included.isSet(i)) continue;
-                if (self.entry_set.isSet(i) or m.side_effects) continue;
+                if (self.entry_set.isSet(i) or m.side_effects or m.wrap_kind == .cjs) continue;
                 if (!self.hasAnyUsedExport(@intCast(i))) {
                     self.included.unset(i);
                     changed = true;
