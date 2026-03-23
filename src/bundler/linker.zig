@@ -1367,7 +1367,22 @@ pub const Linker = struct {
                 }
                 return null;
             }
-            // local export: 이 모듈의 심볼
+            // local export: 이 모듈의 심볼이지만, barrel re-export 패턴인지 확인.
+            // `import { X } from './a'; export { X }` 는 binding_scanner에서 .local로
+            // 분류되지만 실제로는 import binding이므로 소스 모듈로 따라가야 한다.
+            const m_local = self.modules[mod_i];
+            for (m_local.import_bindings) |ib| {
+                if (std.mem.eql(u8, ib.local_name, entry.binding.local_name)) {
+                    // 이 로컬 이름은 import binding → 소스 모듈의 export를 따라간다
+                    if (ib.import_record_index < m_local.import_records.len) {
+                        const source_mod = m_local.import_records[ib.import_record_index].resolved;
+                        if (!source_mod.isNone()) {
+                            return self.resolveExportChain(source_mod, ib.imported_name, depth + 1);
+                        }
+                    }
+                    break;
+                }
+            }
             return .{
                 .module_index = module_idx,
                 .export_name = name,
