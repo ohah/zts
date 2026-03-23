@@ -126,6 +126,7 @@ const cases: BrowserSmokeCase[] = [
     pkg: "vue",
     entry: `import { ref } from 'vue';\nconsole.log(ref(0).value);`,
     expected: "0",
+    extraArgs: ['--define:process.env.NODE_ENV="production"'],
   },
   {
     name: "svelte",
@@ -138,6 +139,7 @@ const cases: BrowserSmokeCase[] = [
     pkg: "react",
     entry: `import React from 'react';\nconsole.log(typeof React.createElement);`,
     expected: "function",
+    extraArgs: ['--define:process.env.NODE_ENV="production"'],
   },
   {
     name: "graphql",
