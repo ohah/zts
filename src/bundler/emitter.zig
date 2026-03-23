@@ -129,6 +129,8 @@ pub const EmitOptions = struct {
     root_dir: ?[]const u8 = null,
     /// React Fast Refresh 활성화. $RefreshReg$/$RefreshSig$ 주입.
     react_refresh: bool = false,
+    /// define 글로벌 치환 (--define:KEY=VALUE)
+    define: []const @import("../transformer/transformer.zig").DefineEntry = &.{},
 
     pub const Format = enum {
         esm,
@@ -495,6 +497,7 @@ pub fn emitDevModule(
 
     var transformer = Transformer.init(arena_alloc, ast, .{
         .react_refresh = options.react_refresh,
+        .define = options.define,
     });
     if (module.semantic) |sem| {
         transformer.old_symbol_ids = sem.symbol_ids;
@@ -1019,8 +1022,10 @@ pub fn emitModule(
     defer emit_arena.deinit();
     const arena_alloc = emit_arena.allocator();
 
-    // Transformer: TS 타입 스트리핑 등
-    var transformer = Transformer.init(arena_alloc, ast, .{});
+    // Transformer: TS 타입 스트리핑 등 + define 치환
+    var transformer = Transformer.init(arena_alloc, ast, .{
+        .define = options.define,
+    });
     // symbol_ids 전파: semantic analyzer가 생성한 원본 AST의 symbol_ids를
     // transformer가 new_ast 기준으로 재매핑
     if (module.semantic) |sem| {
