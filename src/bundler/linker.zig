@@ -93,6 +93,9 @@ pub const Linker = struct {
         local: []const u8,
     };
 
+    /// re-export 체인 순환 방지 깊이 제한.
+    const max_chain_depth = 100;
+
     const BindingKey = struct {
         module_index: u32,
         span_key: u64,
@@ -560,45 +563,12 @@ pub const Linker = struct {
                     continue;
                 }
 
-                // re-export 체인을 따라가서 최종 모듈의 canonical 이름 해결
-                // e.g. lodash: `export { default as groupBy } from './groupBy'`
-                //      groupBy.js: `export default groupBy` (local_name = "groupBy")
-                //   → resolveExportChain → (groupBy.js, "default")
-                //   → getExportLocalName(groupBy.js, "default") → "groupBy"
-                const canonical = self.resolveExportChain(
-                    rec.resolved,
-                    ib.imported_name,
-                    0,
-                );
-
-                var effective_name = ib.imported_name;
-                if (canonical) |c| {
-                    const cmod = @intFromEnum(c.module_index);
-                    // canonical 모듈에서 export의 실제 local_name 가져오기
-                    if (self.getExportLocalName(@intCast(cmod), c.export_name)) |local| {
-                        effective_name = local;
-                    } else {
-                        effective_name = c.export_name;
-                    }
-                    // canonical 모듈에서 이름 충돌 리네임 반영
-                    const target_name = if (self.getCanonicalName(@intCast(cmod), effective_name)) |renamed|
-                        renamed
-                    else
-                        effective_name;
-
-                    if (!std.mem.eql(u8, ib.local_name, target_name)) {
-                        if (module_scope.get(ib.local_name)) |sym_idx| {
-                            try renames.put(@intCast(sym_idx), target_name);
-                        }
-                    }
-                    continue;
-                }
-
-                // canonical 해결 실패 시 기존 방식 폴백
-                const target_name = if (self.getCanonicalName(@intCast(canonical_mod), effective_name)) |renamed|
-                    renamed
+                // resolveImports()에서 이미 해결한 바인딩을 조회하거나, 직접 해결
+                const resolved = self.getResolvedBinding(module_index, ib.local_span);
+                const target_name = if (resolved) |rb|
+                    self.resolveToLocalName(rb.canonical)
                 else
-                    effective_name;
+                    ib.imported_name;
 
                 if (!std.mem.eql(u8, ib.local_name, target_name)) {
                     if (module_scope.get(ib.local_name)) |sym_idx| {
@@ -1091,7 +1061,7 @@ pub const Linker = struct {
         name: []const u8,
         depth: u32,
     ) ?SymbolRef {
-        if (depth > 100) return null; // 순환 방지
+        if (depth > max_chain_depth) return null;
 
         const mod_i = @intFromEnum(module_idx);
         if (mod_i >= self.modules.len) return null;
@@ -1141,9 +1111,16 @@ pub const Linker = struct {
         return null;
     }
 
+    /// SymbolRef를 scope hoisting 후 최종 로컬 이름으로 해결.
+    /// resolveExportChain → getExportLocalName → getCanonicalName 3단계를 캡슐화.
+    fn resolveToLocalName(self: *const Linker, ref: SymbolRef) []const u8 {
+        const cmod: u32 = @intCast(@intFromEnum(ref.module_index));
+        const local = self.getExportLocalName(cmod, ref.export_name) orelse ref.export_name;
+        return self.getCanonicalName(cmod, local) orelse local;
+    }
+
     /// ESM namespace import를 위한 namespace 객체 preamble 생성.
     /// `import * as X from './mod'` → `var X = {a: a, b: b};`
-    /// 대상 모듈의 모든 export를 수집하여 객체 리터럴로 만든다.
     fn buildNamespacePreamble(
         self: *const Linker,
         buf: *std.ArrayList(u8),
@@ -1151,58 +1128,13 @@ pub const Linker = struct {
         target_mod_idx: u32,
     ) !void {
         if (target_mod_idx >= self.modules.len) return;
-        const target = self.modules[target_mod_idx];
 
-        // 대상 모듈의 export 목록 수집
-        // export binding에서 local_name → exported_name 매핑
         var exports: std.ArrayList(NsExportPair) = .empty;
         defer exports.deinit(self.allocator);
+        var seen = std.StringHashMap(void).init(self.allocator);
+        defer seen.deinit();
 
-        for (target.export_bindings) |eb| {
-            if (eb.kind == .re_export_all) continue;
-            if (std.mem.eql(u8, eb.exported_name, "*")) continue;
-
-            // re-export 체인을 따라가서 실제 local_name 찾기
-            var actual_local = eb.local_name;
-            if (eb.kind == .re_export) {
-                if (self.resolveExportChain(@enumFromInt(target_mod_idx), eb.exported_name, 0)) |canonical| {
-                    const cmod = @intFromEnum(canonical.module_index);
-                    // canonical 모듈에서 export의 실제 local_name
-                    if (self.getExportLocalName(@intCast(cmod), canonical.export_name)) |local| {
-                        actual_local = local;
-                    } else {
-                        actual_local = canonical.export_name;
-                    }
-                    // canonical 모듈에서 이름 충돌로 리네임된 경우
-                    if (self.getCanonicalName(@intCast(cmod), actual_local)) |renamed| {
-                        actual_local = renamed;
-                    }
-                }
-            } else {
-                // local export: 이름 충돌로 리네임된 경우 반영
-                if (self.getCanonicalName(target_mod_idx, eb.local_name)) |renamed| {
-                    actual_local = renamed;
-                }
-            }
-
-            try exports.append(self.allocator, .{
-                .exported = eb.exported_name,
-                .local = actual_local,
-            });
-        }
-
-        // export * from 처리: 재귀적으로 소스 모듈의 export 수집
-        for (target.export_bindings) |eb| {
-            if (eb.kind != .re_export_all) continue;
-            if (eb.import_record_index) |rec_idx| {
-                if (rec_idx < target.import_records.len) {
-                    const source_mod = target.import_records[rec_idx].resolved;
-                    if (!source_mod.isNone()) {
-                        try self.collectExportsRecursive(&exports, source_mod, 0);
-                    }
-                }
-            }
-        }
+        try self.collectExportsRecursive(&exports, &seen, @enumFromInt(target_mod_idx), 0);
 
         if (exports.items.len == 0) return;
 
@@ -1212,7 +1144,6 @@ pub const Linker = struct {
         try buf.appendSlice(self.allocator, " = {");
         for (exports.items, 0..) |exp, idx| {
             if (idx > 0) try buf.appendSlice(self.allocator, ", ");
-            // default export는 "default" 키 사용 (유효한 프로퍼티명)
             if (std.mem.eql(u8, exp.exported, "default")) {
                 try buf.appendSlice(self.allocator, "\"default\": ");
             } else {
@@ -1224,14 +1155,16 @@ pub const Linker = struct {
         try buf.appendSlice(self.allocator, "};\n");
     }
 
-    /// export * 체인을 재귀적으로 따라가서 모든 export를 수집.
+    /// 모듈의 모든 export를 재귀적으로 수집 (export * 체인 포함).
+    /// seen: O(1) 중복 검사용 해시맵 (앞선 export가 우선).
     fn collectExportsRecursive(
         self: *const Linker,
         exports: *std.ArrayList(NsExportPair),
+        seen: *std.StringHashMap(void),
         module_idx: ModuleIndex,
         depth: u32,
     ) !void {
-        if (depth > 50) return; // 순환 방지
+        if (depth > max_chain_depth) return;
         const mod_i = @intFromEnum(module_idx);
         if (mod_i >= self.modules.len) return;
         const m = self.modules[mod_i];
@@ -1239,35 +1172,16 @@ pub const Linker = struct {
         for (m.export_bindings) |eb| {
             if (eb.kind == .re_export_all) continue;
             if (std.mem.eql(u8, eb.exported_name, "*")) continue;
+            if (seen.contains(eb.exported_name)) continue;
+            try seen.put(eb.exported_name, {});
 
-            // 이미 같은 이름이 있으면 스킵 (앞선 export가 우선)
-            var dup = false;
-            for (exports.items) |existing| {
-                if (std.mem.eql(u8, existing.exported, eb.exported_name)) {
-                    dup = true;
-                    break;
-                }
-            }
-            if (dup) continue;
-
-            var actual_local = eb.local_name;
-            if (eb.kind == .re_export) {
-                if (self.resolveExportChain(module_idx, eb.exported_name, 0)) |canonical| {
-                    const cmod = @intFromEnum(canonical.module_index);
-                    if (self.getExportLocalName(@intCast(cmod), canonical.export_name)) |local| {
-                        actual_local = local;
-                    } else {
-                        actual_local = canonical.export_name;
-                    }
-                    if (self.getCanonicalName(@intCast(cmod), actual_local)) |renamed| {
-                        actual_local = renamed;
-                    }
-                }
-            } else {
-                if (self.getCanonicalName(@intCast(mod_i), eb.local_name)) |renamed| {
-                    actual_local = renamed;
-                }
-            }
+            const actual_local = if (eb.kind == .re_export) blk: {
+                break :blk if (self.resolveExportChain(module_idx, eb.exported_name, 0)) |canonical|
+                    self.resolveToLocalName(canonical)
+                else
+                    eb.local_name;
+            } else
+                self.getCanonicalName(@intCast(mod_i), eb.local_name) orelse eb.local_name;
 
             try exports.append(self.allocator, .{
                 .exported = eb.exported_name,
@@ -1282,7 +1196,7 @@ pub const Linker = struct {
                 if (rec_idx < m.import_records.len) {
                     const source_mod = m.import_records[rec_idx].resolved;
                     if (!source_mod.isNone()) {
-                        try self.collectExportsRecursive(exports, source_mod, depth + 1);
+                        try self.collectExportsRecursive(exports, seen, source_mod, depth + 1);
                     }
                 }
             }
