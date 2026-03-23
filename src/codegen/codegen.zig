@@ -1198,8 +1198,14 @@ pub const Codegen = struct {
     }
 
     fn emitBindingProperty(self: *Codegen, node: Node) !void {
-        // key는 항상 원본 span 출력 (프로퍼티 이름이므로 rename 적용 안 함)
-        try self.writeSpan(self.ast.getNode(node.data.binary.left).span);
+        // key는 원본 span 출력 (프로퍼티 이름이므로 rename 적용 안 함).
+        // computed property key ([expr])는 내부 표현식에 rename이 필요하므로 emitNode 사용.
+        const key_node = self.ast.getNode(node.data.binary.left);
+        if (key_node.tag == .computed_property_key) {
+            try self.emitNode(node.data.binary.left);
+        } else {
+            try self.writeSpan(key_node.span);
+        }
         // shorthand: right가 none이면 {key} 형태 — 콜론 생략
         if (!node.data.binary.right.isNone()) {
             try self.writeByte(':');
