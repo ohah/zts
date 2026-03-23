@@ -66,8 +66,10 @@ pub const PackageJson = struct {
 pub const ParsedPackageJson = struct {
     pkg: PackageJson,
     parsed: std.json.Parsed(std.json.Value),
+    allocator: std.mem.Allocator,
 
     pub fn deinit(self: *ParsedPackageJson) void {
+        self.pkg.side_effects.deinit(self.allocator);
         self.parsed.deinit();
     }
 };
@@ -101,6 +103,7 @@ pub fn parsePackageJson(allocator: std.mem.Allocator, dir: std.fs.Dir) !ParsedPa
             .side_effects = parseSideEffects(obj, allocator),
         },
         .parsed = parsed,
+        .allocator = allocator,
     };
 }
 
@@ -341,10 +344,7 @@ test "parsePackageJson: sideEffects array" {
     });
 
     var result = try parsePackageJson(std.testing.allocator, tmp.dir);
-    defer {
-        result.pkg.side_effects.deinit(std.testing.allocator);
-        result.deinit();
-    }
+    defer result.deinit();
 
     switch (result.pkg.side_effects) {
         .patterns => |patterns| {
