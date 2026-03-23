@@ -493,51 +493,48 @@ pub const Linker = struct {
     }
 
     /// JS 예약어 + 글로벌 객체 이름인지 확인 (Rolldown renamer.rs 참고).
-    /// `name$1` 형태에서 예약어가 될 가능성은 거의 없지만, 안전을 위해 체크.
+    /// comptime StaticStringMap으로 O(1) 조회.
     fn isReservedName(name: []const u8) bool {
-        // ECMAScript 예약어
-        const reserved = [_][]const u8{
-            "break",     "case",       "catch",    "class",     "const",
-            "continue",  "debugger",   "default",  "delete",    "do",
-            "else",      "enum",       "export",   "extends",   "false",
-            "finally",   "for",        "function", "if",        "import",
-            "in",        "instanceof", "new",      "null",      "return",
-            "super",     "switch",     "this",     "throw",     "true",
-            "try",       "typeof",     "var",      "void",      "while",
-            "with",      "yield",      "let",      "static",    "implements",
-            "interface", "package",    "private",  "protected", "public",
-            "await",
-        };
-        // 글로벌 객체 (ECMAScript + Web API + Node.js)
-        const globals = [_][]const u8{
-            "undefined",       "NaN",            "Infinity",       "arguments",
-            "eval",            "Array",          "Object",         "Function",
-            "String",          "Number",         "Boolean",        "Symbol",
-            "Date",            "Math",           "JSON",           "Promise",
-            "RegExp",          "Error",          "Map",            "Set",
-            "WeakMap",         "WeakSet",        "Proxy",          "Reflect",
-            "console",         "globalThis",     "window",         "document",
-            "require",         "module",         "exports",        "__filename",
-            "__dirname",
+        const map = comptime std.StaticStringMap(void).initComptime(.{
+            // ECMAScript 예약어
+            .{ "break", {} },     .{ "case", {} },       .{ "catch", {} },     .{ "class", {} },
+            .{ "const", {} },     .{ "continue", {} },   .{ "debugger", {} },  .{ "default", {} },
+            .{ "delete", {} },    .{ "do", {} },         .{ "else", {} },      .{ "enum", {} },
+            .{ "export", {} },    .{ "extends", {} },    .{ "false", {} },     .{ "finally", {} },
+            .{ "for", {} },       .{ "function", {} },   .{ "if", {} },        .{ "import", {} },
+            .{ "in", {} },        .{ "instanceof", {} }, .{ "new", {} },       .{ "null", {} },
+            .{ "return", {} },    .{ "super", {} },      .{ "switch", {} },    .{ "this", {} },
+            .{ "throw", {} },     .{ "true", {} },       .{ "try", {} },       .{ "typeof", {} },
+            .{ "var", {} },       .{ "void", {} },       .{ "while", {} },     .{ "with", {} },
+            .{ "yield", {} },     .{ "let", {} },        .{ "static", {} },    .{ "implements", {} },
+            .{ "interface", {} }, .{ "package", {} },    .{ "private", {} },   .{ "protected", {} },
+            .{ "public", {} },    .{ "await", {} },
+            // ECMAScript 글로벌 객체
+            .{ "undefined", {} },  .{ "NaN", {} },        .{ "Infinity", {} },  .{ "arguments", {} },
+            .{ "eval", {} },       .{ "Array", {} },      .{ "Object", {} },    .{ "Function", {} },
+            .{ "String", {} },     .{ "Number", {} },     .{ "Boolean", {} },   .{ "Symbol", {} },
+            .{ "Date", {} },       .{ "Math", {} },       .{ "JSON", {} },      .{ "Promise", {} },
+            .{ "RegExp", {} },     .{ "Error", {} },      .{ "Map", {} },       .{ "Set", {} },
+            .{ "WeakMap", {} },    .{ "WeakSet", {} },    .{ "Proxy", {} },     .{ "Reflect", {} },
+            .{ "console", {} },    .{ "globalThis", {} }, .{ "window", {} },    .{ "document", {} },
+            .{ "require", {} },    .{ "module", {} },     .{ "exports", {} },   .{ "__filename", {} },
+            .{ "__dirname", {} },
             // Web API globals — scope hoisting 시 shadowing 방지
-                  "TextEncoder",    "TextDecoder",    "URL",
-            "URLSearchParams", "ReadableStream", "WritableStream", "TransformStream",
-            "Request",         "Response",       "Headers",        "FormData",
-            "Blob",            "File",           "FileReader",     "AbortController",
-            "AbortSignal",     "Event",          "EventTarget",    "CustomEvent",
-            "setTimeout",      "setInterval",    "clearTimeout",   "clearInterval",
-            "fetch",           "crypto",         "performance",    "navigator",
-            "atob",            "btoa",           "queueMicrotask", "structuredClone",
+            .{ "TextEncoder", {} },    .{ "TextDecoder", {} },    .{ "URL", {} },
+            .{ "URLSearchParams", {} }, .{ "ReadableStream", {} }, .{ "WritableStream", {} },
+            .{ "TransformStream", {} }, .{ "Request", {} },        .{ "Response", {} },
+            .{ "Headers", {} },        .{ "FormData", {} },       .{ "Blob", {} },
+            .{ "File", {} },           .{ "FileReader", {} },     .{ "AbortController", {} },
+            .{ "AbortSignal", {} },    .{ "Event", {} },          .{ "EventTarget", {} },
+            .{ "CustomEvent", {} },    .{ "setTimeout", {} },     .{ "setInterval", {} },
+            .{ "clearTimeout", {} },   .{ "clearInterval", {} },  .{ "fetch", {} },
+            .{ "crypto", {} },         .{ "performance", {} },    .{ "navigator", {} },
+            .{ "atob", {} },           .{ "btoa", {} },           .{ "queueMicrotask", {} },
+            .{ "structuredClone", {} },
             // Node.js globals
-            "Buffer",          "process",        "global",         "__global",
-        };
-        for (reserved) |r| {
-            if (std.mem.eql(u8, name, r)) return true;
-        }
-        for (globals) |g| {
-            if (std.mem.eql(u8, name, g)) return true;
-        }
-        return false;
+            .{ "Buffer", {} }, .{ "process", {} }, .{ "global", {} }, .{ "__global", {} },
+        });
+        return map.has(name);
     }
 
     /// export의 실제 local_name을 조회. default export에서 "default" → "greet" 등.
@@ -683,23 +680,18 @@ pub const Linker = struct {
                 // 예: import url from 'url' → var url = require("url")
                 if (rec.resolved.isNone()) {
                     if (rec.kind == .static_import or rec.kind == .side_effect or rec.kind == .re_export) {
-                        if (ib.kind == .namespace or std.mem.eql(u8, ib.imported_name, "default")) {
-                            // namespace 또는 default import: var <local> = require("<specifier>")
-                            try cjs_preamble_buf.appendSlice(self.allocator, "var ");
-                            try cjs_preamble_buf.appendSlice(self.allocator, ib.local_name);
-                            try cjs_preamble_buf.appendSlice(self.allocator, " = require(\"");
-                            try cjs_preamble_buf.appendSlice(self.allocator, rec.specifier);
-                            try cjs_preamble_buf.appendSlice(self.allocator, "\");\n");
-                        } else {
-                            // named import: var <local> = require("<specifier>").<imported>
-                            try cjs_preamble_buf.appendSlice(self.allocator, "var ");
-                            try cjs_preamble_buf.appendSlice(self.allocator, ib.local_name);
-                            try cjs_preamble_buf.appendSlice(self.allocator, " = require(\"");
-                            try cjs_preamble_buf.appendSlice(self.allocator, rec.specifier);
-                            try cjs_preamble_buf.appendSlice(self.allocator, "\").");
+                        // var <local> = require("<specifier>")[.<imported>];
+                        try cjs_preamble_buf.appendSlice(self.allocator, "var ");
+                        try cjs_preamble_buf.appendSlice(self.allocator, ib.local_name);
+                        try cjs_preamble_buf.appendSlice(self.allocator, " = require(\"");
+                        try cjs_preamble_buf.appendSlice(self.allocator, rec.specifier);
+                        try cjs_preamble_buf.appendSlice(self.allocator, "\")");
+                        // named import만 .property 접근 추가 (namespace/default는 모듈 전체)
+                        if (ib.kind != .namespace and !std.mem.eql(u8, ib.imported_name, "default")) {
+                            try cjs_preamble_buf.appendSlice(self.allocator, ".");
                             try cjs_preamble_buf.appendSlice(self.allocator, ib.imported_name);
-                            try cjs_preamble_buf.appendSlice(self.allocator, ";\n");
                         }
+                        try cjs_preamble_buf.appendSlice(self.allocator, ";\n");
                     }
                     continue;
                 }
