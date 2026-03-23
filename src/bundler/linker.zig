@@ -721,41 +721,8 @@ pub const Linker = struct {
 
                 // CJS 모듈에서 import하는 경우: preamble에서 require_xxx() 호출 생성
                 if (canonical_mod < self.modules.len and self.modules[canonical_mod].wrap_kind == .cjs) {
-                    const req_var = if (cjs_var_cache.get(@intCast(canonical_mod))) |cached|
-                        cached
-                    else blk: {
-                        const target_path = self.modules[canonical_mod].path;
-                        const name = try types.makeRequireVarName(self.allocator, target_path);
-                        try cjs_var_cache.put(@intCast(canonical_mod), name);
-                        break :blk name;
-                    };
-
-                    if (ib.kind == .namespace) {
-                        // namespace import: var <local> = __toESM(require_xxx());
-                        // __toESM이 __esModule 플래그를 확인하여 적절한 namespace 객체 생성
-                        try cjs_preamble_buf.appendSlice(self.allocator, "var ");
-                        try cjs_preamble_buf.appendSlice(self.allocator, ib.local_name);
-                        try cjs_preamble_buf.appendSlice(self.allocator, " = __toESM(");
-                        try cjs_preamble_buf.appendSlice(self.allocator, req_var);
-                        try cjs_preamble_buf.appendSlice(self.allocator, "());\n");
-                    } else if (std.mem.eql(u8, ib.imported_name, "default")) {
-                        // default import: var <local> = __toESM(require_xxx()).default;
-                        // __toESM이 { default: module.exports, ... }를 반환하므로 .default 필요
-                        try cjs_preamble_buf.appendSlice(self.allocator, "var ");
-                        try cjs_preamble_buf.appendSlice(self.allocator, ib.local_name);
-                        try cjs_preamble_buf.appendSlice(self.allocator, " = __toESM(");
-                        try cjs_preamble_buf.appendSlice(self.allocator, req_var);
-                        try cjs_preamble_buf.appendSlice(self.allocator, "()).default;\n");
-                    } else {
-                        // named import: var <local> = require_xxx().<imported>;
-                        try cjs_preamble_buf.appendSlice(self.allocator, "var ");
-                        try cjs_preamble_buf.appendSlice(self.allocator, ib.local_name);
-                        try cjs_preamble_buf.appendSlice(self.allocator, " = ");
-                        try cjs_preamble_buf.appendSlice(self.allocator, req_var);
-                        try cjs_preamble_buf.appendSlice(self.allocator, "().");
-                        try cjs_preamble_buf.appendSlice(self.allocator, ib.imported_name);
-                        try cjs_preamble_buf.appendSlice(self.allocator, ";\n");
-                    }
+                    const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, @intCast(canonical_mod));
+                    try appendCjsImportPreamble(&cjs_preamble_buf, self.allocator, ib.local_name, ib.imported_name, req_var, ib.kind == .namespace);
                     continue;
                 }
 
@@ -781,37 +748,11 @@ pub const Linker = struct {
 
                 // export * from CJS 패턴: canonical이 CJS 모듈을 가리키면
                 // rename 대신 CJS preamble을 생성한다.
-                // 예: import { ref } from 'vue' (vue가 export * from './index.js' CJS)
-                // → var ref = require_index()["ref"];
                 if (resolved) |rb| {
                     const cjs_mod: u32 = @intCast(@intFromEnum(rb.canonical.module_index));
                     if (cjs_mod < self.modules.len and self.modules[cjs_mod].wrap_kind == .cjs) {
-                        const req_var = if (cjs_var_cache.get(cjs_mod)) |cached|
-                            cached
-                        else blk2: {
-                            const target_path = self.modules[cjs_mod].path;
-                            const name2 = try types.makeRequireVarName(self.allocator, target_path);
-                            try cjs_var_cache.put(cjs_mod, name2);
-                            break :blk2 name2;
-                        };
-
-                        if (std.mem.eql(u8, ib.imported_name, "default")) {
-                            // default import through export * from CJS
-                            try cjs_preamble_buf.appendSlice(self.allocator, "var ");
-                            try cjs_preamble_buf.appendSlice(self.allocator, ib.local_name);
-                            try cjs_preamble_buf.appendSlice(self.allocator, " = __toESM(");
-                            try cjs_preamble_buf.appendSlice(self.allocator, req_var);
-                            try cjs_preamble_buf.appendSlice(self.allocator, "()).default;\n");
-                        } else {
-                            // named import through export * from CJS
-                            try cjs_preamble_buf.appendSlice(self.allocator, "var ");
-                            try cjs_preamble_buf.appendSlice(self.allocator, ib.local_name);
-                            try cjs_preamble_buf.appendSlice(self.allocator, " = ");
-                            try cjs_preamble_buf.appendSlice(self.allocator, req_var);
-                            try cjs_preamble_buf.appendSlice(self.allocator, "().");
-                            try cjs_preamble_buf.appendSlice(self.allocator, ib.imported_name);
-                            try cjs_preamble_buf.appendSlice(self.allocator, ";\n");
-                        }
+                        const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, cjs_mod);
+                        try appendCjsImportPreamble(&cjs_preamble_buf, self.allocator, ib.local_name, ib.imported_name, req_var, false);
                         continue;
                     }
                 }
@@ -1796,6 +1737,54 @@ pub const Linker = struct {
     const makeExportKey = types.makeModuleKey;
     const makeExportKeyBuf = types.makeModuleKeyBuf;
 };
+
+// ============================================================
+// CJS preamble 헬퍼 (buildMetadataForAst에서 2곳에서 사용)
+// ============================================================
+
+/// CJS 모듈의 require_xxx 변수명을 캐시에서 가져오거나 새로 생성.
+fn getOrCreateRequireVar(
+    self: *const Linker,
+    cache: *std.AutoHashMap(u32, []const u8),
+    mod_idx: u32,
+) ![]const u8 {
+    if (cache.get(mod_idx)) |cached| return cached;
+    const target_path = self.modules[mod_idx].path;
+    const name = try types.makeRequireVarName(self.allocator, target_path);
+    try cache.put(mod_idx, name);
+    return name;
+}
+
+/// CJS import preamble 한 줄을 buf에 추가.
+/// namespace: var local = __toESM(req_var());
+/// default:   var local = __toESM(req_var()).default;
+/// named:     var local = req_var().imported;
+fn appendCjsImportPreamble(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    local_name: []const u8,
+    imported_name: []const u8,
+    req_var: []const u8,
+    is_namespace: bool,
+) !void {
+    try buf.appendSlice(allocator, "var ");
+    try buf.appendSlice(allocator, local_name);
+    if (is_namespace) {
+        try buf.appendSlice(allocator, " = __toESM(");
+        try buf.appendSlice(allocator, req_var);
+        try buf.appendSlice(allocator, "());\n");
+    } else if (std.mem.eql(u8, imported_name, "default")) {
+        try buf.appendSlice(allocator, " = __toESM(");
+        try buf.appendSlice(allocator, req_var);
+        try buf.appendSlice(allocator, "()).default;\n");
+    } else {
+        try buf.appendSlice(allocator, " = ");
+        try buf.appendSlice(allocator, req_var);
+        try buf.appendSlice(allocator, "().");
+        try buf.appendSlice(allocator, imported_name);
+        try buf.appendSlice(allocator, ";\n");
+    }
+}
 
 // ============================================================
 // Tests
