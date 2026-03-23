@@ -77,6 +77,10 @@ pub const Transformer = struct {
     /// 새 AST 기준 symbol_ids. new_ast에 노드 추가 시 자동 전파.
     new_symbol_ids: std.ArrayList(?u32) = .empty,
 
+    /// define value의 string_table Span 캐시. options.define과 동일 인덱스.
+    /// transform() 시작 시 한 번 빌드하여, tryDefineReplace에서 addString 중복 호출을 방지.
+    define_spans: []Span = &.{},
+
     /// React Fast Refresh: 감지된 컴포넌트 등록 목록.
     /// transform 완료 후 프로그램 끝에 $RefreshReg$ 호출로 주입.
     refresh_registrations: std.ArrayList(RefreshRegistration) = .empty,
@@ -116,6 +120,7 @@ pub const Transformer = struct {
         self.new_ast.deinit();
         self.scratch.deinit(self.allocator);
         self.pending_nodes.deinit(self.allocator);
+        if (self.define_spans.len > 0) self.allocator.free(self.define_spans);
         self.refresh_registrations.deinit(self.allocator);
         for (self.refresh_signatures.items) |s| self.allocator.free(s.signature);
         self.refresh_signatures.deinit(self.allocator);
@@ -130,6 +135,14 @@ pub const Transformer = struct {
     /// 반환값: 새 AST에서의 루트 NodeIndex.
     /// 변환된 AST는 self.new_ast에 저장된다.
     pub fn transform(self: *Transformer) Error!NodeIndex {
+        // define value를 미리 string_table에 저장하여 tryDefineReplace에서 중복 addString 방지
+        if (self.options.define.len > 0) {
+            self.define_spans = self.allocator.alloc(Span, self.options.define.len) catch return Error.OutOfMemory;
+            for (self.options.define, 0..) |entry, i| {
+                self.define_spans[i] = self.new_ast.addString(entry.value) catch return Error.OutOfMemory;
+            }
+        }
+
         // 파서는 parse() 끝에 program 노드를 추가하므로 마지막 노드가 루트
         const root_idx: NodeIndex = @enumFromInt(@as(u32, @intCast(self.old_ast.nodes.items.len - 1)));
         const root = try self.visitNode(root_idx);
@@ -591,11 +604,10 @@ pub const Transformer = struct {
         // 노드의 소스 텍스트를 define key와 비교
         const text = self.getNodeText(node) orelse return null;
 
-        for (self.options.define) |entry| {
+        for (self.options.define, 0..) |entry, i| {
             if (std.mem.eql(u8, text, entry.key)) {
-                // 값을 string_table에 저장하여 codegen이 올바른 텍스트를 출력하도록 한다.
-                // codegen의 writeNodeSpan은 node.span을 사용하므로 span에 string_table 참조를 넣는다.
-                const value_span = self.new_ast.addString(entry.value) catch return Error.OutOfMemory;
+                // transform() 시작 시 캐싱된 string_table Span 사용 (addString 중복 방지)
+                const value_span = self.define_spans[i];
                 return self.new_ast.addNode(.{
                     .tag = .string_literal,
                     .span = value_span,
