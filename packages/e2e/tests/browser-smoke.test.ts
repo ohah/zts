@@ -35,7 +35,20 @@ const cases: BrowserSmokeCase[] = [
     entry: `import { h } from 'preact';\nconsole.log(typeof h);`,
     expected: "function",
   },
-  // immer/mobx는 process.env.NODE_ENV를 참조 — --define CLI 구현 후 추가 예정
+  {
+    name: "immer",
+    pkg: "immer",
+    entry: `import { produce } from 'immer';\nconst n = produce({ a: 1 }, d => { d.a = 2; });\nconsole.log(n.a);`,
+    expected: "2",
+    extraArgs: ['--define:process.env.NODE_ENV="production"'],
+  },
+  {
+    name: "mobx",
+    pkg: "mobx",
+    entry: `import { observable } from 'mobx';\nconst o = observable({ v: 0 });\no.v = 42;\nconsole.log(o.v);`,
+    expected: "42",
+    extraArgs: ['--define:process.env.NODE_ENV="production"'],
+  },
   {
     name: "clsx",
     pkg: "clsx",
