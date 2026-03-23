@@ -1198,7 +1198,8 @@ pub const Codegen = struct {
     }
 
     fn emitBindingProperty(self: *Codegen, node: Node) !void {
-        try self.emitNode(node.data.binary.left);
+        // key는 항상 원본 span 출력 (프로퍼티 이름이므로 rename 적용 안 함)
+        try self.writeSpan(self.ast.getNode(node.data.binary.left).span);
         // shorthand: right가 none이면 {key} 형태 — 콜론 생략
         if (!node.data.binary.right.isNone()) {
             try self.writeByte(':');

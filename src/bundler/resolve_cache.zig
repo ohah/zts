@@ -55,14 +55,9 @@ pub const ResolveCache = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator, platform: Platform, external_patterns: []const []const u8) ResolveCache {
-        var resolver = Resolver.init(allocator);
-        // platform=node일 때: "node" 조건 추가 + "browser" 제외
-        if (platform == .node) {
-            resolver.conditions = &.{ "node", "import", "module", "default" };
-        }
         return .{
             .allocator = allocator,
-            .resolver = resolver,
+            .resolver = Resolver.init(allocator),
             .cache = std.StringHashMap(CachedResult).init(allocator),
             .external_patterns = external_patterns,
             .platform = platform,
