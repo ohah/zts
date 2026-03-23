@@ -85,6 +85,66 @@ const cases: BrowserSmokeCase[] = [
     entry: `import { nanoid } from 'nanoid';\nconsole.log(nanoid().length >= 21);`,
     expected: "true",
   },
+  {
+    name: "zod",
+    pkg: "zod",
+    entry: `import { z } from 'zod';\nconsole.log(typeof z.string);`,
+    expected: "function",
+  },
+  {
+    name: "superjson",
+    pkg: "superjson",
+    entry: `import superjson from 'superjson';\nconsole.log(typeof superjson.stringify);`,
+    expected: "function",
+  },
+  {
+    name: "date-fns",
+    pkg: "date-fns",
+    entry: `import { addDays } from 'date-fns';\nconsole.log(typeof addDays);`,
+    expected: "function",
+  },
+  {
+    name: "d3",
+    pkg: "d3",
+    entry: `import { scaleLinear } from 'd3';\nconsole.log(scaleLinear().domain([0, 1]).range([0, 10])(0.5));`,
+    expected: "5",
+  },
+  {
+    name: "pako",
+    pkg: "pako",
+    entry: `import pako from 'pako';\nconsole.log(typeof pako.deflate);`,
+    expected: "function",
+  },
+  {
+    name: "solid-js",
+    pkg: "solid-js",
+    entry: `import { createSignal } from 'solid-js';\nconst [count, setCount] = createSignal(0);\nsetCount(1);\nconsole.log(count());`,
+    expected: "1",
+  },
+  {
+    name: "vue",
+    pkg: "vue",
+    entry: `import { ref } from 'vue';\nconsole.log(ref(0).value);`,
+    expected: "0",
+  },
+  {
+    name: "svelte",
+    pkg: "svelte",
+    entry: `import { readable } from 'svelte/store';\nlet v;\nreadable(42, s => { s(42); return () => {}; }).subscribe(x => v = x);\nconsole.log(v);`,
+    expected: "42",
+  },
+  {
+    name: "react",
+    pkg: "react",
+    entry: `import React from 'react';\nconsole.log(typeof React.createElement);`,
+    expected: "function",
+  },
+  {
+    name: "graphql",
+    pkg: "graphql",
+    entry: `import { parse } from 'graphql';\nconsole.log(parse('{ hello }').definitions.length);`,
+    expected: "1",
+  },
 ];
 
 const MIME: Record<string, string> = {
