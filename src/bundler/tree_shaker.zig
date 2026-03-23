@@ -399,8 +399,21 @@ pub const TreeShaker = struct {
 
     fn markAllExportsUsed(self: *TreeShaker, module_index: u32) !void {
         if (module_index >= self.modules.len) return;
-        for (self.modules[module_index].export_bindings) |eb| {
-            if (eb.kind == .re_export_all) continue;
+        const m = self.modules[module_index];
+        for (m.export_bindings) |eb| {
+            if (eb.kind == .re_export_all) {
+                // export * from './dep' → dep 모듈의 모든 export도 마킹 + include
+                if (eb.import_record_index) |rec_idx| {
+                    if (rec_idx < m.import_records.len) {
+                        const source_mod = @intFromEnum(m.import_records[rec_idx].resolved);
+                        if (source_mod < self.modules.len) {
+                            if (!self.included.isSet(source_mod)) self.included.set(source_mod);
+                            try self.markAllExportsUsed(@intCast(source_mod));
+                        }
+                    }
+                }
+                continue;
+            }
             if (std.mem.eql(u8, eb.exported_name, "*")) continue;
             try self.markExportUsed(module_index, eb.exported_name);
         }
