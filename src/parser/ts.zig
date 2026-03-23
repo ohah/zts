@@ -546,7 +546,7 @@ fn parseTypeReference(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
-fn parseTypeArguments(self: *Parser) ParseError2!NodeIndex {
+pub fn parseTypeArguments(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     try self.advance(); // skip <
 

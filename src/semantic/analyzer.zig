@@ -988,6 +988,20 @@ pub const SemanticAnalyzer = struct {
                 try self.visitNode(node.data.unary.operand);
             },
 
+            // ---- TS expression: 값 부분만 순회, 타입 부분은 스킵 ----
+            // ts_as_expression, ts_satisfies_expression은 binary(left=expr, right=type)이지만
+            // extern union이므로 unary.operand == binary.left — 값(expr) 부분만 방문한다.
+            // ts_non_null_expression은 unary(operand=expr).
+            // ts_type_assertion, ts_instantiation_expression은 현재 파서가 생성하지 않지만 안전을 위해 포함.
+            .ts_as_expression,
+            .ts_satisfies_expression,
+            .ts_non_null_expression,
+            .ts_type_assertion,
+            .ts_instantiation_expression,
+            => {
+                try self.visitNode(node.data.unary.operand);
+            },
+
             // ---- 스킵 (TS 타입 노드, 리터럴, 식별자 등) ----
             else => {},
         }

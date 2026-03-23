@@ -1604,6 +1604,10 @@ pub const Parser = struct {
         return ts.parseType(self);
     }
 
+    pub fn parseTypeArguments(self: *Parser) ParseError2!NodeIndex {
+        return ts.parseTypeArguments(self);
+    }
+
     // ================================================================
     // TS Arrow Function Detection
     // ================================================================
