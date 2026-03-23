@@ -97,7 +97,7 @@ pub fn parseExpression(self: *Parser) ParseError2!NodeIndex {
 /// arrow function의 body를 파싱한다.
 /// arrow function은 함수이므로 in_function=true, loop/switch 리셋.
 /// block body면 parseFunctionBody(), expression body면 parseAssignmentExpression().
-fn parseArrowBody(self: *Parser, is_async: bool, param_idx: NodeIndex) ParseError2!NodeIndex {
+pub fn parseArrowBody(self: *Parser, is_async: bool, param_idx: NodeIndex) ParseError2!NodeIndex {
     // arrow function은 generator가 될 수 없으므로 is_generator=false
     const saved_ctx = self.enterFunctionContext(is_async, false);
     // arrow function은 자체 바인딩이 없으므로 외부 컨텍스트를 상속:
@@ -179,6 +179,12 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
                             });
                         }
                     }
+                    self.restoreState(saved);
+                } else if (try self.isTypedArrowFunction()) {
+                    // async (a: Type) => body — TS typed async arrow
+                    const result = try self.parseTypedArrowParams(async_span.start, true);
+                    const result_node = self.ast.getNode(result);
+                    if (result_node.tag == .arrow_function_expression) return result;
                     self.restoreState(saved);
                 } else {
                     // 괄호를 expression으로 파싱 (parenthesized_expression)
@@ -1027,6 +1033,13 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
         .l_paren => {
             // 괄호 표현식 또는 arrow function 파라미터 리스트.
             // 괄호 안에서는 `in` 연산자가 항상 허용된다 (ECMAScript: [+In] 컨텍스트).
+
+            // TS 모드: `(a: Type, b?: Type) => body` — 타입 어노테이션이 있는 arrow function.
+            // lookahead로 감지: `(` 뒤에 identifier + `:` 또는 `?` 패턴이면 speculative 파싱.
+            if (try self.isTypedArrowFunction()) {
+                return try self.parseTypedArrowParams(span.start, false);
+            }
+
             try self.advance(); // skip (
 
             // 빈 괄호: () → arrow function의 빈 파라미터 리스트

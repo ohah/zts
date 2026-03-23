@@ -1603,6 +1603,111 @@ pub const Parser = struct {
     pub fn parseType(self: *Parser) ParseError2!NodeIndex {
         return ts.parseType(self);
     }
+
+    // ================================================================
+    // TS Arrow Function Detection
+    // ================================================================
+
+    /// TS 모드에서 `(identifier:` 또는 `(identifier?` 패턴으로 typed arrow function 감지.
+    /// 현재 토큰이 `(` 일 때 호출. 2-token lookahead로 판단.
+    pub fn isTypedArrowFunction(self: *Parser) !bool {
+        if (self.current() != .l_paren) return false;
+        const saved = self.saveState();
+        defer self.restoreState(saved);
+
+        try self.advance(); // skip (
+
+        // (): Type => ... — 빈 파라미터 + 리턴 타입
+        if (self.current() == .r_paren) {
+            try self.advance();
+            // ): 이면 typed arrow (리턴 타입 어노테이션)
+            return self.current() == .colon;
+        }
+
+        // (...rest: Type) => ... — rest parameter with type
+        if (self.current() == .dot3) return true;
+
+        // (identifier: 패턴 — contextual keyword(get/set/number 등)도 식별자
+        // ?는 ternary와 모호하므로 : 만 감지
+        if (self.current() == .identifier or self.current().isKeyword() or self.current() == .escaped_keyword) {
+            try self.advance(); // skip identifier
+            return self.current() == .colon;
+        }
+
+        // ({}: Type) 또는 ([]: Type) — destructuring with type
+        if (self.current() == .l_curly or self.current() == .l_bracket) return true;
+
+        return false;
+    }
+
+    /// TS typed arrow function을 직접 파싱: `(a: Type, b?: Type): ReturnType => body`
+    /// save/restore로 실패 시 원래 위치로 복원할 수 있도록 호출부에서 관리.
+    pub fn parseTypedArrowParams(self: *Parser, start: u32, is_async: bool) ParseError2!NodeIndex {
+        const saved = self.saveState();
+        const errors_before = self.errors.items.len;
+
+        try self.advance(); // skip (
+        self.in_formal_parameters = true;
+        const scratch_top = self.saveScratch();
+
+        while (self.current() != .r_paren and self.current() != .eof) {
+            const loop_guard_pos = self.scanner.token.span.start;
+            const param = try self.parseBindingIdentifier();
+            try self.scratch.append(self.allocator, param);
+            if (!try self.eat(.comma)) break;
+            if (try self.ensureLoopProgress(loop_guard_pos)) break;
+        }
+
+        self.in_formal_parameters = false;
+        if (self.current() != .r_paren) {
+            // 파싱 실패 — 복원
+            self.restoreScratch(scratch_top);
+            self.errors.shrinkRetainingCapacity(errors_before);
+            self.restoreState(saved);
+            // 더미 노드 반환 (호출부에서 tag 체크)
+            return try self.ast.addNode(.{
+                .tag = .parenthesized_expression,
+                .span = .{ .start = start, .end = self.currentSpan().start },
+                .data = .{ .none = 0 },
+            });
+        }
+        try self.advance(); // skip )
+
+        // TS return type annotation: ): Type =>
+        _ = try self.tryParseReturnType();
+
+        // => 확인
+        if (self.current() != .arrow or self.scanner.token.has_newline_before) {
+            // arrow가 아님 — 복원
+            self.restoreScratch(scratch_top);
+            self.errors.shrinkRetainingCapacity(errors_before);
+            self.restoreState(saved);
+            return try self.ast.addNode(.{
+                .tag = .parenthesized_expression,
+                .span = .{ .start = start, .end = self.currentSpan().start },
+                .data = .{ .none = 0 },
+            });
+        }
+
+        // 파라미터 노드 리스트 생성
+        const params = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        self.restoreScratch(scratch_top);
+        const params_node = try self.ast.addNode(.{
+            .tag = .formal_parameters,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .list = params },
+        });
+
+        try self.advance(); // skip =>
+        const body = try expression.parseArrowBody(self, is_async, params_node);
+        const flags: u32 = if (is_async) 0x01 else 0;
+        const ae = try self.ast.addExtras(&.{ @intFromEnum(params_node), @intFromEnum(body), flags });
+        return try self.ast.addNode(.{
+            .tag = .arrow_function_expression,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .extra = ae },
+        });
+    }
 };
 
 // ============================================================
