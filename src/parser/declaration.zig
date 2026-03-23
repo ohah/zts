@@ -147,10 +147,12 @@ fn parseFunctionDeclarationWithFlagsOptionalName(self: *Parser, extra_flags: u32
     const is_async = (flags & FunctionFlags.is_async) != 0;
     const is_generator = (flags & FunctionFlags.is_generator) != 0;
 
-    // 이름은 선택적: identifier가 있으면 외부 context에서 파싱
+    // 이름은 선택적: identifier 또는 비예약 키워드(TS contextual keyword 포함)면 함수 이름으로 파싱.
+    // 예: `export default function number(x) { return +x; }` — number는 kw_number이지만 유효한 함수 이름.
+    // binding.zig의 parseBindingPattern과 동일한 로직: isKeyword() and !isReservedKeyword()
     const name = if (self.current() == .identifier or
-        self.current() == .kw_yield or self.current() == .kw_await or
-        self.current() == .escaped_keyword or self.current() == .escaped_strict_reserved)
+        self.current() == .escaped_keyword or self.current() == .escaped_strict_reserved or
+        (self.current().isKeyword() and !self.current().isReservedKeyword()))
         try self.parseBindingIdentifier()
     else
         NodeIndex.none;
