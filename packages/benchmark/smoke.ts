@@ -73,7 +73,7 @@ function testProject(
       join(dir, "package.json"),
       JSON.stringify({ name: `smoke-${name}`, private: true }),
     );
-    const install = spawnSync("npm", ["install", npmPkg, "--save"], {
+    const install = spawnSync("npm", ["install", ...npmPkg.split(/\s+/), "--save"], {
       cwd: dir,
       stdio: "pipe",
       timeout: 120000,
@@ -352,6 +352,52 @@ const projects = [
     name: "valtio",
     pkg: "valtio",
     entry: `import { proxy, snapshot } from 'valtio/vanilla';\nconst state = proxy({ count: 0 });\nstate.count = 42;\nconsole.log(snapshot(state).count);`,
+  },
+  // --- 새로 추가 (PR #311) ---
+  {
+    name: "react-dom",
+    pkg: "react-dom@18 react@18",
+    entry: `import { renderToString } from 'react-dom/server';\nimport { createElement } from 'react';\nconsole.log(renderToString(createElement('div', null, 'Hello')));`,
+  },
+  {
+    name: "d3",
+    pkg: "d3",
+    entry: `import { scaleLinear, range } from 'd3';\nconst s = scaleLinear().domain([0, 100]).range([0, 1]);\nconsole.log(s(50));`,
+  },
+  {
+    name: "hono",
+    pkg: "hono",
+    entry: `import { Hono } from 'hono';\nconst app = new Hono();\napp.get('/', (c) => c.text('Hello'));\nconsole.log('routes:', app.routes.length);`,
+  },
+  {
+    name: "dayjs",
+    pkg: "dayjs",
+    entry: `import dayjs from 'dayjs';\nconsole.log(dayjs('2024-01-01').format('YYYY/MM/DD'));`,
+  },
+  {
+    name: "nanoid",
+    pkg: "nanoid",
+    entry: `import { nanoid } from 'nanoid';\nconsole.log(nanoid().length >= 21);`,
+  },
+  {
+    name: "zlib",
+    pkg: "pako",
+    entry: `import pako from 'pako';\nconst d = pako.deflate('hello world');\nconsole.log(pako.inflate(d, { to: 'string' }));`,
+  },
+  {
+    name: "fp-ts",
+    pkg: "fp-ts",
+    entry: `import { pipe } from 'fp-ts/function';\nimport { some, map, getOrElse } from 'fp-ts/Option';\nconst r = pipe(some(1), map((n: number) => n + 1), getOrElse(() => 0));\nconsole.log(r);`,
+  },
+  {
+    name: "neverthrow",
+    pkg: "neverthrow",
+    entry: `import { ok, err } from 'neverthrow';\nconst r = ok(42).map(n => n + 1);\nconsole.log(r.isOk(), r._unsafeUnwrap());`,
+  },
+  {
+    name: "drizzle-orm",
+    pkg: "drizzle-orm",
+    entry: `import { sql } from 'drizzle-orm';\nconsole.log(typeof sql);`,
   },
 ];
 
