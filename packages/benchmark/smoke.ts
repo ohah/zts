@@ -230,6 +230,26 @@ const projects = [
     pkg: "@tanstack/query-core",
     entry: `import { QueryClient } from '@tanstack/query-core';\nconst qc = new QueryClient();\nqc.fetchQuery({queryKey:['t'],queryFn:()=>Promise.resolve(42)}).then(r=>{console.log(r);qc.clear();});`,
   },
+  {
+    name: "fast-glob",
+    pkg: "fast-glob",
+    entry: `import fg from 'fast-glob';\nconsole.log(typeof fg, typeof fg.sync);`,
+  },
+  {
+    name: "micromatch",
+    pkg: "micromatch",
+    entry: `import mm from 'micromatch';\nconsole.log(mm(['foo.js','bar.ts','baz.js'], '*.js'));`,
+  },
+  {
+    name: "semver",
+    pkg: "semver",
+    entry: `import semver from 'semver';\nconsole.log(semver.gt('2.0.0','1.0.0'), semver.valid('1.2.3'));`,
+  },
+  {
+    name: "debug",
+    pkg: "debug",
+    entry: `import debug from 'debug';\nconst log = debug('test');\nconsole.log(typeof log);`,
+  },
 ];
 
 // ============================================================
