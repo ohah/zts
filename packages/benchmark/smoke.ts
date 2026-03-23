@@ -308,6 +308,51 @@ const projects = [
     pkg: "effect",
     entry: `import { Effect, pipe } from 'effect';\nconst p = pipe(Effect.succeed(42), Effect.map((n: number) => n + 1));\nEffect.runPromise(p).then(r => console.log(r));`,
   },
+  {
+    name: "vue",
+    pkg: "vue",
+    entry: `import { ref, computed } from 'vue';\nconst c = ref(0);\nconst d = computed(() => c.value * 2);\nconsole.log(c.value, d.value);`,
+  },
+  {
+    name: "svelte",
+    pkg: "svelte",
+    entry: `import { readable } from 'svelte/store';\nconst t = readable(0, set => { set(42); return () => {}; });\nlet v; t.subscribe(x => v = x);\nconsole.log(v);`,
+  },
+  {
+    name: "solid-js",
+    pkg: "solid-js",
+    entry: `import { createSignal } from 'solid-js';\nconst [count, setCount] = createSignal(0);\nsetCount(1);\nconsole.log(count());`,
+  },
+  {
+    name: "three",
+    pkg: "three",
+    entry: `import { Vector3 } from 'three';\nconst v = new Vector3(1, 2, 3);\nconsole.log(v.length().toFixed(2));`,
+  },
+  {
+    name: "graphql",
+    pkg: "graphql",
+    entry: `import { parse } from 'graphql';\nconst d = parse('{ hello }');\nconsole.log(d.definitions[0].selectionSet.selections[0].name.value);`,
+  },
+  {
+    name: "supabase",
+    pkg: "@supabase/supabase-js",
+    entry: `import { createClient } from '@supabase/supabase-js';\nconsole.log(typeof createClient);`,
+  },
+  {
+    name: "mobx",
+    pkg: "mobx",
+    entry: `import { observable } from 'mobx';\nconst o = observable({ v: 0 });\no.v = 42;\nconsole.log(o.v);`,
+  },
+  {
+    name: "jotai",
+    pkg: "jotai",
+    entry: `import { atom, createStore } from 'jotai';\nconst a = atom(0);\nconst s = createStore();\ns.set(a, 42);\nconsole.log(s.get(a));`,
+  },
+  {
+    name: "valtio",
+    pkg: "valtio",
+    entry: `import { proxy, snapshot } from 'valtio/vanilla';\nconst state = proxy({ count: 0 });\nstate.count = 42;\nconsole.log(snapshot(state).count);`,
+  },
 ];
 
 // ============================================================
