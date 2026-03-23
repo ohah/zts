@@ -82,16 +82,32 @@ fn transpileFile(
     }
 
     // Semantic analysis (D038): 파서 에러가 없을 때만 실행
-    {
-        var analyzer = SemanticAnalyzer.init(arena_alloc, &parser.ast);
-        analyzer.is_strict_mode = parser.is_strict_mode;
-        analyzer.is_module = parser.is_module;
-        try analyzer.analyze();
-        if (analyzer.errors.items.len > 0) {
-            for (analyzer.errors.items) |diag| {
-                try printErrorCodeFrame(stderr, source, file_path, &scanner, diag);
-            }
-            return; // semantic 에러가 있으면 변환하지 않음
+    var analyzer = SemanticAnalyzer.init(arena_alloc, &parser.ast);
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    try analyzer.analyze();
+    if (analyzer.errors.items.len > 0) {
+        for (analyzer.errors.items) |diag| {
+            try printErrorCodeFrame(stderr, source, file_path, &scanner, diag);
+        }
+        return;
+    }
+
+    // Identifier mangling (--minify 활성화 시)
+    const Mangler = lib.codegen.mangler;
+    const LinkingMetadata = lib.bundler.LinkingMetadata;
+
+    var mangle_result: ?Mangler.ManglerResult = null;
+    defer if (mangle_result) |*mr| mr.deinit();
+
+    if (options.minify) {
+        if (analyzer.symbols.items.len > 0 and analyzer.scope_maps.items.len > 0) {
+            mangle_result = Mangler.mangle(
+                arena_alloc,
+                analyzer.scopes.items,
+                analyzer.symbols.items,
+                analyzer.scope_maps.items,
+            ) catch null;
         }
     }
 
@@ -105,12 +121,37 @@ fn transpileFile(
         return;
     };
 
+    // Mangling 메타데이터 구성 (codegen에 전달)
+    // renames는 mangle_result가 소유 — mangle_metadata.deinit()에서 해제하지 않음
+    var mangle_metadata: ?LinkingMetadata = null;
+    defer if (mangle_metadata) |*mm| {
+        mm.skip_nodes.deinit();
+        // mm.renames는 mangle_result가 소유하므로 여기서 해제하지 않음
+    };
+
+    if (mangle_result) |*mr| {
+        const node_count = transformer.new_ast.nodes.items.len;
+        mangle_metadata = .{
+            .skip_nodes = try std.DynamicBitSet.initEmpty(arena_alloc, node_count),
+            .renames = mr.renames, // 소유권 이전하지 않음 — mangle_result가 소유
+            .final_exports = null,
+            .symbol_ids = if (transformer.new_symbol_ids.items.len > 0)
+                transformer.new_symbol_ids.items
+            else if (analyzer.symbol_ids.items.len > 0)
+                analyzer.symbol_ids.items
+            else
+                &.{},
+            .allocator = arena_alloc,
+        };
+    }
+
     // 코드 생성
     var cg = Codegen.initWithOptions(arena_alloc, &transformer.new_ast, .{
         .module_format = options.module_format,
         .minify = options.minify,
         .sourcemap = options.sourcemap,
         .ascii_only = options.ascii_only,
+        .linking_metadata = if (mangle_metadata) |*mm| mm else null,
     });
     cg.comments = scanner.comments.items;
     if (options.sourcemap) {

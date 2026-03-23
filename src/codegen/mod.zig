@@ -12,8 +12,10 @@ pub const codegen = @import("codegen.zig");
 pub const Codegen = codegen.Codegen;
 pub const sourcemap = @import("sourcemap.zig");
 pub const SourceMapBuilder = sourcemap.SourceMapBuilder;
+pub const mangler = @import("mangler.zig");
 
 test {
     _ = codegen;
     _ = sourcemap;
+    _ = mangler;
 }
