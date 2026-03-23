@@ -1468,10 +1468,19 @@ pub const Codegen = struct {
                     },
                     else => {
                         // export default 42 → var _default = 42;
+                        // 이름 충돌 시 linker가 _default$1 등으로 리네임
+                        const def_name = if (self.options.linking_metadata) |meta|
+                            meta.default_export_name
+                        else
+                            "_default";
                         if (self.options.minify) {
-                            try self.write("var _default=");
+                            try self.write("var ");
+                            try self.write(def_name);
+                            try self.writeByte('=');
                         } else {
-                            try self.write("var _default = ");
+                            try self.write("var ");
+                            try self.write(def_name);
+                            try self.write(" = ");
                         }
                         try self.emitNode(inner);
                         try self.writeByte(';');
