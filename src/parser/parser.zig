@@ -389,13 +389,7 @@ pub const Parser = struct {
     /// 현재 토큰이 identifier이고 텍스트가 name과 일치하면 소비, 아니면 에러.
     pub fn expectContextual(self: *Parser, name: []const u8) !void {
         if (!try self.eatContextual(name)) {
-            try self.errors.append(self.allocator, .{
-                .span = self.currentSpan(),
-                .message = name,
-                .found = self.current().symbol(),
-                .related_span = null,
-                .related_label = null,
-            });
+            try self.addError(self.currentSpan(), name);
         }
     }
 
