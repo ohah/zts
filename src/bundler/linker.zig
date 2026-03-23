@@ -1893,6 +1893,90 @@ test "linker: export * resolves through re-export all" {
     try std.testing.expectEqual(@as(u32, 2), @intFromEnum(binding.?.canonical.module_index));
 }
 
+test "linker: export * from CJS resolves to CJS module" {
+    // ESM이 export * from CJS를 하고, 소비자가 named import를 할 때
+    // resolveExportChain이 CJS 모듈을 반환하는지 검증.
+    // CJS 모듈은 정적 export가 없으므로, export * 경로에서
+    // wrap_kind == .cjs인 모듈 자체를 반환해야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import { x } from './b';");
+    try writeFile(tmp.dir, "b.ts", "export * from './c';");
+    try writeFile(tmp.dir, "c.js", "module.exports = { x: 42 };");
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "a.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    const a = r.graph.modules.items[0];
+    const binding = r.linker.getResolvedBinding(0, a.import_bindings[0].local_span);
+    try std.testing.expect(binding != null);
+    // c.js는 CJS이므로, resolveExportChain이 c.js(index 2)를 반환
+    try std.testing.expectEqual(@as(u32, 2), @intFromEnum(binding.?.canonical.module_index));
+    try std.testing.expectEqualStrings("x", binding.?.canonical.export_name);
+    // c.js가 실제로 CJS로 감지되었는지 확인
+    try std.testing.expectEqual(types.WrapKind.cjs, r.graph.modules.items[2].wrap_kind);
+}
+
+test "linker: namespace re-export resolves to local binding" {
+    // import * as ns from './c'; export { ns } 패턴에서
+    // resolveExportChain이 현재 모듈(b.ts)의 로컬 바인딩을 반환하는지 검증.
+    // namespace import는 소스 모듈에서 "*"를 named export로 찾을 수 없으므로,
+    // 로컬 바인딩을 그대로 반환해야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import { ns } from './b';");
+    try writeFile(tmp.dir, "b.ts", "import * as ns from './c';\nexport { ns };");
+    try writeFile(tmp.dir, "c.ts", "export const x = 1;");
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "a.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    const a = r.graph.modules.items[0];
+    const binding = r.linker.getResolvedBinding(0, a.import_bindings[0].local_span);
+    try std.testing.expect(binding != null);
+    // namespace re-export는 b.ts(index 1)의 로컬 바인딩을 반환
+    try std.testing.expectEqual(@as(u32, 1), @intFromEnum(binding.?.canonical.module_index));
+    try std.testing.expectEqualStrings("ns", binding.?.canonical.export_name);
+}
+
+test "linker: resolveExportChain on CJS module returns null for named exports" {
+    // CJS 모듈에 직접 resolveExportChain을 호출하면,
+    // 정적 export가 없으므로 null을 반환해야 한다.
+    // (export * from CJS 경로에서는 별도 CJS 폴백이 동작하지만,
+    //  직접 호출 시에는 null)
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import { x } from './b';");
+    try writeFile(tmp.dir, "b.js", "module.exports = { x: 42 };");
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(&.{entry});
+
+    var linker = Linker.init(std.testing.allocator, graph.modules.items);
+    defer linker.deinit();
+    try linker.link();
+
+    // b.js가 CJS로 감지됨
+    try std.testing.expectEqual(types.WrapKind.cjs, graph.modules.items[1].wrap_kind);
+
+    // CJS 모듈(index 1)에 직접 resolveExportChain 호출 → null
+    // CJS는 정적 export가 없으므로 named export를 찾을 수 없다
+    const result = linker.resolveExportChain(@enumFromInt(1), "x", 0);
+    try std.testing.expect(result == null);
+}
+
 test "linker: default import resolves" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
