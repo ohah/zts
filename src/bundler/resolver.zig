@@ -200,11 +200,11 @@ pub const Resolver = struct {
         const pkg = &parsed.pkg;
 
         // 1. exports 필드 (D064)
-        // subpath: "." (루트) 또는 "sub" (상대) → exports 매칭용 "." 또는 "./sub"
+        // subpath: "." 또는 "/sub" → exports 매칭용 "." 또는 "./sub"
         const allocated_subpath: ?[]const u8 = if (std.mem.eql(u8, subpath, "."))
             null
         else
-            std.mem.concat(self.allocator, u8, &.{ "./", subpath }) catch return error.OutOfMemory;
+            std.mem.concat(self.allocator, u8, &.{ ".", subpath }) catch return error.OutOfMemory;
         defer if (allocated_subpath) |buf| self.allocator.free(buf);
         const exports_subpath = allocated_subpath orelse subpath;
 
@@ -226,8 +226,11 @@ pub const Resolver = struct {
         }
 
         // 서브패스가 있으면 패키지 내부 파일 직접 해석
+        // subpath는 "/shams" 형태 (leading /) — resolve()는 절대 경로로 취급하므로
+        // leading /를 제거하여 상대 경로로 만든다.
         if (!std.mem.eql(u8, subpath, ".")) {
-            const sub_file = std.fs.path.resolve(self.allocator, &.{ pkg_dir_path, subpath }) catch
+            const relative_subpath = if (subpath.len > 0 and subpath[0] == '/') subpath[1..] else subpath;
+            const sub_file = std.fs.path.resolve(self.allocator, &.{ pkg_dir_path, relative_subpath }) catch
                 return error.OutOfMemory;
             defer self.allocator.free(sub_file);
 
@@ -314,7 +317,7 @@ pub fn splitBareSpecifier(specifier: []const u8) BareSpecifierSplit {
             if (std.mem.indexOfScalarPos(u8, specifier, first_slash + 1, '/')) |second_slash| {
                 return .{
                     .pkg_name = specifier[0..second_slash],
-                    .subpath = specifier[second_slash + 1 ..],
+                    .subpath = specifier[second_slash..],
                 };
             }
         }
@@ -325,7 +328,7 @@ pub fn splitBareSpecifier(specifier: []const u8) BareSpecifierSplit {
     if (std.mem.indexOfScalar(u8, specifier, '/')) |slash| {
         return .{
             .pkg_name = specifier[0..slash],
-            .subpath = specifier[slash + 1 ..],
+            .subpath = specifier[slash..],
         };
     }
 
@@ -610,7 +613,7 @@ test "splitBareSpecifier" {
 
     const s2 = splitBareSpecifier("react/jsx-runtime");
     try std.testing.expectEqualStrings("react", s2.pkg_name);
-    try std.testing.expectEqualStrings("jsx-runtime", s2.subpath);
+    try std.testing.expectEqualStrings("/jsx-runtime", s2.subpath);
 
     const s3 = splitBareSpecifier("@mui/material");
     try std.testing.expectEqualStrings("@mui/material", s3.pkg_name);
@@ -618,7 +621,7 @@ test "splitBareSpecifier" {
 
     const s4 = splitBareSpecifier("@mui/material/Button");
     try std.testing.expectEqualStrings("@mui/material", s4.pkg_name);
-    try std.testing.expectEqualStrings("Button", s4.subpath);
+    try std.testing.expectEqualStrings("/Button", s4.subpath);
 }
 
 test "resolve: json module type" {
