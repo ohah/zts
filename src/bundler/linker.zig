@@ -748,9 +748,9 @@ pub const Linker = struct {
                     break :blk ib.imported_name;
                 };
 
-                // "default"는 JS 예약어이므로 rename target으로 사용 불가
+                // JS 예약어 (default 등)를 rename target으로 사용 불가
                 if (!std.mem.eql(u8, ib.local_name, target_name) and
-                    !std.mem.eql(u8, target_name, "default"))
+                    !isReservedName(target_name))
                 {
                     if (module_scope.get(ib.local_name)) |sym_idx| {
                         try renames.put(@intCast(sym_idx), target_name);
