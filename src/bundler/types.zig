@@ -214,12 +214,23 @@ test "ModuleType: fromExtension" {
 /// 모듈 경로에서 require_xxx 변수명을 생성한다.
 /// "lib/foo-bar.cjs" → "require_foo_bar"
 pub fn makeRequireVarName(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
-    const basename = std.fs.path.basename(path);
-    const stem = std.fs.path.stem(basename);
+    // node_modules/ 이후의 전체 경로를 사용하여 고유성 보장.
+    // react/index.js → require_react_index, react-dom/index.js → require_react_dom_index
+    const nm = "node_modules" ++ std.fs.path.sep_str;
+    const significant = if (std.mem.lastIndexOf(u8, path, nm)) |pos|
+        path[pos + nm.len ..]
+    else
+        std.fs.path.basename(path);
+
+    // 확장자 제거
+    const without_ext = if (std.mem.lastIndexOf(u8, significant, ".")) |dot|
+        significant[0..dot]
+    else
+        significant;
 
     var name: std.ArrayList(u8) = .empty;
     try name.appendSlice(allocator, "require_");
-    for (stem) |c| {
+    for (without_ext) |c| {
         if (std.ascii.isAlphanumeric(c) or c == '_') {
             try name.append(allocator, c);
         } else {
