@@ -37,6 +37,9 @@ pub const LinkingMetadata = struct {
     symbol_ids: []const ?u32,
     /// CJS 모듈을 import하는 경우: require_xxx() 호출 preamble (e.g. "var lib = require_lib();\n")
     cjs_import_preamble: ?[]const u8 = null,
+    /// export default의 합성 변수명. 이름 충돌 시 "_default$1" 등으로 변경됨.
+    /// codegen이 `export default X` → `var <이름> = X;` 출력할 때 사용.
+    default_export_name: []const u8 = "_default",
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *LinkingMetadata) void {
@@ -82,6 +85,12 @@ pub const Linker = struct {
     const ExportEntry = struct {
         binding: ExportBinding,
         module_index: ModuleIndex,
+    };
+
+    /// namespace 객체 preamble 생성 시 사용하는 export 쌍.
+    const NsExportPair = struct {
+        exported: []const u8,
+        local: []const u8,
     };
 
     const BindingKey = struct {
@@ -155,6 +164,25 @@ pub const Linker = struct {
                 if (sym_idx < sem.symbols.len and sem.symbols[sym_idx].decl_flags.is_import) continue;
 
                 const entry = try name_to_owners.getOrPut(sym_name);
+                if (!entry.found_existing) {
+                    entry.value_ptr.* = .empty;
+                }
+                try entry.value_ptr.append(self.allocator, .{
+                    .module_index = @intCast(i),
+                    .exec_index = m.exec_index,
+                });
+            }
+
+            // export default의 합성 _default 이름도 수집.
+            // codegen에서 `export default X` → `var _default = X;`를 생성하는데,
+            // 이 이름이 semantic scope에 없으므로 별도로 수집한다.
+            for (m.export_bindings) |eb| {
+                if (eb.kind != .local) continue;
+                if (!std.mem.eql(u8, eb.exported_name, "default")) continue;
+                if (std.mem.eql(u8, eb.local_name, "default")) continue;
+                // scope에 이미 있으면 중복 추가 방지
+                if (module_scope.get(eb.local_name) != null) continue;
+                const entry = try name_to_owners.getOrPut(eb.local_name);
                 if (!entry.found_existing) {
                     entry.value_ptr.* = .empty;
                 }
@@ -520,15 +548,54 @@ pub const Linker = struct {
                     continue;
                 }
 
-                // default import 처리: "default" → export의 실제 local_name
-                // (e.g. "export default function greet()" → "greet")
-                var effective_name = ib.imported_name;
-                if (std.mem.eql(u8, ib.imported_name, "default")) {
-                    if (self.getExportLocalName(@intCast(canonical_mod), "default")) |local| {
-                        effective_name = local;
-                    }
+                // namespace import 처리: preamble에서 namespace 객체 생성
+                // (e.g. `import * as utils from './mod'` → `var utils = {add: add, mul: mul};`)
+                if (ib.kind == .namespace) {
+                    try self.buildNamespacePreamble(
+                        &cjs_preamble_buf,
+                        ib.local_name,
+                        @intCast(canonical_mod),
+                    );
+                    // namespace 로컬 이름을 renames에서 제거 방지 (skip)
+                    continue;
                 }
 
+                // re-export 체인을 따라가서 최종 모듈의 canonical 이름 해결
+                // e.g. lodash: `export { default as groupBy } from './groupBy'`
+                //      groupBy.js: `export default groupBy` (local_name = "groupBy")
+                //   → resolveExportChain → (groupBy.js, "default")
+                //   → getExportLocalName(groupBy.js, "default") → "groupBy"
+                const canonical = self.resolveExportChain(
+                    rec.resolved,
+                    ib.imported_name,
+                    0,
+                );
+
+                var effective_name = ib.imported_name;
+                if (canonical) |c| {
+                    const cmod = @intFromEnum(c.module_index);
+                    // canonical 모듈에서 export의 실제 local_name 가져오기
+                    if (self.getExportLocalName(@intCast(cmod), c.export_name)) |local| {
+                        effective_name = local;
+                    } else {
+                        effective_name = c.export_name;
+                    }
+                    // canonical 모듈에서 이름 충돌 리네임 반영
+                    const target_name = if (self.getCanonicalName(@intCast(cmod), effective_name)) |renamed|
+                        renamed
+                    else
+                        effective_name;
+
+
+                    if (!std.mem.eql(u8, ib.local_name, target_name)) {
+                        if (module_scope.get(ib.local_name)) |sym_idx| {
+                            try renames.put(@intCast(sym_idx), target_name);
+                        }
+                    }
+                    continue;
+                }
+
+                // canonical 해결 실패 시 기존 방식 폴백
                 const target_name = if (self.getCanonicalName(@intCast(canonical_mod), effective_name)) |renamed|
                     renamed
                 else
@@ -556,6 +623,17 @@ pub const Linker = struct {
         var cjs_import_preamble: ?[]const u8 = null;
         if (cjs_preamble_buf.items.len > 0) {
             cjs_import_preamble = try self.allocator.dupe(u8, cjs_preamble_buf.items);
+        }
+
+        // export default의 합성 변수명 계산 (이름 충돌 시 _default$1 등)
+        var default_export_name: []const u8 = "_default";
+        for (m.export_bindings) |eb| {
+            if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, "default")) {
+                if (!std.mem.eql(u8, eb.local_name, "default")) {
+                    default_export_name = self.getCanonicalName(module_index, eb.local_name) orelse eb.local_name;
+                }
+                break;
+            }
         }
 
         // 3. 엔트리 포인트 final exports
@@ -590,6 +668,7 @@ pub const Linker = struct {
             .final_exports = final_exports,
             .symbol_ids = sem.symbol_ids,
             .cjs_import_preamble = cjs_import_preamble,
+            .default_export_name = default_export_name,
             .allocator = self.allocator,
         };
     }
@@ -1061,6 +1140,154 @@ pub const Linker = struct {
         }
 
         return null;
+    }
+
+    /// ESM namespace import를 위한 namespace 객체 preamble 생성.
+    /// `import * as X from './mod'` → `var X = {a: a, b: b};`
+    /// 대상 모듈의 모든 export를 수집하여 객체 리터럴로 만든다.
+    fn buildNamespacePreamble(
+        self: *const Linker,
+        buf: *std.ArrayList(u8),
+        local_name: []const u8,
+        target_mod_idx: u32,
+    ) !void {
+        if (target_mod_idx >= self.modules.len) return;
+        const target = self.modules[target_mod_idx];
+
+        // 대상 모듈의 export 목록 수집
+        // export binding에서 local_name → exported_name 매핑
+        var exports: std.ArrayList(NsExportPair) = .empty;
+        defer exports.deinit(self.allocator);
+
+        for (target.export_bindings) |eb| {
+            if (eb.kind == .re_export_all) continue;
+            if (std.mem.eql(u8, eb.exported_name, "*")) continue;
+
+            // re-export 체인을 따라가서 실제 local_name 찾기
+            var actual_local = eb.local_name;
+            if (eb.kind == .re_export) {
+                if (self.resolveExportChain(@enumFromInt(target_mod_idx), eb.exported_name, 0)) |canonical| {
+                    const cmod = @intFromEnum(canonical.module_index);
+                    // canonical 모듈에서 export의 실제 local_name
+                    if (self.getExportLocalName(@intCast(cmod), canonical.export_name)) |local| {
+                        actual_local = local;
+                    } else {
+                        actual_local = canonical.export_name;
+                    }
+                    // canonical 모듈에서 이름 충돌로 리네임된 경우
+                    if (self.getCanonicalName(@intCast(cmod), actual_local)) |renamed| {
+                        actual_local = renamed;
+                    }
+                }
+            } else {
+                // local export: 이름 충돌로 리네임된 경우 반영
+                if (self.getCanonicalName(target_mod_idx, eb.local_name)) |renamed| {
+                    actual_local = renamed;
+                }
+            }
+
+            try exports.append(self.allocator, .{
+                .exported = eb.exported_name,
+                .local = actual_local,
+            });
+        }
+
+        // export * from 처리: 재귀적으로 소스 모듈의 export 수집
+        for (target.export_bindings) |eb| {
+            if (eb.kind != .re_export_all) continue;
+            if (eb.import_record_index) |rec_idx| {
+                if (rec_idx < target.import_records.len) {
+                    const source_mod = target.import_records[rec_idx].resolved;
+                    if (!source_mod.isNone()) {
+                        try self.collectExportsRecursive(&exports, source_mod, 0);
+                    }
+                }
+            }
+        }
+
+        if (exports.items.len == 0) return;
+
+        // var X = {a: a, b: b};
+        try buf.appendSlice(self.allocator, "var ");
+        try buf.appendSlice(self.allocator, local_name);
+        try buf.appendSlice(self.allocator, " = {");
+        for (exports.items, 0..) |exp, idx| {
+            if (idx > 0) try buf.appendSlice(self.allocator, ", ");
+            // default export는 "default" 키 사용 (유효한 프로퍼티명)
+            if (std.mem.eql(u8, exp.exported, "default")) {
+                try buf.appendSlice(self.allocator, "\"default\": ");
+            } else {
+                try buf.appendSlice(self.allocator, exp.exported);
+                try buf.appendSlice(self.allocator, ": ");
+            }
+            try buf.appendSlice(self.allocator, exp.local);
+        }
+        try buf.appendSlice(self.allocator, "};\n");
+    }
+
+    /// export * 체인을 재귀적으로 따라가서 모든 export를 수집.
+    fn collectExportsRecursive(
+        self: *const Linker,
+        exports: *std.ArrayList(NsExportPair),
+        module_idx: ModuleIndex,
+        depth: u32,
+    ) !void {
+        if (depth > 50) return; // 순환 방지
+        const mod_i = @intFromEnum(module_idx);
+        if (mod_i >= self.modules.len) return;
+        const m = self.modules[mod_i];
+
+        for (m.export_bindings) |eb| {
+            if (eb.kind == .re_export_all) continue;
+            if (std.mem.eql(u8, eb.exported_name, "*")) continue;
+
+            // 이미 같은 이름이 있으면 스킵 (앞선 export가 우선)
+            var dup = false;
+            for (exports.items) |existing| {
+                if (std.mem.eql(u8, existing.exported, eb.exported_name)) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (dup) continue;
+
+            var actual_local = eb.local_name;
+            if (eb.kind == .re_export) {
+                if (self.resolveExportChain(module_idx, eb.exported_name, 0)) |canonical| {
+                    const cmod = @intFromEnum(canonical.module_index);
+                    if (self.getExportLocalName(@intCast(cmod), canonical.export_name)) |local| {
+                        actual_local = local;
+                    } else {
+                        actual_local = canonical.export_name;
+                    }
+                    if (self.getCanonicalName(@intCast(cmod), actual_local)) |renamed| {
+                        actual_local = renamed;
+                    }
+                }
+            } else {
+                if (self.getCanonicalName(@intCast(mod_i), eb.local_name)) |renamed| {
+                    actual_local = renamed;
+                }
+            }
+
+            try exports.append(self.allocator, .{
+                .exported = eb.exported_name,
+                .local = actual_local,
+            });
+        }
+
+        // export * 재귀
+        for (m.export_bindings) |eb| {
+            if (eb.kind != .re_export_all) continue;
+            if (eb.import_record_index) |rec_idx| {
+                if (rec_idx < m.import_records.len) {
+                    const source_mod = m.import_records[rec_idx].resolved;
+                    if (!source_mod.isNone()) {
+                        try self.collectExportsRecursive(exports, source_mod, depth + 1);
+                    }
+                }
+            }
+        }
     }
 
     /// 특정 모듈+import에 대한 resolved binding 조회.
