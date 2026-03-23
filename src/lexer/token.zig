@@ -76,10 +76,9 @@ pub const Token = struct {
 /// u8로 표현 가능 (256 이내).
 ///
 /// 키워드는 연속 배치하여 range check 최적화:
-///   isKeyword()          → kw_await..kw_override
+///   isKeyword()          → kw_await..kw_null
 ///   isReservedKeyword()  → kw_await..kw_with
 ///   isStrictModeReserved() → kw_implements..kw_yield
-///   isTypeScriptKeyword() → kw_abstract..kw_override
 pub const Kind = enum(u8) {
     // ========================================================================
     // Special
@@ -178,40 +177,6 @@ pub const Kind = enum(u8) {
     kw_true,
     kw_false,
     kw_null,
-
-    // ========================================================================
-    // TypeScript Contextual Keywords
-    // ========================================================================
-    kw_abstract,
-    kw_any,
-    kw_as,
-    kw_asserts,
-    kw_assert,
-    kw_bigint,
-    kw_boolean,
-    kw_constructor,
-    kw_declare,
-    kw_global,
-    kw_infer,
-    kw_intrinsic,
-    kw_is,
-    kw_keyof,
-    kw_module,
-    kw_namespace,
-    kw_never,
-    kw_number,
-    kw_object,
-    kw_out,
-    kw_readonly,
-    kw_require,
-    kw_satisfies,
-    kw_string,
-    kw_symbol,
-    kw_type,
-    kw_undefined,
-    kw_unique,
-    kw_unknown,
-    kw_override,
 
     // ========================================================================
     // Punctuators / Operators
@@ -354,15 +319,11 @@ pub const Kind = enum(u8) {
         std.debug.assert(@intFromEnum(Kind.kw_implements) < @intFromEnum(Kind.kw_yield));
         std.debug.assert(@intFromEnum(Kind.kw_yield) + 1 == @intFromEnum(Kind.kw_true));
 
-        // Literal keywords: kw_true..kw_null 연속
-        std.debug.assert(@intFromEnum(Kind.kw_null) + 1 == @intFromEnum(Kind.kw_abstract));
+        // Literal keywords: kw_true..kw_null 연속, 그 다음이 l_paren
+        std.debug.assert(@intFromEnum(Kind.kw_null) + 1 == @intFromEnum(Kind.l_paren));
 
-        // TS keywords: kw_abstract..kw_override 연속
-        std.debug.assert(@intFromEnum(Kind.kw_abstract) < @intFromEnum(Kind.kw_override));
-
-        // Full keyword range: kw_await..kw_override
-        std.debug.assert(@intFromEnum(Kind.kw_await) < @intFromEnum(Kind.kw_override));
-        std.debug.assert(@intFromEnum(Kind.kw_override) + 1 == @intFromEnum(Kind.l_paren));
+        // Full keyword range: kw_await..kw_null
+        std.debug.assert(@intFromEnum(Kind.kw_await) < @intFromEnum(Kind.kw_null));
 
         // Assignment operators: eq..question2_eq 연속
         std.debug.assert(@intFromEnum(Kind.eq) < @intFromEnum(Kind.question2_eq));
@@ -396,14 +357,9 @@ pub const Kind = enum(u8) {
         return self.inRange(.kw_implements, .kw_yield) or self == .kw_let or self == .kw_static;
     }
 
-    /// TypeScript contextual keyword인지 (abstract..override)
-    pub fn isTypeScriptKeyword(self: Kind) bool {
-        return self.inRange(.kw_abstract, .kw_override);
-    }
-
-    /// 키워드인지 (reserved + contextual + strict + TS + literals)
+    /// 키워드인지 (reserved + contextual + strict + literals)
     pub fn isKeyword(self: Kind) bool {
-        return self.inRange(.kw_await, .kw_override);
+        return self.inRange(.kw_await, .kw_null);
     }
 
     /// Literal keyword인지 (true, false, null)
@@ -484,37 +440,6 @@ pub const Kind = enum(u8) {
             .kw_public,
             .kw_static,
             .kw_yield,
-            // TS contextual keyword도 식별자로 사용 가능 → division
-            .kw_abstract,
-            .kw_any,
-            .kw_as,
-            .kw_asserts,
-            .kw_assert,
-            .kw_bigint,
-            .kw_boolean,
-            .kw_constructor,
-            .kw_declare,
-            .kw_global,
-            .kw_infer,
-            .kw_intrinsic,
-            .kw_is,
-            .kw_keyof,
-            .kw_module,
-            .kw_namespace,
-            .kw_never,
-            .kw_number,
-            .kw_object,
-            .kw_out,
-            .kw_readonly,
-            .kw_require,
-            .kw_satisfies,
-            .kw_string,
-            .kw_symbol,
-            .kw_type,
-            .kw_undefined,
-            .kw_unique,
-            .kw_unknown,
-            .kw_override,
             => false,
 
             // 그 외 → regex
@@ -598,38 +523,6 @@ pub const keywords = std.StaticStringMap(Kind).initComptime(.{
     .{ "true", .kw_true },
     .{ "false", .kw_false },
     .{ "null", .kw_null },
-
-    // TypeScript Contextual Keywords
-    .{ "abstract", .kw_abstract },
-    .{ "any", .kw_any },
-    .{ "as", .kw_as },
-    .{ "asserts", .kw_asserts },
-    .{ "assert", .kw_assert },
-    .{ "bigint", .kw_bigint },
-    .{ "boolean", .kw_boolean },
-    .{ "constructor", .kw_constructor },
-    .{ "declare", .kw_declare },
-    .{ "global", .kw_global },
-    .{ "infer", .kw_infer },
-    .{ "intrinsic", .kw_intrinsic },
-    .{ "is", .kw_is },
-    .{ "keyof", .kw_keyof },
-    .{ "module", .kw_module },
-    .{ "namespace", .kw_namespace },
-    .{ "never", .kw_never },
-    .{ "number", .kw_number },
-    .{ "object", .kw_object },
-    .{ "out", .kw_out },
-    .{ "readonly", .kw_readonly },
-    .{ "require", .kw_require },
-    .{ "satisfies", .kw_satisfies },
-    .{ "string", .kw_string },
-    .{ "symbol", .kw_symbol },
-    .{ "type", .kw_type },
-    .{ "undefined", .kw_undefined },
-    .{ "unique", .kw_unique },
-    .{ "unknown", .kw_unknown },
-    .{ "override", .kw_override },
 });
 
 /// 각 토큰 종류의 표시 이름 (에러 메시지, 디버깅용).
@@ -759,7 +652,7 @@ test "Kind.isReservedKeyword" {
     try std.testing.expect(!Kind.escaped_keyword.isReservedKeyword()); // kw_await 직전
     try std.testing.expect(!Kind.kw_async.isReservedKeyword()); // kw_with 직후
     try std.testing.expect(!Kind.identifier.isReservedKeyword());
-    try std.testing.expect(!Kind.kw_abstract.isReservedKeyword());
+    try std.testing.expect(!Kind.l_paren.isReservedKeyword());
 }
 
 test "Kind.isStrictModeReserved" {
@@ -772,15 +665,6 @@ test "Kind.isStrictModeReserved" {
     try std.testing.expect(!Kind.kw_true.isStrictModeReserved()); // kw_yield 직후
 }
 
-test "Kind.isTypeScriptKeyword" {
-    try std.testing.expect(Kind.kw_abstract.isTypeScriptKeyword());
-    try std.testing.expect(Kind.kw_override.isTypeScriptKeyword());
-    try std.testing.expect(Kind.kw_readonly.isTypeScriptKeyword());
-    // 경계값
-    try std.testing.expect(!Kind.kw_null.isTypeScriptKeyword()); // kw_abstract 직전
-    try std.testing.expect(!Kind.l_paren.isTypeScriptKeyword()); // kw_override 직후
-}
-
 test "Kind.isKeyword covers all keyword ranges" {
     try std.testing.expect(Kind.kw_await.isKeyword());
     try std.testing.expect(Kind.kw_with.isKeyword());
@@ -788,11 +672,9 @@ test "Kind.isKeyword covers all keyword ranges" {
     try std.testing.expect(Kind.kw_yield.isKeyword());
     try std.testing.expect(Kind.kw_true.isKeyword());
     try std.testing.expect(Kind.kw_null.isKeyword());
-    try std.testing.expect(Kind.kw_abstract.isKeyword());
-    try std.testing.expect(Kind.kw_override.isKeyword());
     // 경계값
     try std.testing.expect(!Kind.escaped_keyword.isKeyword()); // kw_await 직전
-    try std.testing.expect(!Kind.l_paren.isKeyword()); // kw_override 직후
+    try std.testing.expect(!Kind.l_paren.isKeyword()); // kw_null 직후
     try std.testing.expect(!Kind.identifier.isKeyword());
     try std.testing.expect(!Kind.plus.isKeyword());
 }
@@ -802,7 +684,7 @@ test "Kind.isLiteralKeyword" {
     try std.testing.expect(Kind.kw_false.isLiteralKeyword());
     try std.testing.expect(Kind.kw_null.isLiteralKeyword());
     try std.testing.expect(!Kind.kw_yield.isLiteralKeyword()); // 직전
-    try std.testing.expect(!Kind.kw_abstract.isLiteralKeyword()); // 직후
+    try std.testing.expect(!Kind.l_paren.isLiteralKeyword()); // 직후
 }
 
 test "Kind.isNumericLiteral" {
@@ -882,8 +764,6 @@ test "Kind.symbol returns readable name for punctuators" {
 test "Kind.symbol strips kw_ prefix for keywords" {
     try std.testing.expectEqualStrings("break", Kind.kw_break.symbol());
     try std.testing.expectEqualStrings("const", Kind.kw_const.symbol());
-    try std.testing.expectEqualStrings("abstract", Kind.kw_abstract.symbol());
-    try std.testing.expectEqualStrings("readonly", Kind.kw_readonly.symbol());
     try std.testing.expectEqualStrings("true", Kind.kw_true.symbol());
     try std.testing.expectEqualStrings("null", Kind.kw_null.symbol());
 }
@@ -891,8 +771,8 @@ test "Kind.symbol strips kw_ prefix for keywords" {
 test "keywords map lookup" {
     try std.testing.expectEqual(Kind.kw_break, keywords.get("break").?);
     try std.testing.expectEqual(Kind.kw_const, keywords.get("const").?);
-    try std.testing.expectEqual(Kind.kw_abstract, keywords.get("abstract").?);
-    try std.testing.expectEqual(Kind.kw_readonly, keywords.get("readonly").?);
+    try std.testing.expect(keywords.get("abstract") == null); // TS contextual은 더이상 keyword 아님
+    try std.testing.expect(keywords.get("readonly") == null);
     try std.testing.expect(keywords.get("notakeyword") == null);
     try std.testing.expect(keywords.get("foo") == null);
 }

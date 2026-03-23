@@ -235,15 +235,16 @@ pub fn parseDecoratedStatement(self: *Parser) ParseError2!NodeIndex {
     const decorators = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
     // 데코레이터 뒤에 올 수 있는 것: class, export, abstract
-    return switch (self.current()) {
-        .kw_class => self.parseClassWithDecorators(.class_declaration, decorators),
-        .kw_export => self.parseExportDeclaration(),
-        .kw_abstract => parseTsAbstractClass(self),
-        else => {
-            try self.addError(self.currentSpan(), "Class or export expected after decorator");
-            return self.parseExpressionStatement();
-        },
-    };
+    if (self.current() == .kw_class) {
+        return self.parseClassWithDecorators(.class_declaration, decorators);
+    } else if (self.current() == .kw_export) {
+        return self.parseExportDeclaration();
+    } else if (self.isContextual("abstract")) {
+        return parseTsAbstractClass(self);
+    } else {
+        try self.addError(self.currentSpan(), "Class or export expected after decorator");
+        return self.parseExpressionStatement();
+    }
 }
 
 /// @expr — 단일 데코레이터 파싱
@@ -407,22 +408,23 @@ fn parsePostfixType(self: *Parser) ParseError2!NodeIndex {
 fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
     const span = self.currentSpan();
 
-    // TS 키워드 타입
-    if (self.current().isTypeScriptKeyword()) {
-        const tag: Tag = switch (self.current()) {
-            .kw_any => .ts_any_keyword,
-            .kw_string => .ts_string_keyword,
-            .kw_number => .ts_number_keyword,
-            .kw_boolean => .ts_boolean_keyword,
-            .kw_bigint => .ts_bigint_keyword,
-            .kw_symbol => .ts_symbol_keyword,
-            .kw_object => .ts_object_keyword,
-            .kw_never => .ts_never_keyword,
-            .kw_unknown => .ts_unknown_keyword,
-            .kw_undefined => .ts_undefined_keyword,
-            else => .ts_type_reference, // 다른 TS 키워드는 타입 참조로
+    // TS 키워드 타입 (contextual keywords — 렉서에서 .identifier로 토큰화됨)
+    if (self.current() == .identifier) {
+        const ts_keyword_tag: ?Tag = blk: {
+            const text = self.tokenText();
+            if (std.mem.eql(u8, text, "any")) break :blk .ts_any_keyword;
+            if (std.mem.eql(u8, text, "string")) break :blk .ts_string_keyword;
+            if (std.mem.eql(u8, text, "number")) break :blk .ts_number_keyword;
+            if (std.mem.eql(u8, text, "boolean")) break :blk .ts_boolean_keyword;
+            if (std.mem.eql(u8, text, "bigint")) break :blk .ts_bigint_keyword;
+            if (std.mem.eql(u8, text, "symbol")) break :blk .ts_symbol_keyword;
+            if (std.mem.eql(u8, text, "object")) break :blk .ts_object_keyword;
+            if (std.mem.eql(u8, text, "never")) break :blk .ts_never_keyword;
+            if (std.mem.eql(u8, text, "unknown")) break :blk .ts_unknown_keyword;
+            if (std.mem.eql(u8, text, "undefined")) break :blk .ts_undefined_keyword;
+            break :blk null;
         };
-        if (tag != .ts_type_reference) {
+        if (ts_keyword_tag) |tag| {
             try self.advance();
             return try self.ast.addNode(.{
                 .tag = tag,
@@ -477,8 +479,20 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
                 .data = .{ .string_ref = span },
             });
         },
-        // 타입 참조: Foo, Foo.Bar, Foo<T>
-        .identifier => return parseTypeReference(self),
+        // 타입 참조: Foo, Foo.Bar, Foo<T> 또는 contextual keyword (keyof)
+        .identifier => {
+            // keyof T — contextual keyword
+            if (self.isContextual("keyof")) {
+                try self.advance();
+                const operand = try parseType(self);
+                return try self.ast.addNode(.{
+                    .tag = .ts_type_operator,
+                    .span = .{ .start = span.start, .end = self.currentSpan().start },
+                    .data = .{ .unary = .{ .operand = operand, .flags = 0 } },
+                });
+            }
+            return parseTypeReference(self);
+        },
         // 괄호 타입: (Type) 또는 함수 타입: (a: T) => R
         .l_paren => return parseParenOrFunctionType(self),
         // 객체 타입 리터럴: { x: number, y: string }
@@ -491,16 +505,6 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
             const operand = try parseType(self);
             return try self.ast.addNode(.{
                 .tag = .ts_type_query,
-                .span = .{ .start = span.start, .end = self.currentSpan().start },
-                .data = .{ .unary = .{ .operand = operand, .flags = 0 } },
-            });
-        },
-        // keyof T
-        .kw_keyof => {
-            try self.advance();
-            const operand = try parseType(self);
-            return try self.ast.addNode(.{
-                .tag = .ts_type_operator,
                 .span = .{ .start = span.start, .end = self.currentSpan().start },
                 .data = .{ .unary = .{ .operand = operand, .flags = 0 } },
             });

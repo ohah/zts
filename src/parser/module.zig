@@ -153,7 +153,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     // namespace import: import * as ns from "module"
     if (self.current() == .star) {
         try self.advance(); // skip *
-        try self.expect(.kw_as);
+        try self.expectContextual("as");
         const local_span = self.currentSpan();
         // TS contextual keywords (number, string, object 등)도 유효한 바인딩 이름이므로
         // expect(.identifier) 대신 parseSimpleIdentifier를 사용한다.
@@ -206,16 +206,24 @@ fn parseImportSpecifier(self: *Parser) ParseError2!NodeIndex {
     // 주의: import { type } from ... → 'type'이라는 값을 import (modifier 아님)
     // 주의: import { type as alias } from ... → 'type'을 alias로 import (modifier 아님)
     var is_type_only: u16 = 0;
-    if (self.current() == .kw_type) {
+    if (self.isContextual("type")) {
         const next = try self.peekNextKind();
         // 다음이 바인딩 이름으로 사용 가능한 토큰이면 type modifier
         // (identifier 또는 keyword — TS도 모든 keyword 뒤에서 type modifier로 판단)
         // 단, '}', ',', 'as'는 제외: import { type }, import { type, x }, import { type as y }
-        if (next != .r_curly and next != .comma and next != .kw_as and
+        // 'as'는 contextual keyword이므로 identifier로 토큰화됨 — save/restore로 텍스트 확인
+        if (next != .r_curly and next != .comma and
             (next == .identifier or next.isKeyword()))
         {
-            is_type_only = 1;
-            try self.advance(); // skip 'type' modifier
+            const saved = self.saveState();
+            try self.advance(); // tentatively skip 'type'
+            if (self.isContextual("as")) {
+                // "import { type as alias }" — 'type'은 값 이름, modifier 아님
+                self.restoreState(saved);
+            } else {
+                is_type_only = 1;
+                // 'type' modifier 확정 — 이미 advance됨
+            }
         }
     }
 
@@ -226,7 +234,7 @@ fn parseImportSpecifier(self: *Parser) ParseError2!NodeIndex {
     // import { "☿" as Ami } from ... (OK)
     // import { "☿" } from ... (Error — string cannot be used as binding)
     var local = imported;
-    if (try self.eat(.kw_as)) {
+    if (try self.eatContextual("as")) {
         // `as` 뒤는 반드시 BindingIdentifier (string literal 불가)
         local = try self.parseIdentifierName();
     } else if (!imported.isNone() and @intFromEnum(imported) < self.ast.nodes.items.len and
@@ -307,7 +315,7 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
     if (self.current() == .star) {
         try self.advance(); // skip *
         var exported_name = NodeIndex.none;
-        if (try self.eat(.kw_as)) {
+        if (try self.eatContextual("as")) {
             exported_name = try self.parseModuleExportName();
         }
         try self.expect(.kw_from);
@@ -403,7 +411,7 @@ fn parseExportSpecifier(self: *Parser) ParseError2!NodeIndex {
     const local = try self.parseModuleExportName();
 
     var exported = local;
-    if (try self.eat(.kw_as)) {
+    if (try self.eatContextual("as")) {
         exported = try self.parseModuleExportName();
     }
 
@@ -437,7 +445,7 @@ fn skipImportAttributes(self: *Parser) !void {
     // with { ... }: 줄바꿈 허용 (ECMAScript: AttributesKeyword = with)
     // assert { ... }: 줄바꿈 불허 (ECMAScript: [no LineTerminator here] assert)
     const is_with = self.current() == .kw_with;
-    const is_assert = self.current() == .kw_assert and !self.scanner.token.has_newline_before;
+    const is_assert = self.isContextual("assert") and !self.scanner.token.has_newline_before;
     if (!is_with and !is_assert) return;
 
     try self.advance(); // skip with/assert

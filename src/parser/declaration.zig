@@ -421,11 +421,10 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
     const decorators = try self.ast.addNodeList(self.scratch.items[deco_scratch_top..]);
     self.restoreScratch(deco_scratch_top);
 
-    // TS 접근 제어자 (public/private/protected) + readonly + abstract + override
+    // TS 접근 제어자 (public/private/protected) + readonly + abstract + override + declare
     while (self.current() == .kw_public or self.current() == .kw_private or
-        self.current() == .kw_protected or self.current() == .kw_readonly or
-        self.current() == .kw_abstract or self.current() == .kw_override or
-        self.current() == .kw_declare)
+        self.current() == .kw_protected or
+        self.isContextualAny(&.{ "readonly", "abstract", "override", "declare" }))
     {
         try self.advance(); // skip modifier (스트리핑 대상이므로 AST에 저장 불필요)
     }
@@ -482,10 +481,9 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
     }
 
     // static 뒤의 TS modifier도 소비 (static readonly x 등)
-    while (self.current() == .kw_readonly or self.current() == .kw_abstract or
-        self.current() == .kw_override or self.current() == .kw_declare or
-        self.current() == .kw_public or self.current() == .kw_private or
-        self.current() == .kw_protected)
+    while (self.current() == .kw_public or self.current() == .kw_private or
+        self.current() == .kw_protected or
+        self.isContextualAny(&.{ "readonly", "abstract", "override", "declare" }))
     {
         try self.advance();
     }

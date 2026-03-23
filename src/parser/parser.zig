@@ -360,6 +360,45 @@ pub const Parser = struct {
         return self.scanner.tokenText();
     }
 
+    /// 현재 토큰이 identifier이고 텍스트가 name과 일치하면 true.
+    /// TS contextual keyword 판별에 사용 (kw_number 등이 identifier로 토큰화된 후).
+    pub fn isContextual(self: *const Parser, name: []const u8) bool {
+        return self.current() == .identifier and
+            std.mem.eql(u8, self.tokenText(), name);
+    }
+
+    /// 현재 토큰이 identifier이고 텍스트가 name과 일치하면 소비하고 true.
+    pub fn eatContextual(self: *Parser, name: []const u8) !bool {
+        if (self.isContextual(name)) {
+            try self.advance();
+            return true;
+        }
+        return false;
+    }
+
+    /// isContextual과 동일하지만 여러 이름을 한번에 체크.
+    pub fn isContextualAny(self: *const Parser, names: []const []const u8) bool {
+        if (self.current() != .identifier) return false;
+        const text = self.tokenText();
+        for (names) |name| {
+            if (std.mem.eql(u8, text, name)) return true;
+        }
+        return false;
+    }
+
+    /// 현재 토큰이 identifier이고 텍스트가 name과 일치하면 소비, 아니면 에러.
+    pub fn expectContextual(self: *Parser, name: []const u8) !void {
+        if (!try self.eatContextual(name)) {
+            try self.errors.append(self.allocator, .{
+                .span = self.currentSpan(),
+                .message = name,
+                .found = self.current().symbol(),
+                .related_span = null,
+                .related_label = null,
+            });
+        }
+    }
+
     /// strict mode에서 eval/arguments를 바인딩 이름으로 사용하면 에러.
     /// escaped 형태 (\u0065val → "eval")도 검증한다.
     pub fn checkStrictBinding(self: *Parser, span: Span) ParseError2!void {
