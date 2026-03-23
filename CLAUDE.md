@@ -269,7 +269,7 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
          - C안(API 스텁 + full-reload) 배제: 실질적 가치 없음
 5. **.d.ts 생성** (isolatedDeclarations) — 후순위. 당분간 tsc에 위임 (esbuild/SWC와 동일). 자체 구현 시 AST 순회로 export 타입 추출 (~500줄), 파일별 독립이라 번들러 불필요
 6. **프로파일링 → SIMD → 미니파이어** — 번들러 B2 완료 후 현실적 벤치마크 가능
-   - 미니파이어 3단계: 1) whitespace (✅ 이미 있음, codegen minify) → 2) identifier mangling (번들 크기 70%, 스코프 분석 필수) → 3) syntax 최적화 (if→ternary, dead code 등)
+   - 미니파이어 3단계: 1) whitespace (✅ 이미 있음, codegen minify) → 2) identifier mangling (✅ mangler.zig, computeMangling) → 3) syntax 최적화 (if→ternary, dead code 등)
    - mangling은 번들러의 스코프/심볼 데이터를 공유하므로 번들러 후가 효율적
    - SIMD는 렉서 함수 3개 교체, 인터페이스 불변이라 언제 넣어도 비용 동일
 7. **ES 다운레벨링** (ES2024→ES2016 점진적, ES2015 이후, ES5) — 번들러 완성 후 진행
@@ -431,14 +431,14 @@ src/bundler/
 - **픽스처 테스트**: `tests/bundler/fixtures/` — 입력 파일 → 기대 출력 비교
 - **실행 비교 테스트 (핵심)**: 번들 결과를 실행해서 동작 확인 (출력 형태보다 실행 결과가 중요)
 - **호환 테스트**: 같은 입력으로 Rollup과 실행 결과 비교 (Rolldown 방식)
-- **스모크 테스트**: three.js, react, lodash 등 실제 프로젝트 빌드 (프로덕션 전)
-- **도입 순서**: B1에서 유닛+픽스처 → B2에서 실행 비교+호환 → 프로덕션 전 스모크
+- ✅ **스모크 테스트**: lodash-es, preact, date-fns, uuid, zod 빌드+실행 검증 (CI 통합, packages/benchmark/smoke.ts)
+- **도입 순서**: B1에서 유닛+픽스처 → B2에서 실행 비교+호환 → ✅ 프로덕션 전 스모크
 
 ##### 실전 검증 로드맵
 - **1단계 (지금 가능)**: 실제 .ts/.tsx 파일을 ZTS로 변환, esbuild/SWC 출력과 비교
 - **2단계 (Arena 후)**: `hyperfine`으로 대형 파일 벤치마크 (ZTS vs esbuild vs SWC). Arena 없이 벤치마크는 의미 없음
 - **3단계 (N-API 후)**: `vite-plugin-zts`로 실제 React/Vue 프로젝트 개발 서버. 첫 실전 사용자 검증
-- **4단계 (번들러 MVP)**: three.js, lodash-es, react-todomvc 등 실제 프로젝트 빌드 스모크 테스트
+- ✅ **4단계 (번들러 MVP)**: 실제 프로젝트 빌드 스모크 테스트 — 5/5 통과 (lodash-es, preact, date-fns, uuid, zod), CI 통합 완료
 
 **Module에 필요한 정보 (Rollup 분석 결과):**
 ```zig
