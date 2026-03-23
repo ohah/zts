@@ -245,27 +245,26 @@ pub const ModuleGraph = struct {
         module.state = .ready;
     }
 
-    /// node_modules 패키지의 package.json sideEffects 필드를 module.side_effects에 반영.
-    /// 모듈 경로에서 가장 가까운 node_modules/패키지/package.json을 찾아서 읽음.
-    fn applySideEffectsFromPackageJson(self: *ModuleGraph, module: *Module) void {
-        // node_modules 안의 모듈만 대상
+    /// 모듈 경로에서 node_modules/패키지/ 디렉토리 경로를 추출.
+    /// 스코프 패키지 (@scope/name) 지원.
+    fn findPackageDirPath(module_path: []const u8) ?[]const u8 {
         const nm = "node_modules" ++ std.fs.path.sep_str;
-        const nm_pos = std.mem.lastIndexOf(u8, module.path, nm) orelse return;
+        const nm_pos = std.mem.lastIndexOf(u8, module_path, nm) orelse return null;
         const pkg_start = nm_pos + nm.len;
-
-        // 패키지 디렉토리 경로: node_modules/패키지명/ (스코프 패키지 @scope/name 지원)
         var pkg_end = pkg_start;
-        if (pkg_end < module.path.len and module.path[pkg_end] == '@') {
-            // @scope/name — 첫 번째 / 후 두 번째 / 까지
-            if (std.mem.indexOfPos(u8, module.path, pkg_end, std.fs.path.sep_str)) |sep1| {
-                pkg_end = if (std.mem.indexOfPos(u8, module.path, sep1 + 1, std.fs.path.sep_str)) |sep2| sep2 else module.path.len;
-            } else pkg_end = module.path.len;
+        if (pkg_end < module_path.len and module_path[pkg_end] == '@') {
+            if (std.mem.indexOfPos(u8, module_path, pkg_end, std.fs.path.sep_str)) |sep1| {
+                pkg_end = std.mem.indexOfPos(u8, module_path, sep1 + 1, std.fs.path.sep_str) orelse module_path.len;
+            } else pkg_end = module_path.len;
         } else {
-            // 일반 패키지 — 첫 번째 / 까지
-            pkg_end = std.mem.indexOfPos(u8, module.path, pkg_start, std.fs.path.sep_str) orelse module.path.len;
+            pkg_end = std.mem.indexOfPos(u8, module_path, pkg_start, std.fs.path.sep_str) orelse module_path.len;
         }
+        return module_path[0..pkg_end];
+    }
 
-        const pkg_dir_path = module.path[0..pkg_end];
+    /// node_modules 패키지의 package.json sideEffects 필드를 module.side_effects에 반영.
+    fn applySideEffectsFromPackageJson(self: *ModuleGraph, module: *Module) void {
+        const pkg_dir_path = findPackageDirPath(module.path) orelse return;
 
         // 캐시 확인 — 같은 패키지의 package.json을 반복 읽지 않음
         if (self.side_effects_cache.get(pkg_dir_path)) |cached| {
@@ -493,8 +492,10 @@ pub const ModuleGraph = struct {
         // node_modules 밖이면 ESM으로 간주 (사용자 코드)
         const nm = "node_modules" ++ std.fs.path.sep_str;
         if (std.mem.indexOf(u8, module.path, nm) == null) return false;
-        // .mjs/.mts는 항상 ESM
         const ext = std.fs.path.extension(module.path);
+        // .cjs/.cts는 항상 CJS (type 필드 무관)
+        if (std.mem.eql(u8, ext, ".cjs") or std.mem.eql(u8, ext, ".cts")) return true;
+        // .mjs/.mts는 항상 ESM
         if (std.mem.eql(u8, ext, ".mjs") or std.mem.eql(u8, ext, ".mts")) return false;
         // package.json "type": "module"이면 ESM
         if (self.isPackageTypeModule(module.path)) return false;
@@ -503,18 +504,7 @@ pub const ModuleGraph = struct {
 
     /// 모듈 경로에서 가장 가까운 package.json의 "type" 필드가 "module"인지 확인.
     fn isPackageTypeModule(self: *ModuleGraph, module_path: []const u8) bool {
-        const nm = "node_modules" ++ std.fs.path.sep_str;
-        const nm_pos = std.mem.lastIndexOf(u8, module_path, nm) orelse return false;
-        const pkg_start = nm_pos + nm.len;
-        var pkg_end = pkg_start;
-        if (pkg_end < module_path.len and module_path[pkg_end] == '@') {
-            if (std.mem.indexOfPos(u8, module_path, pkg_end, std.fs.path.sep_str)) |sep1| {
-                pkg_end = std.mem.indexOfPos(u8, module_path, sep1 + 1, std.fs.path.sep_str) orelse module_path.len;
-            } else pkg_end = module_path.len;
-        } else {
-            pkg_end = std.mem.indexOfPos(u8, module_path, pkg_start, std.fs.path.sep_str) orelse module_path.len;
-        }
-        const pkg_dir_path = module_path[0..pkg_end];
+        const pkg_dir_path = findPackageDirPath(module_path) orelse return false;
         var pkg_dir = std.fs.cwd().openDir(pkg_dir_path, .{}) catch return false;
         defer pkg_dir.close();
         var parsed = pkg_json.parsePackageJson(self.allocator, pkg_dir) catch return false;
