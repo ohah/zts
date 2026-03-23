@@ -161,12 +161,14 @@ pub fn emitWithTreeShaking(
     linker: ?*const Linker,
     shaker: ?*const TreeShaker,
 ) ![]const u8 {
-    // 1. JS 모듈만 필터 + exec_index 순으로 정렬
+    // 1. JS/JSON 모듈 필터 + exec_index 순으로 정렬
     var sorted: std.ArrayList(*const Module) = .empty;
     defer sorted.deinit(allocator);
 
     for (graph.modules.items, 0..) |*m, i| {
-        if (m.module_type == .javascript and m.ast != null) {
+        const is_js = m.module_type == .javascript and m.ast != null;
+        const is_json = m.module_type == .json;
+        if (is_js or is_json) {
             // tree-shaking: 미포함 모듈 스킵
             if (shaker) |s| {
                 if (!s.isIncluded(@intCast(i))) continue;
@@ -303,12 +305,12 @@ pub fn emitDevBundle(
     options: EmitOptions,
     linker: ?*const Linker,
 ) !DevBundleResult {
-    // 1. JS 모듈만 필터 + exec_index 순 정렬
+    // 1. JS/JSON 모듈 필터 + exec_index 순 정렬
     var sorted: std.ArrayList(*const Module) = .empty;
     defer sorted.deinit(allocator);
 
     for (graph.modules.items) |*m| {
-        if (m.module_type == .javascript and m.ast != null) {
+        if ((m.module_type == .javascript and m.ast != null) or m.module_type == .json) {
             try sorted.append(allocator, m);
         }
     }
@@ -1005,6 +1007,11 @@ pub fn emitModule(
     linker: ?*const Linker,
     is_entry: bool,
 ) !?[]const u8 {
+    // JSON 모듈: 내용을 module.exports = <JSON>으로 래핑
+    if (module.module_type == .json) {
+        return emitJsonModule(allocator, module);
+    }
+
     const ast = &(module.ast orelse return null);
 
     // 변환용 arena (Transformer/Codegen 내부 메모리)
@@ -1117,6 +1124,33 @@ pub fn emitModule(
 
     // arena 해제 전에 복사 (caller 소유)
     return try allocator.dupe(u8, code);
+}
+
+/// JSON 모듈을 CJS 형태로 출력: __commonJS 래핑 + module.exports = <JSON content>
+fn emitJsonModule(allocator: std.mem.Allocator, module: *const Module) !?[]const u8 {
+    // JSON 파일의 소스를 직접 읽음
+    const source = if (module.source.len > 0)
+        module.source
+    else blk: {
+        break :blk std.fs.cwd().readFileAlloc(allocator, module.path, 10 * 1024 * 1024) catch return null;
+    };
+    defer if (module.source.len == 0) allocator.free(source);
+
+    const var_name = try types.makeRequireVarName(allocator, module.path);
+    defer allocator.free(var_name);
+    const basename = std.fs.path.basename(module.path);
+
+    // __commonJS 래핑
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+    try buf.appendSlice(allocator, "var ");
+    try buf.appendSlice(allocator, var_name);
+    try buf.appendSlice(allocator, " = __commonJS({\n\t\"");
+    try buf.appendSlice(allocator, basename);
+    try buf.appendSlice(allocator, "\"(exports, module) {\nmodule.exports=");
+    try buf.appendSlice(allocator, source);
+    try buf.appendSlice(allocator, ";\n\t}\n});\n");
+    return try allocator.dupe(u8, buf.items);
 }
 
 /// Cross-module @__NO_SIDE_EFFECTS__ 전파.
