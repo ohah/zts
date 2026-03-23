@@ -778,6 +778,44 @@ pub const Linker = struct {
 
                 // resolveImports()에서 이미 해결한 바인딩을 조회하거나, 직접 해결
                 const resolved = self.getResolvedBinding(module_index, ib.local_span);
+
+                // export * from CJS 패턴: canonical이 CJS 모듈을 가리키면
+                // rename 대신 CJS preamble을 생성한다.
+                // 예: import { ref } from 'vue' (vue가 export * from './index.js' CJS)
+                // → var ref = require_index()["ref"];
+                if (resolved) |rb| {
+                    const cjs_mod: u32 = @intCast(@intFromEnum(rb.canonical.module_index));
+                    if (cjs_mod < self.modules.len and self.modules[cjs_mod].wrap_kind == .cjs) {
+                        const req_var = if (cjs_var_cache.get(cjs_mod)) |cached|
+                            cached
+                        else blk2: {
+                            const target_path = self.modules[cjs_mod].path;
+                            const name2 = try types.makeRequireVarName(self.allocator, target_path);
+                            try cjs_var_cache.put(cjs_mod, name2);
+                            break :blk2 name2;
+                        };
+
+                        if (std.mem.eql(u8, ib.imported_name, "default")) {
+                            // default import through export * from CJS
+                            try cjs_preamble_buf.appendSlice(self.allocator, "var ");
+                            try cjs_preamble_buf.appendSlice(self.allocator, ib.local_name);
+                            try cjs_preamble_buf.appendSlice(self.allocator, " = __toESM(");
+                            try cjs_preamble_buf.appendSlice(self.allocator, req_var);
+                            try cjs_preamble_buf.appendSlice(self.allocator, "()).default;\n");
+                        } else {
+                            // named import through export * from CJS
+                            try cjs_preamble_buf.appendSlice(self.allocator, "var ");
+                            try cjs_preamble_buf.appendSlice(self.allocator, ib.local_name);
+                            try cjs_preamble_buf.appendSlice(self.allocator, " = ");
+                            try cjs_preamble_buf.appendSlice(self.allocator, req_var);
+                            try cjs_preamble_buf.appendSlice(self.allocator, "().");
+                            try cjs_preamble_buf.appendSlice(self.allocator, ib.imported_name);
+                            try cjs_preamble_buf.appendSlice(self.allocator, ";\n");
+                        }
+                        continue;
+                    }
+                }
+
                 const target_name = blk: {
                     if (resolved) |rb| {
                         const local = self.resolveToLocalName(rb.canonical);
@@ -1406,6 +1444,13 @@ pub const Linker = struct {
                     if (!source_mod.isNone()) {
                         if (self.resolveExportChain(source_mod, name, depth + 1)) |result| {
                             return result;
+                        }
+                        // CJS 모듈은 정적 export가 없으므로 resolveExportChain이 null을 반환한다.
+                        // 이 경우 CJS 모듈 자체를 반환하여, 소비자 측에서 require_xxx().name 형태의
+                        // CJS preamble을 생성하도록 한다. (esbuild의 __reExport 패턴과 동일한 효과)
+                        const src_idx = @intFromEnum(source_mod);
+                        if (src_idx < self.modules.len and self.modules[src_idx].wrap_kind == .cjs) {
+                            return .{ .module_index = source_mod, .export_name = name };
                         }
                     }
                 }
