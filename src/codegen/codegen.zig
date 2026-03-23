@@ -829,6 +829,26 @@ pub const Codegen = struct {
         const property = self.ast.readExtraNode(e, 1);
         const flags = self.ast.readExtra(e, 2);
         const MemberFlags = ast_mod.MemberFlags;
+
+        // namespace member rewrite: ns.prop → canonical_name (esbuild 방식)
+        if (self.options.linking_metadata) |meta| {
+            if (flags & MemberFlags.optional_chain == 0) { // optional chain은 리라이트 안 함
+                const obj_node_i = @intFromEnum(object);
+                if (obj_node_i < meta.symbol_ids.len) {
+                    if (meta.symbol_ids[obj_node_i]) |obj_sym_id| {
+                        if (meta.ns_member_rewrites.get(obj_sym_id)) |inner_map| {
+                            const prop_node = self.ast.getNode(property);
+                            const prop_text = self.ast.source[prop_node.data.string_ref.start..prop_node.data.string_ref.end];
+                            if (inner_map.get(prop_text)) |canonical_name| {
+                                try self.write(canonical_name);
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         try self.emitNode(object);
         if (flags & MemberFlags.optional_chain != 0) {
             try self.write("?.");

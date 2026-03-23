@@ -1026,15 +1026,21 @@ pub fn emitModule(
     defer if (metadata) |*m| m.deinit();
 
     if (linker) |l| {
+        // transformer가 생성한 new_symbol_ids (있으면 우선 사용)
+        const override_syms: ?[]const ?u32 = if (transformer.new_symbol_ids.items.len > 0)
+            transformer.new_symbol_ids.items
+        else
+            null;
         // new_ast 기준으로 skip_nodes 구축 (transformer 이후이므로 노드 인덱스가 new_ast와 일치)
         var md = try l.buildMetadataForAst(
             &transformer.new_ast,
             @intFromEnum(module.index),
             is_entry,
+            override_syms,
         );
         // transformer가 전파한 new_symbol_ids를 메타데이터에 설정
-        if (transformer.new_symbol_ids.items.len > 0) {
-            md.symbol_ids = transformer.new_symbol_ids.items;
+        if (override_syms) |syms| {
+            md.symbol_ids = syms;
         }
         metadata = md;
     }

@@ -40,13 +40,43 @@ pub const LinkingMetadata = struct {
     /// export default의 합성 변수명. 이름 충돌 시 "_default$1" 등으로 변경됨.
     /// codegen이 `export default X` → `var <이름> = X;` 출력할 때 사용.
     default_export_name: []const u8 = "_default",
+    /// namespace import의 member access 직접 치환 맵 (esbuild 방식).
+    /// key: namespace 식별자의 symbol_id, value: export_name → canonical_local_name.
+    /// codegen이 `ns.prop`를 만나면 이 맵으로 직접 치환 (namespace 객체 생성 불필요).
+    ns_member_rewrites: NsMemberRewrites = .{},
     allocator: std.mem.Allocator,
+
+    pub const NsMemberRewrites = struct {
+        /// symbol_id → (export_name → canonical_name) 매핑 배열.
+        entries: []const Entry = &.{},
+
+        pub const Entry = struct {
+            symbol_id: u32,
+            map: std.StringHashMap([]const u8),
+        };
+
+        /// symbol_id로 매핑 조회.
+        pub fn get(self: *const NsMemberRewrites, sym_id: u32) ?*const std.StringHashMap([]const u8) {
+            for (self.entries) |*e| {
+                if (e.symbol_id == sym_id) return &e.map;
+            }
+            return null;
+        }
+    };
 
     pub fn deinit(self: *LinkingMetadata) void {
         self.skip_nodes.deinit();
         self.renames.deinit();
         if (self.final_exports) |fe| self.allocator.free(fe);
         if (self.cjs_import_preamble) |p| self.allocator.free(p);
+        // ns_member_rewrites의 inner map과 entries 배열 해제
+        if (self.ns_member_rewrites.entries.len > 0) {
+            for (self.ns_member_rewrites.entries) |*e| {
+                var m = @constCast(&e.map);
+                m.deinit();
+            }
+            self.allocator.free(self.ns_member_rewrites.entries);
+        }
     }
 };
 
@@ -467,6 +497,7 @@ pub const Linker = struct {
         new_ast: *const Ast,
         module_index: u32,
         is_entry: bool,
+        override_symbol_ids: ?[]const ?u32,
     ) !LinkingMetadata {
         if (module_index >= self.modules.len) {
             return .{
@@ -510,6 +541,14 @@ pub const Linker = struct {
         // CJS import preamble 빌드용 버퍼
         var cjs_preamble_buf: std.ArrayList(u8) = .empty;
         defer cjs_preamble_buf.deinit(self.allocator);
+
+        // namespace member rewrite 엔트리 수집 (esbuild 방식)
+        var ns_rewrite_list: std.ArrayList(LinkingMetadata.NsMemberRewrites.Entry) = .empty;
+        // errdefer만 — 성공 시 소유권이 LinkingMetadata로 이동
+        errdefer {
+            for (ns_rewrite_list.items) |*e| e.map.deinit();
+            ns_rewrite_list.deinit(self.allocator);
+        }
 
         // CJS 모듈별 require_xxx 변수명 캐시 (같은 모듈에서 여러 named import 시 중복 생성 방지)
         var cjs_var_cache = std.AutoHashMap(u32, []const u8).init(self.allocator);
@@ -561,21 +600,41 @@ pub const Linker = struct {
                     continue;
                 }
 
-                // namespace import 처리: preamble에서 namespace 객체 생성
-                // (e.g. `import * as utils from './mod'` → `var utils = {add: add, mul: mul};`)
+                // namespace import: esbuild 방식 — ns.prop → canonical_name 직접 치환.
+                // ns 자체를 값으로 사용할 때만 폴백으로 객체 생성.
                 if (ib.kind == .namespace) {
-                    // 이름 충돌 시 리네임된 이름 사용
-                    const ns_name = self.getCanonicalName(module_index, ib.local_name) orelse ib.local_name;
-                    try self.buildNamespacePreamble(
-                        &cjs_preamble_buf,
-                        ns_name,
-                        @intCast(canonical_mod),
-                    );
-                    // renames에 등록하여 코드 내 참조도 리네임
-                    if (!std.mem.eql(u8, ib.local_name, ns_name)) {
-                        if (module_scope.get(ib.local_name)) |sym_idx| {
-                            try renames.put(@intCast(sym_idx), ns_name);
+                    const ns_sym_id = module_scope.get(ib.local_name) orelse continue;
+                    const effective_syms = override_symbol_ids orelse sem.symbol_ids;
+
+                    if (isNamespaceUsedAsValue(new_ast, effective_syms, @intCast(ns_sym_id))) {
+                        // 폴백: ns 자체가 값으로 사용됨 → 기존 preamble 방식
+                        const ns_name = self.getCanonicalName(module_index, ib.local_name) orelse ib.local_name;
+                        try self.buildNamespacePreamble(
+                            &cjs_preamble_buf,
+                            ns_name,
+                            @intCast(canonical_mod),
+                        );
+                        if (!std.mem.eql(u8, ib.local_name, ns_name)) {
+                            try renames.put(@intCast(ns_sym_id), ns_name);
                         }
+                    } else {
+                        // 최적화: ns.prop만 사용 → member access를 직접 치환
+                        var exports: std.ArrayList(NsExportPair) = .empty;
+                        defer exports.deinit(self.allocator);
+                        var seen_exports = std.StringHashMap(void).init(self.allocator);
+                        defer seen_exports.deinit();
+                        var visited_mods = std.AutoHashMap(u32, void).init(self.allocator);
+                        defer visited_mods.deinit();
+                        try self.collectExportsRecursive(&exports, &seen_exports, &visited_mods, @enumFromInt(canonical_mod), 0);
+
+                        var inner_map = std.StringHashMap([]const u8).init(self.allocator);
+                        for (exports.items) |exp| {
+                            try inner_map.put(exp.exported, exp.local);
+                        }
+                        try ns_rewrite_list.append(self.allocator, .{
+                            .symbol_id = @intCast(ns_sym_id),
+                            .map = inner_map,
+                        });
                     }
                     continue;
                 }
@@ -648,6 +707,13 @@ pub const Linker = struct {
             }
         }
 
+        // ns_member_rewrites 소유권 이동
+        const ns_rewrites: LinkingMetadata.NsMemberRewrites = if (ns_rewrite_list.items.len > 0) blk: {
+            break :blk .{ .entries = try self.allocator.dupe(LinkingMetadata.NsMemberRewrites.Entry, ns_rewrite_list.items) };
+        } else .{};
+        // dupe 성공 후 원본 리스트만 해제 (inner map은 이동됨)
+        ns_rewrite_list.deinit(self.allocator);
+
         return .{
             .skip_nodes = skip_nodes,
             .renames = renames,
@@ -655,6 +721,7 @@ pub const Linker = struct {
             .symbol_ids = sem.symbol_ids,
             .cjs_import_preamble = cjs_import_preamble,
             .default_export_name = default_export_name,
+            .ns_member_rewrites = ns_rewrites,
             .allocator = self.allocator,
         };
     }
@@ -1130,6 +1197,57 @@ pub const Linker = struct {
 
     /// SymbolRef를 scope hoisting 후 최종 로컬 이름으로 해결.
     /// resolveExportChain → getExportLocalName → getCanonicalName 3단계를 캡슐화.
+    /// namespace 식별자가 member access 이외의 위치에서 사용되는지 판별.
+    /// `ns.prop`만 사용되면 false (직접 치환 가능), `console.log(ns)` 등이면 true (객체 필요).
+    fn isNamespaceUsedAsValue(new_ast: *const Ast, symbol_ids: []const ?u32, ns_sym_id: u32) bool {
+        // 1. "안전한 위치" 수집: static_member_expression의 object 또는 import 관련 노드
+        var safe_buf: [512]u32 = undefined;
+        var safe_count: usize = 0;
+        for (new_ast.nodes.items) |node| {
+            switch (node.tag) {
+                // member access의 object 위치 — ns.prop 패턴
+                .static_member_expression, .private_field_expression => {
+                    const e = node.data.extra;
+                    if (new_ast.hasExtra(e, 2)) {
+                        const obj_raw = new_ast.readExtra(e, 0);
+                        if (safe_count < safe_buf.len) {
+                            safe_buf[safe_count] = obj_raw;
+                            safe_count += 1;
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+        const safe_positions = safe_buf[0..safe_count];
+
+        // 2. ns 심볼 참조 확인 — 안전한 위치가 아닌 참조가 하나라도 있으면 값 사용
+        for (symbol_ids, 0..) |maybe_sid, node_i| {
+            if (maybe_sid) |sid| {
+                if (sid == ns_sym_id) {
+                    // import specifier 등 바인딩 선언 위치는 skip
+                    if (node_i < new_ast.nodes.items.len) {
+                        const tag = new_ast.nodes.items[node_i].tag;
+                        if (tag == .import_namespace_specifier or tag == .import_default_specifier or
+                            tag == .import_specifier or tag == .binding_identifier)
+                        {
+                            continue;
+                        }
+                    }
+                    var is_safe = false;
+                    for (safe_positions) |safe_idx| {
+                        if (safe_idx == @as(u32, @intCast(node_i))) {
+                            is_safe = true;
+                            break;
+                        }
+                    }
+                    if (!is_safe) return true;
+                }
+            }
+        }
+        return false;
+    }
+
     pub fn resolveToLocalName(self: *const Linker, ref: SymbolRef) []const u8 {
         const cmod: u32 = @intCast(@intFromEnum(ref.module_index));
         const local = self.getExportLocalName(cmod, ref.export_name) orelse ref.export_name;
