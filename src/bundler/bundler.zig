@@ -9554,3 +9554,80 @@ test "Bundler: dev mode refresh signature" {
     // 바인딩 정보: useState{x(0)} — LHS 바인딩 + 초기값
     try std.testing.expect(std.mem.indexOf(u8, output, "useState{x(0)}") != null);
 }
+
+test "Profile: pipeline stage timing (dev only, not for CI)" {
+    // 프로세스 시작 비용 없이 순수 파이프라인 단계별 시간 측정
+    const alloc = std.testing.allocator;
+    const Scanner = @import("../lexer/mod.zig").Scanner;
+    const Parser = @import("../parser/mod.zig").Parser;
+    const SemanticAnalyzer = @import("../semantic/mod.zig").SemanticAnalyzer;
+    const Transformer = @import("../transformer/transformer.zig").Transformer;
+    const Codegen = @import("../codegen/codegen.zig").Codegen;
+
+    const sizes = [_]usize{ 1000, 5000, 10000 };
+    const RUNS = 5;
+
+    std.debug.print("\n=== Pipeline Profile ({d} runs avg, Debug build) ===\n", .{RUNS});
+    std.debug.print("| Lines | Scanner | Parser | Semantic | Transformer | Codegen | Total (us) |\n", .{});
+    std.debug.print("|-------|---------|--------|----------|-------------|---------|------------|\n", .{});
+
+    for (sizes) |line_count| {
+        var src_buf: std.ArrayList(u8) = .empty;
+        defer src_buf.deinit(alloc);
+        for (0..line_count) |i| {
+            var line_buf: [64]u8 = undefined;
+            const line = std.fmt.bufPrint(&line_buf, "export const v{d} = {d};\n", .{ i, i }) catch continue;
+            try src_buf.appendSlice(alloc, line);
+        }
+        const source = src_buf.items;
+
+        var scan_ns: i128 = 0;
+        var parse_ns: i128 = 0;
+        var sem_ns: i128 = 0;
+        var xform_ns: i128 = 0;
+        var cg_ns: i128 = 0;
+
+        for (0..RUNS) |_| {
+            var arena = std.heap.ArenaAllocator.init(alloc);
+            defer arena.deinit();
+            const a = arena.allocator();
+
+            var t0 = std.time.nanoTimestamp();
+            var scanner = try Scanner.init(a, source);
+            scan_ns += std.time.nanoTimestamp() - t0;
+
+            t0 = std.time.nanoTimestamp();
+            var parser = Parser.init(a, &scanner);
+            _ = try parser.parse();
+            parse_ns += std.time.nanoTimestamp() - t0;
+
+            t0 = std.time.nanoTimestamp();
+            var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+            _ = analyzer.analyze() catch {};
+            sem_ns += std.time.nanoTimestamp() - t0;
+
+            t0 = std.time.nanoTimestamp();
+            var transformer = Transformer.init(a, &parser.ast, .{});
+            const root = try transformer.transform();
+            xform_ns += std.time.nanoTimestamp() - t0;
+
+            t0 = std.time.nanoTimestamp();
+            var cg = Codegen.init(a, &transformer.new_ast);
+            _ = try cg.generate(root);
+            cg_ns += std.time.nanoTimestamp() - t0;
+        }
+
+        const us: i128 = 1000;
+        const r: i128 = RUNS;
+        const total = scan_ns + parse_ns + sem_ns + xform_ns + cg_ns;
+        std.debug.print("| {d:>5} | {d:>7} | {d:>6} | {d:>8} | {d:>11} | {d:>7} | {d:>10} |\n", .{
+            line_count,
+            @divTrunc(scan_ns, r * us),
+            @divTrunc(parse_ns, r * us),
+            @divTrunc(sem_ns, r * us),
+            @divTrunc(xform_ns, r * us),
+            @divTrunc(cg_ns, r * us),
+            @divTrunc(total, r * us),
+        });
+    }
+}
