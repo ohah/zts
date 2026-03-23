@@ -1128,29 +1128,20 @@ pub fn emitModule(
 
 /// JSON 모듈을 CJS 형태로 출력: __commonJS 래핑 + module.exports = <JSON content>
 fn emitJsonModule(allocator: std.mem.Allocator, module: *const Module) !?[]const u8 {
-    // JSON 파일의 소스를 직접 읽음
-    const source = if (module.source.len > 0)
-        module.source
-    else blk: {
-        break :blk std.fs.cwd().readFileAlloc(allocator, module.path, 10 * 1024 * 1024) catch return null;
-    };
-    defer if (module.source.len == 0) allocator.free(source);
+    if (module.source.len == 0) return null;
 
     const var_name = try types.makeRequireVarName(allocator, module.path);
     defer allocator.free(var_name);
-    const basename = std.fs.path.basename(module.path);
 
-    // __commonJS 래핑
     var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(allocator);
     try buf.appendSlice(allocator, "var ");
     try buf.appendSlice(allocator, var_name);
     try buf.appendSlice(allocator, " = __commonJS({\n\t\"");
-    try buf.appendSlice(allocator, basename);
+    try buf.appendSlice(allocator, std.fs.path.basename(module.path));
     try buf.appendSlice(allocator, "\"(exports, module) {\nmodule.exports=");
-    try buf.appendSlice(allocator, source);
+    try buf.appendSlice(allocator, module.source);
     try buf.appendSlice(allocator, ";\n\t}\n});\n");
-    return try allocator.dupe(u8, buf.items);
+    return try buf.toOwnedSlice(allocator);
 }
 
 /// Cross-module @__NO_SIDE_EFFECTS__ 전파.

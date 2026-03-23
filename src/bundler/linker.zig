@@ -589,8 +589,8 @@ pub const Linker = struct {
                 const target = @intFromEnum(rec.resolved);
                 if (target >= self.modules.len) continue;
                 // 번들된 모듈을 가리키는 require() → require_xxx()로 치환
-                // CJS, JSON 등 __commonJS로 래핑되는 모듈만 대상
-                if (self.modules[target].wrap_kind == .cjs or self.modules[target].module_type == .json) {
+                // __commonJS로 래핑되는 모듈만 대상 (CJS, JSON 모두 wrap_kind=.cjs)
+                if (self.modules[target].wrap_kind == .cjs) {
                     const var_name = try types.makeRequireVarName(self.allocator, self.modules[target].path);
                     try require_rewrites.put(self.allocator, rec.specifier, var_name);
                 }
