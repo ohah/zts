@@ -54,17 +54,27 @@ pub const ResolveCache = struct {
         not_found,
     };
 
+    /// 플랫폼 + import kind에 따른 package.json exports 조건 세트.
+    /// node: "node" 포함, "browser" 제외 (react-dom/server 등이 올바른 엔트리 선택)
+    /// browser: "browser" 포함, "node" 제외
+    fn conditionsFor(platform: Platform, kind: ImportKind) []const []const u8 {
+        return switch (kind) {
+            .require => switch (platform) {
+                .node => &.{ "require", "node", "default" },
+                .browser => &.{ "require", "browser", "default" },
+                .neutral => &.{ "require", "default" },
+            },
+            else => switch (platform) {
+                .node => &.{ "node", "import", "module", "default" },
+                .browser => &.{ "browser", "import", "module", "default" },
+                .neutral => &.{ "import", "module", "default" },
+            },
+        };
+    }
+
     pub fn init(allocator: std.mem.Allocator, platform: Platform, external_patterns: []const []const u8) ResolveCache {
         var r = Resolver.init(allocator);
-        // 플랫폼별 package.json exports 조건 세트 설정.
-        // node: "node" 조건 포함, "browser" 제외 (react-dom/server 등이 올바른 엔트리 선택)
-        // browser: "browser" 조건 포함, "node" 제외
-        // neutral: 플랫폼 특정 조건 없이 "import", "module", "default"만
-        r.conditions = switch (platform) {
-            .node => &.{ "node", "import", "module", "default" },
-            .browser => &.{ "browser", "import", "module", "default" },
-            .neutral => &.{ "import", "module", "default" },
-        };
+        r.conditions = conditionsFor(platform, .static_import);
         return .{
             .allocator = allocator,
             .resolver = r,
@@ -118,14 +128,7 @@ pub const ResolveCache = struct {
         //    require() → "require" 조건, 그 외 → "import" 조건
         //    예: is-promise의 exports { "import": "./esm.mjs", "require": "./cjs.js" }
         const saved_conditions = self.resolver.conditions;
-        if (kind == .require) {
-            // require()는 "require" 조건 + 플랫폼별 조건
-            self.resolver.conditions = switch (self.platform) {
-                .node => &.{ "require", "node", "default" },
-                .browser => &.{ "require", "browser", "default" },
-                .neutral => &.{ "require", "default" },
-            };
-        }
+        self.resolver.conditions = conditionsFor(self.platform, kind);
         defer self.resolver.conditions = saved_conditions;
 
         const result = self.resolver.resolve(source_dir, specifier) catch |err| switch (err) {

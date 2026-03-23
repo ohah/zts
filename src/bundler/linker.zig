@@ -1359,8 +1359,6 @@ pub const Linker = struct {
                     if (rec_idx < m.import_records.len) {
                         const source_mod = m.import_records[rec_idx].resolved;
                         if (!source_mod.isNone()) {
-                            // re-export에서 exported_name이 local_name과 같으면
-                            // 소스 모듈에서도 같은 이름으로 export됨
                             return self.resolveExportChain(source_mod, entry.binding.local_name, depth + 1);
                         }
                     }
