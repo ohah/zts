@@ -366,6 +366,9 @@ pub fn main() !void {
                     .key = kv[0..eq_pos],
                     .value = kv[eq_pos + 1 ..],
                 });
+            } else {
+                try stderr.print("zts: --define requires KEY=VALUE format: {s}\n", .{arg});
+                return;
             }
         } else if (std.mem.eql(u8, arg, "--ascii-only")) {
             ascii_only = true;
