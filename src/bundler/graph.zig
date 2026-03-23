@@ -151,6 +151,17 @@ pub const ModuleGraph = struct {
         var module = &self.modules.items[mod_idx];
         module.state = .parsing;
 
+        // JSON 모듈: 파싱 불필요, CJS로 래핑만
+        if (module.module_type == .json) {
+            module.parse_arena = std.heap.ArenaAllocator.init(self.allocator);
+            const arena_alloc = module.parse_arena.?.allocator();
+            module.source = std.fs.cwd().readFileAlloc(arena_alloc, module.path, 10 * 1024 * 1024) catch "";
+            module.exports_kind = .commonjs;
+            module.wrap_kind = .cjs;
+            module.state = .ready;
+            return;
+        }
+
         if (module.module_type != .javascript) {
             module.state = .ready;
             return;
