@@ -728,17 +728,16 @@ pub const Scanner = struct {
             return .undetermined;
         }
 
-        // /= 는 항상 대입 연산자 (regex에서 = 가 첫 문자인 경우는 없음...
-        // 실제로는 /=.../flags 도 유효한 regex이지만, 대입 연산자가 더 일반적.
-        // esbuild/Bun도 /=를 항상 slash_eq로 처리)
+        // regex vs division: 이전 토큰에 기반하여 판별.
+        // regex 컨텍스트에서는 /=.../ 도 유효한 regex (`/=/g` 등).
+        if (self.prev_token_kind.slashIsRegex()) {
+            return self.scanRegExp();
+        }
+
+        // division 컨텍스트에서만 /= 대입 연산자
         if (next_char == '=') {
             self.current += 1;
             return .slash_eq;
-        }
-
-        // regex vs division: 이전 토큰에 기반하여 판별
-        if (self.prev_token_kind.slashIsRegex()) {
-            return self.scanRegExp();
         }
 
         return .slash;
@@ -2104,12 +2103,28 @@ test "Scanner: empty string literals" {
 }
 
 test "Scanner: slash_eq operator" {
-    const source = "/=";
+    // /= 대입 연산자: 식별자 뒤에서만 division context
+    const source = "x /= 2";
     var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
-    try scanner.next();
+    try scanner.next(); // x (identifier)
+    try scanner.next(); // /=
     try std.testing.expectEqual(Kind.slash_eq, scanner.token.kind);
+}
+
+test "Scanner: /=/ regex vs /= divide-assign" {
+    // regex 컨텍스트에서 /=/ 는 regex
+    const source = "x.replace(/=/g, '')";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    try scanner.next(); // x
+    try scanner.next(); // .
+    try scanner.next(); // replace
+    try scanner.next(); // (
+    try scanner.next(); // /=/g
+    try std.testing.expectEqual(Kind.regexp_literal, scanner.token.kind);
 }
 
 test "Scanner: CR alone as line terminator" {
@@ -2148,7 +2163,8 @@ test "Scanner: NBSP whitespace (U+00A0)" {
 }
 
 test "Scanner: all assignment operators" {
-    const source = "= += -= *= /= %= **= &= |= ^= <<= >>= >>>= &&= ||= ??=";
+    // 각 연산자 앞에 식별자를 넣어 division context 보장 (/= 가 regex로 해석되지 않도록)
+    const source = "x = x += x -= x *= x /= x %= x **= x &= x |= x ^= x <<= x >>= x >>>= x &&= x ||= x ??= x";
     var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
 
@@ -2159,7 +2175,8 @@ test "Scanner: all assignment operators" {
         .shift_right3_eq, .amp2_eq,    .pipe2_eq,      .question2_eq,
     };
     for (expected) |kind| {
-        try scanner.next();
+        try scanner.next(); // identifier (x)
+        try scanner.next(); // operator
         try std.testing.expectEqual(kind, scanner.token.kind);
     }
 }
