@@ -981,16 +981,13 @@ pub const Codegen = struct {
         try self.emitNode(@enumFromInt(extras[e + 1]));
     }
 
-    /// import.meta → CJS: polyfill 객체, 번들 non-ESM: {} (esbuild 호환)
+    /// import.meta → CJS/번들 non-ESM: __filename 기반 polyfill
+    /// Node.js는 import.meta를 보면 ESM으로 재파싱하므로 제거 필요
     fn emitMetaProperty(self: *Codegen, node: Node) !void {
         const text = self.ast.source[node.span.start..node.span.end];
         if (std.mem.eql(u8, text, "import.meta")) {
-            if (self.options.module_format == .cjs) {
+            if (self.options.module_format == .cjs or self.options.replace_import_meta) {
                 try self.write("{url:require('url').pathToFileURL(__filename).href}");
-                return;
-            } else if (self.options.replace_import_meta) {
-                // Node.js는 import.meta를 보면 ESM으로 재파싱하므로 제거 필요
-                try self.write("{}");
                 return;
             }
         }

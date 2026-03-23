@@ -46,7 +46,12 @@ function fileSize(path: string): number {
   }
 }
 
-function testProject(name: string, npmPkg: string, entryCode: string): SmokeResult {
+function testProject(
+  name: string,
+  npmPkg: string,
+  entryCode: string,
+  extraArgs: string[] = [],
+): SmokeResult {
   const dir = mkdtempSync(join(tmpdir(), `zts-smoke-${name}-`));
   const result: SmokeResult = {
     project: name,
@@ -82,7 +87,14 @@ function testProject(name: string, npmPkg: string, entryCode: string): SmokeResu
     const esOut = join(dir, "dist-esbuild.js");
 
     // ZTS bundle
-    const zts = exec(ZTS_BIN, ["--bundle", join(dir, "index.ts"), "-o", ztsOut, "--platform=node"]);
+    const zts = exec(ZTS_BIN, [
+      "--bundle",
+      join(dir, "index.ts"),
+      "-o",
+      ztsOut,
+      "--platform=node",
+      ...extraArgs,
+    ]);
     result.ztsBuild = zts.ok;
     result.ztsSize = fileSize(ztsOut);
     result.ztsTime = zts.time;
@@ -260,6 +272,12 @@ const projects = [
     pkg: "yaml",
     entry: `import { parse } from 'yaml';\nconsole.log(JSON.stringify(parse('a: 1\\nb: 2')));`,
   },
+  {
+    name: "yargs",
+    pkg: "yargs",
+    entry: `import yargs from 'yargs';\nconsole.log(typeof yargs);`,
+    extraArgs: ["--format=cjs"],
+  },
 ];
 
 // ============================================================
@@ -272,7 +290,7 @@ const results: SmokeResult[] = [];
 
 for (const p of projects) {
   process.stdout.write(`Testing ${p.name}... `);
-  const r = testProject(p.name, p.pkg, p.entry);
+  const r = testProject(p.name, p.pkg, p.entry, (p as any).extraArgs);
   results.push(r);
 
   const status = r.ztsBuild ? "OK" : "FAIL";
