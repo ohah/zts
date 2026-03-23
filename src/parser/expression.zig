@@ -769,6 +769,52 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                     });
                 }
             },
+            .l_angle => {
+                // TS generic type arguments in call expression: foo<Type>()
+                // Speculative parse: try parsing <Type>, check if followed by ( or `
+                // If not, restore state and let binary expression handle < as comparison.
+                const saved_scanner = self.saveState();
+                const saved_nodes_len = self.ast.nodes.items.len;
+                const saved_extra_len = self.ast.extra_data.items.len;
+                const saved_scratch = self.saveScratch();
+                const saved_errors_len = self.errors.items.len;
+
+                const type_args_ok = blk: {
+                    // parseTypeArguments will advance past < and parse types until >
+                    _ = self.parseTypeArguments() catch {
+                        break :blk false;
+                    };
+                    // After >, check if next token can follow type arguments
+                    const next = self.current();
+                    break :blk (next == .l_paren or next == .no_substitution_template or next == .template_head);
+                };
+
+                if (type_args_ok) {
+                    // Type arguments successfully parsed and followed by ( or template.
+                    // The type argument nodes are in the AST but we don't need them
+                    // (type stripping). The scanner is now positioned after >.
+                    // The next iteration of the while loop will handle ( or template.
+                    // However, the type arg nodes are wasted space. For simplicity,
+                    // roll back the AST but keep the scanner position.
+                    const current_scanner = self.saveState();
+                    // Restore AST nodes/extra to discard type argument nodes
+                    self.ast.nodes.items.len = saved_nodes_len;
+                    self.ast.extra_data.items.len = saved_extra_len;
+                    self.restoreScratch(saved_scratch);
+                    self.errors.shrinkRetainingCapacity(saved_errors_len);
+                    // Keep scanner advanced past the type arguments
+                    self.restoreState(current_scanner);
+                } else {
+                    // Not type arguments — restore everything and let < be handled
+                    // as a comparison operator by the binary expression parser.
+                    self.restoreState(saved_scanner);
+                    self.ast.nodes.items.len = saved_nodes_len;
+                    self.ast.extra_data.items.len = saved_extra_len;
+                    self.restoreScratch(saved_scratch);
+                    self.errors.shrinkRetainingCapacity(saved_errors_len);
+                    break;
+                }
+            },
             .bang => {
                 // TS non-null assertion: expr!
                 // `!` 뒤에 `.`, `[`, `(` 가 오면 체이닝 (foo()!.bar)

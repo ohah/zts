@@ -153,12 +153,37 @@ const projects = [
   {
     name: "axios",
     pkg: "axios",
-    entry: `import axios from 'axios';\nconsole.log(typeof axios.get);`,
+    entry: `import axios from 'axios';\nconsole.log(typeof axios.get, typeof axios.post, typeof axios.create);`,
   },
   {
     name: "toolkit",
     pkg: "@reduxjs/toolkit",
-    entry: `import { configureStore, createSlice } from '@reduxjs/toolkit';\nconsole.log(typeof configureStore, typeof createSlice);`,
+    entry: `import { configureStore, createSlice } from '@reduxjs/toolkit';\nconst slice = createSlice({ name: 'test', initialState: 0, reducers: { inc: s => s + 1 } });\nconsole.log(slice.name, typeof slice.reducer);`,
+  },
+  {
+    name: "rxjs",
+    pkg: "rxjs",
+    entry: `import { of, map, filter, toArray } from 'rxjs';\nof(1,2,3,4,5).pipe(filter(x=>x%2===0), map(x=>x*10), toArray()).subscribe(arr=>console.log(JSON.stringify(arr)));`,
+  },
+  {
+    name: "immer",
+    pkg: "immer",
+    entry: `import { produce } from 'immer';\nconst o = { a: 1, b: [1,2] };\nconst n = produce(o, d => { d.a = 2; d.b.push(3); });\nconsole.log(o.a, n.a, o === n);`,
+  },
+  {
+    name: "superjson",
+    pkg: "superjson",
+    entry: `import superjson from 'superjson';\nconst d = { s: new Set([1,2]), m: new Map([['a',1]]) };\nconst r = superjson.parse(superjson.stringify(d)) as typeof d;\nconsole.log(r.s instanceof Set, r.m instanceof Map);`,
+  },
+  {
+    name: "express",
+    pkg: "express",
+    entry: `import express from 'express';\nconst app = express();\napp.get('/t', (q,s)=>s.json({ok:true}));\nconsole.log(typeof app.listen, typeof app.get);`,
+  },
+  {
+    name: "react",
+    pkg: "react",
+    entry: `import React from 'react';\nconst el = React.createElement('div', {id:'t'}, 'hi');\nconsole.log(el.type, el.props.id);`,
   },
 ];
 

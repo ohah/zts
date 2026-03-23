@@ -104,7 +104,15 @@ pub const ResolveCache = struct {
             };
         }
 
-        // 3. 실제 resolve
+        // 3. 실제 resolve — import kind에 따라 조건 세트를 교체 (D064)
+        //    require() → "require" 조건, 그 외 → "import" 조건
+        //    예: is-promise의 exports { "import": "./esm.mjs", "require": "./cjs.js" }
+        const saved_conditions = self.resolver.conditions;
+        if (kind == .require) {
+            self.resolver.conditions = &.{ "require", "module", "browser", "default" };
+        }
+        defer self.resolver.conditions = saved_conditions;
+
         const result = self.resolver.resolve(source_dir, specifier) catch |err| switch (err) {
             error.ModuleNotFound => {
                 try self.putCache(cache_key, .not_found);
