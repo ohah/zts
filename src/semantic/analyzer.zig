@@ -924,10 +924,22 @@ pub const SemanticAnalyzer = struct {
                 try self.visitNodeList(node.data.list);
             },
             .object_property => {
-                // binary: { left = key, right = value }
-                // key도 순회 (computed property에 표현식이 들어갈 수 있음)
-                try self.visitNode(node.data.binary.left);
-                try self.visitNode(node.data.binary.right);
+                // binary: { left = key, right = value, flags }
+                const key_idx = node.data.binary.left;
+                const val_idx = node.data.binary.right;
+                if (!key_idx.isNone()) {
+                    const key_node = self.ast.getNode(key_idx);
+                    if (val_idx.isNone()) {
+                        // shorthand `{x}` — key가 변수 참조이므로 resolve 필요
+                        try self.visitNode(key_idx);
+                    } else if (key_node.tag == .computed_property_key) {
+                        // computed `{[expr]: value}` — expr 내부 순회
+                        try self.visitNode(key_idx);
+                    }
+                    // non-shorthand `{key: value}` — key는 property name이므로 순회하지 않음.
+                    // identifier_reference 태그여도 심볼 참조가 아닌 이름일 뿐.
+                }
+                try self.visitNode(val_idx);
             },
             .template_literal => {
                 // list: [template_element, expression, template_element, ...]
