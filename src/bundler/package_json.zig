@@ -37,6 +37,17 @@ pub const PackageJson = struct {
         unknown,
         all: bool,
         patterns: []const []const u8,
+
+        /// allocator로 dupe된 패턴 문자열 해제. .all/.unknown은 no-op.
+        pub fn deinit(self: SideEffects, allocator: std.mem.Allocator) void {
+            switch (self) {
+                .patterns => |patterns| {
+                    for (patterns) |p| allocator.free(p);
+                    allocator.free(patterns);
+                },
+                else => {},
+            }
+        }
     };
 
     /// package.json이 ESM 패키지인지 판별.
@@ -223,7 +234,7 @@ fn parseSideEffects(obj: std.json.ObjectMap, allocator: std.mem.Allocator) Packa
             const patterns = allocator.alloc([]const u8, arr.items.len) catch return .unknown;
             for (arr.items, 0..) |item, i| {
                 if (item != .string) {
-                    allocator.free(patterns[0..i]);
+                    for (patterns[0..i]) |p| allocator.free(p);
                     allocator.free(patterns);
                     return .unknown;
                 }
@@ -302,14 +313,7 @@ test "parsePackageJson: sideEffects array" {
 
     var result = try parsePackageJson(std.testing.allocator, tmp.dir);
     defer {
-        // patterns는 allocator로 dupe되었으므로 해제 필요
-        switch (result.pkg.side_effects) {
-            .patterns => |patterns| {
-                for (patterns) |p| std.testing.allocator.free(p);
-                std.testing.allocator.free(patterns);
-            },
-            else => {},
-        }
+        result.pkg.side_effects.deinit(std.testing.allocator);
         result.deinit();
     }
 
