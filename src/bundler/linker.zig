@@ -739,7 +739,9 @@ pub const Linker = struct {
                                     defer ns_v.deinit();
                                     try self.collectExportsRecursive(&ns_exps, &ns_s, &ns_v, @enumFromInt(@as(u32, @intCast(ns_target_mod))), 0);
                                     var ns_m = std.StringHashMap([]const u8).init(self.allocator);
-                                    for (ns_exps.items) |exp| try ns_m.put(exp.exported, exp.local);
+                                    for (ns_exps.items) |exp| {
+                                        try ns_m.put(exp.exported, exp.local);
+                                    }
                                     try ns_rewrite_list.append(self.allocator, .{ .symbol_id = @intCast(imp_sym), .map = ns_m });
                                     // inline object
                                     const obj = try self.buildInlineObjectStr(@intCast(ns_target_mod), 0);
@@ -1518,9 +1520,10 @@ pub const Linker = struct {
             });
         }
 
-        // export * 재귀
+        // export * 재귀 — export * as ns는 이미 첫 루프에서 인라인 객체로 처리됨
         for (m.export_bindings) |eb| {
             if (eb.kind != .re_export_all) continue;
+            if (!std.mem.eql(u8, eb.exported_name, "*")) continue; // export * as ns는 skip
             if (eb.import_record_index) |rec_idx| {
                 if (rec_idx < m.import_records.len) {
                     const source_mod = m.import_records[rec_idx].resolved;
@@ -2615,4 +2618,29 @@ test "semantic: shorthand property key has symbol_id" {
             }
         }
     }
+}
+
+// ============================================================
+// export * as ns — seen 오염 방지 (독립 namespace)
+// ============================================================
+
+test "export * as: does not pollute parent seen (name collision)" {
+    // export * as ns의 내부 export가 외부 export *의 같은 이름을 덮어쓰면 안 됨
+    // regexes에 string (regex), schemas에 string (factory) → 외부는 schemas의 string 사용
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "regexes.ts", "export const string = /^.*$/;");
+    try writeFile(tmp.dir, "schemas.ts", "export function string() { return 'schema'; }");
+    try writeFile(tmp.dir, "core.ts", "export * as regexes from './regexes';\nexport * from './schemas';");
+    try writeFile(tmp.dir, "entry.ts", "import * as ns from './core';\nconsole.log(ns.string());");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.graph.deinit();
+    defer r.cache.deinit();
+
+    // entry의 namespace import 확인
+    const entry = r.graph.modules.items[0];
+    try std.testing.expect(entry.import_bindings.len > 0);
+    try std.testing.expectEqual(ImportBinding.Kind.namespace, entry.import_bindings[0].kind);
 }
