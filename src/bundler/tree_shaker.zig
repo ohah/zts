@@ -363,7 +363,6 @@ pub const TreeShaker = struct {
 
     /// 하나의 포함된 모듈에 대해 import binding → export 마킹 + canonical 모듈 포함.
     /// 새 모듈이 포함되면 true를 반환하여 fixpoint 루프가 계속되도록 한다.
-    /// (기존 step 2c와 2f를 합침 — resolveExportChain 중복 호출 제거)
     fn processModuleImports(self: *TreeShaker, m: Module) !bool {
         var newly_included = false;
         for (m.import_bindings) |ib| {

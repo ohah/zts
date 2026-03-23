@@ -55,7 +55,8 @@ const index_files: []const []const u8 = &.{ "index.ts", "index.tsx", "index.js",
 pub const Resolver = struct {
     allocator: std.mem.Allocator,
     /// 조건 세트 (D064: import kind별로 다를 수 있음).
-    /// 기본값은 ESM 브라우저용.
+    /// ResolveCache.conditionsFor()에서 platform+kind별로 설정.
+    /// 기본값은 테스트용 (브라우저 ESM).
     conditions: []const []const u8 = &.{ "import", "module", "browser", "default" },
 
     pub fn init(allocator: std.mem.Allocator) Resolver {
