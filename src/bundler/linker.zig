@@ -718,6 +718,36 @@ pub const Linker = struct {
                                 }
                             }
                         }
+                        // canonical의 export local_name이 namespace import인 경우 → 인라인 객체
+                        const cmod2: u32 = @intCast(@intFromEnum(rb.canonical.module_index));
+                        const export_local = self.getExportLocalName(cmod2, rb.canonical.export_name) orelse rb.canonical.export_name;
+                        if (cmod2 < self.modules.len) {
+                            for (self.modules[cmod2].import_bindings) |cib| {
+                                if (cib.kind == .namespace and std.mem.eql(u8, cib.local_name, export_local)) {
+                                    // namespace import → 인라인 객체로 처리
+                                    const imp_sym = module_scope.get(ib.local_name) orelse break;
+                                    const ns_target_mod = if (cib.import_record_index < self.modules[cmod2].import_records.len)
+                                        @intFromEnum(self.modules[cmod2].import_records[cib.import_record_index].resolved)
+                                    else
+                                        break;
+                                    // member rewrite
+                                    var ns_exps: std.ArrayList(NsExportPair) = .empty;
+                                    defer ns_exps.deinit(self.allocator);
+                                    var ns_s = std.StringHashMap(void).init(self.allocator);
+                                    defer ns_s.deinit();
+                                    var ns_v = std.AutoHashMap(u32, void).init(self.allocator);
+                                    defer ns_v.deinit();
+                                    try self.collectExportsRecursive(&ns_exps, &ns_s, &ns_v, @enumFromInt(@as(u32, @intCast(ns_target_mod))), 0);
+                                    var ns_m = std.StringHashMap([]const u8).init(self.allocator);
+                                    for (ns_exps.items) |exp| try ns_m.put(exp.exported, exp.local);
+                                    try ns_rewrite_list.append(self.allocator, .{ .symbol_id = @intCast(imp_sym), .map = ns_m });
+                                    // inline object
+                                    const obj = try self.buildInlineObjectStr(@intCast(ns_target_mod), 0);
+                                    try ns_inline_list.append(self.allocator, .{ .symbol_id = @intCast(imp_sym), .object_literal = obj });
+                                    break :blk ib.local_name;
+                                }
+                            }
+                        }
                         break :blk local;
                     }
                     break :blk ib.imported_name;
