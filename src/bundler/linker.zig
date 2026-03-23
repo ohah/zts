@@ -204,6 +204,137 @@ pub const Linker = struct {
         }
     }
 
+    /// minify 활성화 시, scope hoisting 후 모든 top-level 이름을 짧은 이름으로 교체.
+    /// computeRenames 이후에 호출해야 함 (충돌 해결 완료 상태).
+    pub fn computeMangling(self: *Linker) !void {
+        const Mangler = @import("../codegen/mangler.zig");
+
+        // 1. 현재 사용 중인 모든 이름 수집 (canonical_names의 값 + 첫 번째 소유자의 원본 이름)
+        var all_names = std.StringHashMap(void).init(self.allocator);
+        defer all_names.deinit();
+
+        for (self.modules) |m| {
+            const sem = m.semantic orelse continue;
+            if (sem.scope_maps.len == 0) continue;
+            var sit = sem.scope_maps[0].iterator();
+            while (sit.next()) |entry| {
+                try all_names.put(entry.key_ptr.*, {});
+            }
+        }
+
+        // canonical_names의 rename된 이름도 수집
+        var cit = self.canonical_names.valueIterator();
+        while (cit.next()) |v| {
+            try all_names.put(v.*, {});
+        }
+
+        // 2. 이름 생성기로 모든 top-level 이름을 짧은 이름으로 매핑
+        var name_map = std.StringHashMap([]const u8).init(self.allocator);
+        defer {
+            // name_map의 값(duped 이름)은 canonical_names로 이전되지 않은 것만 해제
+            // canonical_names에 이전된 값은 linker.deinit()에서 해제
+            var vit = name_map.valueIterator();
+            while (vit.next()) |v| {
+                // canonical_names에 없으면 우리가 해제해야 함
+                var in_canonical = false;
+                var cnv = self.canonical_names.valueIterator();
+                while (cnv.next()) |cv| {
+                    if (cv.*.ptr == v.*.ptr) {
+                        in_canonical = true;
+                        break;
+                    }
+                }
+                if (!in_canonical) self.allocator.free(v.*);
+            }
+            name_map.deinit();
+        }
+
+        // mangling 결과로 사용된 이름 추적 (중복 방지)
+        var used_names = std.StringHashMap(void).init(self.allocator);
+        defer used_names.deinit();
+
+        var name_gen = Mangler.NameGenerator{};
+
+        // export된 이름은 보존해야 하므로 먼저 수집
+        var exported = std.StringHashMap(void).init(self.allocator);
+        defer exported.deinit();
+        for (self.modules) |m| {
+            for (m.export_bindings) |eb| {
+                try exported.put(eb.exported_name, {});
+                try exported.put(eb.local_name, {});
+            }
+        }
+
+        var ait = all_names.iterator();
+        while (ait.next()) |entry| {
+            const orig_name = entry.key_ptr.*;
+
+            // export된 이름은 mangling 제외
+            if (exported.contains(orig_name)) continue;
+            // import 바인딩, default, 1글자는 제외
+            if (orig_name.len <= 1) continue;
+            if (std.mem.eql(u8, orig_name, "default")) continue;
+            if (std.mem.eql(u8, orig_name, "arguments")) continue;
+
+            // 짧은 이름 생성 (예약어 + 기존/사용된 이름 충돌 방지)
+            var new_name = name_gen.next();
+            while (Mangler.isReservedOrGlobal(new_name) or
+                all_names.contains(new_name) or
+                used_names.contains(new_name) or
+                exported.contains(new_name))
+            {
+                new_name = name_gen.next();
+            }
+
+            if (!std.mem.eql(u8, orig_name, new_name)) {
+                const duped = try self.allocator.dupe(u8, new_name);
+                try name_map.put(orig_name, duped);
+                try used_names.put(duped, {});
+            }
+        }
+
+        // 3. canonical_names 업데이트 — 기존 rename된 이름도 mangling
+        var update_list: std.ArrayList(struct { key: []const u8, val: []const u8 }) = .empty;
+        defer update_list.deinit(self.allocator);
+
+        var cnit = self.canonical_names.iterator();
+        while (cnit.next()) |cn_entry| {
+            const current_name = cn_entry.value_ptr.*;
+            if (name_map.get(current_name)) |mangled| {
+                try update_list.append(self.allocator, .{
+                    .key = cn_entry.key_ptr.*,
+                    .val = try self.allocator.dupe(u8, mangled),
+                });
+            }
+        }
+        for (update_list.items) |upd| {
+            if (self.canonical_names.getPtr(upd.key)) |ptr| {
+                self.allocator.free(ptr.*);
+                ptr.* = upd.val;
+            }
+        }
+
+        // 4. 아직 canonical_names에 없는 이름도 추가 (충돌 없던 이름)
+        for (self.modules, 0..) |m, i| {
+            const sem = m.semantic orelse continue;
+            if (sem.scope_maps.len == 0) continue;
+            var sit = sem.scope_maps[0].iterator();
+            while (sit.next()) |scope_entry| {
+                const sym_name = scope_entry.key_ptr.*;
+                if (name_map.get(sym_name)) |mangled| {
+                    const key = makeExportKey(self.allocator, @intCast(i), sym_name) catch continue;
+                    if (!self.canonical_names.contains(key)) {
+                        self.canonical_names.put(key, self.allocator.dupe(u8, mangled) catch continue) catch {
+                            self.allocator.free(key);
+                        };
+                    } else {
+                        self.allocator.free(key);
+                    }
+                }
+            }
+        }
+    }
+
     /// 모듈의 중첩 스코프(비-모듈 스코프)에 해당 이름이 존재하는지 확인.
     fn hasNestedBinding(self: *const Linker, module_index: u32, name: []const u8) bool {
         if (module_index >= self.modules.len) return false;
