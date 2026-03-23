@@ -145,6 +145,77 @@ const cases: BrowserSmokeCase[] = [
     entry: `import { parse } from 'graphql';\nconsole.log(parse('{ hello }').definitions.length);`,
     expected: "1",
   },
+  {
+    name: "uuid",
+    pkg: "uuid",
+    entry: `import { v4 } from 'uuid';\nconsole.log(typeof v4(), v4().length);`,
+    expected: "string 36",
+  },
+  {
+    name: "rxjs",
+    pkg: "rxjs",
+    entry: `import { of, map, toArray } from 'rxjs';\nof(1,2,3).pipe(map(x=>x*10), toArray()).subscribe(arr=>console.log(JSON.stringify(arr)));`,
+    expected: "[10,20,30]",
+  },
+  {
+    name: "tiny-invariant",
+    pkg: "tiny-invariant",
+    entry: `import invariant from 'tiny-invariant';\ninvariant(true, 'ok');\nconsole.log('pass');`,
+    expected: "pass",
+    extraArgs: ['--define:process.env.NODE_ENV="production"'],
+  },
+  {
+    name: "tanstack-query",
+    pkg: "@tanstack/query-core",
+    entry: `import { QueryClient } from '@tanstack/query-core';\nconst qc = new QueryClient();\nconsole.log(typeof qc.fetchQuery);`,
+    expected: "function",
+  },
+  // effect: scope hoisting에서 "window" 글로벌 충돌 — deconflict 개선 후 추가
+  // jotai, valtio: import.meta outside module — ESM 출력 또는 import.meta polyfill 필요
+  // fp-ts: 동일 import.meta 이슈
+  {
+    name: "neverthrow",
+    pkg: "neverthrow",
+    entry: `import { ok } from 'neverthrow';\nconst r = ok(42).map(n => n + 1);\nconsole.log(r.isOk(), r._unsafeUnwrap());`,
+    expected: "true 43",
+  },
+  {
+    name: "yaml",
+    pkg: "yaml",
+    entry: `import { parse } from 'yaml';\nconsole.log(JSON.stringify(parse('a: 1\\nb: 2')));`,
+    expected: '{"a":1,"b":2}',
+  },
+  {
+    name: "semver",
+    pkg: "semver",
+    entry: `import semver from 'semver';\nconsole.log(semver.gt('2.0.0', '1.0.0'));`,
+    expected: "true",
+  },
+  {
+    name: "hono",
+    pkg: "hono",
+    entry: `import { Hono } from 'hono';\nconst app = new Hono();\napp.get('/', (c) => c.text('Hello'));\nconsole.log('routes:', app.routes.length);`,
+    expected: "routes: 1",
+  },
+  {
+    name: "chalk",
+    pkg: "chalk@5",
+    entry: `import chalk from 'chalk';\nconsole.log(typeof chalk.red);`,
+    expected: "function",
+  },
+  {
+    name: "drizzle-orm",
+    pkg: "drizzle-orm",
+    entry: `import { sql } from 'drizzle-orm';\nconsole.log(typeof sql);`,
+    expected: "function",
+  },
+  {
+    name: "react-dom",
+    pkg: "react-dom@18 react@18",
+    entry: `import { renderToString } from 'react-dom/server';\nimport { createElement } from 'react';\nconsole.log(renderToString(createElement('div', null, 'Hello')));`,
+    expected: "<div>Hello</div>",
+    extraArgs: ['--define:process.env.NODE_ENV="production"'],
+  },
 ];
 
 const MIME: Record<string, string> = {
