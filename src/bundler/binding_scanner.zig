@@ -305,13 +305,7 @@ pub fn extractExportBindings(
     return bindings.toOwnedSlice(allocator);
 }
 
-const NameInfo = struct {
-    name: []const u8,
-    span: Span,
-    /// destructuring일 때: 초기값 식별자의 span (import binding 추적용).
-    /// non-destructuring이거나 초기값이 식별자가 아니면 null.
-    init_identifier_span: ?Span = null,
-};
+const NameInfo = struct { name: []const u8, span: Span };
 
 /// export 선언에서 이름들을 추출. export const x, y / export function f / export class C
 fn extractDeclExportNames(allocator: std.mem.Allocator, ast: *const Ast, decl: Node) ![]NameInfo {
@@ -347,19 +341,7 @@ fn extractDeclExportNames(allocator: std.mem.Allocator, ast: *const Ast, decl: N
 
                 // destructuring: export const { X, Y } = obj
                 if (name_node.tag == .object_pattern) {
-                    // init 식별자 추출 (re-export 추적용)
-                    const init_span = blk: {
-                        if (de + 2 < ast.extra_data.items.len) {
-                            const init_idx: NodeIndex = @enumFromInt(ast.extra_data.items[de + 2]);
-                            if (!init_idx.isNone() and @intFromEnum(init_idx) < ast.nodes.items.len) {
-                                const init_node = ast.getNode(init_idx);
-                                if (init_node.tag == .identifier_reference)
-                                    break :blk init_node.span;
-                            }
-                        }
-                        break :blk @as(?Span, null);
-                    };
-                    try extractObjectPatternNames(&names, allocator, ast, name_node, init_span);
+                    try extractObjectPatternNames(&names, allocator, ast, name_node);
                 } else {
                     try names.append(allocator, .{
                         .name = ast.source[name_node.span.start..name_node.span.end],
@@ -396,54 +378,13 @@ fn extractDeclExportNames(allocator: std.mem.Allocator, ast: *const Ast, decl: N
     return names.toOwnedSlice(allocator);
 }
 
-/// import 이름으로 import_record 인덱스를 찾는다.
-/// `import commander from './index.js'` → "commander" → record index
-fn findImportRecordForName(import_records: []const types.ImportRecord, ast: *const Ast, name: []const u8) ?u32 {
-    // AST에서 import_declaration을 순회하여 default/namespace import 이름 매칭
-    for (ast.nodes.items) |nd| {
-        if (nd.tag != .import_declaration) continue;
-        // import_declaration: extra [specifiers_start, specifiers_len, source, attributes_start, attributes_len]
-        const ie = nd.data.extra;
-        if (ie + 2 >= ast.extra_data.items.len) continue;
-        const specs_start = ast.extra_data.items[ie];
-        const specs_len = ast.extra_data.items[ie + 1];
-        const source_idx: NodeIndex = @enumFromInt(ast.extra_data.items[ie + 2]);
-        if (source_idx.isNone()) continue;
-        const source_span = ast.getNode(source_idx).span;
-
-        // specifier 중 default import (import_default_specifier)를 찾아 이름 비교
-        if (specs_len > 0 and specs_start + specs_len <= ast.extra_data.items.len) {
-            const spec_indices = ast.extra_data.items[specs_start .. specs_start + specs_len];
-            for (spec_indices) |raw| {
-                const spec: NodeIndex = @enumFromInt(raw);
-                if (spec.isNone() or @intFromEnum(spec) >= ast.nodes.items.len) continue;
-                const spec_node = ast.getNode(spec);
-                // default import 또는 namespace import
-                if (spec_node.tag == .import_default_specifier or spec_node.tag == .import_namespace_specifier) {
-                    const spec_name = ast.source[spec_node.span.start..spec_node.span.end];
-                    if (std.mem.eql(u8, spec_name, name)) {
-                        // 이 import의 source span과 일치하는 import_record 찾기
-                        for (import_records, 0..) |rec, ri| {
-                            if (rec.span.start == source_span.start and rec.span.end == source_span.end)
-                                return @intCast(ri);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    return null;
-}
-
 /// object_pattern의 각 프로퍼티 이름을 추출한다.
 /// `{ Command, Option }` → ["Command", "Option"]
-/// `{ Command: Cmd }` → ["Cmd"] (rename된 경우 value 이름 사용)
 fn extractObjectPatternNames(
     names: *std.ArrayList(NameInfo),
     allocator: std.mem.Allocator,
     ast: *const Ast,
     pattern: Node,
-    init_span: ?Span,
 ) !void {
     const list = pattern.data.list;
     if (list.len == 0) return;
@@ -463,7 +404,6 @@ fn extractObjectPatternNames(
                 try names.append(allocator, .{
                     .name = exported_name,
                     .span = key.span,
-                    .init_identifier_span = init_span,
                 });
             },
             else => {},
