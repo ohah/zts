@@ -3702,3 +3702,89 @@ test "binding: contextual keyword as for-of variable" {
     try expectNoParseError("for (const type of [1,2,3]) { console.log(type); }");
     try expectNoParseError("for (const get of [1,2,3]) { console.log(get); }");
 }
+
+// ============================================================
+// static_member_expression span 테스트
+// ============================================================
+
+test "Parser: static_member_expression span excludes trailing whitespace" {
+    // "a.b ;" — span은 0..3 ("a.b"), 공백과 세미콜론 포함 안 함
+    var scanner = try Scanner.init(std.testing.allocator, "a.b ;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+
+    // AST에서 static_member_expression 노드를 찾아 span 검증
+    var found = false;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag == .static_member_expression) {
+            // span.start == 0 ("a"의 시작), span.end == 3 ("b"의 끝)
+            try std.testing.expectEqual(@as(u32, 0), node.span.start);
+            try std.testing.expectEqual(@as(u32, 3), node.span.end);
+            // 소스 텍스트로도 검증
+            try std.testing.expectEqualStrings("a.b", parser.ast.source[node.span.start..node.span.end]);
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "Parser: chained static_member_expression span" {
+    // "a.b.c ;" — 외부 static_member_expression의 span은 0..5 ("a.b.c")
+    var scanner = try Scanner.init(std.testing.allocator, "a.b.c ;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+
+    // 체인이므로 static_member_expression이 2개 있어야 함:
+    //   내부: a.b (0..3), 외부: a.b.c (0..5)
+    var count: usize = 0;
+    var has_inner = false;
+    var has_outer = false;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag == .static_member_expression) {
+            count += 1;
+            const text = parser.ast.source[node.span.start..node.span.end];
+            if (std.mem.eql(u8, text, "a.b")) has_inner = true;
+            if (std.mem.eql(u8, text, "a.b.c")) has_outer = true;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), count);
+    try std.testing.expect(has_inner);
+    try std.testing.expect(has_outer);
+}
+
+test "Parser: static_member_expression text matches source exactly" {
+    // "process.env.NODE_ENV ;" 에서
+    // source[span.start..span.end] == "process.env.NODE_ENV" (공백 없이)
+    var scanner = try Scanner.init(std.testing.allocator, "process.env.NODE_ENV ;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+
+    // 가장 바깥 static_member_expression (span이 가장 넓은 것)의 텍스트를 검증
+    var max_span_len: u32 = 0;
+    var max_span_text: []const u8 = "";
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag == .static_member_expression) {
+            const len = node.span.end - node.span.start;
+            if (len > max_span_len) {
+                max_span_len = len;
+                max_span_text = parser.ast.source[node.span.start..node.span.end];
+            }
+        }
+    }
+    // define 매칭에 사용되는 getNodeText가 정확한 텍스트를 반환하는지 검증
+    // 공백이 포함되지 않아야 함
+    try std.testing.expectEqualStrings("process.env.NODE_ENV", max_span_text);
+}
