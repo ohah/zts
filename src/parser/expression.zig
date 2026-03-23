@@ -182,9 +182,7 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
                     self.restoreState(saved);
                 } else if (try self.isTypedArrowFunction()) {
                     // async (a: Type) => body — TS typed async arrow
-                    const result = try self.parseTypedArrowParams(async_span.start, true);
-                    const result_node = self.ast.getNode(result);
-                    if (result_node.tag == .arrow_function_expression) return result;
+                    if (try self.parseTypedArrowParams(async_span.start, true)) |arrow| return arrow;
                     self.restoreState(saved);
                 } else {
                     // 괄호를 expression으로 파싱 (parenthesized_expression)
@@ -1037,7 +1035,7 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
             // TS 모드: `(a: Type, b?: Type) => body` — 타입 어노테이션이 있는 arrow function.
             // lookahead로 감지: `(` 뒤에 identifier + `:` 또는 `?` 패턴이면 speculative 파싱.
             if (try self.isTypedArrowFunction()) {
-                return try self.parseTypedArrowParams(span.start, false);
+                if (try self.parseTypedArrowParams(span.start, false)) |arrow| return arrow;
             }
 
             try self.advance(); // skip (
