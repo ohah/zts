@@ -555,6 +555,17 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
     // 키
     const key = try self.parsePropertyKey();
 
+    // TS optional class field: foo?: Type (프로퍼티 이름 뒤의 ?)
+    // TS definite assignment: foo!: Type (프로퍼티 이름 뒤의 !)
+    _ = try self.eat(.question); // optional marker (스트리핑 대상)
+    if (self.current() == .bang and !self.scanner.token.has_newline_before) {
+        // ! 뒤에 : 이면 definite assignment assertion, 아니면 non-null 표현식
+        const next = try self.peekNextKind();
+        if (next == .colon or next == .semicolon or next == .eq or next == .r_curly) {
+            try self.advance(); // skip !
+        }
+    }
+
     // 제네릭 파라미터: method<T>()
     if (self.current() == .l_angle) {
         _ = try self.parseTsTypeParameterDeclaration();

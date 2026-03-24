@@ -53,6 +53,22 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     }
     try self.advance(); // skip 'import'
 
+    // TS: import type — type-only import (완전 제거)
+    // import type Foo from 'bar'
+    // import type { Foo } from 'bar'
+    // import type * as ns from 'bar'
+    var is_type_only = false;
+    if (self.current() == .identifier and self.isContextual("type")) {
+        // type 다음에 { 또는 * 또는 identifier가 오면 type-only import
+        const next = try self.peekNextKind();
+        if (next == .l_curly or next == .star or next == .identifier or
+            (next.isKeyword() and !next.isReservedKeyword()))
+        {
+            is_type_only = true;
+            try self.advance(); // skip 'type'
+        }
+    }
+
     // import defer / import source — Stage 3 proposals
     // defer/source를 스킵하고 나머지는 일반 import로 처리
     var has_phase_modifier = false;
@@ -331,6 +347,18 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
             .span = .{ .start = start, .end = self.currentSpan().start },
             .data = .{ .unary = .{ .operand = decl, .flags = 0 } },
         });
+    }
+
+    // TS: export type — type-only export (완전 제거)
+    // export type { Foo } from 'bar'
+    // export type * from 'bar'
+    // export type * as ns from 'bar'
+    if (self.current() == .identifier and self.isContextual("type")) {
+        const next = try self.peekNextKind();
+        if (next == .l_curly or next == .star) {
+            try self.advance(); // skip 'type'
+            // type-only export는 파싱 후 스트리핑
+        }
     }
 
     // export * from "module" / export * as ns from "module"
