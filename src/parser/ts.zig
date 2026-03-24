@@ -44,7 +44,7 @@ pub fn parseTsTypeAliasDeclaration(self: *Parser) ParseError2!NodeIndex {
 
     // 제네릭 파라미터: type Foo<T> = ...
     var type_params = NodeIndex.none;
-    if (self.current() == .l_angle) {
+    if (self.isAtOpeningAngleBracket()) {
         type_params = try parseTsTypeParameterDeclaration(self);
     }
 
@@ -74,7 +74,7 @@ pub fn parseTsInterfaceDeclaration(self: *Parser) ParseError2!NodeIndex {
 
     // 제네릭 파라미터
     var type_params = NodeIndex.none;
-    if (self.current() == .l_angle) {
+    if (self.isAtOpeningAngleBracket()) {
         type_params = try parseTsTypeParameterDeclaration(self);
     }
 
@@ -598,10 +598,10 @@ fn parseTypeOperatorOrHigher(self: *Parser) ParseError2!NodeIndex {
                 .data = .{ .unary = .{ .operand = operand, .flags = 0 } },
             });
         }
-        // unique symbol → type operator, unique 단독 (뒤에 =, ;, , 등) → identifier (type reference)
+        // unique symbol → type operator. TS에서 unique는 symbol과만 결합 가능.
         if (std.mem.eql(u8, text, "unique")) {
             const next = try self.peekNextKind();
-            if (next != .eq and next != .semicolon and next != .comma and next != .r_paren and next != .r_curly and next != .r_bracket and next != .l_angle and next != .pipe and next != .amp) {
+            if (next == .identifier) {
                 const span = self.currentSpan();
                 try self.advance();
                 const operand = try parseTypeOperatorOrHigher(self);
@@ -845,7 +845,7 @@ fn parseTypeReference(self: *Parser) ParseError2!NodeIndex {
 
     // 제네릭: Foo<T, U> — << (shift_left) 도 중첩 제네릭 시작
     var type_args = NodeIndex.none;
-    if (self.current() == .l_angle or self.current() == .shift_left) {
+    if (self.isAtOpeningAngleBracket()) {
         type_args = try parseTypeArguments(self);
     }
 
@@ -894,7 +894,7 @@ fn parseFunctionOrConstructorType(self: *Parser, is_abstract: bool) ParseError2!
 
     // 제네릭 파라미터
     var type_params = NodeIndex.none;
-    if (self.current() == .l_angle) {
+    if (self.isAtOpeningAngleBracket()) {
         type_params = try parseTsTypeParameterDeclaration(self);
     }
     try self.expect(.l_paren);
@@ -1101,7 +1101,7 @@ fn parseTypeMember(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
 
     // 1. 콜 시그니처: ( 또는 < 로 시작
-    if (self.current() == .l_paren or self.current() == .l_angle) {
+    if (self.current() == .l_paren or self.isAtOpeningAngleBracket()) {
         return parseSignatureMember(self, start, false);
     }
 
@@ -1183,10 +1183,10 @@ fn parseTypeMember(self: *Parser) ParseError2!NodeIndex {
     _ = try self.eat(.question); // optional
 
     // 6. 메서드 시그니처: 이름 뒤에 ( 또는 < 가 오면 메서드
-    if (self.current() == .l_paren or self.current() == .l_angle) {
+    if (self.current() == .l_paren or self.isAtOpeningAngleBracket()) {
         // 제네릭 파라미터
         var type_params = NodeIndex.none;
-        if (self.current() == .l_angle) {
+        if (self.isAtOpeningAngleBracket()) {
             type_params = try parseTsTypeParameterDeclaration(self);
         }
         try self.expect(.l_paren);
@@ -1231,7 +1231,7 @@ fn parseTypeMember(self: *Parser) ParseError2!NodeIndex {
 fn parseSignatureMember(self: *Parser, start: u32, is_constructor: bool) ParseError2!NodeIndex {
     // 제네릭 파라미터
     var type_params = NodeIndex.none;
-    if (self.current() == .l_angle) {
+    if (self.isAtOpeningAngleBracket()) {
         type_params = try parseTsTypeParameterDeclaration(self);
     }
     try self.expect(.l_paren);
@@ -1602,7 +1602,7 @@ fn parseImportType(self: *Parser, start: u32) ParseError2!NodeIndex {
         });
     }
     // 선택적 제네릭: import("module").Foo<T>
-    if (self.current() == .l_angle) {
+    if (self.isAtOpeningAngleBracket()) {
         _ = try self.parseTypeArguments();
     }
     return result;

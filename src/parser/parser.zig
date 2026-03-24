@@ -328,8 +328,15 @@ pub const Parser = struct {
         }
     }
 
+    /// 현재 토큰이 `<` 또는 `<`로 시작하는 복합 토큰인지 확인한다.
+    pub fn isAtOpeningAngleBracket(self: *const Parser) bool {
+        return switch (self.current()) {
+            .l_angle, .shift_left, .lt_eq, .shift_left_eq => true,
+            else => false,
+        };
+    }
+
     /// 현재 토큰이 `>` 또는 `>`로 시작하는 복합 토큰인지 확인한다.
-    /// 타입 인수/파라미터 루프의 종료 조건으로 사용.
     pub fn isAtClosingAngleBracket(self: *const Parser) bool {
         return switch (self.current()) {
             .r_angle, .shift_right, .shift_right3, .gt_eq, .shift_right_eq, .shift_right3_eq => true,
