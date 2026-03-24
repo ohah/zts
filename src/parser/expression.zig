@@ -557,7 +557,7 @@ fn parseUnaryExpression(self: *Parser) ParseError2!NodeIndex {
             // module top-level(함수 밖)에서는 top-level await.
             // module 안 일반 함수 body에서는 await을 식별자로 취급 → strict mode 에러.
             // ECMAScript: FunctionBody[~Yield, ~Await] → await은 keyword가 아님.
-            if (self.ctx.in_async or (self.is_module and !self.ctx.in_function)) {
+            if (self.ctx.in_async or (self.is_module and !self.in_namespace and !self.ctx.in_function)) {
                 const start = self.currentSpan().start;
                 try self.advance();
                 const operand = try parseUnaryExpression(self);
@@ -568,7 +568,7 @@ fn parseUnaryExpression(self: *Parser) ParseError2!NodeIndex {
                 });
             }
             // module 안 일반 함수에서 await 사용 → strict mode 위반 에러
-            if (self.is_module and self.ctx.in_function and !self.ctx.in_async) {
+            if (self.is_module and !self.in_namespace and self.ctx.in_function and !self.ctx.in_async) {
                 try self.addError(self.currentSpan(), "'await' is not allowed in non-async function in module code");
             }
             // async 밖 + script mode에서는 식별자로 파싱

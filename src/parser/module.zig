@@ -46,7 +46,8 @@ pub fn parseImportCallArgs(self: *Parser, start: u32) ParseError2!NodeIndex {
 pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     // ECMAScript 15.2: import 선언은 module의 top-level에서만 허용
-    if (!self.is_module) {
+    // namespace body 안에서도 import 허용 (in_namespace)
+    if (!self.is_module and !self.in_namespace) {
         try self.addError(self.currentSpan(), "'import' declaration is only allowed in module code");
     } else if (!self.ctx.is_top_level) {
         try self.addError(self.currentSpan(), "'import' declaration must be at the top level");
@@ -342,7 +343,8 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
     // function 파서에서 확인해야 하므로 여기서 미리 저장한다.
     const had_no_side_effects = self.scanner.token.has_no_side_effects_comment;
     // ECMAScript 15.2: export 선언은 module의 top-level에서만 허용
-    if (!self.is_module) {
+    // namespace body 안에서도 export 허용 (in_namespace)
+    if (!self.is_module and !self.in_namespace) {
         try self.addError(self.currentSpan(), "'export' declaration is only allowed in module code");
     } else if (!self.ctx.is_top_level) {
         try self.addError(self.currentSpan(), "'export' declaration must be at the top level");

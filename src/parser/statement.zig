@@ -347,7 +347,7 @@ fn parseExpressionOrLabeledStatement(self: *Parser) ParseError2!NodeIndex {
                 const esc_text = self.resolveIdentifierText(self.currentSpan());
                 const is_escaped_await = std.mem.eql(u8, esc_text, "await");
                 if (is_escaped_await) {
-                    if (self.is_module or self.ctx.in_async) {
+                    if ((self.is_module and !self.in_namespace) or self.ctx.in_async) {
                         try self.addError(self.currentSpan(), "Escaped reserved word cannot be used as label");
                     }
                 } else {

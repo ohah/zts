@@ -30,6 +30,16 @@ fn parseFunctionBodyOrOverload(self: *Parser) ParseError2!NodeIndex {
         _ = try self.eat(.semicolon);
         return NodeIndex.none;
     }
+    // ambient context (declare)에서는 body가 없어도 됨 — ASI로 처리
+    // 예: `declare function fn()\n function scope() {}`
+    if (self.ctx.in_ambient and self.current() != .l_curly) {
+        return NodeIndex.none;
+    }
+    // TS function overload + ASI: 줄바꿈 뒤에 body가 아닌 것이 오면 overload
+    // 예: `function fn(): void\n function fn(x: number): void {}`
+    if (self.scanner.token.has_newline_before and self.current() != .l_curly) {
+        return NodeIndex.none;
+    }
     return self.parseFunctionBody();
 }
 
@@ -329,7 +339,7 @@ pub fn parseClassWithDecorators(self: *Parser, tag: Tag, decorators: NodeList) P
     var name = NodeIndex.none;
     if (self.current() == .identifier or
         (self.current() == .kw_yield and !self.ctx.in_generator) or
-        (self.current() == .kw_await and !self.ctx.in_async and !self.is_module) or
+        (self.current() == .kw_await and !self.ctx.in_async and (!self.is_module or self.in_namespace)) or
         self.current() == .escaped_keyword or self.current() == .escaped_strict_reserved)
     {
         name = try self.parseBindingIdentifier();
