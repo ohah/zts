@@ -684,6 +684,7 @@ zts --bundle <entry.ts> --splitting --outdir dist  # 코드 스플리팅
 --minify                         출력 압축
 --sourcemap                      소스맵 생성 (.js.map)
 --ascii-only                     non-ASCII를 \uXXXX로 이스케이프
+--quotes=<style>                 문자열 따옴표 (double|single|preserve, 기본: double)
 --drop=console                   console.* 호출 제거
 --drop=debugger                  debugger 문 제거
 --define:KEY=VALUE               글로벌 치환 (예: --define:DEBUG=false)
@@ -818,6 +819,7 @@ main ← feature/lexer-token-enum
 3. ✅ CLI 기본 (파일 → 파싱 → 변환 → 출력) — PR #52
 4. ✅ 소스맵 V3 생성 (VLQ + JSON) — PR #53
 5. ✅ --ascii-only (D031) — PR #54
+    - ✅ --quotes=double|single|preserve (기본: 쌍따옴표, esbuild/oxc 호환) — PR #325
 6. ✅ legal comments (@license, @preserve) — 렉서 single-line 감지 + codegen minify 보존
 
 ### CLI 고급 기능 (PR 단위) — Phase 5 완료
