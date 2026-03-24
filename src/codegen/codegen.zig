@@ -838,9 +838,20 @@ pub const Codegen = struct {
     fn emitBinary(self: *Codegen, node: Node) !void {
         try self.emitNode(node.data.binary.left);
         const op: Kind = @enumFromInt(node.data.binary.flags);
-        try self.writeSpace();
+        // 키워드 연산자(in, instanceof)와 +/- 는 minify에서도 공백 필수
+        // in/instanceof: 공백 없으면 식별자와 붙음 (xinstanceofy)
+        // +/-: 공백 없으면 ++/-- 와 혼동 (a+ +b → a++b)
+        if (op == .kw_in or op == .kw_instanceof or op == .plus or op == .minus) {
+            try self.writeByte(' ');
+        } else {
+            try self.writeSpace();
+        }
         try self.write(op.symbol());
-        try self.writeSpace();
+        if (op == .kw_in or op == .kw_instanceof or op == .plus or op == .minus) {
+            try self.writeByte(' ');
+        } else {
+            try self.writeSpace();
+        }
         try self.emitNode(node.data.binary.right);
     }
 
@@ -2309,7 +2320,7 @@ test "Codegen: arrow single param" {
 test "Codegen: arrow block body" {
     var r = try e2e(std.testing.allocator, "const f = (a, b) => { return a + b; };");
     defer r.deinit();
-    try std.testing.expectEqualStrings("const f=(a,b)=>{return a+b;};", r.output);
+    try std.testing.expectEqualStrings("const f=(a,b)=>{return a + b;};", r.output);
 }
 
 test "Codegen: arrow rest param" {
