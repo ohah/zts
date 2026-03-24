@@ -1877,6 +1877,8 @@ pub const Codegen = struct {
                 try self.write(trimmed);
                 try self.writeByte('"');
             } else {
+                // 빈 expression container {} 는 스킵 (esbuild 호환)
+                if (child.tag == .jsx_expression_container and child.data.unary.operand.isNone()) continue;
                 if (self.options.minify) try self.writeByte(',') else try self.write(", ");
                 try self.emitNode(@enumFromInt(raw_idx));
             }

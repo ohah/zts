@@ -27,6 +27,17 @@ fn parseJSXChildren(self: *Parser) ParseError2!ast_mod.NodeList {
         } else if (self.current() == .l_curly) {
             const expr_start = self.currentSpan().start;
             try self.advance(); // skip {
+            // 빈 expression container: {} — children에서 유효
+            if (self.current() == .r_curly) {
+                const container = try self.ast.addNode(.{
+                    .tag = .jsx_expression_container,
+                    .span = .{ .start = expr_start, .end = self.currentSpan().end },
+                    .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
+                });
+                try self.scratch.append(self.allocator, container);
+                try self.scanner.nextJSXChild();
+                continue;
+            }
             const expr = try self.parseExpression();
             // expect(.r_curly) 대신 수동 체크: JSX children에서는 nextJSXChild()로 스캔해야 함
             if (self.current() != .r_curly) {
