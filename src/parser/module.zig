@@ -338,6 +338,16 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
             },
             .kw_class => try self.parseClassDeclaration(),
             else => blk: {
+                // export default interface Foo {} — TS 전용, 런타임에 제거
+                if (self.current() == .kw_interface) {
+                    _ = try self.parseTsInterfaceDeclaration();
+                    break :blk NodeIndex.none;
+                }
+                // export default abstract class Foo {} — abstract 키워드 처리
+                if (self.current() == .identifier and self.isContextual("abstract")) {
+                    try self.advance(); // skip 'abstract'
+                    break :blk try self.parseClassDeclaration();
+                }
                 // export default async function / export default async function* — 이름 선택적
                 if (self.current() == .kw_async) {
                     const peek = try self.peekNext();
@@ -354,6 +364,8 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
                 break :blk expr;
             },
         };
+        // TS type-only default export (interface) → 전체 제거
+        if (decl.isNone()) return NodeIndex.none;
         return try self.ast.addNode(.{
             .tag = .export_default_declaration,
             .span = .{ .start = start, .end = self.currentSpan().start },
