@@ -44,6 +44,20 @@
 
 ## 구조적 개선 (후순위)
 
+### `"type": "module"` .js 파일을 ESM으로 인식 못함 (minimatch)
+- **증상**: minimatch의 `dist/esm/escape.js`가 스크립트 모드로 파싱 → `export` 에러
+- **원인**: graph.zig에서 package.json `"type": "module"` 체크가 파싱 모드에 반영 안 됨
+- **esbuild/rolldown**: package.json type 필드를 인식하여 .js를 ESM으로 파싱
+
+### Node 내장 서브패스 미해석 (zx)
+- **증상**: `stream/web` 등 Node 내장 모듈의 서브패스를 resolve 못함
+- **원인**: resolver가 `stream`, `fs` 등 bare name만 external 처리하고 서브패스는 미처리
+- **esbuild**: `stream/web`, `fs/promises` 등 서브패스도 자동 external
+
+### cheerio 번들 실행 시 출력 없음
+- **증상**: 번들 성공, 에러 없음, 하지만 `console.log` 출력 안 됨
+- **원인**: 미조사
+
 ### binding_scanner — barrel re-export를 `.local`로 오분류
 - **현상**: `import { X } from './a'; export { X }` 가 `.local` export로 분류됨
 - **영향**: `resolveExportChain`에서 import_bindings를 O(N) 선형 탐색으로 보정
