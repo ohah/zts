@@ -493,8 +493,14 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
                 .data = .{ .unary = .{ .operand = body, .flags = 0 } },
             });
         }
-        // static 뒤에 (나 = 가 오면 static은 메서드/프로퍼티 이름
-        if (next != .l_paren and next != .eq and next != .semicolon) {
+        // static 뒤에 (, =, ;, } 가 오거나 줄바꿈이 있으면 static은 메서드/프로퍼티 이름
+        // 예: class C { static } — "static"이라는 이름의 필드
+        // 예: class C { static = 1 } — "static"이라는 이름의 필드 (초기화)
+        // 예: class C { static\n } — ASI로 "static" 필드
+        if (next != .l_paren and next != .eq and next != .semicolon and
+            next != .r_curly and next != .eof and
+            !(try self.peekNext()).has_newline_before)
+        {
             flags |= 0x01; // static modifier
             try self.advance();
         }

@@ -729,8 +729,46 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                             .data = .{ .extra = me },
                         });
                     }
-                } else if (self.current() == .l_paren) {
-                    // a?.()
+                } else if (self.current() == .l_paren or self.isAtOpeningAngleBracket()) {
+                    // a?.() or a?.<Type>()
+                    // TS type arguments: speculatively parse, skip if followed by (
+                    if (self.isAtOpeningAngleBracket()) {
+                        const saved_scanner = self.saveState();
+                        const saved_nodes_len = self.ast.nodes.items.len;
+                        const saved_extra_len = self.ast.extra_data.items.len;
+                        const saved_scratch = self.saveScratch();
+                        const saved_errors_len = self.errors.items.len;
+
+                        const type_args_ok = ta_blk: {
+                            _ = self.parseTypeArguments() catch {
+                                break :ta_blk false;
+                            };
+                            break :ta_blk (self.current() == .l_paren);
+                        };
+
+                        const scanner_after = if (type_args_ok) self.saveState() else saved_scanner;
+                        self.ast.nodes.items.len = saved_nodes_len;
+                        self.ast.extra_data.items.len = saved_extra_len;
+                        self.restoreScratch(saved_scratch);
+                        self.errors.shrinkRetainingCapacity(saved_errors_len);
+                        self.restoreState(scanner_after);
+                        if (!type_args_ok) {
+                            // type args failed, fall through to a?.b (identifier)
+                            const prop = try parseIdentifierName(self);
+                            {
+                                const prop_end = if (!prop.isNone()) self.ast.getNode(prop).span.end else self.currentSpan().start;
+                                const me = try self.ast.addExtras(&.{ @intFromEnum(expr), @intFromEnum(prop), 1 }); // 1 = optional
+                                expr = try self.ast.addNode(.{
+                                    .tag = .static_member_expression,
+                                    .span = .{ .start = expr_start, .end = prop_end },
+                                    .data = .{ .extra = me },
+                                });
+                            }
+                            after_optional_chain = true;
+                            continue;
+                        }
+                    }
+                    // Now at '(' — parse call
                     try self.advance();
                     const arg_list = try parseArgumentList(self);
                     var oc_flags: u32 = ast_mod.CallFlags.optional_chain;

@@ -202,6 +202,14 @@ pub fn parseStatement(self: *Parser) ParseError2!NodeIndex {
                 break :blk self.parseTsDeclareStatement();
             } else if (std.mem.eql(u8, text, "abstract")) {
                 break :blk self.parseTsAbstractClass();
+            } else if (std.mem.eql(u8, text, "global")) {
+                // global { } inside namespace/module — global augmentation
+                const next = try self.peekNextKind();
+                if (next == .l_curly) {
+                    try self.advance(); // skip 'global'
+                    _ = try self.parseTsNamespaceBlock();
+                    break :blk NodeIndex.none;
+                }
             }
             // 위 조건에 매치되지 않으면 expression 또는 labeled statement로 파싱
             break :blk parseExpressionOrLabeledStatement(self);
@@ -475,6 +483,15 @@ fn parseVariableDeclarator(self: *Parser) ParseError2!NodeIndex {
 
     // TS 타입 어노테이션 (: Type)
     const type_ann = try self.tryParseTypeAnnotation();
+
+    // TS definite assignment assertion AFTER type: let x: number! = y
+    // (다른 형태인 x!: Type 는 위에서 이미 처리)
+    // 줄바꿈 후 !는 ASI 경계이므로 definite assignment가 아님
+    if (self.current() == .bang and !self.scanner.token.has_newline_before and
+        !type_ann.isNone() and !name.isNone() and self.ast.getNode(name).tag == .binding_identifier)
+    {
+        _ = try self.eat(.bang);
+    }
 
     // 이니셜라이저 — `in` 연산자를 복원한다 (ECMAScript: Initializer[+In]).
     // for 초기화절에서 allow_in=false여도, 이니셜라이저 안에서는 `in`이 연산자로 동작해야 한다.
