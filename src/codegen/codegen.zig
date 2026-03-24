@@ -1871,7 +1871,10 @@ pub const Codegen = struct {
             const child = self.ast.getNode(@enumFromInt(raw_idx));
             if (child.tag == .jsx_text) {
                 const text = self.ast.source[child.span.start..child.span.end];
-                const trimmed = std.mem.trim(u8, text, " \t\n\r");
+                // JSX text: 줄바꿈 포함 공백은 trim, 줄바꿈 없는 공백은 유지
+                // esbuild 호환: 줄바꿈이 있으면 해당 시퀀스를 제거/공백으로 치환
+                const has_newline = std.mem.indexOfAny(u8, text, "\n\r") != null;
+                const trimmed = if (has_newline) std.mem.trim(u8, text, " \t\n\r") else text;
                 if (trimmed.len == 0) continue;
                 if (self.options.minify) try self.write(",\"") else try self.write(", \"");
                 try self.write(trimmed);
