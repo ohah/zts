@@ -1027,9 +1027,8 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
         try self.scratch.append(self.allocator, inner);
         while (try self.eat(.comma)) {
             if (self.current() == .r_paren) break;
-            // 콤마 뒤에 함수 타입 파라미터 패턴이 오면 parseTypeMemberParam으로 파싱
-            // destructuring ([...], {...}), rest (...), identifier: / identifier? 패턴
-            if (self.current() == .dot3 or self.current() == .l_bracket or self.current() == .l_curly or isFunctionTypeParam(self)) {
+            // 함수 타입 파라미터 패턴: rest (...) 또는 isFunctionTypeParam (identifier:/?, [...], {...})
+            if (self.current() == .dot3 or isFunctionTypeParam(self)) {
                 const param = try parseTypeMemberParam(self);
                 try self.scratch.append(self.allocator, param);
                 if (self.current() != .comma) break;
