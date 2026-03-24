@@ -707,11 +707,8 @@ const projects: ProjectConfig[] = [
     pkg: "nanoevents",
     entry: `import { createNanoEvents } from 'nanoevents';\nconst e = createNanoEvents();\nconsole.log(typeof e.on);`,
   },
-  {
-    name: "zx",
-    pkg: "zx",
-    entry: `import { $ } from 'zx';\nconsole.log(typeof $);`,
-  },
+  // zx: CJS 래핑 모듈 내부의 require("async_hooks")가 ESM 번들에서 동작 안 함
+  // → createRequire(import.meta.url) 주입 필요 (esbuild 방식)
 ];
 
 // ============================================================

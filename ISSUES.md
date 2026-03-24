@@ -35,3 +35,14 @@
 - linker workaround 제거
 
 ### ~~ESM→CJS `export *` 지원~~ ✅ PR #314
+
+## 미해결
+
+### zx — CJS 래핑 모듈 내부 require()가 ESM 번들에서 동작 안 함
+- **증상**: `ReferenceError: require is not defined in ES module scope`
+- **원인**: `__commonJS` 래핑된 모듈이 Node 빌트인(`async_hooks`)을 `require()`로 호출하는데, Node.js가 번들을 ESM으로 파싱하면 `require`가 없음
+- **해결 방향**: esbuild처럼 `createRequire(import.meta.url)` 주입하여 CJS 래퍼 내부에서 require 사용 가능하게
+
+### zod v4 — 순환 참조 + `export *` 리네이밍 버그
+- **증상**: `SyntaxError: Unexpected token '*'` — `export *`의 `*`가 코드에 리터럴로 남음
+- **원인**: zod v4의 순환 참조(`schemas.js`)와 `export *` 처리가 결합되면서 linker의 리네이밍이 깨짐
