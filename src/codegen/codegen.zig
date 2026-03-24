@@ -603,9 +603,9 @@ pub const Codegen = struct {
                 try self.emitNode(@enumFromInt(raw_idx));
             }
             self.indent_level -= 1;
-            try self.writeNewline();
-            try self.writeIndent();
         }
+        try self.writeNewline();
+        try self.writeIndent();
         try self.writeByte('}');
     }
 
@@ -838,29 +838,35 @@ pub const Codegen = struct {
     fn emitBinary(self: *Codegen, node: Node) !void {
         try self.emitNode(node.data.binary.left);
         const op: Kind = @enumFromInt(node.data.binary.flags);
-        try self.writeByte(' ');
+        try self.writeSpace();
         try self.write(op.symbol());
-        try self.writeByte(' ');
+        try self.writeSpace();
         try self.emitNode(node.data.binary.right);
     }
 
     fn emitAssignment(self: *Codegen, node: Node) !void {
         try self.emitNode(node.data.binary.left);
+        try self.writeSpace();
         if (node.data.binary.flags != 0) {
             const op: Kind = @enumFromInt(node.data.binary.flags);
             try self.write(op.symbol());
         } else {
             try self.writeByte('=');
         }
+        try self.writeSpace();
         try self.emitNode(node.data.binary.right);
     }
 
     fn emitConditional(self: *Codegen, node: Node) !void {
         const t = node.data.ternary;
         try self.emitNode(t.a);
+        try self.writeSpace();
         try self.writeByte('?');
+        try self.writeSpace();
         try self.emitNode(t.b);
+        try self.writeSpace();
         try self.writeByte(':');
+        try self.writeSpace();
         try self.emitNode(t.c);
     }
 
@@ -1189,7 +1195,9 @@ pub const Codegen = struct {
         } else {
             try self.write("()");
         }
+        try self.writeSpace();
         try self.write("=>");
+        try self.writeSpace();
         try self.emitNode(body);
     }
 
@@ -1711,8 +1719,15 @@ pub const Codegen = struct {
             return;
         }
         try self.write("export default ");
-        try self.emitNode(node.data.unary.operand);
-        try self.writeByte(';');
+        const inner_idx = node.data.unary.operand;
+        try self.emitNode(inner_idx);
+        // class/function 선언 뒤에는 세미콜론 불필요
+        if (!inner_idx.isNone()) {
+            const inner_tag = self.ast.getNode(inner_idx).tag;
+            if (inner_tag != .class_declaration and inner_tag != .function_declaration) {
+                try self.writeByte(';');
+            }
+        }
     }
 
     /// `var <name> = <inner>;` 출력 (export default 변환용).
@@ -1759,7 +1774,7 @@ pub const Codegen = struct {
         const children_start = self.ast.extra_data.items[e + 3];
         const children_len = self.ast.extra_data.items[e + 4];
 
-        try self.write("React.createElement(");
+        try self.write("/* @__PURE__ */ React.createElement(");
         try self.emitJSXTagName(tag_name_idx);
         try self.emitJSXAttrs(attrs_start, attrs_len);
         try self.emitJSXChildren(children_start, children_len);
@@ -1768,7 +1783,7 @@ pub const Codegen = struct {
 
     /// <>{children}</> → React.createElement(React.Fragment,null,...children)
     fn emitJSXFragment(self: *Codegen, node: Node) !void {
-        try self.write("React.createElement(React.Fragment,null");
+        try self.write("/* @__PURE__ */ React.createElement(React.Fragment,null");
         const list = node.data.list;
         try self.emitJSXChildren(list.start, list.len);
         try self.writeByte(')');
@@ -2294,7 +2309,7 @@ test "Codegen: arrow single param" {
 test "Codegen: arrow block body" {
     var r = try e2e(std.testing.allocator, "const f = (a, b) => { return a + b; };");
     defer r.deinit();
-    try std.testing.expectEqualStrings("const f=(a,b)=>{return a + b;};", r.output);
+    try std.testing.expectEqualStrings("const f=(a,b)=>{return a+b;};", r.output);
 }
 
 test "Codegen: arrow rest param" {
@@ -2437,7 +2452,7 @@ test "Codegen: optional chaining" {
 test "Codegen: nullish coalescing" {
     var r = try e2e(std.testing.allocator, "const x = a ?? b;");
     defer r.deinit();
-    try std.testing.expectEqualStrings("const x=a ?? b;", r.output);
+    try std.testing.expectEqualStrings("const x=a??b;", r.output);
 }
 
 test "Codegen: optional chaining method call" {
@@ -2500,7 +2515,7 @@ test "Codegen: export named" {
 test "Codegen: export default function" {
     var r = try e2e(std.testing.allocator, "export default function foo() {}");
     defer r.deinit();
-    try std.testing.expectEqualStrings("export default function foo(){};", r.output);
+    try std.testing.expectEqualStrings("export default function foo(){}", r.output);
 }
 
 test "Codegen: export all re-export" {
@@ -2518,19 +2533,19 @@ test "Codegen: export all re-export" {
 test "Codegen: JSX self-closing" {
     var r = try e2eJSX(std.testing.allocator, "const x = <div />;");
     defer r.deinit();
-    try std.testing.expectEqualStrings("const x=React.createElement(\"div\",null);", r.output);
+    try std.testing.expectEqualStrings("const x=/* @__PURE__ */ React.createElement(\"div\",null);", r.output);
 }
 
 test "Codegen: JSX element with children" {
     var r = try e2eJSX(std.testing.allocator, "const x = <div>hello</div>;");
     defer r.deinit();
-    try std.testing.expectEqualStrings("const x=React.createElement(\"div\",null,\"hello\");", r.output);
+    try std.testing.expectEqualStrings("const x=/* @__PURE__ */ React.createElement(\"div\",null,\"hello\");", r.output);
 }
 
 test "Codegen: JSX fragment" {
     var r = try e2eJSX(std.testing.allocator, "const x = <>hello</>;");
     defer r.deinit();
-    try std.testing.expectEqualStrings("const x=React.createElement(React.Fragment,null,\"hello\");", r.output);
+    try std.testing.expectEqualStrings("const x=/* @__PURE__ */ React.createElement(React.Fragment,null,\"hello\");", r.output);
 }
 
 // ============================================================
@@ -2627,7 +2642,7 @@ test "Codegen formatted: function declaration" {
 test "Codegen formatted: class with method" {
     var r = try e2eWithOptions(std.testing.allocator, "class Foo { bar() {} }", .{});
     defer r.deinit();
-    try std.testing.expectEqualStrings("class Foo {\n\tbar() {}\n}\n", r.output);
+    try std.testing.expectEqualStrings("class Foo {\n\tbar() {\n\t}\n}\n", r.output);
 }
 
 test "Codegen formatted: spaces indent" {
