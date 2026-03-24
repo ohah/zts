@@ -453,10 +453,20 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
     self.restoreScratch(deco_scratch_top);
 
     // TS 접근 제어자 (public/private/protected) + readonly + abstract + override + declare
+    // 주의: 수식어 뒤에 (, :, =, ;, }, ! 가 오면 수식어가 아니라 멤버 이름이다.
+    // 예: class C { override() {} } → 'override'는 메서드 이름
     while (self.current() == .kw_public or self.current() == .kw_private or
         self.current() == .kw_protected or
         self.isContextualAny(ts_class_modifiers))
     {
+        const peek_kind = try self.peekNextKind();
+        // 수식어 뒤에 멤버 이름이 될 수 없는 토큰이 오면 → 이 단어가 멤버 이름
+        if (peek_kind == .l_paren or peek_kind == .colon or peek_kind == .eq or
+            peek_kind == .semicolon or peek_kind == .r_curly or peek_kind == .bang or
+            peek_kind == .question)
+        {
+            break;
+        }
         try self.advance(); // skip modifier (스트리핑 대상이므로 AST에 저장 불필요)
     }
 
@@ -518,10 +528,18 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
     }
 
     // static 뒤의 TS modifier도 소비 (static readonly x 등)
+    // 주의: 첫 번째 루프와 동일하게 멤버 이름으로 사용되는 경우를 처리
     while (self.current() == .kw_public or self.current() == .kw_private or
         self.current() == .kw_protected or
         self.isContextualAny(ts_class_modifiers))
     {
+        const peek_kind2 = try self.peekNextKind();
+        if (peek_kind2 == .l_paren or peek_kind2 == .colon or peek_kind2 == .eq or
+            peek_kind2 == .semicolon or peek_kind2 == .r_curly or peek_kind2 == .bang or
+            peek_kind2 == .question)
+        {
+            break;
+        }
         try self.advance();
     }
 
@@ -529,11 +547,13 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
     // accessor는 modifier이므로 get/set보다 먼저 파싱.
     // `accessor get(){}` → "get"이라는 이름의 accessor field (get은 메서드 이름).
     // `accessor()`, `accessor;`, `accessor =` 는 "accessor"라는 이름의 일반 멤버.
+    // `accessor\n a = 42` → "accessor"라는 필드 + "a"라는 필드 (줄바꿈 = ASI).
     var is_accessor = false;
     if (self.current() == .kw_accessor) {
-        const next = try self.peekNextKind();
-        if (next != .l_paren and next != .eq and next != .semicolon and
-            next != .r_curly and next != .eof)
+        const next = try self.peekNext();
+        if (!next.has_newline_before and
+            next.kind != .l_paren and next.kind != .eq and next.kind != .semicolon and
+            next.kind != .r_curly and next.kind != .eof)
         {
             is_accessor = true;
             try self.advance(); // skip 'accessor'
@@ -750,18 +770,25 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
     _ = try self.tryParseTypeAnnotation();
 
     // 프로퍼티 (= 이니셜라이저) — class field에서 arguments 사용 금지
+    // ECMAScript: Initializer[+In, ~Yield, ~Await] — yield/await는 키워드가 아닌 식별자로 취급
     var init_val = NodeIndex.none;
     if (try self.eat(.eq)) {
         const saved_in_class_field = self.in_class_field;
         const saved_new_target = self.allow_new_target;
         const saved_super_property = self.allow_super_property;
+        const saved_in_async = self.ctx.in_async;
+        const saved_in_generator = self.ctx.in_generator;
         self.in_class_field = true;
         self.allow_new_target = true; // class field에서 new.target 허용 (ECMAScript 15.7.15)
         self.allow_super_property = true; // class field에서 super.prop 허용 (ECMAScript 15.7.5)
+        self.ctx.in_async = false; // class field: ~Await (await는 식별자)
+        self.ctx.in_generator = false; // class field: ~Yield (yield는 식별자)
         init_val = try self.parseAssignmentExpression();
         self.in_class_field = saved_in_class_field;
         self.allow_new_target = saved_new_target;
         self.allow_super_property = saved_super_property;
+        self.ctx.in_async = saved_in_async;
+        self.ctx.in_generator = saved_in_generator;
     }
     // class field 끝에서 ASI 규칙 적용: 같은 줄에 다른 멤버가 오면 에러
     try self.expectSemicolon();

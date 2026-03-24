@@ -314,8 +314,12 @@ fn isUsingDeclarationStart(self: *Parser) ParseError2!bool {
 }
 
 /// `await` + `using` + identifier (줄바꿈 없이) → AwaitUsingDeclaration
+/// module top-level에서도 await using이 허용된다 (top-level await).
 fn isAwaitUsingDeclarationStart(self: *Parser) ParseError2!bool {
-    if (!self.ctx.in_async) return false;
+    // await은 async 함수 내부 또는 module top-level(함수 밖)에서만 유효
+    const is_await_context = self.ctx.in_async or
+        (self.is_module and !self.in_namespace and !self.ctx.in_function);
+    if (!is_await_context) return false;
     const next = try self.peekNext();
     if (next.has_newline_before or next.kind != .kw_using) return false;
     // await using 뒤에 identifier가 와야 함 — 더 앞은 볼 수 없으므로 true 반환

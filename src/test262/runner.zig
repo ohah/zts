@@ -90,6 +90,7 @@ pub fn parseMetadata(source: []const u8) TestMetadata {
     // 간이 YAML 파싱 (line-by-line)
     // 정식 YAML 파서가 아니라 Test262 메타데이터에 필요한 최소한만 파싱
     var in_negative = false;
+    var in_flags = false;
     var lines = mem.splitScalar(u8, yaml_block, '\n');
 
     while (lines.next()) |line| {
@@ -98,6 +99,7 @@ pub fn parseMetadata(source: []const u8) TestMetadata {
         // negative: 블록 진입
         if (mem.startsWith(u8, trimmed, "negative:")) {
             in_negative = true;
+            in_flags = false;
             continue;
         }
 
@@ -124,7 +126,9 @@ pub fn parseMetadata(source: []const u8) TestMetadata {
         }
 
         // flags: [module], flags: [onlyStrict], flags: [noStrict]
+        // YAML 다중행도 지원: `flags:\n  - module\n  - noStrict`
         if (mem.startsWith(u8, trimmed, "flags:")) {
+            in_flags = true;
             if (mem.indexOf(u8, trimmed, "module") != null) {
                 meta.is_module = true;
             }
@@ -135,6 +139,20 @@ pub fn parseMetadata(source: []const u8) TestMetadata {
                 meta.is_no_strict = true;
             }
             in_negative = false;
+        } else if (in_flags) {
+            // YAML 리스트 항목: `  - module`, `  - noStrict` 등
+            if (mem.startsWith(u8, trimmed, "- ") or mem.startsWith(u8, trimmed, "-\t")) {
+                const flag_value = mem.trim(u8, trimmed[1..], " \t-");
+                if (mem.eql(u8, flag_value, "module")) {
+                    meta.is_module = true;
+                } else if (mem.eql(u8, flag_value, "onlyStrict")) {
+                    meta.is_only_strict = true;
+                } else if (mem.eql(u8, flag_value, "noStrict")) {
+                    meta.is_no_strict = true;
+                }
+            } else {
+                in_flags = false;
+            }
         }
     }
 

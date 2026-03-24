@@ -73,10 +73,11 @@ pub fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
     }
 
     // async 메서드 shorthand: { async foo() {} }
+    // 주의: { async() {} }는 'async'라는 이름의 일반 메서드 (async 수식어가 아님).
     if (self.current() == .kw_async) {
         const peek = try self.peekNext();
         if (peek.kind != .colon and peek.kind != .comma and
-            peek.kind != .r_curly and !peek.has_newline_before)
+            peek.kind != .r_curly and peek.kind != .l_paren and !peek.has_newline_before)
         {
             var method_flags: u16 = 0x08; // async
             try self.advance(); // skip 'async'

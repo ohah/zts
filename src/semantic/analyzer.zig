@@ -111,6 +111,13 @@ pub const SemanticAnalyzer = struct {
     /// resolveIdentifier/declareSymbol에서 채워진다.
     symbol_ids: std.ArrayList(?u32),
 
+    /// Annex B: if/else/labeled body에서 function declaration을 만나면
+    /// var hoisting conflict check를 건너뛴다.
+    /// sloppy mode에서 `if (true) function f() {}` 같은 구문이 let/const와 충돌하지 않도록 한다.
+    /// ECMAScript B.3.2/B.3.3: "If replacing the FunctionDeclaration with a VariableStatement
+    /// would produce an Early Error, the extension is not applied."
+    in_annex_b_context: bool = false,
+
     const PrivateRef = struct {
         name: []const u8,
         span: Span,
@@ -432,35 +439,45 @@ pub const SemanticAnalyzer = struct {
             break :blk self.findVarScope();
         } else self.current_scope;
 
+        // Annex B 예외: if/else body의 function declaration은 sloppy mode에서
+        // 모든 재선언/호이스팅 충돌 검사를 건너뛴다.
+        // ECMAScript B.3.2/B.3.3: "If replacing the FunctionDeclaration with a VariableStatement
+        // would produce an Early Error, the extension is not applied" — 에러가 아니라 무시.
+        const is_annex_b_fn = self.in_annex_b_context and kind.isFunctionLike();
+
         // 재선언 검증: 같은 스코프에서 같은 이름의 심볼이 있는지 확인
-        if (self.findSymbolInScope(target_scope, name_text)) |existing| {
-            if (!self.canRedeclare(existing.kind, kind, target_scope)) {
-                try self.addError(decl_span, name_text);
-                return;
+        if (!is_annex_b_fn) {
+            if (self.findSymbolInScope(target_scope, name_text)) |existing| {
+                if (!self.canRedeclare(existing.kind, kind, target_scope)) {
+                    try self.addError(decl_span, name_text);
+                    return;
+                }
             }
         }
 
         // var/function-like의 경우 블록 스코프 체인에서도 충돌 체크
         // let x; { var x; } → 에러 (var가 호이스팅되어 let과 같은 스코프에 도달)
-        if (kind == .variable_var or kind.isFunctionLike()) {
+        if (!is_annex_b_fn and (kind == .variable_var or kind.isFunctionLike())) {
             if (try self.checkVarHoistingConflict(target_scope, name_text, decl_span)) return;
         }
 
         // 역방향: let/const/class/function-like 선언 시,
         // 같은 block 경로에서 선언된 var가 있으면 충돌 (LexicallyDeclaredNames ∩ VarDeclaredNames)
         // { var f; let f; } → 에러, but { let f; } 밖의 var f → 충돌 아님
-        if (kind.isBlockScoped() or (kind.isFunctionLike() and !target_scope.isNone() and
-            !self.scopes.items[target_scope.toIndex()].kind.isVarScope()))
+        if (!is_annex_b_fn and (kind.isBlockScoped() or (kind.isFunctionLike() and !target_scope.isNone() and
+            !self.scopes.items[target_scope.toIndex()].kind.isVarScope())))
         {
             if (try self.checkLexicalVarConflict(target_scope, name_text, decl_span)) return;
         }
 
         const sym_index = self.symbols.items.len;
+        var decl_flags = kind.declFlags();
+        if (is_annex_b_fn) decl_flags.is_annex_b_function = true;
         try self.symbols.append(self.allocator, .{
             .name = name_span,
             .scope_id = target_scope,
             .kind = kind,
-            .decl_flags = kind.declFlags(),
+            .decl_flags = decl_flags,
             .declaration_span = decl_span,
             .origin_scope = self.current_scope,
         });
@@ -564,6 +581,28 @@ pub const SemanticAnalyzer = struct {
             // 특수 케이스: parameter + parameter → non-strict에서 허용 (function f(a, a) {})
             if (existing == .parameter and new == .parameter and !self.is_strict_mode) {
                 return true;
+            }
+            // 특수 케이스: function-like + function-like → var scope + sloppy mode에서 허용.
+            // ECMAScript: script/eval의 top-level에서 function/generator/async 선언은
+            // var-like 바인딩이므로 같은 이름 재선언이 가능하다 (나중 선언이 덮어씀).
+            if (existing.isFunctionLike() and new.isFunctionLike() and !self.is_strict_mode) {
+                const in_var_scope = if (!target_scope.isNone())
+                    self.scopes.items[target_scope.toIndex()].kind.isVarScope()
+                else
+                    false;
+                if (in_var_scope) return true;
+            }
+            // 특수 케이스: var + function-like, function-like + var → var scope + sloppy mode에서 허용.
+            if ((existing == .variable_var and new.isFunctionLike()) or
+                (existing.isFunctionLike() and new == .variable_var))
+            {
+                if (!self.is_strict_mode) {
+                    const in_var_scope = if (!target_scope.isNone())
+                        self.scopes.items[target_scope.toIndex()].kind.isVarScope()
+                    else
+                        false;
+                    if (in_var_scope) return true;
+                }
             }
             return false;
         }
@@ -740,8 +779,13 @@ pub const SemanticAnalyzer = struct {
             .throw_statement => try self.visitNode(node.data.unary.operand),
             .if_statement => {
                 try self.visitNode(node.data.ternary.a);
+                // Annex B: if/else body에서 function declaration은 sloppy mode에서
+                // var hoisting conflict check를 건너뛴다.
+                const saved_annex_b = self.in_annex_b_context;
+                if (!self.is_strict_mode) self.in_annex_b_context = true;
                 try self.visitNode(node.data.ternary.b);
                 try self.visitNode(node.data.ternary.c);
+                self.in_annex_b_context = saved_annex_b;
             },
             .while_statement, .do_while_statement => {
                 try self.visitNode(node.data.binary.left);
@@ -1803,6 +1847,9 @@ pub const SemanticAnalyzer = struct {
             if (@intFromEnum(sym.scope_id) != @intFromEnum(self.current_scope)) continue;
             // Only block-scoped (let/const/class) and function-like declarations conflict
             if (!sym.kind.isBlockScoped() and !sym.kind.isFunctionLike()) continue;
+            // Annex B: if/else body의 function declaration은 catch parameter와 충돌하지 않는다.
+            // ECMAScript B.3.5: var-like hoisting이 적용되는 함수는 catch parameter를 shadow 가능.
+            if (sym.decl_flags.is_annex_b_function) continue;
             const sym_name = self.ast.source[sym.name.start..sym.name.end];
             for (catch_names) |catch_span| {
                 const catch_name = self.ast.source[catch_span.start..catch_span.end];
