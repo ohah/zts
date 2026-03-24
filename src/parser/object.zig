@@ -103,8 +103,8 @@ pub fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
         try self.addError(self.ast.getNode(key).span, "Private identifier is not allowed as object property key");
     }
 
-    // 메서드 shorthand: { foo() {} }
-    if (self.current() == .l_paren) {
+    // 메서드 shorthand: { foo() {} } 또는 { foo<T>() {} }
+    if (self.current() == .l_paren or self.isAtOpeningAngleBracket()) {
         return parseObjectMethodBody(self, start, key, 0);
     }
 
@@ -168,6 +168,11 @@ pub fn parseObjectMethodBody(self: *Parser, start: u32, key: NodeIndex, flags: u
     const saved_ctx = self.enterFunctionContext((flags & 0x08) != 0, (flags & 0x10) != 0);
     // ECMAScript 12.3.7: 객체 리터럴 메서드에서도 super.prop 허용
     self.allow_super_property = true;
+
+    // TS 제네릭 파라미터: { foo<T>() {} }
+    if (self.isAtOpeningAngleBracket()) {
+        _ = try self.parseTsTypeParameterDeclaration();
+    }
 
     try self.expect(.l_paren);
     self.in_formal_parameters = true;

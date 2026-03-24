@@ -623,6 +623,13 @@ pub const Parser = struct {
             .object_assignment_target,
             => true,
 
+            // 6b) TS as/satisfies expression — 내부 expression을 assignment target으로 검증
+            // (z as any) = 1 → z가 valid target이면 OK (esbuild/TS 호환)
+            .ts_as_expression, .ts_satisfies_expression => {
+                const inner = node.data.binary.left;
+                return try self.coverExpressionToAssignmentTarget(inner, is_top);
+            },
+
             // 7) meta_property (import.meta, new.target) — 절대로 assignment target이 될 수 없음.
             //    is_top 여부와 무관하게 항상 에러. else 분기는 is_top=false일 때 에러를 내지 않으므로
             //    destructuring 내부([import.meta] = arr)에서 잘못 통과하는 것을 방지.

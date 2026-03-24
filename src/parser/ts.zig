@@ -1168,11 +1168,38 @@ fn parseTypeMember(self: *Parser) ParseError2!NodeIndex {
     }
 
     // 2. 컨스트럭트 시그니처: new ( 또는 new <
+    //    named construct signature: new bar<T>(): R (esbuild 호환)
     if (self.current() == .kw_new) {
         const next = try self.peekNextKind();
         if (next == .l_paren or next == .l_angle) {
             try self.advance(); // skip 'new'
             return parseSignatureMember(self, start, true);
+        }
+        // new identifier( 또는 new identifier< → named construct signature
+        // `new` 뒤에 이름이 오는 패턴. new를 건너뛰고 이름 + 시그니처로 파싱.
+        if (next == .identifier or next == .escaped_keyword) {
+            try self.advance(); // skip 'new'
+            const key = try self.parsePropertyKey();
+            _ = try self.eat(.question); // optional
+            var type_params = NodeIndex.none;
+            if (self.isAtOpeningAngleBracket()) {
+                type_params = try parseTsTypeParameterDeclaration(self);
+            }
+            try self.expect(.l_paren);
+            const params = try parseTypeMemberParamList(self);
+            const return_type = try tryParseReturnType(self);
+            const extra = try self.ast.addExtras(&.{
+                @intFromEnum(key),
+                @intFromEnum(type_params),
+                params.start,
+                params.len,
+                @intFromEnum(return_type),
+            });
+            return try self.ast.addNode(.{
+                .tag = .ts_method_signature,
+                .span = .{ .start = start, .end = self.currentSpan().start },
+                .data = .{ .extra = extra },
+            });
         }
     }
 
@@ -1651,10 +1678,16 @@ fn parseMappedType(self: *Parser) ParseError2!NodeIndex {
 }
 
 /// import("module").Type — import type (oxc parse_ts_import_type)
+/// import("module", { assert: { type: "json" } }).Type — import attributes (TS 5.3+)
 fn parseImportType(self: *Parser, start: u32) ParseError2!NodeIndex {
     try self.advance(); // skip 'import'
     try self.expect(.l_paren);
     const module_type = try parseType(self);
+    // import attributes: import("module", { assert: { ... } })
+    // 2번째 인자는 옵션 객체. 타입 스트리핑에서 제거되므로 파싱만 하고 버린다.
+    if (try self.eat(.comma)) {
+        _ = try parseType(self);
+    }
     try self.expect(.r_paren);
     // 선택적 .member 접근
     var result = try self.ast.addNode(.{
