@@ -23,6 +23,13 @@ const ParseError2 = @import("parser.zig").ParseError2;
 /// TS class member modifier (contextual keywords). parseClassMember에서 2번 사용.
 const ts_class_modifiers: []const []const u8 = &.{ "readonly", "abstract", "override", "declare" };
 
+/// 수식어 뒤에 이 토큰이 오면 수식어가 아니라 멤버 이름으로 판단.
+/// 예: class C { override() {} } → 'override'는 메서드 이름.
+fn isModifierTerminator(kind: Kind) bool {
+    return kind == .l_paren or kind == .colon or kind == .eq or
+        kind == .semicolon or kind == .r_curly or kind == .bang or kind == .question;
+}
+
 /// 함수 body 또는 TS 오버로드 시그니처 (세미콜론으로 끝나면 body 없음)
 fn parseFunctionBodyOrOverload(self: *Parser) ParseError2!NodeIndex {
     // TS function overload: 세미콜론 또는 EOF로 body 없음
@@ -459,14 +466,7 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         self.current() == .kw_protected or
         self.isContextualAny(ts_class_modifiers))
     {
-        const peek_kind = try self.peekNextKind();
-        // 수식어 뒤에 멤버 이름이 될 수 없는 토큰이 오면 → 이 단어가 멤버 이름
-        if (peek_kind == .l_paren or peek_kind == .colon or peek_kind == .eq or
-            peek_kind == .semicolon or peek_kind == .r_curly or peek_kind == .bang or
-            peek_kind == .question)
-        {
-            break;
-        }
+        if (isModifierTerminator(try self.peekNextKind())) break;
         try self.advance(); // skip modifier (스트리핑 대상이므로 AST에 저장 불필요)
     }
 
@@ -533,13 +533,7 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         self.current() == .kw_protected or
         self.isContextualAny(ts_class_modifiers))
     {
-        const peek_kind2 = try self.peekNextKind();
-        if (peek_kind2 == .l_paren or peek_kind2 == .colon or peek_kind2 == .eq or
-            peek_kind2 == .semicolon or peek_kind2 == .r_curly or peek_kind2 == .bang or
-            peek_kind2 == .question)
-        {
-            break;
-        }
+        if (isModifierTerminator(try self.peekNextKind())) break;
         try self.advance();
     }
 
