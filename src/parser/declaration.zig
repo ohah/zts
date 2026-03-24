@@ -462,18 +462,26 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
     // TS 접근 제어자 (public/private/protected) + readonly + abstract + override + declare
     // 주의: 수식어 뒤에 (, :, =, ;, }, ! 가 오면 수식어가 아니라 멤버 이름이다.
     // 예: class C { override() {} } → 'override'는 메서드 이름
+    // abstract/declare 플래그: 트랜스포머에서 해당 멤버를 완전히 제거하기 위해 저장.
+    // bit5=abstract (0x20), bit6=declare (0x40)
+    var flags: u16 = 0;
     while (self.current() == .kw_public or self.current() == .kw_private or
         self.current() == .kw_protected or
         self.isContextualAny(ts_class_modifiers))
     {
         if (isModifierTerminator(try self.peekNextKind())) break;
+        // abstract/declare 수식어는 플래그에 기록 (런타임에 제거해야 하므로)
+        if (self.current() == .identifier) {
+            const text = self.scanner.source[self.scanner.token.span.start..self.scanner.token.span.end];
+            if (std.mem.eql(u8, text, "abstract")) flags |= 0x20;
+            if (std.mem.eql(u8, text, "declare")) flags |= 0x40;
+        }
         try self.advance(); // skip modifier (스트리핑 대상이므로 AST에 저장 불필요)
     }
 
     // static 키워드 (선택)
     // static은 멤버 이름으로도 사용 가능: class C { static() {} }
     // static 뒤에 {, (, = 가 오면 이름으로 취급
-    var flags: u16 = 0;
     if (self.current() == .kw_static) {
         const next = try self.peekNextKind();
         if (next == .l_curly) {
@@ -534,6 +542,11 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         self.isContextualAny(ts_class_modifiers))
     {
         if (isModifierTerminator(try self.peekNextKind())) break;
+        if (self.current() == .identifier) {
+            const text = self.scanner.source[self.scanner.token.span.start..self.scanner.token.span.end];
+            if (std.mem.eql(u8, text, "abstract")) flags |= 0x20;
+            if (std.mem.eql(u8, text, "declare")) flags |= 0x40;
+        }
         try self.advance();
     }
 
