@@ -814,8 +814,14 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
                 .data = .{ .none = 0 },
             });
         },
-        .decimal, .float, .hex, .string_literal,
-        .decimal_bigint, .hex_bigint, .octal_bigint, .binary_bigint,
+        .decimal,
+        .float,
+        .hex,
+        .string_literal,
+        .decimal_bigint,
+        .hex_bigint,
+        .octal_bigint,
+        .binary_bigint,
         => {
             try self.advance();
             return try self.ast.addNode(.{
