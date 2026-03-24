@@ -1667,7 +1667,7 @@ fn parseTSTypeAssertion(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     try self.advance(); // skip <
     _ = try self.parseType();
-    try self.expect(.r_angle);
+    try self.expectClosingAngleBracket();
     // oxc: parse_unary_expression_or_higher — <T>-x, <T>await foo() 등 지원
     const expr = try parseUnaryExpression(self);
     return try self.ast.addNode(.{

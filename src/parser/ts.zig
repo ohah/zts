@@ -319,7 +319,7 @@ pub fn parseTsTypeParameterDeclaration(self: *Parser) ParseError2!NodeIndex {
     try self.advance(); // skip <
 
     const scratch_top = self.saveScratch();
-    while (self.current() != .r_angle and self.current() != .eof) {
+    while (!self.isAtClosingAngleBracket() and self.current() != .eof) {
         const loop_guard_pos = self.scanner.token.span.start;
         const param = try parseTsTypeParameter(self);
         try self.scratch.append(self.allocator, param);
@@ -327,7 +327,7 @@ pub fn parseTsTypeParameterDeclaration(self: *Parser) ParseError2!NodeIndex {
 
         if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
-    try self.expect(.r_angle);
+    try self.expectClosingAngleBracket();
 
     const params = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
@@ -840,7 +840,7 @@ pub fn parseTypeArguments(self: *Parser) ParseError2!NodeIndex {
     try self.advance(); // skip <
 
     const scratch_top = self.saveScratch();
-    while (self.current() != .r_angle and self.current() != .eof) {
+    while (!self.isAtClosingAngleBracket() and self.current() != .eof) {
         const loop_guard_pos = self.scanner.token.span.start;
         const ty = try parseType(self);
         try self.scratch.append(self.allocator, ty);
@@ -848,7 +848,7 @@ pub fn parseTypeArguments(self: *Parser) ParseError2!NodeIndex {
 
         if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
-    try self.expect(.r_angle);
+    try self.expectClosingAngleBracket();
 
     const types = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
