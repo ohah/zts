@@ -245,16 +245,14 @@ pub fn extractExportBindings(
                         var kind: ExportBinding.Kind = if (has_source) .re_export else .local;
                         var final_rec_idx: ?u32 = rec_idx;
                         var final_local_name = local_name;
+                        // Rolldown 방식: namespace가 아닌 named import만 .re_export로 분류.
+                        // namespace barrel re-export(import * as z; export { z })는
+                        // .local 유지 — linker가 namespace 객체를 별도 생성.
                         if (!has_source) {
                             if (import_by_name.get(local_name)) |ib| {
-                                if (ib.kind == .namespace) {
-                                    // namespace barrel re-export (import * as z; export { z }):
-                                    // .local로 유지. linker가 namespace import를 별도 처리.
-                                } else {
+                                if (ib.kind != .namespace) {
                                     kind = .re_export;
                                     final_rec_idx = ib.import_record_index;
-                                    // named import: local_name을 소스 모듈의 export 이름으로 교체
-                                    // import { foo as bar } → local_name = "foo" (imported_name)
                                     final_local_name = ib.imported_name;
                                 }
                             }
