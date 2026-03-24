@@ -290,13 +290,16 @@ pub fn parseDecoratedStatement(self: *Parser) ParseError2!NodeIndex {
     }
     const decorators = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
-    // 데코레이터 뒤에 올 수 있는 것: class, export, abstract
+    // 데코레이터 뒤에 올 수 있는 것: class, export, abstract, declare
     if (self.current() == .kw_class) {
         return self.parseClassWithDecorators(.class_declaration, decorators);
     } else if (self.current() == .kw_export) {
         return self.parseExportDeclaration();
     } else if (self.isContextual("abstract")) {
         return parseTsAbstractClass(self);
+    } else if (self.isContextual("declare")) {
+        // @dec declare class Foo {} — declare는 스트리핑되므로 NodeIndex.none 반환
+        return self.parseTsDeclareStatement();
     } else {
         try self.addError(self.currentSpan(), "Class or export expected after decorator");
         return self.parseExpressionStatement();
@@ -585,7 +588,7 @@ fn parseTypeOperatorOrHigher(self: *Parser) ParseError2!NodeIndex {
     if (self.current() == .identifier) {
         const text = self.tokenText();
         // keyof T
-        if (std.mem.eql(u8, text, "keyof") or std.mem.eql(u8, text, "unique") or std.mem.eql(u8, text, "readonly")) {
+        if (std.mem.eql(u8, text, "keyof") or std.mem.eql(u8, text, "readonly")) {
             const span = self.currentSpan();
             try self.advance();
             const operand = try parseTypeOperatorOrHigher(self);
@@ -594,6 +597,21 @@ fn parseTypeOperatorOrHigher(self: *Parser) ParseError2!NodeIndex {
                 .span = .{ .start = span.start, .end = self.currentSpan().start },
                 .data = .{ .unary = .{ .operand = operand, .flags = 0 } },
             });
+        }
+        // unique symbol → type operator, unique 단독 (뒤에 =, ;, , 등) → identifier (type reference)
+        if (std.mem.eql(u8, text, "unique")) {
+            const next = try self.peekNextKind();
+            if (next != .eq and next != .semicolon and next != .comma and next != .r_paren and next != .r_curly and next != .r_bracket and next != .l_angle and next != .pipe and next != .amp) {
+                const span = self.currentSpan();
+                try self.advance();
+                const operand = try parseTypeOperatorOrHigher(self);
+                return try self.ast.addNode(.{
+                    .tag = .ts_type_operator,
+                    .span = .{ .start = span.start, .end = self.currentSpan().start },
+                    .data = .{ .unary = .{ .operand = operand, .flags = 0 } },
+                });
+            }
+            // unique 단독 — type reference로 처리 (아래 fallthrough)
         }
         // infer T (extends C)?
         if (std.mem.eql(u8, text, "infer")) {
@@ -1048,9 +1066,10 @@ fn parseObjectType(self: *Parser) ParseError2!NodeIndex {
         const loop_guard_pos = self.scanner.token.span.start;
         const member = try parseTypeMember(self);
         try self.scratch.append(self.allocator, member);
-        // ; 또는 , 로 구분
+        // ; 또는 , 로 구분. 줄바꿈만으로도 다음 멤버를 시작할 수 있음
+        // (콜/컨스트럭트 시그니처 등 separator 없이 newline으로 구분되는 경우)
         if (!try self.eat(.semicolon) and !try self.eat(.comma)) {
-            if (self.current() != .r_curly) break;
+            if (self.current() != .r_curly and !self.scanner.token.has_newline_before) break;
         }
 
         if (try self.ensureLoopProgress(loop_guard_pos)) break;
@@ -1092,6 +1111,14 @@ fn parseTypeMember(self: *Parser) ParseError2!NodeIndex {
         if (next == .l_paren or next == .l_angle) {
             try self.advance(); // skip 'new'
             return parseSignatureMember(self, start, true);
+        }
+    }
+
+    // static 수정자 (interface에서 static accessor x 등)
+    if (self.current() == .identifier and self.isContextual("static")) {
+        const next = try self.peekNextKind();
+        if (isFollowedByTypeMemberName(next)) {
+            try self.advance(); // skip 'static'
         }
     }
 
