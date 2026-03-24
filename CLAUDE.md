@@ -769,6 +769,13 @@ main ← feature/lexer-token-enum
 11. ✅ async/await + generator (yield, yield*) — PR #27
 12. ✅ BACKLOG (#private, import.meta, elision) — PR #28-#29
 13. ✅ TS 타입 어노테이션 (union, intersection, array, tuple, generic, typeof, keyof, as, satisfies, !) — PR #30
+    - ✅ 타입 파서 전면 보강 — PR #324 (적합성 14.2%→19.4%, 에러 527→242)
+      - 타입 리터럴 시그니처 7종 (콜/컨스트럭트/인덱스/getter/setter/메서드/프로퍼티)
+      - 함수/컨스트럭터 타입 (new, abstract new, 제네릭, 다중 파라미터)
+      - 타입 프레디케이트 (x is Type, asserts x is Type)
+      - 매핑 타입 lookahead (checkpoint/rewind), 타입 파라미터 수정자 (const/in/out)
+      - 제네릭 arrow function (<T>() => body), 클래스 optional 필드, import/export type
+      - import x = require('y'), 함수 오버로드 시그니처, namespace export 허용
 14. ✅ TS 선언 (interface, type alias, enum, namespace, declare, abstract) — PR #31
 15. ✅ TS 변환 대상 (parameter property, decorator, implements, class generics) — PR #32
 16. ✅ JSX 파싱 (element, fragment, attributes, expression, text) — PR #33
