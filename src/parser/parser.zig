@@ -1037,6 +1037,17 @@ pub const Parser = struct {
     /// ECMAScript 13.1.1: yield는 [Yield] 또는 strict mode에서, await는 [Await] 또는 module에서 금지.
     /// context_noun: "identifier", "label" 등 — 에러 메시지에 사용 (comptime 문자열 연결).
     /// 에러를 추가했으면 true, 아니면 false를 반환한다.
+    /// yield/await + strict mode 예약어를 식별자 위치에서 검증한다.
+    /// ECMAScript 12.1.1: yield/await는 컨텍스트에 따라 식별자 사용 금지,
+    /// strict mode에서는 implements/interface/let/package 등도 금지.
+    pub fn checkIdentifierKeywordUse(self: *Parser, span: Span) ParseError2!void {
+        if (self.current() == .kw_yield or self.current() == .kw_await) {
+            _ = try self.checkYieldAwaitUse(span, "identifier");
+        } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
+            try self.addError(span, "Reserved word in strict mode cannot be used as identifier");
+        }
+    }
+
     pub fn checkYieldAwaitUse(self: *Parser, span: Span, comptime context_noun: []const u8) ParseError2!bool {
         // yield/await는 escaped 형태(yi\u0065ld)도 동일 규칙 적용 (ECMAScript 12.1.1)
         // await는 reserved keyword이므로 escaped_keyword로 분류됨 → 여기서는 yield만 처리
@@ -1231,61 +1242,32 @@ pub const Parser = struct {
         return true;
     }
 
-    /// arrow function의 typed 파싱 경로에서 중복 파라미터를 검사한다.
-    /// arrow function은 항상 UniqueFormalParameters이므로 조건 없이 검사.
+    /// arrow function은 항상 UniqueFormalParameters — 조건 없이 검사.
     pub fn checkDuplicateArrowFormalParams(self: *Parser, scratch_top: usize) ParseError2!void {
-        const params = self.scratch.items[scratch_top..];
-        self.param_name_spans.clearRetainingCapacity();
-        for (params) |param_idx| {
-            const names_before = self.param_name_spans.items.len;
-            try self.collectBoundNames(param_idx);
-            const names_after = self.param_name_spans.items.len;
-            var j: usize = names_before;
-            while (j < names_after) : (j += 1) {
-                const name_span = self.param_name_spans.items[j];
-                const name = self.ast.source[name_span.start..name_span.end];
-                for (self.param_name_spans.items[0..j]) |prev_span| {
-                    const prev_name = self.ast.source[prev_span.start..prev_span.end];
-                    if (std.mem.eql(u8, name, prev_name)) {
-                        try self.addError(name_span, "Duplicate parameter name");
-                        break;
-                    }
-                }
-            }
-        }
-        self.param_name_spans.clearRetainingCapacity();
+        try self.checkDuplicateParamsCore(scratch_top);
     }
 
-    /// 중복 파라미터를 검사한다.
-    /// ECMAScript 14.1.2: non-simple params면 항상 에러
-    /// ECMAScript 15.4.1/15.5.1: generator/async generator는 항상 에러
-    /// strict mode에서도 항상 에러
-    /// sloppy mode + simple params인 일반 function만 허용
+    /// 일반 함수 중복 파라미터 검사.
+    /// sloppy mode + simple params인 일반 function만 허용, 나머지는 에러.
     pub fn checkDuplicateParams(self: *Parser, scratch_top: usize) ParseError2!void {
         const must_check = self.is_strict_mode or !self.has_simple_params or
             self.ctx.in_generator or self.ctx.in_async;
         if (!must_check) return;
+        try self.checkDuplicateParamsCore(scratch_top);
+    }
+
+    /// 파라미터 목록에서 중복 바인딩 이름을 찾아 에러를 추가한다.
+    fn checkDuplicateParamsCore(self: *Parser, scratch_top: usize) ParseError2!void {
         const params = self.scratch.items[scratch_top..];
-
-        // 지금까지 본 모든 바인딩 이름 Span을 누적하는 임시 버퍼.
-        // param_name_spans를 재사용 (cover grammar 검사와 겹치지 않는 시점에 호출됨).
         self.param_name_spans.clearRetainingCapacity();
-
         for (params) |param_idx| {
-            // 이 파라미터에서 나오는 모든 바인딩 이름을 수집한다.
-            // 단순 식별자(a)는 1개, destructuring([a,b])은 여러 개.
             const names_before = self.param_name_spans.items.len;
             try self.collectBoundNames(param_idx);
-            // collectBoundNames 이후 재참조: append 시 재할당이 일어날 수 있으므로
-            // names_before 이후 범위를 수집 완료 후에 인덱스로 순회한다.
             const names_after = self.param_name_spans.items.len;
-
             var j: usize = names_before;
             while (j < names_after) : (j += 1) {
                 const name_span = self.param_name_spans.items[j];
                 const name = self.ast.source[name_span.start..name_span.end];
-                // 이 이름 이전에 수집된 모든 이름과 비교
-                // (이전 파라미터 + 같은 패턴 내 앞선 이름 모두 포함)
                 for (self.param_name_spans.items[0..j]) |prev_span| {
                     const prev_name = self.ast.source[prev_span.start..prev_span.end];
                     if (std.mem.eql(u8, name, prev_name)) {
@@ -1295,7 +1277,6 @@ pub const Parser = struct {
                 }
             }
         }
-
         self.param_name_spans.clearRetainingCapacity();
     }
 
