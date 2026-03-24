@@ -293,6 +293,24 @@ pub const Parser = struct {
         }
     }
 
+    /// 제네릭 여는 꺾쇠 `<` 를 소비한다. (oxc re_lex_ts_l_angle 대응)
+    /// `<<`, `<=`, `<<=` 를 `<` + 나머지로 분할한다.
+    /// 예: `Array<<T>() => T>` 에서 `<<` → `<` + `<`
+    pub fn expectOpeningAngleBracket(self: *Parser) !void {
+        switch (self.current()) {
+            .l_angle => try self.advance(),
+            .shift_left, // <<
+            .lt_eq, // <=
+            .shift_left_eq, // <<=
+            => {
+                self.scanner.prev_token_kind = .l_angle;
+                self.scanner.current = self.scanner.token.span.start + 1;
+                try self.advance();
+            },
+            else => try self.expect(.l_angle),
+        }
+    }
+
     /// 제네릭 닫는 꺾쇠 `>` 를 기대한다. (oxc re_lex_ts_r_angle 대응)
     /// `>>`, `>>>`, `>=`, `>>=`, `>>>=` 를 `>` + 나머지로 분할한다.
     /// 예: `Array<Map<K,V>>` 에서 `>>` → `>` + `>`

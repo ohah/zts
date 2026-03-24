@@ -326,7 +326,7 @@ pub fn parseDecorator(self: *Parser) ParseError2!NodeIndex {
 /// <T, U extends V = W>
 pub fn parseTsTypeParameterDeclaration(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    try self.advance(); // skip <
+    try self.expectOpeningAngleBracket();
 
     const scratch_top = self.saveScratch();
     while (!self.isAtClosingAngleBracket() and self.current() != .eof) {
@@ -843,9 +843,9 @@ fn parseTypeReference(self: *Parser) ParseError2!NodeIndex {
         try self.advance(); // Bar
     }
 
-    // 제네릭: Foo<T, U>
+    // 제네릭: Foo<T, U> — << (shift_left) 도 중첩 제네릭 시작
     var type_args = NodeIndex.none;
-    if (self.current() == .l_angle) {
+    if (self.current() == .l_angle or self.current() == .shift_left) {
         type_args = try parseTypeArguments(self);
     }
 
@@ -862,7 +862,7 @@ fn parseTypeReference(self: *Parser) ParseError2!NodeIndex {
 
 pub fn parseTypeArguments(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    try self.advance(); // skip <
+    try self.expectOpeningAngleBracket();
 
     const scratch_top = self.saveScratch();
     while (!self.isAtClosingAngleBracket() and self.current() != .eof) {
