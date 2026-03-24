@@ -75,6 +75,74 @@ describe("번들 스모크 테스트", () => {
     expect(result.runOutput).toBe("from_a from_b");
   });
 
+  test("abstract 멤버 스트리핑", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        abstract class BaseService {
+          abstract getName(): string;
+          abstract readonly id: number;
+          greet() { return "Hello, " + this.getName(); }
+        }
+        class UserService extends BaseService {
+          getName() { return "User"; }
+          get id() { return 1; }
+        }
+        console.log(new UserService().greet());
+      `,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("Hello, User");
+    expect(result.bundleOutput).not.toContain("abstract");
+  });
+
+  test("declare 필드 스트리핑", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        class Config {
+          declare env: string;
+          declare readonly debug: boolean;
+          host = "localhost";
+          port = 3000;
+        }
+        const cfg = new Config();
+        console.log(cfg.host + ":" + cfg.port);
+      `,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("localhost:3000");
+    // declare 필드가 제거되어 env/debug가 undefined로 초기화되면 안 됨
+    expect(result.bundleOutput).not.toContain("env");
+    expect(result.bundleOutput).not.toContain("debug");
+  });
+
+  test("abstract + declare 복합 — 실전 패턴", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        import { UserRepo } from "./repo";
+        const repo = new UserRepo();
+        console.log(repo.findAll().join(","));
+      `,
+      "repo.ts": `
+        abstract class BaseRepo<T> {
+          declare tableName: string;
+          abstract findAll(): T[];
+          count() { return this.findAll().length; }
+        }
+        export class UserRepo extends BaseRepo<string> {
+          findAll() { return ["alice", "bob"]; }
+        }
+      `,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("alice,bob");
+  });
+
   test("tree-shaking으로 미사용 모듈 제거", async () => {
     const { dir, cleanup: c } = await createFixture({
       "index.ts": `import { used } from "./used"; console.log(used);`,

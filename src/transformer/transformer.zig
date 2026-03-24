@@ -1084,8 +1084,12 @@ pub const Transformer = struct {
 
     // method_definition: extra = [key, params_start, params_len, body, flags, deco_start, deco_len]
     // constructor의 parameter property (public x: number) 변환도 처리.
+    // abstract 메서드 (flags bit5=0x20)는 런타임에 존재하면 안 되므로 완전히 제거.
     fn visitMethodDefinition(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
+        const flags = self.readU32(e, 4);
+        // abstract 메서드는 타입 전용이므로 완전히 스트리핑
+        if (self.options.strip_types and (flags & 0x20) != 0) return NodeIndex.none;
         const new_key = try self.visitNode(self.readNodeIdx(e, 0));
 
         // 파라미터 방문 — parameter property 감지
@@ -1109,8 +1113,14 @@ pub const Transformer = struct {
     }
 
     // property_definition: extra = [key, init_val, flags, deco_start, deco_len]
+    // abstract 프로퍼티 (flags bit5=0x20) 및 declare 필드 (flags bit6=0x40)는
+    // 런타임에 존재하면 안 되므로 완전히 제거.
+    // declare 필드가 남으면 undefined로 초기화되어 의미가 바뀜.
     fn visitPropertyDefinition(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
+        const flags = self.readU32(e, 2);
+        // abstract 프로퍼티 또는 declare 필드는 타입 전용이므로 완전히 스트리핑
+        if (self.options.strip_types and (flags & 0x60) != 0) return NodeIndex.none;
         const new_key = try self.visitNode(self.readNodeIdx(e, 0));
         const new_value = try self.visitNode(self.readNodeIdx(e, 1));
         const new_decos = try self.visitExtraList(self.readU32(e, 3), self.readU32(e, 4));
