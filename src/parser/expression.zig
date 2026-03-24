@@ -920,8 +920,10 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
 
     // contextual keyword도 expression 위치에서 식별자로 유효.
     // async는 제외 — async function/arrow에서 특수 처리 (아래 switch에서).
+    // literal keyword (true, false, null)는 제외 — 아래 switch에서 boolean_literal/null_literal로 처리.
     if (self.current() == .identifier or
-        (self.current().isKeyword() and !self.current().isReservedKeyword() and self.current() != .kw_async))
+        (self.current().isKeyword() and !self.current().isReservedKeyword() and
+            !self.current().isLiteralKeyword() and self.current() != .kw_async))
     {
         if (self.current() == .identifier) {
             if (self.in_class_field or self.in_static_initializer) {

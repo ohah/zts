@@ -1467,8 +1467,15 @@ pub const SemanticAnalyzer = struct {
                 // binary: { left = key, right = value }
                 try self.declareBindingPattern(node.data.binary.right);
             },
-            .assignment_target_property_identifier, .assignment_target_property_property => {
-                // cover grammar 변환된 프로퍼티
+            .assignment_target_property_identifier => {
+                // shorthand property: { x } 또는 { x = default }
+                // left = key(바인딩), right = default value 또는 none
+                // 항상 left(key)에서 바인딩을 추출한다. right는 default value.
+                try self.declareBindingPattern(node.data.binary.left);
+            },
+            .assignment_target_property_property => {
+                // long-form property: { key: value }
+                // right(value)에서 바인딩을 추출한다.
                 try self.declareBindingPattern(node.data.binary.right);
             },
             .assignment_pattern, .assignment_expression, .assignment_target_with_default => {

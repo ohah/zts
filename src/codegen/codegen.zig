@@ -1268,8 +1268,21 @@ pub const Codegen = struct {
         }
         // shorthand: right가 none이면 {key} 형태 — 콜론 생략
         if (!node.data.binary.right.isNone()) {
-            try self.writeByte(':');
-            try self.emitNode(node.data.binary.right);
+            // shorthand_with_default: { x = val } → x:x=val
+            // cover grammar에서 assignment_target_property_identifier로 변환된 경우,
+            // right가 default value이고 key가 binding name이다.
+            // 출력: key:key=default (TS 모드의 binding_property와 동일한 형태)
+            const shorthand_with_default: u16 = 0x01; // Parser.shorthand_with_default과 동일
+            const is_shorthand_default = (node.data.binary.flags & shorthand_with_default) != 0;
+            if (is_shorthand_default and node.tag == .assignment_target_property_identifier) {
+                try self.writeByte(':');
+                try self.writeSpan(key_node.span);
+                try self.writeByte('=');
+                try self.emitNode(node.data.binary.right);
+            } else {
+                try self.writeByte(':');
+                try self.emitNode(node.data.binary.right);
+            }
         }
     }
 
