@@ -8409,7 +8409,7 @@ test "TLA: for_await_of_statement detected via AST tag" {
     // for await 감지 → CJS 경고
     try std.testing.expect(std.mem.indexOf(u8, result.output, "ZTS WARNING") != null);
     // codegen이 for await of를 올바르게 출력
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "for await(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "for await") != null);
 }
 
 // ============================================================

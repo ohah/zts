@@ -589,9 +589,15 @@ pub const Codegen = struct {
         try self.emitBracedList(node);
     }
 
-    /// { item1 item2 ... } — 블록과 클래스 바디 공통
+    /// { item1 item2 ... } — 블록과 클래스 바디 공통.
+    /// `{` 앞 공백: 마지막 바이트가 공백/줄바꿈이 아니면 자동 추가 (이중 공백 방지).
     fn emitBracedList(self: *Codegen, node: Node) !void {
-        try self.writeSpace();
+        if (!self.options.minify and self.buf.items.len > 0) {
+            const last = self.buf.items[self.buf.items.len - 1];
+            if (last != ' ' and last != '\n' and last != '\t') {
+                try self.writeByte(' ');
+            }
+        }
         try self.writeByte('{');
         const list = node.data.list;
         const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
@@ -631,27 +637,39 @@ pub const Codegen = struct {
 
     fn emitIf(self: *Codegen, node: Node) !void {
         const t = node.data.ternary;
-        try self.write("if(");
+        if (self.options.minify) try self.write("if(") else try self.write("if (");
         try self.emitNode(t.a);
         try self.writeByte(')');
         try self.emitNode(t.b);
         if (!t.c.isNone()) {
-            try self.write("else ");
+            // minify: }else — 다음이 block이면 공백 불필요, if면 필수
+            // non-minify: } else  — emitBracedList가 { 앞 공백을 관리
+            if (self.options.minify) {
+                // else 뒤에 if가 오면 공백 필수 (elseif 방지), block이면 불필요
+                const next_node = self.ast.getNode(t.c);
+                if (next_node.tag == .block_statement) {
+                    try self.write("else");
+                } else {
+                    try self.write("else ");
+                }
+            } else {
+                try self.write(" else ");
+            }
             try self.emitNode(t.c);
         }
     }
 
     fn emitWhile(self: *Codegen, node: Node) !void {
-        try self.write("while(");
+        if (self.options.minify) try self.write("while(") else try self.write("while (");
         try self.emitNode(node.data.binary.left);
         try self.writeByte(')');
         try self.emitNode(node.data.binary.right);
     }
 
     fn emitDoWhile(self: *Codegen, node: Node) !void {
-        try self.write("do ");
+        try self.write("do");
         try self.emitNode(node.data.binary.right);
-        try self.write("while(");
+        if (self.options.minify) try self.write("while(") else try self.write(" while (");
         try self.emitNode(node.data.binary.left);
         try self.write(");");
     }
@@ -659,16 +677,13 @@ pub const Codegen = struct {
     fn emitFor(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
         const extras = self.ast.extra_data.items[e .. e + 4];
-        try self.write("for(");
-        // init이 variable_declaration일 때 세미콜론 중복 방지:
-        // emitVariableDeclaration이 자체적으로 ';'를 붙이므로,
-        // in_for_init 플래그로 해당 세미콜론을 억제한다.
+        if (self.options.minify) try self.write("for(") else try self.write("for (");
         self.in_for_init = true;
         defer self.in_for_init = false;
         try self.emitNode(@enumFromInt(extras[0]));
-        try self.writeByte(';');
+        if (self.options.minify) try self.writeByte(';') else try self.write("; ");
         try self.emitNode(@enumFromInt(extras[1]));
-        try self.writeByte(';');
+        if (self.options.minify) try self.writeByte(';') else try self.write("; ");
         try self.emitNode(@enumFromInt(extras[2]));
         try self.writeByte(')');
         try self.emitNode(@enumFromInt(extras[3]));
@@ -676,7 +691,7 @@ pub const Codegen = struct {
 
     fn emitForAwaitOf(self: *Codegen, node: Node) !void {
         const t = node.data.ternary;
-        try self.write("for await(");
+        if (self.options.minify) try self.write("for await(") else try self.write("for await (");
         self.in_for_init = true;
         defer self.in_for_init = false;
         try self.emitNode(t.a);
@@ -688,7 +703,7 @@ pub const Codegen = struct {
 
     fn emitForInOf(self: *Codegen, node: Node, keyword: []const u8) !void {
         const t = node.data.ternary;
-        try self.write("for(");
+        if (self.options.minify) try self.write("for(") else try self.write("for (");
         self.in_for_init = true;
         defer self.in_for_init = false;
         try self.emitNode(t.a);
@@ -708,7 +723,7 @@ pub const Codegen = struct {
         const cases_start = extras[1];
         const cases_len = extras[2];
 
-        try self.write("switch(");
+        if (self.options.minify) try self.write("switch(") else try self.write("switch (");
         try self.emitNode(discriminant);
         try self.writeByte(')');
         try self.writeSpace();
@@ -787,7 +802,7 @@ pub const Codegen = struct {
     fn emitCatch(self: *Codegen, node: Node) !void {
         try self.write("catch");
         if (!node.data.binary.left.isNone()) {
-            try self.writeByte('(');
+            if (self.options.minify) try self.writeByte('(') else try self.write(" (");
             try self.emitNode(node.data.binary.left);
             try self.writeByte(')');
         }
@@ -1208,7 +1223,10 @@ pub const Codegen = struct {
         }
         try self.writeSpace();
         try self.write("=>");
-        try self.writeSpace();
+        // block body는 emitBlock이 { 앞 공백을 관리, non-block은 여기서 추가
+        if (body.isNone() or self.ast.getNode(body).tag != .block_statement) {
+            try self.writeSpace();
+        }
         try self.emitNode(body);
     }
 
@@ -2681,7 +2699,7 @@ test "Codegen formatted: class with method" {
 test "Codegen formatted: spaces indent" {
     var r = try e2eWithOptions(std.testing.allocator, "if (x) { return 1; }", .{ .indent_char = .space, .indent_width = 2 });
     defer r.deinit();
-    try std.testing.expectEqualStrings("if(x) {\n  return 1;\n}\n", r.output);
+    try std.testing.expectEqualStrings("if (x) {\n  return 1;\n}\n", r.output);
 }
 
 // ================================================================
