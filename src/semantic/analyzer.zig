@@ -2893,6 +2893,7 @@ test "SemanticAnalyzer: duplicate export name is semantic error" {
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
     parser.is_module = true;
+    scanner.is_module = true;
     _ = try parser.parse();
 
     var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);

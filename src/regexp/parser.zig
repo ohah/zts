@@ -86,6 +86,10 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         /// v-flag class에서 property of strings가 포함되었는지 (negated class 검증용).
         class_has_string_property: bool = false,
 
+        /// Annex B: 마지막 assertion이 quantifiable인지 (lookahead: (?=...), (?!...)).
+        /// non-unicode mode에서 lookahead assertion 뒤의 quantifier를 허용한다.
+        last_assertion_is_quantifiable: bool = false,
+
         // ── AST 모드 전용 필드 ──
         // emit_ast=false일 때는 void 타입 (0바이트, 메모리 사용 없음)
 
@@ -443,7 +447,16 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 // ECMAScript: quantifier after assertion is SyntaxError.
                 // 다만 ^, $, \b, \B 뒤의 quantifier-like은 별도 term으로 파싱됨.
                 // lookahead/lookbehind 뒤의 *, +, ?, {n,m}만 에러.
+                //
+                // Annex B 1.4: non-unicode mode에서 (?=...), (?!...)는
+                // quantifiable assertion이므로 뒤에 quantifier 허용.
+                // lookbehind ((?<=...), (?<!...))는 quantifiable이 아님.
                 if (!self.isEnd()) {
+                    // Annex B: non-unicode mode + lookahead → quantifier 허용
+                    if (self.last_assertion_is_quantifiable and !self.flags.hasUnicodeMode()) {
+                        self.parseQuantifier();
+                        return;
+                    }
                     const next = self.peek();
                     if (next == '*' or next == '+' or next == '?') {
                         self.setError("quantifier after assertion");
@@ -475,6 +488,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         // ================================================================
 
         fn parseAssertion(self: *Self) bool {
+            self.last_assertion_is_quantifiable = false;
             if (self.isEnd()) return false;
             const c = self.peek();
 
@@ -517,6 +531,8 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         self.parseDisjunction();
                         const body = if (emit_ast) self.last_node else {};
                         if (!self.eat(')')) self.setError("unterminated lookahead assertion");
+                        // Annex B 1.4: (?=...) and (?!...) are quantifiable assertions
+                        self.last_assertion_is_quantifiable = true;
                         if (emit_ast) {
                             const kind: ast.LookAroundAssertionKind =
                                 if (third == '=') .lookahead else .negative_lookahead;

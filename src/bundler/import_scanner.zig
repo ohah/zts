@@ -313,6 +313,7 @@ fn parseAndExtract(allocator: std.mem.Allocator, source: []const u8) ![]ImportRe
     var scanner = try Scanner.init(arena_alloc, source);
     var parser = Parser.init(arena_alloc, &scanner);
     parser.is_module = true;
+    scanner.is_module = true;
     _ = try parser.parse();
 
     // records는 caller의 allocator로 할당 (arena 해제 후에도 유효).
@@ -531,6 +532,7 @@ test "CJS: ESM syntax flag set" {
     var scanner = try Scanner.init(arena_alloc, "import x from './foo';");
     var parser = Parser.init(arena_alloc, &scanner);
     parser.is_module = true;
+    scanner.is_module = true;
     _ = try parser.parse();
 
     const result = try extractImportsWithCjsDetection(alloc, &parser.ast);
@@ -550,6 +552,7 @@ test "CJS: mixed ESM and CJS" {
     var scanner = try Scanner.init(arena_alloc, "import './a'; const b = require('./b');");
     var parser = Parser.init(arena_alloc, &scanner);
     parser.is_module = true;
+    scanner.is_module = true;
     _ = try parser.parse();
 
     const result = try extractImportsWithCjsDetection(alloc, &parser.ast);

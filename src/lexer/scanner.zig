@@ -101,6 +101,11 @@ pub const Scanner = struct {
     /// Scanner 필드에 두어 dangling pointer 방지. 키워드 최대 길이(~12)+여유.
     decode_buf: [64]u8 = undefined,
 
+    /// ECMAScript Annex B: HTML-like 주석 (<!-- 및 -->).
+    /// module 모드에서는 금지, non-module(script)에서만 주석으로 처리.
+    /// 파서가 configureFromExtension()에서 설정한다.
+    is_module: bool = false,
+
     /// 소스를 UTF-8로 읽고 Scanner를 초기화한다.
     /// BOM이 있으면 스킵한다 (D019).
     pub fn init(allocator: std.mem.Allocator, source: []const u8) !Scanner {
@@ -384,11 +389,11 @@ pub const Scanner = struct {
                 // 현재는 단일 문자만 처리
                 '.' => self.scanDot(),
                 '+' => self.scanPlus(),
-                '-' => self.scanMinus(),
+                '-' => try self.scanMinus(),
                 '*' => self.scanStar(),
                 '/' => try self.scanSlash(),
                 '%' => self.scanPercent(),
-                '<' => self.scanLAngle(),
+                '<' => try self.scanLAngle(),
                 '>' => self.scanRAngle(),
                 '=' => self.scanEquals(),
                 '!' => self.scanBang(),
@@ -689,8 +694,35 @@ pub const Scanner = struct {
         return .plus;
     }
 
-    fn scanMinus(self: *Scanner) Kind {
+    fn scanMinus(self: *Scanner) !Kind {
         if (self.peek() == '-') {
+            // ECMAScript Annex B: --> HTML close comment (non-module only)
+            // HTMLCloseComment :: LineTerminator WhiteSpace_opt SingleLineDelimitedCommentSequence_opt --> SingleLineCommentChars_opt
+            // `-` 이미 소비됨, 다음이 `->` 이고 줄 시작(has_newline_before)이면 주석.
+            if (!self.is_module and self.peekAt(1) == '>' and self.token.has_newline_before) {
+                self.current += 2; // skip ->
+                // 줄 끝까지 스킵
+                const comment_start = self.current;
+                while (!self.isAtEnd()) {
+                    const c = self.peek();
+                    if (c == '\n' or c == '\r') break;
+                    if (c == 0xE2 and self.current + 2 < self.source.len and
+                        self.source[self.current + 1] == 0x80 and
+                        (self.source[self.current + 2] == 0xA8 or self.source[self.current + 2] == 0xA9))
+                    {
+                        break;
+                    }
+                    self.current += 1;
+                }
+                const comment_text = self.source[comment_start..self.current];
+                try self.comments.append(self.allocator, .{
+                    .start = self.start,
+                    .end = self.current,
+                    .is_multiline = false,
+                    .is_legal = isLegalComment(comment_text, false),
+                });
+                return .undetermined; // 주석이므로 다음 토큰 스캔 계속
+            }
             self.current += 1;
             return .minus2;
         }
@@ -987,7 +1019,35 @@ pub const Scanner = struct {
         return .percent;
     }
 
-    fn scanLAngle(self: *Scanner) Kind {
+    fn scanLAngle(self: *Scanner) !Kind {
+        // ECMAScript Annex B: <!-- HTML open comment (non-module only)
+        // SingleLineHTMLOpenComment :: <!-- SingleLineCommentChars_opt
+        // `<` 이미 소비됨, 다음이 `!--`이면 줄 끝까지 주석으로 처리.
+        if (!self.is_module and self.peek() == '!' and self.peekAt(1) == '-' and self.peekAt(2) == '-') {
+            self.current += 3; // skip !--
+            // scanSingleLineComment와 동일: 줄 끝까지 스킵
+            const comment_start = self.current;
+            while (!self.isAtEnd()) {
+                const c = self.peek();
+                if (c == '\n' or c == '\r') break;
+                if (c == 0xE2 and self.current + 2 < self.source.len and
+                    self.source[self.current + 1] == 0x80 and
+                    (self.source[self.current + 2] == 0xA8 or self.source[self.current + 2] == 0xA9))
+                {
+                    break;
+                }
+                self.current += 1;
+            }
+            const comment_text = self.source[comment_start..self.current];
+            try self.comments.append(self.allocator, .{
+                .start = self.start,
+                .end = self.current,
+                .is_multiline = false,
+                .is_legal = isLegalComment(comment_text, false),
+            });
+            return .undetermined; // 주석이므로 다음 토큰 스캔 계속
+        }
+
         if (self.peek() == '<') {
             self.current += 1;
             if (self.peek() == '=') {
@@ -3066,4 +3126,118 @@ test "Scanner: no pragma in normal comment" {
     try scanner.next();
     try std.testing.expect(scanner.jsx_pragma == null);
     try std.testing.expect(scanner.jsx_frag_pragma == null);
+}
+
+// ============================================================
+// Annex B: HTML-like comment tests
+// ============================================================
+
+test "Scanner: <!-- is single-line comment in non-module mode" {
+    const source = "x <!-- this is a comment\ny";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    // is_module defaults to false (non-module/script mode)
+
+    try scanner.next();
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+    try std.testing.expectEqualStrings("x", scanner.tokenText());
+
+    try scanner.next();
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+    try std.testing.expectEqualStrings("y", scanner.tokenText());
+}
+
+test "Scanner: <!-- is NOT a comment in module mode" {
+    const source = "x <!-- y";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    scanner.is_module = true;
+
+    try scanner.next();
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+
+    try scanner.next();
+    // module mode에서는 < ! -- 로 파싱됨
+    try std.testing.expectEqual(Kind.l_angle, scanner.token.kind);
+}
+
+test "Scanner: --> at line start is single-line comment in non-module mode" {
+    const source = "x\n--> this is a comment\ny";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    try scanner.next();
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+    try std.testing.expectEqualStrings("x", scanner.tokenText());
+
+    try scanner.next();
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+    try std.testing.expectEqualStrings("y", scanner.tokenText());
+}
+
+test "Scanner: --> mid-line is NOT a comment (decrement + greater)" {
+    const source = "x --> y";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    try scanner.next();
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind); // x
+
+    try scanner.next();
+    try std.testing.expectEqual(Kind.minus2, scanner.token.kind); // --
+
+    try scanner.next();
+    try std.testing.expectEqual(Kind.r_angle, scanner.token.kind); // >
+
+    try scanner.next();
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind); // y
+}
+
+test "Scanner: --> is NOT a comment in module mode" {
+    const source = "x\n--> y";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    scanner.is_module = true;
+
+    try scanner.next();
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind); // x
+
+    try scanner.next();
+    try std.testing.expectEqual(Kind.minus2, scanner.token.kind); // --
+
+    try scanner.next();
+    try std.testing.expectEqual(Kind.r_angle, scanner.token.kind); // >
+}
+
+test "Scanner: --> after multiline comment with newline is a comment" {
+    const source = "x\n/* comment */ --> this is skipped\ny";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    try scanner.next();
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind); // x
+
+    try scanner.next();
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind); // y
+    try std.testing.expectEqualStrings("y", scanner.tokenText());
+}
+
+test "Scanner: <!-- at start of file is a comment" {
+    const source = "<!-- comment\nx";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    try scanner.next();
+    try std.testing.expectEqual(Kind.identifier, scanner.token.kind);
+    try std.testing.expectEqualStrings("x", scanner.tokenText());
+}
+
+test "Scanner: <!-- comment is recorded in comments list" {
+    const source = "<!-- a comment\nx";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+
+    try scanner.next(); // skips <!-- comment, returns x
+    try std.testing.expectEqual(@as(usize, 1), scanner.comments.items.len);
+    try std.testing.expect(!scanner.comments.items[0].is_multiline);
 }

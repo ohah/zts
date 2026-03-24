@@ -212,6 +212,8 @@ pub const Parser = struct {
             std.mem.eql(u8, ext, ".mts") or std.mem.eql(u8, ext, ".mjs"))
         {
             self.is_module = true;
+            // Annex B HTML-like 주석은 module에서 금지 (scanner에도 전달)
+            self.scanner.is_module = true;
         }
         if (std.mem.eql(u8, ext, ".tsx") or std.mem.eql(u8, ext, ".jsx")) {
             self.is_jsx = true;
