@@ -106,6 +106,10 @@ pub const Scanner = struct {
     /// 파서가 configureFromExtension()에서 설정한다.
     is_module: bool = false,
 
+    /// 입력의 시작 부분인지 (아직 실제 토큰이 생성되지 않은 상태).
+    /// --> HTML close comment가 파일 첫 줄에서 허용되는 조건 판별에 사용.
+    at_start_of_input: bool = true,
+
     /// 소스를 UTF-8로 읽고 Scanner를 초기화한다.
     /// BOM이 있으면 스킵한다 (D019).
     pub fn init(allocator: std.mem.Allocator, source: []const u8) !Scanner {
@@ -527,6 +531,7 @@ pub const Scanner = struct {
             if (self.token.kind != .undetermined) {
                 self.token.span = .{ .start = self.start, .end = self.current };
                 self.prev_token_kind = self.token.kind;
+                self.at_start_of_input = false;
                 return;
             }
         }
@@ -697,9 +702,11 @@ pub const Scanner = struct {
     fn scanMinus(self: *Scanner) !Kind {
         if (self.peek() == '-') {
             // ECMAScript Annex B: --> HTML close comment (non-module only)
-            // HTMLCloseComment :: LineTerminator WhiteSpace_opt SingleLineDelimitedCommentSequence_opt --> SingleLineCommentChars_opt
-            // `-` 이미 소비됨, 다음이 `->` 이고 줄 시작(has_newline_before)이면 주석.
-            if (!self.is_module and self.peekAt(1) == '>' and self.token.has_newline_before) {
+            // HTMLCloseComment :: WhiteSpace_opt SingleLineDelimitedCommentSequence_opt --> SingleLineCommentChars_opt
+            // `-` 이미 소비됨, 다음이 `->` 이고 줄 시작(has_newline_before) 또는 파일 시작이면 주석.
+            // at_start_of_input: 아직 토큰이 생성되지 않은 상태 (whitespace/comments만 있었음).
+            const at_line_start = self.token.has_newline_before or self.at_start_of_input;
+            if (!self.is_module and self.peekAt(1) == '>' and at_line_start) {
                 self.current += 2; // skip ->
                 try self.skipLineAndRecordComment(false);
                 return .undetermined;

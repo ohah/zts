@@ -932,7 +932,25 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     self.advance();
                     if (self.eat('<')) {
                         const ref_name_start = self.pos;
-                        if (!self.parseGroupName()) return false;
+                        const saved_pos = self.pos;
+                        const saved_err = self.err_message;
+                        if (!self.parseGroupName()) {
+                            // non-unicode: malformed \k<...> → identity escape fallback
+                            if (!self.flags.hasUnicodeMode()) {
+                                self.pos = saved_pos - 1; // rewind past <
+                                self.err_message = saved_err;
+                                self.has_bare_k_escape = true;
+                                self.setClassValue('k');
+                                if (emit_ast) {
+                                    self.last_node = self.addNode(.character, .{
+                                        .start = bs_pos,
+                                        .end = bs_pos + 2, // \k only
+                                    }, .{ 'k', @intFromEnum(ast.CharacterKind.identifier), 0 });
+                                }
+                                return true;
+                            }
+                            return false;
+                        }
                         // 참조 이름을 수집 (파싱 끝에서 존재 검증)
                         const ref_name = self.source[ref_name_start .. self.pos - 1];
                         if (self.named_refs_len >= self.named_refs_buf.len) {

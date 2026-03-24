@@ -4121,3 +4121,91 @@ test "rest params trailing comma: arrow" {
 test "rest params trailing comma: async arrow" {
     try expectParseError("async (...a,) => {}", .{ .message_contains = "Rest parameter must be last formal parameter" });
 }
+
+// === using / await using declaration tests ===
+
+test "using declaration: basic" {
+    try expectNoParseError("{ using x = getResource(); }");
+}
+
+test "using as identifier: assignment" {
+    try expectNoParseError("using = 1;");
+}
+
+test "using as identifier: var declaration" {
+    try expectNoParseError("var using = 1;");
+}
+
+test "using as identifier: function name" {
+    try expectNoParseError("function using() {}");
+}
+
+test "await using in module top-level" {
+    // module top-level에서 await using은 허용 (top-level await)
+    var scanner = try Scanner.init(std.testing.allocator, "await using x = { };");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    parser.is_module = true;
+    scanner.is_module = true;
+
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+}
+
+test "await using in async function" {
+    try expectNoParseError("async function f() { await using x = getResource(); }");
+}
+
+// === accessor as identifier tests ===
+
+test "accessor as identifier: var declaration" {
+    try expectNoParseError("var accessor;");
+}
+
+test "accessor as identifier: let declaration" {
+    try expectNoParseError("let accessor;");
+}
+
+test "accessor as identifier: const declaration" {
+    try expectNoParseError("const accessor = null;");
+}
+
+test "accessor as identifier: function name" {
+    try expectNoParseError("function accessor() {}");
+}
+
+test "accessor as identifier: function parameter" {
+    try expectNoParseError("function foo(accessor) {}");
+}
+
+test "accessor as identifier: assignment" {
+    try expectNoParseError("var accessor; accessor = 1;");
+}
+
+test "accessor as class field name" {
+    // accessor;  accessor = 42;  accessor() {} — 일반 멤버 이름으로 사용
+    try expectNoParseError("class C { accessor; }");
+    try expectNoParseError("class C { accessor = 42; }");
+    try expectNoParseError("class C { accessor() { return 42; } }");
+}
+
+test "accessor with newline in class body" {
+    // accessor 뒤에 줄바꿈이 있으면 ASI → accessor는 필드 이름
+    try expectNoParseError(
+        \\class C {
+        \\  accessor
+        \\  a = 42;
+        \\}
+    );
+}
+
+test "accessor static with newline in class body" {
+    // static accessor\n static a = 42; → accessor는 필드 이름
+    try expectNoParseError(
+        \\class C {
+        \\  static accessor
+        \\  static a = 42;
+        \\}
+    );
+}
