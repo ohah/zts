@@ -57,12 +57,15 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     // import type Foo from 'bar'
     // import type { Foo } from 'bar'
     // import type * as ns from 'bar'
+    var is_type_only = false;
     if (self.current() == .identifier and self.isContextual("type")) {
         const next = try self.peekNextKind();
-        if (next == .l_curly or next == .star or next == .identifier or
-            (next.isKeyword() and !next.isReservedKeyword()))
-        {
-            try self.advance(); // skip 'type' — type-only import는 트랜스포머에서 제거
+        // import type { ... } / import type * / import type Foo from (Foo는 identifier)
+        // 주의: import type from 'bar'는 'type'이라는 이름의 default import이므로
+        // next == kw_from이면 type-only가 아님
+        if (next == .l_curly or next == .star or next == .identifier) {
+            is_type_only = true;
+            try self.advance(); // skip 'type'
         }
     }
 
@@ -172,6 +175,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
 
                 const specifiers = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
                 self.restoreScratch(scratch_top);
+                if (is_type_only) return NodeIndex.none;
                 const extra_start = try self.ast.addExtra(specifiers.start);
                 _ = try self.ast.addExtra(specifiers.len);
                 _ = try self.ast.addExtra(@intFromEnum(source_node));
@@ -223,6 +227,10 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
 
     const specifiers = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
+
+    // import type은 완전 제거 — 런타임에 필요 없음
+    if (is_type_only) return NodeIndex.none;
+
     const extra_start = try self.ast.addExtra(specifiers.start);
     _ = try self.ast.addExtra(specifiers.len);
     _ = try self.ast.addExtra(@intFromEnum(source_node));
@@ -350,11 +358,12 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
     // export type { Foo } from 'bar'
     // export type * from 'bar'
     // export type * as ns from 'bar'
+    var is_type_only_export = false;
     if (self.current() == .identifier and self.isContextual("type")) {
         const next = try self.peekNextKind();
         if (next == .l_curly or next == .star) {
+            is_type_only_export = true;
             try self.advance(); // skip 'type'
-            // type-only export는 파싱 후 스트리핑
         }
     }
 
@@ -369,6 +378,7 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
         const source_node = try parseModuleSource(self);
         try self.expectSemicolon();
 
+        if (is_type_only_export) return NodeIndex.none;
         return try self.ast.addNode(.{
             .tag = .export_all_declaration,
             .span = .{ .start = start, .end = self.currentSpan().start },
@@ -420,6 +430,8 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
 
         const specifiers = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
         self.restoreScratch(scratch_top);
+
+        if (is_type_only_export) return NodeIndex.none;
 
         // extra_data layout: [declaration, specifiers_start, specifiers_len, source]
         const extra_start = try self.ast.addExtras(&.{
