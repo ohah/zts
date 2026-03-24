@@ -632,7 +632,9 @@ fn parsePostfixExpression(self: *Parser) ParseError2!NodeIndex {
     // (체이닝 지원: foo()!.bar!.baz)
 
     // TS: as Type / satisfies Type (체이닝 가능: x as A as B)
-    while (self.current() == .identifier) {
+    // ASI: `bar\nas(null)` → 줄바꿈 뒤의 as는 타입 캐스트가 아니라 함수 호출
+    // esbuild: as/satisfies 앞에 줄바꿈이 있으면 ASI 적용
+    while (self.current() == .identifier and !self.scanner.token.has_newline_before) {
         const text = self.tokenText();
         const is_as = std.mem.eql(u8, text, "as");
         const is_satisfies = !is_as and std.mem.eql(u8, text, "satisfies");

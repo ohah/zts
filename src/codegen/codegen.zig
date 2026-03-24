@@ -1213,13 +1213,10 @@ pub const Codegen = struct {
 
         if (flags & 0x01 != 0) try self.write("async ");
 
-        // params 출력
+        // params 출력 — esbuild 호환: 항상 괄호로 감싸기 (단일 파라미터도 괄호 추가)
         if (!params.isNone()) {
             const param_node = self.ast.getNode(params);
-            if (param_node.tag == .binding_identifier) {
-                // 단일 파라미터: x => x
-                try self.emitNode(params);
-            } else if (param_node.tag == .parenthesized_expression) {
+            if (param_node.tag == .parenthesized_expression) {
                 // 괄호 형태: (a, b) => a + b — parenthesized_expression이 이미 괄호를 포함
                 try self.emitNode(params);
             } else {
@@ -2347,9 +2344,10 @@ test "Codegen: arrow no params" {
 }
 
 test "Codegen: arrow single param" {
+    // esbuild 호환: 단일 파라미터도 항상 괄호로 감싸기
     var r = try e2e(std.testing.allocator, "const f = x => x;");
     defer r.deinit();
-    try std.testing.expectEqualStrings("const f=x=>x;", r.output);
+    try std.testing.expectEqualStrings("const f=(x)=>x;", r.output);
 }
 
 test "Codegen: arrow block body" {
