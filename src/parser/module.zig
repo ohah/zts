@@ -60,10 +60,13 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     var is_type_only = false;
     if (self.current() == .identifier and self.isContextual("type")) {
         const next = try self.peekNextKind();
-        // import type { ... } / import type * / import type Foo from (Foo는 identifier)
-        // 주의: import type from 'bar'는 'type'이라는 이름의 default import이므로
-        // next == kw_from이면 type-only가 아님
-        if (next == .l_curly or next == .star or next == .identifier) {
+        // import type { ... } / import type * / import type Foo from
+        // 주의: import type from 'bar'는 'type'이라는 이름의 default import
+        // → next가 kw_from이면 type-only가 아님
+        // 비예약 키워드도 타입 이름으로 유효 (import type async from 'bar')
+        if (next == .l_curly or next == .star or next == .identifier or
+            (next != .kw_from and next.isKeyword() and !next.isReservedKeyword()))
+        {
             is_type_only = true;
             try self.advance(); // skip 'type'
         }
@@ -173,9 +176,12 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
                 const source_node = try parseModuleSource(self);
                 _ = try self.eat(.semicolon);
 
+                if (is_type_only) {
+                    self.restoreScratch(scratch_top);
+                    return NodeIndex.none;
+                }
                 const specifiers = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
                 self.restoreScratch(scratch_top);
-                if (is_type_only) return NodeIndex.none;
                 const extra_start = try self.ast.addExtra(specifiers.start);
                 _ = try self.ast.addExtra(specifiers.len);
                 _ = try self.ast.addExtra(@intFromEnum(source_node));
@@ -225,11 +231,12 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     const source_node = try parseModuleSource(self);
     _ = try self.eat(.semicolon);
 
+    if (is_type_only) {
+        self.restoreScratch(scratch_top);
+        return NodeIndex.none;
+    }
     const specifiers = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
-
-    // import type은 완전 제거 — 런타임에 필요 없음
-    if (is_type_only) return NodeIndex.none;
 
     const extra_start = try self.ast.addExtra(specifiers.start);
     _ = try self.ast.addExtra(specifiers.len);

@@ -305,8 +305,8 @@ pub const Codegen = struct {
         try self.writeSpan(node.span);
     }
 
-    /// 문자열 리터럴 출력. quote_style 옵션에 따라 따옴표를 변환.
-    /// preserve이면 원본 그대로, double/single이면 따옴표 교체 + 내부 이스케이프 처리.
+    /// 문자열 리터럴 출력. quote_style에 따라 따옴표를 변환하고
+    /// 내부 이스케이프를 재조정한다 (\' ↔ \").
     fn writeStringLiteral(self: *Codegen, span: Span) !void {
         const text = self.ast.getText(span);
         if (text.len < 2) {
@@ -321,50 +321,53 @@ pub const Codegen = struct {
             .preserve => src_quote,
         };
 
-        // 따옴표가 같으면 원본 그대로 출력 (fast path)
+        // 따옴표가 같으면 writeSpan에 위임 (ascii_only 포함)
         if (src_quote == target_quote) {
-            if (self.options.ascii_only) {
-                try self.writeAsciiOnly(text);
-            } else {
-                try self.write(text);
-            }
+            try self.writeSpan(span);
             return;
         }
 
-        // 따옴표 변환: 첫/끝 바이트 교체 + 내부 이스케이프 처리
+        // 따옴표 변환: batch write로 연속 구간을 한 번에 출력
         try self.writeByte(target_quote);
         const content = text[1 .. text.len - 1];
+        var flush_start: usize = 0;
         var i: usize = 0;
         while (i < content.len) {
             const c = content[i];
             if (c == '\\' and i + 1 < content.len) {
-                // 이스케이프 시퀀스
                 if (content[i + 1] == src_quote) {
-                    // 원본 따옴표 이스케이프 → target에서는 이스케이프 불필요
-                    // \' → ' (double로 변환 시) 또는 \" → " (single로 변환 시)
+                    // \' → ' (double 변환 시): 원본 따옴표 이스케이프 제거
+                    try self.write(content[flush_start..i]);
                     try self.writeByte(src_quote);
                     i += 2;
+                    flush_start = i;
+                } else if (content[i + 1] == target_quote) {
+                    // \" 이미 이스케이프됨 → 그대로 유지
+                    i += 2;
                 } else {
-                    try self.writeByte(c);
-                    i += 1;
+                    // 다른 이스케이프 시퀀스 → 통째로 유지
+                    i += 2;
                 }
             } else if (c == target_quote) {
                 // target 따옴표가 내용에 있으면 이스케이프 추가
+                try self.write(content[flush_start..i]);
                 try self.writeByte('\\');
                 try self.writeByte(c);
                 i += 1;
+                flush_start = i;
             } else if (c >= 0x80 and self.options.ascii_only) {
-                // non-ASCII → \uXXXX (ascii_only 모드)
-                // UTF-8 멀티바이트 문자의 전체 바이트를 전달해야 함
-                const byte_len: usize = if (c < 0xC0) 1 else if (c < 0xE0) 2 else if (c < 0xF0) 3 else 4;
-                const end = @min(i + byte_len, content.len);
+                try self.write(content[flush_start..i]);
+                const cp_len = std.unicode.utf8ByteSequenceLength(c) catch 1;
+                const end = @min(i + cp_len, content.len);
                 try self.writeAsciiOnly(content[i..end]);
                 i = end;
+                flush_start = i;
             } else {
-                try self.writeByte(c);
                 i += 1;
             }
         }
+        // 남은 구간 flush
+        try self.write(content[flush_start..content.len]);
         try self.writeByte(target_quote);
     }
 
