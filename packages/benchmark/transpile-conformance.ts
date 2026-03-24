@@ -326,7 +326,9 @@ for (const e of allErrors) {
   errorCategories.set(msg, cat);
 }
 console.log(`\n### Error Categories (${allErrors.length} total)\n`);
-for (const [msg, { count, ids }] of [...errorCategories.entries()].sort((a, b) => b[1].count - a[1].count)) {
+for (const [msg, { count, ids }] of [...errorCategories.entries()].sort(
+  (a, b) => b[1].count - a[1].count,
+)) {
   console.log(`- ${count}x: ${msg} (e.g. ${ids.join(", ")})`);
 }
 
