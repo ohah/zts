@@ -1067,6 +1067,11 @@ pub fn emitModule(
             @intFromEnum(module.index),
             is_entry,
             override_syms,
+            switch (options.format) {
+                .esm => .esm,
+                .cjs => .cjs,
+                .iife => .iife,
+            },
         );
         // transformer가 전파한 new_symbol_ids를 메타데이터에 설정
         if (override_syms) |syms| {

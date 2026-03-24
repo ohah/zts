@@ -1600,6 +1600,60 @@ test "Edge: multiple external packages" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "'yes'") != null);
 }
 
+test "ESM external: import statements preserved (no require)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import React from 'react';
+        \\import { useState } from 'react';
+        \\import * as lodash from 'lodash';
+        \\console.log(React, useState, lodash);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .external = &.{ "react", "lodash" },
+        // format 기본값 = ESM
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // ESM 출력: import 문이 유지되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "import ") != null);
+    // ESM 출력: require()가 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(") == null);
+}
+
+test "CJS external: require preamble generated" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import React from 'react';
+        \\console.log(React);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .external = &.{"react"},
+        .format = .cjs,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // CJS 출력: require() preamble이 생성되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(") != null);
+}
+
 test "Edge: import with .js extension resolves to .ts" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

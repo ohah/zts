@@ -25,14 +25,13 @@
 - ~~JS destructuring default~~ ✅ #320 (false/true/null이 identifier로 파싱)
 - ~~regex 검증 에러~~ ✅ #318 (검증 스킵, esbuild 동일)
 
-## 구조적 개선 (후순위)
+## ~~구조적 개선~~ ✅
 
-### zx — ESM 번들에 CJS require 혼입
-- **증상**: ESM 번들에 `require` 호출이 남아있어 Node ESM에서 에러
-- **원인**: CJS interop이 ESM 출력에서 require를 제거하지 못함
+### ~~zx — ESM 번들에 CJS require 혼입~~ ✅
+- linker가 output format을 인식하여 ESM 출력 시 import 문 유지, CJS/IIFE 출력 시 require() preamble 생성 (Rolldown 방식)
 
-### binding_scanner — barrel re-export를 `.local`로 오분류
-- **현상**: `import { X } from './a'; export { X }` 가 `.local` export로 분류됨
-- **PR #308에서 workaround 적용 완료**
+### ~~binding_scanner — barrel re-export를 `.local`로 오분류~~ ✅
+- binding_scanner에서 import binding 조회하여 barrel re-export를 `.re_export`로 정확히 분류 (Rolldown 방식)
+- linker workaround 제거
 
 ### ~~ESM→CJS `export *` 지원~~ ✅ PR #314
