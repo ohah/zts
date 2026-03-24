@@ -123,12 +123,25 @@ pub fn parseArrowBody(self: *Parser, is_async: bool, param_idx: NodeIndex) Parse
 }
 
 pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
+    // TS 제네릭 arrow function: <T>() => body, <const T>() => body
+    if (self.current() == .l_angle) {
+        if (try tryParseGenericArrow(self, false)) |arrow| return arrow;
+    }
+
     // async arrow function 감지 (2가지 형태)
     if (self.current() == .kw_async) {
         const async_span = self.currentSpan();
         const peek = try self.peekNext();
 
         if (!peek.has_newline_before) {
+            // TS async 제네릭 arrow: async <T>() => body
+            if (peek.kind == .l_angle) {
+                const saved = self.saveState();
+                try self.advance(); // skip 'async'
+                if (try tryParseGenericArrow(self, true)) |arrow| return arrow;
+                self.restoreState(saved);
+            }
+
             // 형태 1: async x => body (단순 식별자)
             if (peek.kind == .identifier or (peek.kind.isKeyword() and !peek.kind.isReservedKeyword())) {
                 const saved = self.saveState();
@@ -1638,4 +1651,76 @@ fn getBinaryPrecedence(kind: Kind) u8 {
         .star2 => 11, // ** (우결합)
         else => 0, // 이항 연산자 아님
     };
+}
+
+/// TS 제네릭 arrow function 파싱 시도: <T>() => body, <const T>() => body
+/// 현재 토큰이 < 인 상태에서 호출.
+/// 성공하면 arrow_function_expression 노드를 반환, 실패하면 null.
+/// saveState/restoreState를 사용하여 실패 시 복구.
+fn tryParseGenericArrow(self: *Parser, is_async: bool) ParseError2!?NodeIndex {
+    const start = self.currentSpan().start;
+    const saved = self.saveState();
+    const err_count = self.errors.items.len;
+
+    // 제네릭 타입 파라미터 파싱 시도
+    _ = try self.parseTsTypeParameterDeclaration();
+
+    // ( 가 와야 arrow 파라미터
+    if (self.current() != .l_paren) {
+        self.restoreState(saved);
+        self.errors.shrinkRetainingCapacity(err_count);
+        return null;
+    }
+
+    // 파라미터 리스트 파싱 (parseTypedArrowParams와 동일 패턴)
+    try self.advance(); // skip (
+    self.in_formal_parameters = true;
+    const scratch_top = self.saveScratch();
+
+    while (self.current() != .r_paren and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
+        const param = try self.parseBindingIdentifier();
+        try self.scratch.append(self.allocator, param);
+        if (!try self.eat(.comma)) break;
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
+    }
+    self.in_formal_parameters = false;
+
+    if (self.current() != .r_paren) {
+        self.restoreScratch(scratch_top);
+        self.restoreState(saved);
+        self.errors.shrinkRetainingCapacity(err_count);
+        return null;
+    }
+    try self.advance(); // skip )
+
+    // 선택적 리턴 타입: <T>(): R => body
+    _ = try self.tryParseReturnType();
+
+    // => 가 와야 arrow function
+    if (self.current() != .arrow or self.scanner.token.has_newline_before) {
+        self.restoreScratch(scratch_top);
+        self.restoreState(saved);
+        self.errors.shrinkRetainingCapacity(err_count);
+        return null;
+    }
+
+    // 파라미터 노드 리스트 생성
+    const params = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+    self.restoreScratch(scratch_top);
+    const params_node = try self.ast.addNode(.{
+        .tag = .formal_parameters,
+        .span = .{ .start = start, .end = self.currentSpan().start },
+        .data = .{ .list = params },
+    });
+
+    try self.advance(); // skip =>
+    const body = try parseArrowBody(self, is_async, params_node);
+    const flags: u32 = if (is_async) 0x01 else 0;
+    const ae = try self.ast.addExtras(&.{ @intFromEnum(params_node), @intFromEnum(body), flags });
+    return try self.ast.addNode(.{
+        .tag = .arrow_function_expression,
+        .span = .{ .start = start, .end = self.currentSpan().start },
+        .data = .{ .extra = ae },
+    });
 }
