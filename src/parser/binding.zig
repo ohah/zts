@@ -72,6 +72,13 @@ pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
     {
         const span = self.currentSpan();
         if (self.current() == .identifier) try self.checkStrictBinding(span);
+        // yield/await는 contextual keyword이므로 이 경로에 도달할 수 있다.
+        // generator/async/strict/module 컨텍스트에서 바인딩 이름으로 사용 금지.
+        if (self.current() == .kw_yield or self.current() == .kw_await) {
+            _ = try self.checkYieldAwaitUse(span, "identifier");
+        } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
+            try self.addError(span, "Reserved word in strict mode cannot be used as identifier");
+        }
         try self.advance();
         const node = try self.ast.addNode(.{
             .tag = .binding_identifier,
@@ -365,7 +372,8 @@ pub fn parseBindingProperty(self: *Parser) ParseError2!NodeIndex {
     // - await: async 함수 밖에서 식별자 가능 (ECMAScript 12.1.1)
     // - yield: generator 밖에서 식별자 가능
     const is_shorthand_eligible = self.current() == .identifier or
-        (self.current().isKeyword() and !self.current().isReservedKeyword()) or
+        (self.current().isKeyword() and !self.current().isReservedKeyword() and
+            self.current() != .kw_yield) or
         (self.current() == .kw_await and !self.ctx.in_async and (!self.is_module or self.in_namespace or self.ctx.in_function)) or
         (self.current() == .kw_yield and !self.ctx.in_generator and !self.is_strict_mode);
     if (is_shorthand_eligible) {
@@ -373,6 +381,12 @@ pub fn parseBindingProperty(self: *Parser) ParseError2!NodeIndex {
         const next = try self.peekNextKind();
         if (next == .comma or next == .r_curly or next == .eq) {
             // shorthand property
+            // yield/await는 contextual keyword — generator/async/strict/module에서 식별자 사용 금지
+            if (self.current() == .kw_yield or self.current() == .kw_await) {
+                _ = try self.checkYieldAwaitUse(id_span, "identifier");
+            } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
+                try self.addError(id_span, "Reserved word in strict mode cannot be used as identifier");
+            }
             try self.advance();
             const key = try self.ast.addNode(.{
                 .tag = .binding_identifier,

@@ -1231,6 +1231,31 @@ pub const Parser = struct {
         return true;
     }
 
+    /// arrow function의 typed 파싱 경로에서 중복 파라미터를 검사한다.
+    /// arrow function은 항상 UniqueFormalParameters이므로 조건 없이 검사.
+    pub fn checkDuplicateArrowFormalParams(self: *Parser, scratch_top: usize) ParseError2!void {
+        const params = self.scratch.items[scratch_top..];
+        self.param_name_spans.clearRetainingCapacity();
+        for (params) |param_idx| {
+            const names_before = self.param_name_spans.items.len;
+            try self.collectBoundNames(param_idx);
+            const names_after = self.param_name_spans.items.len;
+            var j: usize = names_before;
+            while (j < names_after) : (j += 1) {
+                const name_span = self.param_name_spans.items[j];
+                const name = self.ast.source[name_span.start..name_span.end];
+                for (self.param_name_spans.items[0..j]) |prev_span| {
+                    const prev_name = self.ast.source[prev_span.start..prev_span.end];
+                    if (std.mem.eql(u8, name, prev_name)) {
+                        try self.addError(name_span, "Duplicate parameter name");
+                        break;
+                    }
+                }
+            }
+        }
+        self.param_name_spans.clearRetainingCapacity();
+    }
+
     /// 중복 파라미터를 검사한다.
     /// ECMAScript 14.1.2: non-simple params면 항상 에러
     /// ECMAScript 15.4.1/15.5.1: generator/async generator는 항상 에러
@@ -1813,6 +1838,8 @@ pub const Parser = struct {
             const loop_guard_pos = self.scanner.token.span.start;
             const param = try self.parseBindingIdentifier();
             try self.scratch.append(self.allocator, param);
+            // rest parameter 뒤에 comma가 오면 에러: (...a,) => {}
+            try self.checkRestParameterLast(param);
             if (!try self.eat(.comma)) break;
             if (try self.ensureLoopProgress(loop_guard_pos)) break;
         }
@@ -1836,6 +1863,9 @@ pub const Parser = struct {
             self.restoreState(saved);
             return null;
         }
+
+        // arrow function은 항상 UniqueFormalParameters — 중복 파라미터 이름 금지.
+        try self.checkDuplicateArrowFormalParams(scratch_top);
 
         // 파라미터 노드 리스트 생성
         const params = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
@@ -3996,4 +4026,115 @@ test "TokenSplit: interface with nested generic members" {
 
 test "TokenSplit: type alias with conditional + nested generic" {
     try expectNoParseError("type Foo<T> = T extends Array<Array<number>> ? T : never");
+}
+
+// === yield identifier validation tests ===
+
+test "yield: identifier in generator body should error" {
+    // `void yield` in generator — yield is IdentifierReference, not YieldExpression
+    // ECMAScript: IdentifierReference[Yield] cannot be "yield"
+    var scanner = try Scanner.init(std.testing.allocator, "function *gen() { void yield; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    // Should have at least one error about yield
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "yield: in strict mode should error" {
+    var scanner = try Scanner.init(std.testing.allocator, "yield;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    parser.is_strict_mode = true;
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "yield: in sloppy mode should be fine" {
+    var scanner = try Scanner.init(std.testing.allocator, "var yield = 1;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+}
+
+test "yield: expression in generator should be fine" {
+    var scanner = try Scanner.init(std.testing.allocator, "function *gen() { yield 1; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+}
+
+test "yield: destructuring in strict mode should error" {
+    var scanner = try Scanner.init(std.testing.allocator, "for ([ x = yield ] of [[]]) ;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    parser.is_strict_mode = true;
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "yield: as parameter name in generator should error" {
+    // yield as parameter name in generator is forbidden
+    var scanner = try Scanner.init(std.testing.allocator, "function *gen(yield) {}");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "yield: in module code should error" {
+    // module code is always strict, so yield as identifier is forbidden
+    var scanner = try Scanner.init(std.testing.allocator, "var x = yield;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    parser.is_module = true;
+    parser.is_strict_mode = true; // module is always strict
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "yield: typeof yield in generator should error" {
+    var scanner = try Scanner.init(std.testing.allocator, "function *gen() { typeof yield; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "yield: as variable name in strict mode should error" {
+    var scanner = try Scanner.init(std.testing.allocator, "var yield = 1;");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    parser.is_strict_mode = true;
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
+test "CoverGrammar: arrow destructuring duplicate params" {
+    try expectParseError("([x, x]) => 1", .{ .message = "Duplicate parameter name" });
+}
+
+test "CoverGrammar: arrow destructuring duplicate params - object" {
+    try expectParseError("({y: x, x}) => 1", .{ .message = "Duplicate parameter name" });
+    try expectParseError("({a: x, b: x}) => 1", .{ .message = "Duplicate parameter name" });
+    try expectParseError("({x, ...x}) => 1", .{ .message = "Duplicate parameter name" });
+}
+
+test "rest params trailing comma: arrow" {
+    try expectParseError("(...a,) => {}", .{ .message_contains = "Rest parameter must be last formal parameter" });
+}
+
+test "rest params trailing comma: async arrow" {
+    try expectParseError("async (...a,) => {}", .{ .message_contains = "Rest parameter must be last formal parameter" });
 }

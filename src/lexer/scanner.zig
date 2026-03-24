@@ -752,6 +752,7 @@ pub const Scanner = struct {
     /// - 줄바꿈은 정규식 안에서 불허
     fn scanRegExp(self: *Scanner) Kind {
         var in_class = false; // [...] character class 안인지
+        const pattern_start = self.current; // opening `/` 바로 다음 byte
 
         while (!self.isAtEnd()) {
             const c = self.peek();
@@ -784,11 +785,19 @@ pub const Scanner = struct {
             }
 
             if (c == '/' and !in_class) {
+                const pattern_end = self.current;
                 self.current += 1; // consume closing /
-                // flags만 스캔 (정규식 내용 검증은 스킵 — esbuild와 동일).
-                // validator에 false positive가 있고 (/[{}]/u 등),
-                // 번들러에서 정규식 내용을 변환하지 않으므로 검증이 불필요하다.
+
+                const flags_start = self.current;
                 self.scanRegExpFlags();
+                const flags_end = self.current;
+
+                // 패턴 + 플래그 검증 (ECMAScript 21.2.1)
+                const pattern_text = self.source[pattern_start..pattern_end];
+                const flag_text = self.source[flags_start..flags_end];
+                if (regexp_mod.validate(pattern_text, flag_text) != null) {
+                    return .syntax_error;
+                }
                 return .regexp_literal;
             }
 
