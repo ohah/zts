@@ -959,7 +959,8 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 // Identity escape — unicode mode에서는 제한
                 else => {
                     if (self.flags.hasUnicodeMode()) {
-                        if (isSyntaxChar(c)) {
+                        // SyntaxCharacter + '-' (ClassEscape: \- → dash in character class)
+                        if (isSyntaxChar(c) or c == '-') {
                             self.advance();
                             self.setClassValue(c);
                             if (emit_ast) {
