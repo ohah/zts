@@ -169,10 +169,15 @@ pub const ResolveCache = struct {
             return true;
         }
 
-        // platform=node이면 node 빌트인 자동 external
+        // platform=node이면 node 빌트인 자동 external (서브패스 포함)
+        // "fs", "fs/promises", "stream/web" 등
         if (self.platform == .node) {
+            const base = if (std.mem.indexOf(u8, specifier, "/")) |slash|
+                specifier[0..slash]
+            else
+                specifier;
             for (node_builtins) |builtin| {
-                if (std.mem.eql(u8, specifier, builtin)) return true;
+                if (std.mem.eql(u8, base, builtin)) return true;
             }
         }
 

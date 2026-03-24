@@ -32,11 +32,11 @@ const TOESM_RUNTIME =
     \\var __getProtoOf = Object.getPrototypeOf;
     \\var __defProp = Object.defineProperty;
     \\var __hasOwn = Object.prototype.hasOwnProperty;
-    \\var __copyProps = (to, from) => { for (var key in from) if (__hasOwn.call(from, key) && !__hasOwn.call(to, key)) __defProp(to, key, { get: () => from[key], enumerable: true }); return to; };
+    \\var __copyProps = (to, from) => { for (let key in from) if (__hasOwn.call(from, key) && !__hasOwn.call(to, key)) __defProp(to, key, { get: () => from[key], enumerable: true }); return to; };
     \\var __toESM = (mod, isNodeMode, target) => (target = mod != null ? Object.create(__getProtoOf(mod)) : {}, __copyProps(isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target, mod));
     \\
 ;
-const TOESM_RUNTIME_MIN = "var __getProtoOf=Object.getPrototypeOf;var __defProp=Object.defineProperty;var __hasOwn=Object.prototype.hasOwnProperty;var __copyProps=(to,from)=>{for(var key in from)if(__hasOwn.call(from,key)&&!__hasOwn.call(to,key))__defProp(to,key,{get:()=>from[key],enumerable:true});return to};var __toESM=(mod,isNodeMode,target)=>(target=mod!=null?Object.create(__getProtoOf(mod)):{},__copyProps(isNodeMode||!mod||!mod.__esModule?__defProp(target,\"default\",{value:mod,enumerable:true}):target,mod));";
+const TOESM_RUNTIME_MIN = "var __getProtoOf=Object.getPrototypeOf;var __defProp=Object.defineProperty;var __hasOwn=Object.prototype.hasOwnProperty;var __copyProps=(to,from)=>{for(let key in from)if(__hasOwn.call(from,key)&&!__hasOwn.call(to,key))__defProp(to,key,{get:()=>from[key],enumerable:true});return to};var __toESM=(mod,isNodeMode,target)=>(target=mod!=null?Object.create(__getProtoOf(mod)):{},__copyProps(isNodeMode||!mod||!mod.__esModule?__defProp(target,\"default\",{value:mod,enumerable:true}):target,mod));";
 /// HMR 런타임: 모듈 레지스트리 + __zts_require + import.meta.hot API.
 /// dev mode 번들 상단에 주입된다.
 ///
