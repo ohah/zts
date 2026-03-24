@@ -546,31 +546,37 @@ pub const Linker = struct {
         return false;
     }
 
-    /// ECMAScript 예약어인지 확인 (키워드 + strict mode 예약어만).
-    /// 글로벌 객체 이름은 포함하지 않음 — reserved_globals에서 자동 수집.
+    /// ECMAScript 예약어 + CJS 런타임 + 브라우저/Node 주요 글로벌인지 확인.
+    /// 브라우저 글로벌(window, document 등)은 unresolved_references 자동 수집의 안전망.
+    /// (해당 글로벌을 참조하지 않는 모듈에서 선언하면 unresolved에 안 잡히므로)
     /// comptime StaticStringMap으로 O(1) 조회.
     fn isReservedName(name: []const u8) bool {
         const map = comptime std.StaticStringMap(void).initComptime(.{
             // ECMAScript 예약어 (keywords + future reserved words)
-            .{ "break", {} },     .{ "case", {} },       .{ "catch", {} },      .{ "class", {} },
-            .{ "const", {} },     .{ "continue", {} },   .{ "debugger", {} },   .{ "default", {} },
-            .{ "delete", {} },    .{ "do", {} },         .{ "else", {} },       .{ "enum", {} },
-            .{ "export", {} },    .{ "extends", {} },    .{ "false", {} },      .{ "finally", {} },
-            .{ "for", {} },       .{ "function", {} },   .{ "if", {} },         .{ "import", {} },
-            .{ "in", {} },        .{ "instanceof", {} }, .{ "new", {} },        .{ "null", {} },
-            .{ "return", {} },    .{ "super", {} },      .{ "switch", {} },     .{ "this", {} },
-            .{ "throw", {} },     .{ "true", {} },       .{ "try", {} },        .{ "typeof", {} },
-            .{ "var", {} },       .{ "void", {} },       .{ "while", {} },      .{ "with", {} },
-            .{ "yield", {} },     .{ "let", {} },        .{ "static", {} },     .{ "implements", {} },
-            .{ "interface", {} }, .{ "package", {} },    .{ "private", {} },    .{ "protected", {} },
-            .{ "public", {} },    .{ "await", {} },
+            .{ "break", {} },       .{ "case", {} },       .{ "catch", {} },      .{ "class", {} },
+            .{ "const", {} },       .{ "continue", {} },   .{ "debugger", {} },   .{ "default", {} },
+            .{ "delete", {} },      .{ "do", {} },         .{ "else", {} },       .{ "enum", {} },
+            .{ "export", {} },      .{ "extends", {} },    .{ "false", {} },      .{ "finally", {} },
+            .{ "for", {} },         .{ "function", {} },   .{ "if", {} },         .{ "import", {} },
+            .{ "in", {} },          .{ "instanceof", {} }, .{ "new", {} },        .{ "null", {} },
+            .{ "return", {} },      .{ "super", {} },      .{ "switch", {} },     .{ "this", {} },
+            .{ "throw", {} },       .{ "true", {} },       .{ "try", {} },        .{ "typeof", {} },
+            .{ "var", {} },         .{ "void", {} },       .{ "while", {} },      .{ "with", {} },
+            .{ "yield", {} },       .{ "let", {} },        .{ "static", {} },     .{ "implements", {} },
+            .{ "interface", {} },   .{ "package", {} },    .{ "private", {} },    .{ "protected", {} },
+            .{ "public", {} },      .{ "await", {} },
             // ECMAScript 특수 식별자 (키워드는 아니지만 변수명으로 사용하면 문제)
                  .{ "undefined", {} },  .{ "NaN", {} },
-            .{ "Infinity", {} },  .{ "arguments", {} },  .{ "eval", {} },
+            .{ "Infinity", {} },    .{ "arguments", {} },  .{ "eval", {} },
             // CJS 런타임 식별자 — 번들러가 합성하는 __commonJS/__require에서 사용.
             // semantic analyzer의 unresolved에 잡히지 않으므로 항상 예약.
                   .{ "require", {} },
-            .{ "module", {} },    .{ "exports", {} },    .{ "__filename", {} }, .{ "__dirname", {} },
+            .{ "module", {} },      .{ "exports", {} },    .{ "__filename", {} }, .{ "__dirname", {} },
+            // 브라우저/Node 공통 글로벌 — scope hoisting에서 재선언 방지.
+            // unresolved_references에 잡히지 않는 경우를 대비한 안전망.
+            .{ "window", {} },      .{ "document", {} },   .{ "self", {} },       .{ "globalThis", {} },
+            .{ "location", {} },    .{ "navigator", {} },  .{ "console", {} },    .{ "setTimeout", {} },
+            .{ "setInterval", {} }, .{ "fetch", {} },      .{ "process", {} },    .{ "global", {} },
         });
         return map.has(name);
     }
@@ -2321,10 +2327,12 @@ test "isReservedName: special identifiers" {
     try std.testing.expect(Linker.isReservedName("eval"));
     try std.testing.expect(Linker.isReservedName("NaN"));
     try std.testing.expect(Linker.isReservedName("Infinity"));
-    // 글로벌 객체는 더 이상 정적 목록에 없음 (unresolved references로 자동 수집)
+    // Array/Object 등 대부분의 글로벌은 unresolved references로 자동 수집
     try std.testing.expect(!Linker.isReservedName("Array"));
     try std.testing.expect(!Linker.isReservedName("Object"));
-    try std.testing.expect(!Linker.isReservedName("console"));
+    // window/console 등 주요 글로벌은 안전망으로 정적 목록에 포함
+    try std.testing.expect(Linker.isReservedName("console"));
+    try std.testing.expect(Linker.isReservedName("window"));
     try std.testing.expect(Linker.isReservedName("require"));
     try std.testing.expect(Linker.isReservedName("module"));
     try std.testing.expect(!Linker.isReservedName("myVar"));

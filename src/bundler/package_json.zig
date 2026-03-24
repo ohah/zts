@@ -32,6 +32,10 @@ pub const PackageJson = struct {
     type_field: ?[]const u8 = null,
     exports: ?std.json.Value = null,
     imports: ?std.json.Value = null,
+    /// "browser" 필드 (object 형태). 키: 상대 경로, 값: false 또는 대체 경로.
+    /// platform=browser에서 파일 교체/비활성화에 사용.
+    /// https://github.com/defunctzombie/package-browser-field-spec
+    browser_map: ?std.json.Value = null,
     side_effects: SideEffects = .unknown,
 
     pub const SideEffects = union(enum) {
@@ -92,6 +96,13 @@ pub fn parsePackageJson(allocator: std.mem.Allocator, dir: std.fs.Dir) !ParsedPa
 
     const obj = root.object;
 
+    // "browser" 필드: object 형태만 browser_map으로 저장.
+    // string 형태("browser": "lib/browser.js")는 main 대체이므로 별도 처리 불필요 (exports/main에서 커버).
+    const browser_map: ?std.json.Value = if (obj.get("browser")) |b| switch (b) {
+        .object => b,
+        else => null,
+    } else null;
+
     return .{
         .pkg = .{
             .name = getStr(obj, "name"),
@@ -100,6 +111,7 @@ pub fn parsePackageJson(allocator: std.mem.Allocator, dir: std.fs.Dir) !ParsedPa
             .type_field = getStr(obj, "type"),
             .exports = obj.get("exports"),
             .imports = obj.get("imports"),
+            .browser_map = browser_map,
             .side_effects = parseSideEffects(obj, allocator),
         },
         .parsed = parsed,

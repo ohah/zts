@@ -312,8 +312,22 @@ Phase B1: 기반 (✅ 완료)          Phase B2: 핵심 (✅ 대부분 완료) P
 ─────────────────                 ──────────────────          ──────────────
 ✅ 모듈 해석 (Node/TS)            ✅ CJS interop (입력)        플러그인 시스템
   ├ node_modules 탐색              ├ require() 감지/래핑        ├ resolve/load/transform 훅
-  ├ package.json exports           ├ __commonJS/__toESM         ├ Rollup 플러그인 호환
-  ├ tsconfig paths/baseUrl         └ ExportsKind 승격           └ Vite 플러그인 호환
+  ├ package.json exports           ├ __commonJS/__toESM         ├ renderChunk/generateBundle 훅
+  ├ tsconfig paths/baseUrl         └ ExportsKind 승격           ├ Rollup 플러그인 호환
+  └ 조건부 exports                                              └ Vite 플러그인 호환
+✅ package.json browser 필드      ✅ Top-level await           CLI 옵션 확장 (플러그인 기반)
+  └ disabled 파일 → 빈 모듈                                     ├ --alias (resolve 훅)
+✅ Node 빌트인 빈 모듈 대체                                      ├ --inject (load 훅)
+  └ --platform=browser 시                                        ├ --loader (load+transform 훅)
+    (disabled) CJS wrapper                                       ├ --banner/--footer (renderChunk)
+                                                                 ├ --target (transform 훅)
+                                                                 ├ --jsx, --jsx-factory (transform)
+                                                                 ├ --global-name (IIFE output)
+                                                                 ├ --metafile (generateBundle)
+                                                                 ├ --entry-names/--chunk-names
+                                                                 ├ --resolve-extensions
+                                                                 ├ --main-fields, --conditions
+                                                                 └ --log-level
   └ 조건부 exports                ✅ Top-level await           React Native 지원
 ✅ 모듈 그래프                     ├ semantic analyzer 감지     ├ Metro 호환 해석
   ├ 정적 import/export              ├ 전이적 전파               ├ 플랫폼 확장자 (.ios/.android)

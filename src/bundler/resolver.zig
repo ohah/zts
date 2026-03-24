@@ -28,6 +28,9 @@ pub const ResolveResult = struct {
     path: []const u8,
     /// 확장자에서 추론한 모듈 타입
     module_type: ModuleType,
+    /// package.json "browser" 필드에서 false로 매핑된 파일.
+    /// platform=browser에서 빈 CJS 모듈로 대체한다 (esbuild "(disabled)" 방식).
+    disabled: bool = false,
 };
 
 pub const ResolveError = error{

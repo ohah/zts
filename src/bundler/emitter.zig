@@ -179,7 +179,7 @@ pub fn emitWithTreeShaking(
     defer sorted.deinit(allocator);
 
     for (graph.modules.items, 0..) |*m, i| {
-        const is_js = m.module_type == .javascript and m.ast != null;
+        const is_js = m.module_type == .javascript and (m.ast != null or m.is_disabled);
         const is_json = m.module_type == .json;
         if (is_js or is_json) {
             // tree-shaking: 미포함 모듈 스킵
@@ -323,7 +323,7 @@ pub fn emitDevBundle(
     defer sorted.deinit(allocator);
 
     for (graph.modules.items) |*m| {
-        if ((m.module_type == .javascript and m.ast != null) or m.module_type == .json) {
+        if ((m.module_type == .javascript and (m.ast != null or m.is_disabled)) or m.module_type == .json) {
             try sorted.append(allocator, m);
         }
     }
@@ -1027,6 +1027,12 @@ pub fn emitModule(
         return emitJsonModule(allocator, module);
     }
 
+    // Disabled 모듈 (platform=browser에서 Node 빌트인): 빈 __commonJS wrapper 출력.
+    // esbuild 호환: var require_X = __commonJS({ "(disabled)"(exports, module) {} });
+    if (module.is_disabled) {
+        return emitDisabledModule(allocator, module, options.minify);
+    }
+
     const ast = &(module.ast orelse return null);
 
     // 변환용 arena (Transformer/Codegen 내부 메모리)
@@ -1147,6 +1153,25 @@ pub fn emitModule(
 }
 
 /// JSON 모듈을 CJS 형태로 출력: __commonJS 래핑 + module.exports = <JSON content>
+/// Disabled 모듈: platform=browser에서 Node 빌트인 모듈을 빈 __commonJS wrapper로 출력.
+/// esbuild 호환 형식: var require_util = __commonJS({ "(disabled)"(exports, module) {} });
+fn emitDisabledModule(allocator: std.mem.Allocator, module: *const Module, minify: bool) !?[]const u8 {
+    const var_name = try types.makeRequireVarName(allocator, module.path);
+    defer allocator.free(var_name);
+
+    var buf: std.ArrayList(u8) = .empty;
+    if (minify) {
+        try buf.appendSlice(allocator, "var ");
+        try buf.appendSlice(allocator, var_name);
+        try buf.appendSlice(allocator, "=__commonJS({\"(disabled)\"(exports,module){}});");
+    } else {
+        try buf.appendSlice(allocator, "var ");
+        try buf.appendSlice(allocator, var_name);
+        try buf.appendSlice(allocator, " = __commonJS({\n\t\"(disabled)\"(exports, module) {\n\t}\n});\n");
+    }
+    return try buf.toOwnedSlice(allocator);
+}
+
 fn emitJsonModule(allocator: std.mem.Allocator, module: *const Module) !?[]const u8 {
     if (module.source.len == 0) return null;
 

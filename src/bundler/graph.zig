@@ -24,7 +24,8 @@ const ImportKind = types.ImportKind;
 const ImportRecord = types.ImportRecord;
 const BundlerDiagnostic = types.BundlerDiagnostic;
 const Module = @import("module.zig").Module;
-const ResolveCache = @import("resolve_cache.zig").ResolveCache;
+const resolve_cache_mod = @import("resolve_cache.zig");
+const ResolveCache = resolve_cache_mod.ResolveCache;
 const import_scanner = @import("import_scanner.zig");
 const binding_scanner_mod = @import("binding_scanner.zig");
 const Scanner = @import("../lexer/scanner.zig").Scanner;
@@ -137,6 +138,34 @@ pub const ModuleGraph = struct {
 
         // 파싱
         self.parseModule(index);
+
+        return index;
+    }
+
+    /// platform=browser에서 Node 빌트인 모듈을 빈 CJS 모듈로 등록 (esbuild "(disabled)" 방식).
+    /// AST 없이 wrap_kind=.cjs, is_disabled=true로 설정.
+    /// DFS가 이 모듈을 방문하여 exec_index를 부여하고, emitter가 빈 __commonJS wrapper를 출력.
+    fn addDisabledModule(self: *ModuleGraph, specifier: []const u8) !ModuleIndex {
+        // 가상 경로: "(disabled):specifier" (esbuild 형식).
+        // specifier 기준으로 중복 체크 — 여러 모듈이 같은 빌트인을 require해도 하나만 생성.
+        const disabled_path = try std.mem.concat(self.allocator, u8, &.{ "(disabled):", specifier });
+
+        // 중복 체크
+        if (self.path_to_module.get(disabled_path)) |existing| {
+            self.allocator.free(disabled_path);
+            return existing;
+        }
+
+        const index: ModuleIndex = @enumFromInt(@as(u32, @intCast(self.modules.items.len)));
+        var module = Module.init(index, disabled_path);
+        module.module_type = .javascript;
+        module.exports_kind = .commonjs;
+        module.wrap_kind = .cjs;
+        module.is_disabled = true;
+        module.side_effects = false;
+        module.state = .ready;
+        try self.modules.append(self.allocator, module);
+        try self.path_to_module.put(disabled_path, index);
 
         return index;
     }
@@ -363,6 +392,17 @@ pub const ModuleGraph = struct {
                 record.kind,
             ) catch |err| switch (err) {
                 error.ModuleNotFound => {
+                    // platform=browser에서 Node 빌트인 모듈은 빈 CJS로 대체 (esbuild "(disabled)" 방식)
+                    if (self.resolve_cache.platform == .browser and resolve_cache_mod.isNodeBuiltin(record.specifier)) {
+                        const dep_idx = try self.addDisabledModule(record.specifier);
+                        self.modules.items[mod_idx].import_records[rec_i].resolved = dep_idx;
+                        if (record.kind == .dynamic_import) {
+                            try self.modules.items[mod_idx].addDynamicImport(self.allocator, dep_idx);
+                        } else {
+                            try self.modules.items[mod_idx].addDependency(self.allocator, dep_idx, self.modules.items);
+                        }
+                        continue;
+                    }
                     const sev: BundlerDiagnostic.Severity = if (record.kind == .dynamic_import) .warning else .@"error";
                     self.addDiag(.unresolved_import, sev, module_path, record.span, .resolve, "Cannot resolve module", record.specifier);
                     continue;
@@ -372,6 +412,19 @@ pub const ModuleGraph = struct {
 
             if (resolved) |r| {
                 defer self.allocator.free(r.path);
+
+                // package.json "browser" 필드에서 false로 매핑된 파일 → 빈 CJS 모듈로 대체
+                if (r.disabled) {
+                    const dep_idx = try self.addDisabledModule(record.specifier);
+                    self.modules.items[mod_idx].import_records[rec_i].resolved = dep_idx;
+                    if (record.kind == .dynamic_import) {
+                        try self.modules.items[mod_idx].addDynamicImport(self.allocator, dep_idx);
+                    } else {
+                        try self.modules.items[mod_idx].addDependency(self.allocator, dep_idx, self.modules.items);
+                    }
+                    continue;
+                }
+
                 const dep_idx = try self.addModule(r.path);
 
                 // import_records 업데이트 (modules 배열이 재할당되었을 수 있으므로 다시 접근)
@@ -597,8 +650,6 @@ fn determineExportsKind(
 // ============================================================
 // Tests
 // ============================================================
-
-const resolve_cache_mod = @import("resolve_cache.zig");
 
 fn createFile(dir: std.fs.Dir, path: []const u8) !void {
     if (std.fs.path.dirname(path)) |parent| {
