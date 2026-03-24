@@ -17,46 +17,25 @@
 
 ### ~~package_json.zig — sideEffects 배열 메모리 릭~~ ✅ PR #313에서 해결
 
-## 브라우저 호환성
+## ~~브라우저 호환성~~ ✅
 
-### scope hoisting에서 글로벌 변수 충돌 (effect)
-- **증상**: `Identifier 'window' has already been declared`
-- **원인**: deconflict에서 `window`, `document` 등 브라우저 글로벌을 예약하지 않음
-- **esbuild**: `SymbolUnbound`(미해석 참조)를 자동 수집하여 예약 — 하드코딩 목록 없음
-- **rolldown**: `GLOBAL_OBJECTS` 하드코딩 + 중첩 스코프 확인 (2중 방어)
-- **수정 방향**: esbuild 방식(unbound 자동 수집) + rolldown 방식(중첩 스코프 확인)
-- **참고**: `references/esbuild/internal/renamer/renamer.go:15` (ComputeReservedNames)
-- **참고**: `references/rolldown/crates/rolldown/src/utils/renamer.rs:42`
-
-### `import.meta` outside module (jotai, valtio, fp-ts)
-- **증상**: IIFE/script 출력에서 `import.meta` 사용 시 브라우저 에러
-- **esbuild/rolldown**: ESM은 유지, CJS는 `require('url').pathToFileURL(__filename).href`로 polyfill
-- **rolldown 추가 확장**: `import.meta.dirname`, `import.meta.filename`, `ROLLUP_FILE_URL_*`
-- **수정 방향**: ESM 유지, CJS/IIFE에서 platform별 polyfill + rolldown 확장도 지원
-
-### `--platform=browser`에서 `process.env.NODE_ENV` 자동 치환 미구현
-- **증상**: vue, react, immer, mobx 등이 브라우저에서 `process is not defined` 에러
-- **현재**: 매번 `--define:process.env.NODE_ENV="production"` 수동 전달 필요
-- **esbuild**: `--platform=browser`이면 자동으로 `process.env.NODE_ENV`를 치환
-- **rolldown/vite**: `mode` 옵션으로 자동 치환
-- **webpack**: `DefinePlugin` + `mode: "production"`으로 자동 치환
-- **수정 방향**: `--platform=browser`이면 `process.env.NODE_ENV`를 `"production"`으로 자동 define
+### ~~scope hoisting에서 글로벌 변수 충돌 (effect)~~ ✅ PR #317에서 해결
+### ~~`import.meta` outside module (jotai, valtio, fp-ts)~~ ✅ PR #317에서 해결
+### ~~`--platform=browser`에서 `process.env.NODE_ENV` 자동 치환~~ ✅ PR #317에서 해결
+### ~~Node 내장 서브패스 미해석 (zx)~~ ✅ PR #319에서 해결
+### ~~cheerio 번들 실행 시 출력 없음~~ ✅ PR #319에서 해결 (__copyProps var→let)
 
 ## 구조적 개선 (후순위)
 
 ### `"type": "module"` .js 파일을 ESM으로 인식 못함 (minimatch)
 - **증상**: minimatch의 `dist/esm/escape.js`가 스크립트 모드로 파싱 → `export` 에러
-- **원인**: graph.zig에서 package.json `"type": "module"` 체크가 파싱 모드에 반영 안 됨
-- **esbuild/rolldown**: package.json type 필드를 인식하여 .js를 ESM으로 파싱
+- **원인**: 파서에 `is_module` 플래그를 전달해야 함 (determineExportsKind가 아님)
+- **esbuild/rolldown**: package.json type 필드를 파서에 전달하여 .js를 ESM 모드로 파싱
+- **주의**: exports_kind를 바꾸면 CJS wrapper 생성에 영향 → regression 위험
 
-### Node 내장 서브패스 미해석 (zx)
-- **증상**: `stream/web` 등 Node 내장 모듈의 서브패스를 resolve 못함
-- **원인**: resolver가 `stream`, `fs` 등 bare name만 external 처리하고 서브패스는 미처리
-- **esbuild**: `stream/web`, `fs/promises` 등 서브패스도 자동 external
-
-### cheerio 번들 실행 시 출력 없음
-- **증상**: 번들 성공, 에러 없음, 하지만 `console.log` 출력 안 됨
-- **원인**: 미조사
+### zx — ESM 번들에 CJS require 혼입
+- **증상**: ESM 번들에 `require` 호출이 남아있어 Node ESM에서 에러
+- **원인**: CJS interop이 ESM 출력에서 require를 제거하지 못함
 
 ### binding_scanner — barrel re-export를 `.local`로 오분류
 - **현상**: `import { X } from './a'; export { X }` 가 `.local` export로 분류됨
