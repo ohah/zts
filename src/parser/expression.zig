@@ -124,7 +124,8 @@ pub fn parseArrowBody(self: *Parser, is_async: bool, param_idx: NodeIndex) Parse
 
 pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
     // TS 제네릭 arrow function: <T>() => body, <const T>() => body
-    if (self.current() == .l_angle) {
+    // TSX 모드에서는 <가 JSX이므로 제네릭 arrow 시도하지 않음
+    if (self.current() == .l_angle and !self.is_jsx) {
         if (try tryParseGenericArrow(self, false)) |arrow| return arrow;
     }
 
@@ -134,8 +135,8 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
         const peek = try self.peekNext();
 
         if (!peek.has_newline_before) {
-            // TS async 제네릭 arrow: async <T>() => body
-            if (peek.kind == .l_angle) {
+            // TS async 제네릭 arrow: async <T>() => body (TSX에서는 비활성)
+            if (peek.kind == .l_angle and !self.is_jsx) {
                 const saved = self.saveState();
                 try self.advance(); // skip 'async'
                 if (try tryParseGenericArrow(self, true)) |arrow| return arrow;
@@ -1133,7 +1134,13 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
             return self.parseClassWithDecorators(.class_expression, decorators);
         },
         .kw_function => return self.parseFunctionExpression(),
-        .l_angle => return self.parseJSXElement(),
+        .l_angle => {
+            if (self.is_jsx) {
+                return self.parseJSXElement();
+            }
+            // .ts: TS type assertion <T>expr → expr (타입 스트리핑)
+            return try parseTSTypeAssertion(self);
+        },
         .kw_import => {
             try self.advance(); // skip 'import'
             if (self.current() == .dot) {
@@ -1651,6 +1658,24 @@ fn getBinaryPrecedence(kind: Kind) u8 {
         .star2 => 11, // ** (우결합)
         else => 0, // 이항 연산자 아님
     };
+}
+
+/// TS type assertion: <T>expr → expr (타입 스트리핑)
+/// .ts 파일에서만 호출 (TSX에서는 JSX가 우선)
+/// oxc parse_ts_type_assertion 대응
+fn parseTSTypeAssertion(self: *Parser) ParseError2!NodeIndex {
+    const start = self.currentSpan().start;
+    try self.advance(); // skip <
+    _ = try self.parseType();
+    try self.expect(.r_angle);
+    // assertion 대상 표현식 파싱
+    const expr = try parsePrimaryExpression(self);
+    // ts_as_expression과 동일하게 처리 — 트랜스포머에서 타입 제거
+    return try self.ast.addNode(.{
+        .tag = .ts_as_expression,
+        .span = .{ .start = start, .end = self.currentSpan().start },
+        .data = .{ .binary = .{ .left = expr, .right = .none, .flags = 0 } },
+    });
 }
 
 /// TS 제네릭 arrow function 파싱 시도: <T>() => body, <const T>() => body
