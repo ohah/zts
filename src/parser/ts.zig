@@ -195,8 +195,10 @@ fn parseTsModuleBody(self: *Parser, start: u32) ParseError2!NodeIndex {
             .data = .{ .none = 0 },
         });
         try self.advance();
-        // body 없는 shorthand: declare module 'X';
-        if (self.current() == .semicolon or self.current() == .eof) {
+        // body 없는 shorthand: declare module 'X'; 또는 ASI
+        if (self.current() == .semicolon or self.current() == .eof or
+            (self.scanner.token.has_newline_before and self.current() != .l_curly))
+        {
             _ = try self.eat(.semicolon);
             return try self.ast.addNode(.{
                 .tag = .ts_module_declaration,
@@ -227,12 +229,16 @@ fn parseTsModuleBody(self: *Parser, start: u32) ParseError2!NodeIndex {
     // namespace body에서는 export/import 허용 (모듈과 동일한 컨텍스트)
     // parseBlockStatement는 내부에서 is_top_level=false로 설정하므로
     // 여기서 직접 블록을 파싱하여 is_top_level=true를 유지한다
+    // in_namespace 설정: namespace body 안에서는 await를 식별자로 사용 가능
+    // (namespace는 IIFE로 변환되므로 top-level module code가 아님)
     const saved_module = self.is_module;
+    const saved_namespace = self.in_namespace;
     const saved_ctx = self.ctx;
-    self.is_module = true;
+    self.in_namespace = true;
     self.ctx.is_top_level = true;
     const body = try parseNamespaceBlock(self);
     self.is_module = saved_module;
+    self.in_namespace = saved_namespace;
     self.ctx = saved_ctx;
 
     return try self.ast.addNode(.{
@@ -322,6 +328,35 @@ pub fn parseDecorator(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     try self.advance(); // skip @
     const expr = try self.parseCallExpression();
+
+    // TS decorator with type arguments: @x<Type> property
+    // parseCallExpression의 speculative parse는 `<Type>` 뒤에 `(`이 올 때만 성공하므로
+    // decorator에서는 `<Type>` 뒤에 식별자가 올 수 있으므로 여기서 별도 처리
+    if (self.isAtOpeningAngleBracket()) {
+        const saved_scanner = self.saveState();
+        const saved_nodes_len = self.ast.nodes.items.len;
+        const saved_extra_len = self.ast.extra_data.items.len;
+        const saved_scratch = self.saveScratch();
+        const saved_errors_len = self.errors.items.len;
+
+        const type_args_ok = ta_blk: {
+            _ = self.parseTypeArguments() catch {
+                break :ta_blk false;
+            };
+            break :ta_blk true;
+        };
+
+        // 타입 인자 노드는 스트리핑 — AST에서 제거
+        self.ast.nodes.items.len = saved_nodes_len;
+        self.ast.extra_data.items.len = saved_extra_len;
+        self.restoreScratch(saved_scratch);
+        self.errors.shrinkRetainingCapacity(saved_errors_len);
+        if (!type_args_ok) {
+            // 파싱 실패 시 상태 복원
+            self.restoreState(saved_scanner);
+        }
+        // 성공 시 scanner는 type args 이후를 가리킴 (expr은 type args 없이 유지)
+    }
 
     return try self.ast.addNode(.{
         .tag = .decorator,

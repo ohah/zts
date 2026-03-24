@@ -22,6 +22,7 @@ const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
 const Ast = ast_mod.Ast;
 const Span = @import("../lexer/token.zig").Span;
+const Symbol = @import("../semantic/symbol.zig").Symbol;
 
 /// define 치환 엔트리. key=식별자 텍스트, value=치환 문자열.
 pub const DefineEntry = struct {
@@ -76,6 +77,10 @@ pub const Transformer = struct {
     old_symbol_ids: []const ?u32 = &.{},
     /// 새 AST 기준 symbol_ids. new_ast에 노드 추가 시 자동 전파.
     new_symbol_ids: std.ArrayList(?u32) = .empty,
+
+    /// semantic analyzer의 심볼 테이블 (unused import 판별용).
+    /// 비어 있으면 unused import 제거 비활성.
+    symbols: []const Symbol = &.{},
 
     /// define value의 string_table Span 캐시. options.define과 동일 인덱스.
     /// transform() 시작 시 한 번 빌드하여, tryDefineReplace에서 addString 중복 호출을 방지.
@@ -1168,11 +1173,61 @@ pub const Transformer = struct {
     ///   side-effect import (import "module")은 specs_len=0.
     fn visitImportDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
-        const new_specs = try self.visitExtraList(self.readU32(e, 0), self.readU32(e, 1));
+        const specs_start = self.readU32(e, 0);
+        const specs_len = self.readU32(e, 1);
+
+        // Unused import 제거: 모든 specifier의 reference_count가 0이면 import 전체를 제거.
+        // side-effect import (import 'foo')는 specifier가 없으므로 제거하지 않음.
+        if (self.symbols.len > 0 and self.old_symbol_ids.len > 0 and specs_len > 0) {
+            const all_unused = self.areAllSpecifiersUnused(specs_start, specs_len);
+            if (all_unused) return .none;
+        }
+
+        const new_specs = try self.visitExtraList(specs_start, specs_len);
         const new_source = try self.visitNode(self.readNodeIdx(e, 2));
         return self.addExtraNode(.import_declaration, node.span, &.{
             new_specs.start, new_specs.len, @intFromEnum(new_source),
         });
+    }
+
+    /// import의 모든 specifier가 미사용인지 확인한다.
+    /// type-only specifier(이미 스트리핑됨)와 reference_count==0인 specifier만 있으면 true.
+    fn areAllSpecifiersUnused(self: *Transformer, specs_start: u32, specs_len: u32) bool {
+        var i: u32 = 0;
+        while (i < specs_len) : (i += 1) {
+            const spec_idx_raw = self.old_ast.extra_data.items[specs_start + i];
+            const spec_idx: NodeIndex = @enumFromInt(spec_idx_raw);
+            if (spec_idx.isNone()) continue;
+            const spec_node = self.old_ast.getNode(spec_idx);
+
+            // type-only specifier (flags & 1 != 0) → 이미 스트리핑됨, 무시
+            if (spec_node.tag == .import_specifier and spec_node.data.binary.flags & 1 != 0) continue;
+            if (spec_node.tag == .export_specifier) continue; // 방어적: export specifier는 여기 없지만
+
+            // 심볼 ID를 찾을 노드 인덱스 결정
+            const sym_node_idx: u32 = switch (spec_node.tag) {
+                // import_specifier: binary.right가 local name 노드
+                .import_specifier => blk: {
+                    const local_idx = spec_node.data.binary.right;
+                    break :blk if (!local_idx.isNone()) @intFromEnum(local_idx) else @intFromEnum(spec_idx);
+                },
+                // import_default_specifier, import_namespace_specifier: spec 노드 자체가 심볼
+                else => @intFromEnum(spec_idx),
+            };
+
+            // symbol_ids에서 심볼 ID 조회
+            if (sym_node_idx < self.old_symbol_ids.len) {
+                if (self.old_symbol_ids[sym_node_idx]) |sym_id| {
+                    if (sym_id < self.symbols.len) {
+                        if (self.symbols[sym_id].reference_count > 0) return false;
+                        continue; // 미사용 — 다음 specifier 확인
+                    }
+                }
+            }
+            // symbol_id를 찾지 못하면 보수적으로 유지 (사용 중으로 간주)
+            return false;
+        }
+        return true;
     }
 
     /// export_named_declaration: extra_data = [declaration, specifiers_start, specifiers_len, source]

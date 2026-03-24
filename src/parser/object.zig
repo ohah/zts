@@ -138,7 +138,7 @@ pub fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
                             try self.addError(key_node.span, "Reserved word in strict mode cannot be used as shorthand property");
                         } else if (kw == .kw_yield and self.ctx.in_generator) {
                             try self.addError(key_node.span, "'yield' cannot be used as shorthand property in generator");
-                        } else if (kw == .kw_await and (self.ctx.in_async or self.is_module)) {
+                        } else if (kw == .kw_await and (self.ctx.in_async or (self.is_module and !self.in_namespace))) {
                             try self.addError(key_node.span, "'await' cannot be used as shorthand property in async/module");
                         }
                     }

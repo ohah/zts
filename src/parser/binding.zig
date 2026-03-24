@@ -101,7 +101,7 @@ pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
             // ECMAScript 12.1.1: await는 Module goal에서만 Syntax Error.
             // 다른 reserved keyword의 escaped 형태는 항상 사용 불가.
             const is_escaped_await = self.isEscapedKeyword("await");
-            if (!is_escaped_await or self.is_module or self.ctx.in_async) {
+            if (!is_escaped_await or (self.is_module and !self.in_namespace) or self.ctx.in_async) {
                 try self.addError(self.currentSpan(), "Escaped reserved word cannot be used as identifier");
             }
             const span = self.currentSpan();
@@ -191,7 +191,7 @@ pub fn parseBindingName(self: *Parser) ParseError2!NodeIndex {
             // ECMAScript 12.1.1: await는 Module goal에서만 Syntax Error.
             // 다른 reserved keyword의 escaped 형태는 항상 사용 불가.
             const is_escaped_await = self.isEscapedKeyword("await");
-            if (!is_escaped_await or self.is_module or self.ctx.in_async) {
+            if (!is_escaped_await or (self.is_module and !self.in_namespace) or self.ctx.in_async) {
                 try self.addError(self.currentSpan(), "Escaped reserved word cannot be used as identifier");
             }
             const span = self.currentSpan();
@@ -366,7 +366,7 @@ pub fn parseBindingProperty(self: *Parser) ParseError2!NodeIndex {
     // - yield: generator 밖에서 식별자 가능
     const is_shorthand_eligible = self.current() == .identifier or
         (self.current().isKeyword() and !self.current().isReservedKeyword()) or
-        (self.current() == .kw_await and !self.ctx.in_async and (!self.is_module or self.ctx.in_function)) or
+        (self.current() == .kw_await and !self.ctx.in_async and (!self.is_module or self.in_namespace or self.ctx.in_function)) or
         (self.current() == .kw_yield and !self.ctx.in_generator and !self.is_strict_mode);
     if (is_shorthand_eligible) {
         const id_span = self.currentSpan();

@@ -116,6 +116,9 @@ fn transpileFile(
         .drop_debugger = options.drop_debugger,
         .define = options.define,
     });
+    // unused import 제거를 위해 semantic 데이터를 transformer에 전달
+    transformer.old_symbol_ids = analyzer.symbol_ids.items;
+    transformer.symbols = analyzer.symbols.items;
     const root = transformer.transform() catch |err| {
         try stderr.print("zts: transform error in '{s}': {}\n", .{ file_path, err });
         return;

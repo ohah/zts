@@ -77,6 +77,10 @@ pub const Parser = struct {
     /// 파싱 시작 시 한 번 결정되는 불변 설정이므로 Context에 포함하지 않음.
     is_module: bool = false,
 
+    /// namespace body 안인지. export/import를 허용하되 await를 키워드로 취급하지 않음.
+    /// is_module과 분리: namespace는 export/import를 허용하지만 module code가 아님.
+    in_namespace: bool = false,
+
     /// JSX 모드 (TSX). true이면 <는 JSX 엘리먼트 시작으로 우선 해석.
     /// false이면 <T>()=>{}가 제네릭 arrow로 해석.
     is_jsx: bool = false,
@@ -1013,7 +1017,7 @@ pub const Parser = struct {
             // 단, escaped await는 script mode의 non-async에서는 허용
             const is_escaped_await = self.isEscapedKeyword("await");
             if (is_escaped_await) {
-                if (self.is_module or self.ctx.in_async) {
+                if ((self.is_module and !self.in_namespace) or self.ctx.in_async) {
                     try self.addError(self.currentSpan(), "'await' cannot be used as identifier in this context");
                 }
             } else {
@@ -1052,7 +1056,9 @@ pub const Parser = struct {
             if (self.ctx.in_async) {
                 try self.addError(span, "'await' cannot be used as " ++ context_noun ++ " in async function");
                 return true;
-            } else if (self.is_module) {
+            } else if (self.is_module and !self.in_namespace) {
+                // namespace body 안에서는 await를 식별자로 허용
+                // (namespace는 IIFE로 변환되므로 top-level module code가 아님)
                 try self.addError(span, "'await' cannot be used as " ++ context_noun ++ " in module code");
                 return true;
             }
