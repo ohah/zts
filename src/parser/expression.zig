@@ -1020,14 +1020,7 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
                 }
             }
         }
-        // yield/await는 contextual keyword이므로 이 경로에 도달할 수 있다.
-        // generator 내에서 yield를 식별자로 사용하거나, strict mode에서 yield를 식별자로 사용하면
-        // ECMAScript 12.1.1에 따라 SyntaxError이다.
-        if (self.current() == .kw_yield or self.current() == .kw_await) {
-            _ = try self.checkYieldAwaitUse(span, "identifier");
-        } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
-            try self.addError(span, "Reserved word in strict mode cannot be used as identifier");
-        }
+        try self.checkIdentifierKeywordUse(span);
         try self.advance();
         return try self.ast.addNode(.{
             .tag = .identifier_reference,
