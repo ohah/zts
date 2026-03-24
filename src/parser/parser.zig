@@ -77,6 +77,10 @@ pub const Parser = struct {
     /// 파싱 시작 시 한 번 결정되는 불변 설정이므로 Context에 포함하지 않음.
     is_module: bool = false,
 
+    /// JSX 모드 (TSX). true이면 <는 JSX 엘리먼트 시작으로 우선 해석.
+    /// false이면 <T>()=>{}가 제네릭 arrow로 해석.
+    is_jsx: bool = false,
+
     // ================================================================
     // 개별 파서 상태 플래그
     // ================================================================
@@ -2839,6 +2843,7 @@ test "Parser: JSX self-closing element" {
     var scanner = try Scanner.init(std.testing.allocator, "const x = <br />;");
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
+    parser.is_jsx = true;
     defer parser.deinit();
 
     _ = try parser.parse();
@@ -2851,6 +2856,7 @@ test "Parser: JSX element with children" {
     );
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
+    parser.is_jsx = true;
     defer parser.deinit();
 
     _ = try parser.parse();
@@ -2863,6 +2869,7 @@ test "Parser: JSX with attributes" {
     );
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
+    parser.is_jsx = true;
     defer parser.deinit();
 
     _ = try parser.parse();
@@ -2875,6 +2882,7 @@ test "Parser: JSX with expression" {
     );
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
+    parser.is_jsx = true;
     defer parser.deinit();
 
     _ = try parser.parse();

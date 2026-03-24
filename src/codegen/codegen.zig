@@ -2109,18 +2109,28 @@ fn e2eCJS(allocator: std.mem.Allocator, source: []const u8) !TestResult {
     return e2eWithOptions(allocator, source, .{ .module_format = .cjs, .minify = true });
 }
 
+fn e2eJSX(allocator: std.mem.Allocator, source: []const u8) !TestResult {
+    return e2eFullEx(allocator, source, .{}, .{ .minify = true }, true);
+}
+
 const TransformOptions = @import("../transformer/transformer.zig").TransformOptions;
 
-/// 풀 옵션 e2e. transform + codegen 옵션 모두 전달.
+/// 풀 옵션 e2e.
+fn e2eFull(backing_allocator: std.mem.Allocator, source: []const u8, t_options: TransformOptions, cg_options: CodegenOptions) !TestResult {
+    return e2eFullEx(backing_allocator, source, t_options, cg_options, false);
+}
+
+/// 풀 옵션 e2e (JSX 모드 지정 가능).
 /// Arena로 전체 파이프라인을 실행. output은 arena 메모리를 가리키므로
 /// TestResult.deinit() 전에 사용해야 한다.
-fn e2eFull(backing_allocator: std.mem.Allocator, source: []const u8, t_options: TransformOptions, cg_options: CodegenOptions) !TestResult {
+fn e2eFullEx(backing_allocator: std.mem.Allocator, source: []const u8, t_options: TransformOptions, cg_options: CodegenOptions, is_jsx: bool) !TestResult {
     var arena = std.heap.ArenaAllocator.init(backing_allocator);
     errdefer arena.deinit();
     const allocator = arena.allocator();
 
     var scanner = try Scanner.init(allocator, source);
     var parser = Parser.init(allocator, &scanner);
+    parser.is_jsx = is_jsx;
     _ = try parser.parse();
 
     var t = Transformer.init(allocator, &parser.ast, t_options);
@@ -2511,19 +2521,19 @@ test "Codegen: export all re-export" {
 // ============================================================
 
 test "Codegen: JSX self-closing" {
-    var r = try e2e(std.testing.allocator, "const x = <div />;");
+    var r = try e2eJSX(std.testing.allocator, "const x = <div />;");
     defer r.deinit();
     try std.testing.expectEqualStrings("const x=React.createElement(\"div\",null);", r.output);
 }
 
 test "Codegen: JSX element with children" {
-    var r = try e2e(std.testing.allocator, "const x = <div>hello</div>;");
+    var r = try e2eJSX(std.testing.allocator, "const x = <div>hello</div>;");
     defer r.deinit();
     try std.testing.expectEqualStrings("const x=React.createElement(\"div\",null,\"hello\");", r.output);
 }
 
 test "Codegen: JSX fragment" {
-    var r = try e2e(std.testing.allocator, "const x = <>hello</>;");
+    var r = try e2eJSX(std.testing.allocator, "const x = <>hello</>;");
     defer r.deinit();
     try std.testing.expectEqualStrings("const x=React.createElement(React.Fragment,null,\"hello\");", r.output);
 }

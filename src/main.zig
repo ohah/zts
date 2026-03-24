@@ -73,6 +73,9 @@ fn transpileFile(
     {
         parser.is_module = true;
     }
+    if (std.mem.eql(u8, ext, ".tsx") or std.mem.eql(u8, ext, ".jsx")) {
+        parser.is_jsx = true;
+    }
     _ = parser.parse() catch |err| {
         try stderr.print("zts: parse error in '{s}': {}\n", .{ file_path, err });
         return;

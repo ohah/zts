@@ -117,8 +117,8 @@ pub fn parseJSXElement(self: *Parser) ParseError2!NodeIndex {
     // Closing tag: </TagName>
     try self.scanner.nextInsideJSXElement(); // skip <
     try self.scanner.nextInsideJSXElement(); // skip /
-    // skip tag name
-    if (self.current() == .jsx_identifier or self.current() == .identifier) {
+    // skip tag name (키워드도 허용)
+    if (self.current() == .jsx_identifier or self.current() == .identifier or self.current().isKeyword()) {
         try self.scanner.nextInsideJSXElement();
     }
     // expect >
@@ -154,7 +154,9 @@ fn parseJSXFragment(self: *Parser, start: u32) ParseError2!NodeIndex {
 
 fn parseJSXTagName(self: *Parser) ParseError2!NodeIndex {
     const span = self.currentSpan();
-    if (self.current() == .jsx_identifier or self.current() == .identifier) {
+    // JSX 태그 이름: identifier, jsx_identifier, 키워드 모두 허용
+    // 예: <div>, <const>, <in>, <return> 등 — JSX에서는 JS 예약어 제한 없음
+    if (self.current() == .jsx_identifier or self.current() == .identifier or self.current().isKeyword()) {
         try self.scanner.nextInsideJSXElement();
         return try self.ast.addNode(.{
             .tag = .jsx_identifier,
