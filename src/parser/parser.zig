@@ -1724,7 +1724,15 @@ pub const Parser = struct {
         // ?는 ternary와 모호하므로 : 만 감지
         if (self.current() == .identifier or self.current().isKeyword() or self.current() == .escaped_keyword) {
             try self.advance(); // skip identifier
-            return self.current() == .colon;
+            if (self.current() == .colon) return true;
+            // (a): Type => ... — 단일 파라미터 + 리턴 타입
+            if (self.current() == .r_paren) {
+                try self.advance();
+                return self.current() == .colon;
+            }
+            // (a?: Type) — optional parameter
+            if (self.current() == .question) return true;
+            return false;
         }
 
         // ({}: Type) 또는 ([]: Type) — destructuring with type
