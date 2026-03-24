@@ -1873,9 +1873,12 @@ pub const Codegen = struct {
                 const text = self.ast.source[child.span.start..child.span.end];
                 // JSX text: 줄바꿈 포함 공백은 trim, 줄바꿈 없는 공백은 유지
                 // esbuild 호환: 줄바꿈이 있으면 해당 시퀀스를 제거/공백으로 치환
+                // 공백/줄바꿈만으로 이루어진 텍스트는 스킵
+                const all_whitespace = std.mem.trim(u8, text, " \t\n\r").len == 0;
+                if (all_whitespace) continue;
+                // 줄바꿈이 포함되면 전체 trim, 아니면 원본 유지 (후행 공백 보존)
                 const has_newline = std.mem.indexOfAny(u8, text, "\n\r") != null;
                 const trimmed = if (has_newline) std.mem.trim(u8, text, " \t\n\r") else text;
-                if (trimmed.len == 0) continue;
                 if (self.options.minify) try self.write(",\"") else try self.write(", \"");
                 try self.write(trimmed);
                 try self.writeByte('"');
