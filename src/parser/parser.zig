@@ -707,22 +707,33 @@ pub const Parser = struct {
                     try self.collectCoverParamNames(elem_idx);
                 }
             },
-            .object_property, .assignment_target_property_identifier, .assignment_target_property_property => {
-                // shorthand: left=key(identifier_reference), right=none → key is the binding
+            .assignment_target_property_identifier => {
+                // shorthand property (identifier): { x }, { x = default }
+                // left = key(identifier_reference) = 바인딩, right = default value 또는 none
+                // 항상 left(key)에서 바인딩 이름을 수집한다. right는 default value이므로 수집하지 않는다.
+                try self.collectCoverParamNames(node.data.binary.left);
+            },
+            .object_property => {
+                // cover grammar 변환 전의 object property.
+                // shorthand_with_default({ x = val }): left=key(바인딩), right=default value
+                // shorthand({ x }): right=none, left=key(바인딩)
+                // long-form({ key: value }): left=key, right=value(바인딩)
+                const is_shorthand_default = (node.data.binary.flags & shorthand_with_default) != 0;
                 if (node.data.binary.right.isNone()) {
+                    // shorthand: { x } — key가 바인딩
+                    try self.collectCoverParamNames(node.data.binary.left);
+                } else if (is_shorthand_default) {
+                    // shorthand with default: { x = val } — key가 바인딩, value는 default
                     try self.collectCoverParamNames(node.data.binary.left);
                 } else {
-                    // long-form { key: value } → value is the binding
-                    // BUT: for shorthand { x } where key==value (same span), also walk left
-                    const key_span = if (!node.data.binary.left.isNone()) self.ast.getNode(node.data.binary.left).span else node.span;
-                    const val_span = self.ast.getNode(node.data.binary.right).span;
-                    if (key_span.start == val_span.start and key_span.end == val_span.end) {
-                        // shorthand with value = same as key (e.g., {x} parsed with both key and value)
-                        try self.collectCoverParamNames(node.data.binary.right);
-                    } else {
-                        try self.collectCoverParamNames(node.data.binary.right);
-                    }
+                    // long-form: { key: value } — value가 바인딩
+                    try self.collectCoverParamNames(node.data.binary.right);
                 }
+            },
+            .assignment_target_property_property => {
+                // long-form property: { key: target } 또는 { key: target = default }
+                // right(value)에서 바인딩 이름을 수집한다.
+                try self.collectCoverParamNames(node.data.binary.right);
             },
             .binding_property => {
                 try self.collectCoverParamNames(node.data.binary.right);
@@ -868,7 +879,9 @@ pub const Parser = struct {
         const node = self.ast.getNode(idx);
         if (node.tag == .parenthesized_expression) {
             // (expr) → 내부를 다시 풀기
-            try self.coverExpressionToArrowParams(node.data.unary.operand);
+            // return으로 종료: 재귀 호출 내부에서 collectCoverParamNames가 실행되므로
+            // 여기서 다시 실행하면 중복 에러가 발생한다.
+            return self.coverExpressionToArrowParams(node.data.unary.operand);
         } else if (node.tag == .sequence_expression) {
             // (a, b, c) → 각 요소를 개별 검증
             const list = node.data.list;
@@ -3787,4 +3800,44 @@ test "Parser: static_member_expression text matches source exactly" {
     // define 매칭에 사용되는 getNodeText가 정확한 텍스트를 반환하는지 검증
     // 공백이 포함되지 않아야 함
     try std.testing.expectEqualStrings("process.env.NODE_ENV", max_span_text);
+}
+
+// ============================================================
+// Destructuring default values in arrow params (cover grammar)
+// ============================================================
+
+test "CoverGrammar: arrow param destructuring with boolean defaults" {
+    // { x = false, y = false } — false/true/null은 default value이지 param name이 아님
+    try expectNoParseError("const f = (s, { x = false, y = false } = {}) => s;");
+    try expectNoParseError("const f = (s, { x = true, y = true } = {}) => s;");
+    try expectNoParseError("const f = (s, { x = null, y = null } = {}) => s;");
+}
+
+test "CoverGrammar: arrow param destructuring with identifier defaults" {
+    // { x = a, y = a } — a는 default value 참조이지 param name이 아님
+    try expectNoParseError("const f = (s, { x = a, y = a } = {}) => s;");
+    try expectNoParseError("const f = ({ x = foo, y = foo } = {}) => s;");
+}
+
+test "CoverGrammar: arrow param destructuring with number defaults" {
+    try expectNoParseError("const f = (s, { x = 1, y = 2 } = {}) => s;");
+}
+
+test "CoverGrammar: actual duplicate param names are still detected" {
+    // 실제 중복 파라미터는 에러가 나야 함
+    try expectParseError("const f = (x, { x } = {}) => s;", .{ .message = "Duplicate parameter name" });
+}
+
+test "CoverGrammar: arrow param single destructuring with defaults" {
+    // 단일 파라미터 (sequence가 아닌 경우)
+    try expectNoParseError("const f = ({ x = false, y = false } = {}) => s;");
+    try expectNoParseError("const f = ({ x = false, y = false }) => s;");
+}
+
+test "CoverGrammar: literal keywords parsed as boolean_literal not identifier" {
+    // true/false/null이 expression 위치에서 올바른 리터럴 노드로 파싱되는지 검증
+    try expectNoParseError("const a = true;");
+    try expectNoParseError("const b = false;");
+    try expectNoParseError("const c = null;");
+    try expectNoParseError("const obj = { true: 1, false: 2, null: 3 };");
 }

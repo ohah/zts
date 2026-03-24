@@ -505,7 +505,11 @@ const projects: ProjectConfig[] = [
     pkg: "hookable",
     entry: `import { createHooks } from 'hookable';\nconst hooks = createHooks();\nconsole.log(typeof hooks.hook);`,
   },
-  // minimatch: "type":"module" .js를 ESM으로 인식 못함 — 별도 이슈
+  {
+    name: "minimatch",
+    pkg: "minimatch",
+    entry: `import { minimatch } from 'minimatch';\nconsole.log(minimatch('foo.js', '*.js'));`,
+  },
   {
     name: "cheerio",
     pkg: "cheerio",

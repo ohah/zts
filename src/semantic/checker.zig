@@ -468,12 +468,30 @@ fn collectArrowParamNames(
             // left = binding, right = default value
             try collectArrowParamNames(ast, node.data.binary.left, seen, errors, allocator);
         },
+        .assignment_target_property_identifier => {
+            // shorthand property: { x } 또는 { x = default }
+            // left = key(바인딩), right = default value 또는 none
+            // 항상 left(key)에서 바인딩 이름을 수집한다.
+            try collectArrowParamNames(ast, node.data.binary.left, seen, errors, allocator);
+        },
+        .object_property => {
+            // cover grammar 변환 전의 object property.
+            // shorthand_with_default({ x = val }): left=key(바인딩), right=default
+            // shorthand({ x }): right=none, left=key(바인딩)
+            // long-form({ key: value }): left=key, right=value(바인딩)
+            const shorthand_with_default: u16 = 0x01; // Parser.shorthand_with_default과 동일
+            const is_shorthand_default = (node.data.binary.flags & shorthand_with_default) != 0;
+            if (node.data.binary.right.isNone() or is_shorthand_default) {
+                try collectArrowParamNames(ast, node.data.binary.left, seen, errors, allocator);
+            } else {
+                try collectArrowParamNames(ast, node.data.binary.right, seen, errors, allocator);
+            }
+        },
         .binding_property,
-        .object_property,
-        .assignment_target_property_identifier,
         .assignment_target_property_property,
         => {
-            // binary: { left = key, right = value }
+            // long-form property: { key: value }
+            // right(value)에서 바인딩 이름을 수집한다.
             try collectArrowParamNames(ast, node.data.binary.right, seen, errors, allocator);
         },
         .spread_element, .binding_rest_element, .rest_element, .assignment_target_rest => {
@@ -655,4 +673,30 @@ test "checker: duplicate method params is error" {
     try ana.analyze();
 
     try std.testing.expect(ana.errors.items.len > 0);
+}
+
+test "checker: destructuring default values are not param names" {
+    // { x = false, y = false } — false는 default value이지 param name이 아님
+    // 파서 + semantic 모두 에러 없어야 함
+    const cases = [_][]const u8{
+        "const f = (s, { x = false, y = false } = {}) => s;",
+        "const f = (s, { x = true, y = true } = {}) => s;",
+        "const f = (s, { x = null, y = null } = {}) => s;",
+        "const f = (s, { x = a, y = a } = {}) => s;",
+        "const f = ({ x = foo, y = foo } = {}) => x;",
+    };
+    for (cases) |src| {
+        var scanner = try Scanner.init(std.testing.allocator, src);
+        defer scanner.deinit();
+        var parser = Parser.init(std.testing.allocator, &scanner);
+        defer parser.deinit();
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+        const SemanticAnalyzer = @import("analyzer.zig").SemanticAnalyzer;
+        var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+        defer ana.deinit();
+        try ana.analyze();
+        try std.testing.expectEqual(@as(usize, 0), ana.errors.items.len);
+    }
 }
