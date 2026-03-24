@@ -242,7 +242,22 @@ pub const Transformer = struct {
             .return_statement,
             .throw_statement,
             .spread_element,
-            .parenthesized_expression,
+            => self.visitUnaryNode(node),
+            .parenthesized_expression => {
+                // (expr as T) → expr: TS expression이면 괄호 불필요
+                const inner = node.data.unary.operand;
+                if (!inner.isNone()) {
+                    const inner_tag = self.old_ast.getNode(inner).tag;
+                    if (inner_tag == .ts_as_expression or
+                        inner_tag == .ts_satisfies_expression or
+                        inner_tag == .ts_non_null_expression or
+                        inner_tag == .ts_type_assertion)
+                    {
+                        return self.visitNode(inner);
+                    }
+                }
+                return self.visitUnaryNode(node);
+            },
             .await_expression,
             .yield_expression,
             .rest_element,
