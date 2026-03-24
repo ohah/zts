@@ -165,6 +165,7 @@ pub fn runTest(allocator: mem.Allocator, source: []const u8, meta: TestMetadata,
     // module 모드 설정 — module은 항상 strict mode (D054)
     if (meta.is_module) {
         parser.is_module = true;
+        scanner.is_module = true;
     }
 
     // onlyStrict 플래그 — strict mode로 파싱

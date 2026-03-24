@@ -460,6 +460,7 @@ fn parseAndExtractBindings(allocator: std.mem.Allocator, source: []const u8) !st
     var scanner = try Scanner.init(arena_alloc, source);
     var parser = Parser.init(arena_alloc, &scanner);
     parser.is_module = true;
+    scanner.is_module = true;
     _ = try parser.parse();
 
     const records = try import_scanner.extractImports(allocator, &parser.ast);

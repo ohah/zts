@@ -91,9 +91,8 @@ pub fn parseStatementChecked(self: *Parser, comptime is_loop_body: bool) ParseEr
             if (try self.peekNextKind() == .star) {
                 // generator는 항상 금지
                 try self.addError(self.currentSpan(), "Generator declaration is not allowed in statement position");
-            } else if (is_loop_body or self.in_labelled_fn_check) {
+            } else if (is_loop_body) {
                 // loop/with body에서 function은 항상 금지 (ECMAScript 13.7.4, Annex B 미적용)
-                // labelled function이 if/with body를 통해 전파된 경우도 금지
                 try self.addError(self.currentSpan(), "Function declaration is not allowed in statement position");
             } else if (self.is_strict_mode) {
                 // if/else/labeled body에서는 strict mode에서만 금지
@@ -375,6 +374,12 @@ fn parseLabeledStatement(self: *Parser) ParseError2!NodeIndex {
     });
     try self.advance(); // skip label
     try self.advance(); // skip ':'
+    // ECMAScript 13.6.1 IsLabelledFunction: if/with body 안에서 label: function은 금지
+    if (self.in_labelled_fn_check and self.current() == .kw_function) {
+        if (try self.peekNextKind() != .star) {
+            try self.addError(self.currentSpan(), "Function declaration is not allowed in statement position");
+        }
+    }
     const body = try parseStatementChecked(self, false);
     return try self.ast.addNode(.{
         .tag = .labeled_statement,
@@ -484,13 +489,23 @@ fn parseVariableDeclarator(self: *Parser) ParseError2!NodeIndex {
     // TS 타입 어노테이션 (: Type)
     const type_ann = try self.tryParseTypeAnnotation();
 
-    // 이니셜라이저 — `in` 연산자를 복원한다 (ECMAScript: Initializer[+In]).
-    // for 초기화절에서 allow_in=false여도, 이니셜라이저 안에서는 `in`이 연산자로 동작해야 한다.
+    // 이니셜라이저:
+    // - 일반 변수 선언: Initializer[+In] — `in`이 연산자로 동작해야 하므로 allow_in=true 복원
+    // - for 초기화절: allow_in=false 유지 — `in`이 for-in 키워드로 남아야 함
+    //   예: `for (var x = 0 in {})` — Annex B.3.5 허용 (BindingIdentifier)
+    //   예: `for (var {a} = 0 in {})` — 항상 SyntaxError (BindingPattern)
+    //   두 경우 모두 `in`을 소비하지 않아야 for-in으로 올바르게 파싱됨
     var init_expr = NodeIndex.none;
     if (try self.eat(.eq)) {
-        const init_saved = self.enterAllowInContext(true);
-        init_expr = try self.parseAssignmentExpression();
-        self.restoreContext(init_saved);
+        if (self.for_loop_init) {
+            // for 초기화절: allow_in=false 유지하여 `in`을 for-in 키워드로 보존
+            init_expr = try self.parseAssignmentExpression();
+        } else {
+            // 일반 문맥: allow_in=true로 복원 (ECMAScript: Initializer[+In])
+            const init_saved = self.enterAllowInContext(true);
+            init_expr = try self.parseAssignmentExpression();
+            self.restoreContext(init_saved);
+        }
     }
 
     // name, type_ann, init_expr → extra_data
@@ -704,10 +719,19 @@ fn validateForInOfDeclaration(self: *Parser, init_expr: NodeIndex) ParseError2!v
     const decl_init: NodeIndex = @enumFromInt(extras[decl_node.data.extra + 2]);
     if (decl_init.isNone()) return;
 
-    // initializer가 있으면 에러 (예외: sloppy var + for-in)
+    // initializer가 있으면 에러 (예외: sloppy var + for-in + BindingIdentifier만)
+    // Annex B.3.5: for (var BindingIdentifier Initializer in Expression) — 허용
+    // BindingPattern (array/object destructuring)은 Annex B에서도 항상 금지
     const is_var = kind_flags == 0;
     const is_for_in = self.current() == .kw_in;
-    if (is_for_in and is_var and !self.is_strict_mode) return; // Annex B.3.5
+    if (is_for_in and is_var and !self.is_strict_mode) {
+        // BindingIdentifier인지 확인 — destructuring이면 허용 불가
+        const binding_name: NodeIndex = @enumFromInt(extras[decl_node.data.extra]);
+        if (!binding_name.isNone()) {
+            const binding_node = self.ast.getNode(binding_name);
+            if (binding_node.tag == .binding_identifier) return; // Annex B.3.5 허용
+        }
+    }
     try self.addError(decl_node.span, "For-in/for-of loop variable declaration may not have an initializer");
 }
 

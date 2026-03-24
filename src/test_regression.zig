@@ -250,6 +250,7 @@ test "regression: import.meta still parses OK in module mode (558be92)" {
     var parser_inst = Parser.init(std.testing.allocator, &scanner);
     defer parser_inst.deinit();
     parser_inst.is_module = true; // import.meta는 module code에서만 허용
+    scanner.is_module = true;
     _ = try parser_inst.parse();
     try std.testing.expect(parser_inst.errors.items.len == 0);
 }
