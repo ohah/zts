@@ -702,7 +702,7 @@ pub const Transformer = struct {
         // 빈 namespace는 런타임 코드 불필요 → strip (esbuild 호환)
         if (!new_body.isNone()) {
             const body_node = self.new_ast.getNode(new_body);
-            if (body_node.tag == .block_statement and body_node.data.list.len == 0) {
+            if ((body_node.tag == .block_statement or body_node.tag == .ts_module_block) and body_node.data.list.len == 0) {
                 return .none;
             }
         }

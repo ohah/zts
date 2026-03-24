@@ -668,6 +668,10 @@ pub const Codegen = struct {
 
     fn emitDoWhile(self: *Codegen, node: Node) !void {
         try self.write("do");
+        // block body는 emitBracedList가 { 앞 공백 관리, non-block은 공백 필수 (dox++ 방지)
+        if (node.data.binary.right.isNone() or self.ast.getNode(node.data.binary.right).tag != .block_statement) {
+            try self.writeByte(' ');
+        }
         try self.emitNode(node.data.binary.right);
         if (self.options.minify) try self.write("while(") else try self.write(" while (");
         try self.emitNode(node.data.binary.left);
