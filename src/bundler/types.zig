@@ -124,6 +124,8 @@ pub const ImportRecord = struct {
     span: Span,
     /// resolve 완료 후 채워지는 모듈 인덱스
     resolved: ModuleIndex = .none,
+    /// --external로 명시적으로 제외된 모듈 (resolve 실패와 구분)
+    is_external: bool = false,
 };
 
 // ============================================================

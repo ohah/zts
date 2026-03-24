@@ -436,8 +436,10 @@ pub const ModuleGraph = struct {
                     // 양방향 엣지 (D078)
                     try self.modules.items[mod_idx].addDependency(self.allocator, dep_idx, self.modules.items);
                 }
+            } else {
+                // resolved == null → external (--external 또는 Node 빌트인)
+                self.modules.items[mod_idx].import_records[rec_i].is_external = true;
             }
-            // resolved == null → external, 스킵
         }
     }
 

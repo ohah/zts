@@ -688,42 +688,6 @@ pub const Linker = struct {
         var skip_nodes = try buildSkipNodes(self.allocator, new_ast);
         errdefer skip_nodes.deinit();
 
-        // ESM 출력: external import/re-export 문을 그대로 유지 (skip 해제).
-        // CJS/IIFE에서는 require() preamble로 대체하지만, ESM에서는 원본 import 문이 필요.
-        if (output_format == .esm) {
-            var source_to_record = std.AutoHashMap(u64, u32).init(self.allocator);
-            defer source_to_record.deinit();
-            for (m.import_records, 0..) |rec, i| {
-                try source_to_record.put(types.spanKey(rec.span), @intCast(i));
-            }
-            for (new_ast.nodes.items, 0..) |node, node_idx| {
-                const source_nidx: NodeIndex = switch (node.tag) {
-                    .import_declaration => blk: {
-                        const e = node.data.extra;
-                        if (e + 2 >= new_ast.extra_data.items.len) continue;
-                        break :blk @enumFromInt(new_ast.extra_data.items[e + 2]);
-                    },
-                    .export_named_declaration => blk: {
-                        // extra[3] = source_idx
-                        const e = node.data.extra;
-                        if (e + 3 >= new_ast.extra_data.items.len) continue;
-                        break :blk @enumFromInt(new_ast.extra_data.items[e + 3]);
-                    },
-                    .export_all_declaration => blk: {
-                        // binary.right = source_idx
-                        break :blk node.data.binary.right;
-                    },
-                    else => continue,
-                };
-                if (source_nidx.isNone()) continue;
-                const source_node = new_ast.getNode(source_nidx);
-                const rec_idx = source_to_record.get(types.spanKey(source_node.span)) orelse continue;
-                if (rec_idx < m.import_records.len and m.import_records[rec_idx].resolved.isNone()) {
-                    skip_nodes.unset(node_idx);
-                }
-            }
-        }
-
         var renames = std.AutoHashMap(u32, []const u8).init(self.allocator);
         errdefer renames.deinit();
 
@@ -768,10 +732,11 @@ pub const Linker = struct {
                 if (ib.import_record_index >= m.import_records.len) continue;
                 const rec = m.import_records[ib.import_record_index];
 
-                // External 모듈 (Node.js 빌트인, --external): resolved가 없음.
-                // ESM 출력: import 문 유지 (위 un-skip 로직), CJS/IIFE: require() preamble 생성.
+                // resolve 미완료: external 또는 resolve 실패.
+                // ESM + external: import 문이 un-skip되어 그대로 출력 → preamble 불필요.
+                // 그 외 (resolve 실패 / CJS/IIFE external): require() preamble 생성.
                 if (rec.resolved.isNone()) {
-                    if (output_format != .esm and
+                    if (!(rec.is_external and output_format == .esm) and
                         (rec.kind == .static_import or rec.kind == .side_effect or rec.kind == .re_export))
                     {
                         try cjs_preamble_buf.appendSlice(self.allocator, "var ");
