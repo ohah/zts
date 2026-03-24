@@ -273,10 +273,11 @@ fn parseImportSpecifier(self: *Parser) ParseError2!NodeIndex {
         const next = try self.peekNextKind();
         // 다음이 바인딩 이름으로 사용 가능한 토큰이면 type modifier
         // (identifier 또는 keyword — TS도 모든 keyword 뒤에서 type modifier로 판단)
+        // string_literal도 허용: import { type 'y' as z } (ModuleExportName)
         // 단, '}', ',', 'as'는 제외: import { type }, import { type, x }, import { type as y }
         // 'as'는 contextual keyword이므로 identifier로 토큰화됨 — save/restore로 텍스트 확인
         if (next != .r_curly and next != .comma and
-            (next == .identifier or next.isKeyword()))
+            (next == .identifier or next == .string_literal or next.isKeyword()))
         {
             const saved = self.saveState();
             try self.advance(); // tentatively skip 'type'
@@ -545,6 +546,46 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
 fn parseExportSpecifier(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
 
+    // TS inline type modifier: export { type Foo } from 'mod'
+    // 주의: export { type } from ... → 'type'이라는 값을 export (modifier 아님)
+    // 주의: export { type as alias } from ... → 'type'을 alias로 export (modifier 아님)
+    var is_type_only: u16 = 0;
+    if (self.isContextual("type")) {
+        const next = try self.peekNextKind();
+        // 다음이 이름으로 사용 가능한 토큰이면 type modifier
+        // string_literal도 허용: export { type "x" as y } from 'mod'
+        // 단, '}', ',', 'as'는 제외
+        if (next != .r_curly and next != .comma and
+            (next == .identifier or next == .string_literal or next.isKeyword()))
+        {
+            const saved = self.saveState();
+            try self.advance(); // tentatively skip 'type'
+            if (self.isContextual("as")) {
+                const after_as = try self.peekNextKind();
+                if (after_as == .r_curly or after_as == .comma) {
+                    // "export { type as }" — 'as'가 local name, type modifier 확정
+                    is_type_only = 1;
+                } else if (after_as == .identifier or after_as == .string_literal or after_as.isKeyword()) {
+                    const saved2 = self.saveState();
+                    try self.advance(); // skip 'as'
+                    if (self.isContextual("as")) {
+                        // "type as as foo" — type modifier, 'as' local, 'as' keyword, 'foo' exported
+                        self.restoreState(saved2);
+                        is_type_only = 1;
+                    } else {
+                        // "type as alias" — 'type'은 값 이름, modifier 아님
+                        self.restoreState(saved);
+                    }
+                } else {
+                    self.restoreState(saved);
+                }
+            } else {
+                is_type_only = 1;
+                // 'type' modifier 확정 — 이미 advance됨
+            }
+        }
+    }
+
     const local = try self.parseModuleExportName();
 
     var exported = local;
@@ -555,7 +596,7 @@ fn parseExportSpecifier(self: *Parser) ParseError2!NodeIndex {
     return try self.ast.addNode(.{
         .tag = .export_specifier,
         .span = .{ .start = start, .end = self.currentSpan().start },
-        .data = .{ .binary = .{ .left = local, .right = exported, .flags = 0 } },
+        .data = .{ .binary = .{ .left = local, .right = exported, .flags = is_type_only } },
     });
 }
 
