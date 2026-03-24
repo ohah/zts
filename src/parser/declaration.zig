@@ -587,6 +587,30 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         flags |= 0x10; // generator flag
     }
 
+    // TS 인덱스 시그니처: [key: string]: any — class body에서만 유효, 타입 스트리핑 대상
+    // 클래스에서는 computed property [expr]와 구분해야 하므로, [identifier :] 패턴을 엄격히 확인.
+    // 타입 리터럴의 isIndexSignature()는 identifier 뒤를 확인하지 않아 여기서는 사용 불가.
+    if (self.current() == .l_bracket) {
+        const saved = self.saveState();
+        try self.advance(); // skip [
+        if (self.current() == .identifier or self.current() == .kw_this) {
+            try self.advance(); // skip identifier
+            if (self.current() == .colon) {
+                // [identifier : 패턴 확인 → 인덱스 시그니처
+                self.restoreState(saved);
+                // parseIndexSignature가 [ 부터 파싱
+                const idx_sig = try self.parseIndexSignature(start, false);
+                _ = idx_sig;
+                // 세미콜론 소비 (optional)
+                _ = try self.eat(.semicolon);
+                // index signature는 TS 전용이므로 스트리핑 — 빈 노드 반환
+                return NodeIndex.none;
+            }
+        }
+        // 인덱스 시그니처가 아님 → 원래 위치로 복구
+        self.restoreState(saved);
+    }
+
     // 키
     const key = try self.parsePropertyKey();
 

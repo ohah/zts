@@ -911,8 +911,10 @@ fn parseTypeReference(self: *Parser) ParseError2!NodeIndex {
     }
 
     // 제네릭: Foo<T, U> — << (shift_left) 도 중첩 제네릭 시작
+    // 줄바꿈 후 <는 제네릭이 아닌 다음 멤버의 시작일 수 있음
+    // 예: { <A>(): c.d \n <E>(): g.h } — \n 뒤의 <는 새 콜 시그니처
     var type_args = NodeIndex.none;
-    if (self.isAtOpeningAngleBracket()) {
+    if (self.isAtOpeningAngleBracket() and !self.scanner.token.has_newline_before) {
         type_args = try parseTypeArguments(self);
     }
 
@@ -1424,7 +1426,7 @@ fn isIndexSignature(self: *Parser) ParseError2!bool {
 }
 
 /// 인덱스 시그니처 파싱: [key: string]: Type
-fn parseIndexSignature(self: *Parser, start: u32, is_readonly: bool) ParseError2!NodeIndex {
+pub fn parseIndexSignature(self: *Parser, start: u32, is_readonly: bool) ParseError2!NodeIndex {
     try self.advance(); // skip [
     // 파라미터: key: Type
     const param_start = self.currentSpan().start;
