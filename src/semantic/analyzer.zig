@@ -582,21 +582,13 @@ pub const SemanticAnalyzer = struct {
             if (existing == .parameter and new == .parameter and !self.is_strict_mode) {
                 return true;
             }
-            // 특수 케이스: function-like + function-like → var scope + sloppy mode에서 허용.
-            // ECMAScript: script/eval의 top-level에서 function/generator/async 선언은
-            // var-like 바인딩이므로 같은 이름 재선언이 가능하다 (나중 선언이 덮어씀).
-            if (existing.isFunctionLike() and new.isFunctionLike() and !self.is_strict_mode) {
-                const in_var_scope = if (!target_scope.isNone())
-                    self.scopes.items[target_scope.toIndex()].kind.isVarScope()
-                else
-                    false;
-                if (in_var_scope) return true;
-            }
-            // 특수 케이스: var + function-like, function-like + var → var scope + sloppy mode에서 허용.
-            if ((existing == .variable_var and new.isFunctionLike()) or
-                (existing.isFunctionLike() and new == .variable_var))
-            {
-                if (!self.is_strict_mode) {
+            // sloppy mode var scope에서 function/var 재선언 허용 (ECMAScript B.3.2-B.3.5):
+            // function + function, var + function, function + var 조합
+            if (!self.is_strict_mode) {
+                const is_fn_fn = existing.isFunctionLike() and new.isFunctionLike();
+                const is_var_fn = (existing == .variable_var and new.isFunctionLike()) or
+                    (existing.isFunctionLike() and new == .variable_var);
+                if (is_fn_fn or is_var_fn) {
                     const in_var_scope = if (!target_scope.isNone())
                         self.scopes.items[target_scope.toIndex()].kind.isVarScope()
                     else
