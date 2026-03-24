@@ -314,8 +314,24 @@ if (failures.length > 0) {
   }
 }
 
+// 에러 분류 (전체)
+const allErrors = results.filter((r) => r.status === "error");
+const errorCategories = new Map<string, { count: number; ids: string[] }>();
+for (const e of allErrors) {
+  const m = e.reason?.match(/error: (.+)/);
+  const msg = m ? m[1].substring(0, 80) : "unknown";
+  const cat = errorCategories.get(msg) ?? { count: 0, ids: [] };
+  cat.count++;
+  if (cat.ids.length < 3) cat.ids.push(e.id);
+  errorCategories.set(msg, cat);
+}
+console.log(`\n### Error Categories (${allErrors.length} total)\n`);
+for (const [msg, { count, ids }] of [...errorCategories.entries()].sort((a, b) => b[1].count - a[1].count)) {
+  console.log(`- ${count}x: ${msg} (e.g. ${ids.join(", ")})`);
+}
+
 // 에러 상세 (최대 10개)
-const errs = results.filter((r) => r.status === "error").slice(0, 10);
+const errs = allErrors.slice(0, 10);
 if (errs.length > 0) {
   console.log(`\n### Errors (first ${errs.length})\n`);
   for (const e of errs) {

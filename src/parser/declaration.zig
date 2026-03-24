@@ -75,7 +75,11 @@ fn parseFunctionDeclarationWithFlags(self: *Parser, extra_flags: u32) ParseError
 
     self.has_simple_params = self.checkSimpleParams(scratch_top);
     try self.checkDuplicateParams(scratch_top);
-    const body = try self.parseFunctionBody();
+    // TS 함수 오버로드 시그니처: function foo(): void; (body 없이 세미콜론)
+    const body = if (self.current() == .semicolon or self.current() == .eof) blk: {
+        _ = try self.eat(.semicolon);
+        break :blk NodeIndex.none;
+    } else try self.parseFunctionBody();
 
     // retroactive strict mode checks: "use strict" directive가 있으면
     // 함수 이름과 파라미터를 소급 검증 (ECMAScript 14.1.2)
@@ -184,7 +188,11 @@ fn parseFunctionDeclarationWithFlagsOptionalName(self: *Parser, extra_flags: u32
 
     self.has_simple_params = self.checkSimpleParams(scratch_top);
     try self.checkDuplicateParams(scratch_top);
-    const body = try self.parseFunctionBody();
+    // TS 함수 오버로드 시그니처: function foo(): void; (body 없이 세미콜론)
+    const body = if (self.current() == .semicolon or self.current() == .eof) blk: {
+        _ = try self.eat(.semicolon);
+        break :blk NodeIndex.none;
+    } else try self.parseFunctionBody();
 
     // retroactive strict mode checks
     if (self.is_strict_mode and !saved_ctx.is_strict_mode) {
@@ -337,6 +345,11 @@ pub fn parseClassWithDecorators(self: *Parser, tag: Tag, decorators: NodeList) P
     var super_class = NodeIndex.none;
     if (try self.eat(.kw_extends)) {
         super_class = try self.parseCallExpression();
+        // TS 제네릭 인수: class Foo extends Bar<T> {}
+        // parseCallExpression은 TS 타입 인수를 소비하지 않으므로 여기서 스킵
+        if (self.current() == .l_angle) {
+            _ = try self.parseTypeArguments();
+        }
     }
 
     // TS implements 절 (선택): class Foo implements Bar, Baz
