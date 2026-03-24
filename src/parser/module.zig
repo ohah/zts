@@ -268,8 +268,28 @@ fn parseImportSpecifier(self: *Parser) ParseError2!NodeIndex {
             const saved = self.saveState();
             try self.advance(); // tentatively skip 'type'
             if (self.isContextual("as")) {
-                // "import { type as alias }" — 'type'은 값 이름, modifier 아님
-                self.restoreState(saved);
+                // "import { type as }" → type modifier, 'as'가 imported name
+                // "import { type as as foo }" → type modifier, 'as' imported, 'foo' local
+                // "import { type as alias }" → 'type'은 값 이름, 'alias'는 로컬 바인딩
+                const after_as = try self.peekNextKind();
+                if (after_as == .r_curly or after_as == .comma) {
+                    // "import { type as }" — 'as'가 imported name, type modifier 확정
+                    is_type_only = 1;
+                } else if (after_as == .identifier or after_as.isKeyword()) {
+                    // 다음 토큰 텍스트를 확인: "type as as foo" vs "type as alias"
+                    const saved2 = self.saveState();
+                    try self.advance(); // skip 'as'
+                    if (self.isContextual("as")) {
+                        // "type as as foo" — type modifier, 'as' imported, 'as' keyword, 'foo' local
+                        self.restoreState(saved2);
+                        is_type_only = 1;
+                    } else {
+                        // "type as alias" — 'type'은 값 이름, modifier 아님
+                        self.restoreState(saved);
+                    }
+                } else {
+                    self.restoreState(saved);
+                }
             } else {
                 is_type_only = 1;
                 // 'type' modifier 확정 — 이미 advance됨

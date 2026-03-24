@@ -1685,6 +1685,21 @@ pub const Parser = struct {
         return ts.tryParseTypeAnnotation(self);
     }
 
+    /// TS `this: Type` 파라미터 스킵. 함수의 첫 번째 파라미터가 `this`이면
+    /// `this` + `: Type` + 선택적 `,`를 소비하고 파라미터 리스트에 추가하지 않는다.
+    /// TS this parameter: `this: Type` → 스킵 (런타임에 불필요).
+    /// `this:` 패턴만 감지 — bare `this`는 일반 파라미터로 처리.
+    pub fn trySkipThisParameter(self: *Parser) ParseError2!void {
+        if (self.current() == .kw_this) {
+            const next = try self.peekNextKind();
+            if (next == .colon) {
+                try self.advance(); // skip 'this'
+                _ = try self.tryParseTypeAnnotation(); // skip ': Type'
+                _ = try self.eat(.comma);
+            }
+        }
+    }
+
     pub fn tryParseReturnType(self: *Parser) ParseError2!NodeIndex {
         return ts.tryParseReturnType(self);
     }
@@ -1750,6 +1765,7 @@ pub const Parser = struct {
 
         try self.advance(); // skip (
         self.in_formal_parameters = true;
+        try self.trySkipThisParameter();
         const scratch_top = self.saveScratch();
 
         while (self.current() != .r_paren and self.current() != .eof) {
