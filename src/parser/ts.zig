@@ -137,7 +137,8 @@ fn parseTsEnumDeclarationWithFlags(self: *Parser, flags: u32) ParseError2!NodeIn
         const loop_guard_pos = self.scanner.token.span.start;
         const member = try parseTsEnumMember(self);
         try self.scratch.append(self.allocator, member);
-        if (!try self.eat(.comma)) break;
+        // TS enum 멤버는 ',' 또는 ';'로 구분 가능 (TypeScript 스펙)
+        if (!try self.eat(.comma) and !try self.eat(.semicolon)) break;
 
         if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
@@ -186,6 +187,7 @@ pub fn parseTsModuleDeclaration(self: *Parser) ParseError2!NodeIndex {
 /// `declare module "*.css" { ... }` 처럼 문자열 리터럴 모듈 이름도 지원.
 fn parseTsModuleBody(self: *Parser, start: u32) ParseError2!NodeIndex {
     // declare module "name" { ... } — 문자열 리터럴 모듈 이름 (ambient module declaration)
+    // declare module "name"; — body 없는 shorthand (세미콜론 또는 ASI)
     if (self.current() == .string_literal) {
         const str_node = try self.ast.addNode(.{
             .tag = .string_literal,
@@ -193,6 +195,17 @@ fn parseTsModuleBody(self: *Parser, start: u32) ParseError2!NodeIndex {
             .data = .{ .none = 0 },
         });
         try self.advance();
+        // body 없는 shorthand: declare module 'X'; 또는 declare module 'X'\n
+        if (self.current() == .semicolon or self.current() == .eof or
+            (self.scanner.token.has_newline_before and self.current() != .l_curly))
+        {
+            _ = try self.eat(.semicolon);
+            return try self.ast.addNode(.{
+                .tag = .ts_module_declaration,
+                .span = .{ .start = start, .end = self.currentSpan().start },
+                .data = .{ .binary = .{ .left = str_node, .right = NodeIndex.none, .flags = 1 } },
+            });
+        }
         // 문자열 모듈 이름은 flags=1로 표시하여 ambient임을 알림
         const body = try self.parseBlockStatement();
         return try self.ast.addNode(.{
@@ -673,6 +686,9 @@ fn parsePostfixType(self: *Parser) ParseError2!NodeIndex {
     var base = try parsePrimaryType(self);
 
     while (self.current() == .l_bracket) {
+        // "any\n['z']" — 줄바꿈 뒤 `[`는 새 statement로 해석 (ASI).
+        // esbuild: "{ ['x']: string \n ['y']: string } must not become a single type"
+        if (self.scanner.token.has_newline_before) break;
         const start = self.ast.getNode(base).span.start;
         if (try self.peekNextKind() == .r_bracket) {
             // 배열 타입: T[]

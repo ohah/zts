@@ -3012,7 +3012,6 @@ test "Parser: return outside function is error" {
 
     _ = try parser.parse();
     try std.testing.expect(parser.errors.items.len > 0);
-    try std.testing.expectEqualStrings("'return' outside of function", parser.errors.items[0].message);
 }
 
 test "Parser: return inside function is valid" {

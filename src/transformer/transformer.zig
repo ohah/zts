@@ -370,7 +370,7 @@ pub const Transformer = struct {
 
             // === import/export specifiers ===
             .import_specifier => if (node.data.binary.flags & 1 != 0) .none else self.visitBinaryNode(node),
-            .export_specifier => self.visitBinaryNode(node),
+            .export_specifier => if (node.data.binary.flags & 1 != 0) .none else self.visitBinaryNode(node),
             // default/namespace specifier는 string_ref(span) 복사 — 자식 노드 없음
             .import_default_specifier,
             .import_namespace_specifier,
@@ -569,8 +569,22 @@ pub const Transformer = struct {
         if (!self.options.strip_types) {
             return self.copyNodeDirect(node);
         }
+        const operand = node.data.unary.operand;
+        // ts_type_assertion: <T>(expr) → expr (괄호 불필요)
+        // angle-bracket 타입 어설션에서 operand가 parenthesized_expression이면
+        // 괄호를 벗겨서 내부 expression만 반환한다.
+        // 단, comma sequence는 괄호가 필요하므로 유지한다.
+        if (node.tag == .ts_type_assertion and !operand.isNone()) {
+            const op_node = self.old_ast.getNode(operand);
+            if (op_node.tag == .parenthesized_expression and !op_node.data.unary.operand.isNone()) {
+                const inner = self.old_ast.getNode(op_node.data.unary.operand);
+                if (inner.tag != .sequence_expression) {
+                    return self.visitNode(op_node.data.unary.operand);
+                }
+            }
+        }
         // 모든 TS expression은 unary로, operand가 값 부분
-        return self.visitNode(node.data.unary.operand);
+        return self.visitNode(operand);
     }
 
     // ================================================================
