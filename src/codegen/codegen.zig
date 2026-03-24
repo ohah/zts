@@ -936,6 +936,11 @@ pub const Codegen = struct {
     }
 
     fn emitObject(self: *Codegen, node: Node) !void {
+        const list = node.data.list;
+        if (list.len == 0) {
+            try self.write("{}");
+            return;
+        }
         if (self.options.minify) {
             try self.writeByte('{');
             try self.emitList(node, ",");

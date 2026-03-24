@@ -176,6 +176,7 @@ function extractSwcCases(): TestCase[] {
 function normalize(s: string): string {
   return s
     .replace(/\r\n/g, "\n")
+    .replace(/\t/g, "  ") // tab → 2 spaces (esbuild 호환)
     .replace(/\s+$/gm, "") // trailing whitespace 제거
     .trim();
 }
