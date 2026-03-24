@@ -732,7 +732,7 @@ pub const Linker = struct {
 
                 // resolve 미완료: external 또는 resolve 실패.
                 // 모든 포맷에서 require() preamble 생성.
-                // ESM에서는 emitter가 createRequire shim을 주입하여 require() 동작.
+                // ESM 번들도 import 구문 없이 출력되므로 Node가 CJS로 파싱 (esbuild 동일).
                 if (rec.resolved.isNone()) {
                     if (rec.kind == .static_import or rec.kind == .side_effect or rec.kind == .re_export) {
                         try cjs_preamble_buf.appendSlice(self.allocator, "var ");
@@ -1398,7 +1398,7 @@ pub const Linker = struct {
                             .export_name = name,
                         };
                     }
-                    // named barrel re-export가 .local로 남은 경우 (혹시 모를 edge case)
+                    // binding_scanner의 re_export 분류를 우회한 named barrel re-export fallback
                     if (ib.import_record_index < m_local.import_records.len) {
                         const source_mod = m_local.import_records[ib.import_record_index].resolved;
                         if (!source_mod.isNone()) {
