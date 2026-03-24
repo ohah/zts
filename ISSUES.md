@@ -46,6 +46,10 @@
 - **현재 동작**: `type: module` 없으면 Node가 CJS로 파싱 → require() 동작 (esbuild 동일)
 - **해결 방향**: `type: module` 환경 지원 시 `createRequire(import.meta.url)` shim 주입 필요
 
+### remeda — pipe 함수 인자 수 검증 에러
+- **증상**: `Error: Wrong number of arguments` — remeda의 pipe()가 인자 수 검증 실패
+- **원인**: tree-shaking 또는 scope hoisting에서 함수 래핑이 깨짐 (esbuild는 정상)
+
 ### 스모크 테스트 제외 패키지 (ZTS 문제 아님)
 - **cookie**: v1.0+에서 default export 제거. esbuild/rolldown도 동일 실패. ZTS만 성공
 - **yargs**: 내부 `createRequire(import.meta.url)` 사용 → esbuild 번들에서도 동일 실패. ZTS는 `format: cjs`로 우회
