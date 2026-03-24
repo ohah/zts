@@ -75,7 +75,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     // import defer / import source — Stage 3 proposals
     // defer/source를 스킵하고 나머지는 일반 import로 처리
     var has_phase_modifier = false;
-    if (self.current() == .kw_defer or self.isContextual("source")) {
+    if (self.current() == .kw_defer or self.current() == .kw_source or self.isContextual("source")) {
         has_phase_modifier = true;
         try self.advance(); // skip defer/source
     }
@@ -343,10 +343,15 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
                     _ = try self.parseTsInterfaceDeclaration();
                     break :blk NodeIndex.none;
                 }
-                // export default abstract class Foo {} — abstract 키워드 처리
+                // export default abstract class Foo {}
+                // export default abstract (abstract를 식별자 표현식으로)
                 if (self.current() == .identifier and self.isContextual("abstract")) {
-                    try self.advance(); // skip 'abstract'
-                    break :blk try self.parseClassDeclaration();
+                    const peek = try self.peekNext();
+                    if (peek.kind == .kw_class and !peek.has_newline_before) {
+                        try self.advance(); // skip 'abstract'
+                        break :blk try self.parseClassDeclaration();
+                    }
+                    // abstract 단독 → 식별자 expression (fallthrough)
                 }
                 // export default async function / export default async function* — 이름 선택적
                 if (self.current() == .kw_async) {
@@ -465,6 +470,24 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
             .span = .{ .start = start, .end = self.currentSpan().start },
             .data = .{ .extra = extra_start },
         });
+    }
+
+    // TS: export as namespace ns — 타입 전용 (완전 제거)
+    if (self.current() == .identifier and self.isContextual("as")) {
+        try self.advance(); // skip 'as'
+        if (self.current() == .identifier and self.isContextual("namespace")) {
+            try self.advance(); // skip 'namespace'
+            _ = try self.parseSimpleIdentifier(); // skip name
+            _ = try self.eat(.semicolon);
+            return NodeIndex.none;
+        }
+    }
+
+    // TS: export = expr — export assignment (타입 전용)
+    if (try self.eat(.eq)) {
+        _ = try self.parseAssignmentExpression();
+        _ = try self.eat(.semicolon);
+        return NodeIndex.none;
     }
 
     // export var/let/const/function/class

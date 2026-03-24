@@ -259,6 +259,12 @@ fn parseNamespaceBlock(self: *Parser) ParseError2!NodeIndex {
 /// declare var/let/const/function/class/...
 pub fn parseTsDeclareStatement(self: *Parser) ParseError2!NodeIndex {
     try self.advance(); // skip 'declare'
+    // declare global { ... } — 글로벌 augmentation (타입 전용, 완전 제거)
+    if (self.current() == .identifier and self.isContextual("global")) {
+        try self.advance(); // skip 'global'
+        _ = try self.parseBlockStatement();
+        return NodeIndex.none;
+    }
     // declare 뒤의 선언은 ambient context (const 이니셜라이저 불필요 등)
     const saved = self.ctx;
     self.ctx.in_ambient = true;
@@ -1088,16 +1094,15 @@ fn parseTypeMember(self: *Parser) ParseError2!NodeIndex {
         }
     }
 
-    // readonly 수정자 (프로퍼티/인덱스 시그니처에서만 유효)
+    // readonly/accessor 수정자 (프로퍼티/인덱스 시그니처에서만 유효)
     var is_readonly = false;
-    if (self.current() == .identifier and self.isContextual("readonly")) {
-        // readonly 다음이 [ 이면 인덱스 시그니처, 아니면 프로퍼티
+    if (self.current() == .identifier and
+        (self.isContextual("readonly") or self.isContextual("accessor")))
+    {
         const next = try self.peekNextKind();
-        if (next != .l_paren and next != .l_angle and next != .colon and next != .comma and
-            next != .semicolon and next != .r_curly and next != .question)
-        {
+        if (isFollowedByTypeMemberName(next)) {
             is_readonly = true;
-            try self.advance(); // skip 'readonly'
+            try self.advance(); // skip 'readonly'/'accessor'
         }
     }
 
