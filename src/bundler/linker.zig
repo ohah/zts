@@ -1425,8 +1425,28 @@ pub const Linker = struct {
                 }
                 return null;
             }
-            // binding_scanner가 barrel re-export를 .re_export로 정확히 분류하므로
-            // 여기 도달하면 진짜 로컬 export다.
+            // .local export: binding_scanner가 named barrel re-export는 .re_export로
+            // 분류하지만, namespace barrel re-export는 .local로 유지한다.
+            // namespace import인 경우 현재 모듈의 바인딩을 반환.
+            const m_local = self.modules[mod_i];
+            for (m_local.import_bindings) |ib| {
+                if (std.mem.eql(u8, ib.local_name, entry.binding.local_name)) {
+                    if (ib.kind == .namespace) {
+                        return .{
+                            .module_index = module_idx,
+                            .export_name = name,
+                        };
+                    }
+                    // named barrel re-export가 .local로 남은 경우 (혹시 모를 edge case)
+                    if (ib.import_record_index < m_local.import_records.len) {
+                        const source_mod = m_local.import_records[ib.import_record_index].resolved;
+                        if (!source_mod.isNone()) {
+                            return self.resolveExportChain(source_mod, ib.imported_name, depth + 1);
+                        }
+                    }
+                    break;
+                }
+            }
             return .{
                 .module_index = module_idx,
                 .export_name = name,

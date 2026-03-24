@@ -247,11 +247,16 @@ pub fn extractExportBindings(
                         var final_local_name = local_name;
                         if (!has_source) {
                             if (import_by_name.get(local_name)) |ib| {
-                                kind = .re_export;
-                                final_rec_idx = ib.import_record_index;
-                                // barrel re-export의 local_name은 소스 모듈의 export 이름
-                                // import { foo as bar } → local_name = "foo" (imported_name)
-                                final_local_name = ib.imported_name;
+                                if (ib.kind == .namespace) {
+                                    // namespace barrel re-export (import * as z; export { z }):
+                                    // .local로 유지. linker가 namespace import를 별도 처리.
+                                } else {
+                                    kind = .re_export;
+                                    final_rec_idx = ib.import_record_index;
+                                    // named import: local_name을 소스 모듈의 export 이름으로 교체
+                                    // import { foo as bar } → local_name = "foo" (imported_name)
+                                    final_local_name = ib.imported_name;
+                                }
                             }
                         }
 
@@ -701,7 +706,7 @@ test "barrel re-export with alias: import { foo as bar }; export { bar }" {
     try std.testing.expectEqualStrings("foo", r.export_bindings[0].local_name);
 }
 
-test "barrel re-export: namespace import stays namespace" {
+test "barrel re-export: namespace import stays local" {
     const alloc = std.testing.allocator;
     var r = try parseAndExtractBindings(alloc,
         \\import * as ns from './dep';
@@ -714,9 +719,9 @@ test "barrel re-export: namespace import stays namespace" {
 
     try std.testing.expectEqual(@as(usize, 1), r.export_bindings.len);
     try std.testing.expectEqualStrings("ns", r.export_bindings[0].exported_name);
-    try std.testing.expectEqual(ExportBinding.Kind.re_export, r.export_bindings[0].kind);
-    // namespace import의 local_name은 "*" (소스 모듈에서 전체 namespace)
-    try std.testing.expectEqualStrings("*", r.export_bindings[0].local_name);
+    // namespace barrel re-export는 .local로 유지 (linker가 namespace import를 별도 처리)
+    try std.testing.expectEqual(ExportBinding.Kind.local, r.export_bindings[0].kind);
+    try std.testing.expectEqualStrings("ns", r.export_bindings[0].local_name);
 }
 
 test "barrel re-export: mixed local and re-export" {
