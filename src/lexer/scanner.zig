@@ -701,27 +701,8 @@ pub const Scanner = struct {
             // `-` 이미 소비됨, 다음이 `->` 이고 줄 시작(has_newline_before)이면 주석.
             if (!self.is_module and self.peekAt(1) == '>' and self.token.has_newline_before) {
                 self.current += 2; // skip ->
-                // 줄 끝까지 스킵
-                const comment_start = self.current;
-                while (!self.isAtEnd()) {
-                    const c = self.peek();
-                    if (c == '\n' or c == '\r') break;
-                    if (c == 0xE2 and self.current + 2 < self.source.len and
-                        self.source[self.current + 1] == 0x80 and
-                        (self.source[self.current + 2] == 0xA8 or self.source[self.current + 2] == 0xA9))
-                    {
-                        break;
-                    }
-                    self.current += 1;
-                }
-                const comment_text = self.source[comment_start..self.current];
-                try self.comments.append(self.allocator, .{
-                    .start = self.start,
-                    .end = self.current,
-                    .is_multiline = false,
-                    .is_legal = isLegalComment(comment_text, false),
-                });
-                return .undetermined; // 주석이므로 다음 토큰 스캔 계속
+                try self.skipLineAndRecordComment(false);
+                return .undetermined;
             }
             self.current += 1;
             return .minus2;
@@ -857,16 +838,13 @@ pub const Scanner = struct {
 
     /// single-line comment를 스캔한다 (// ... \n).
     /// JSX pragma (@jsx, @jsxFrag, @jsxRuntime, @jsxImportSource)를 감지한다 (D026).
-    fn scanSingleLineComment(self: *Scanner) !void {
-        self.current += 1; // skip second '/'
-
+    /// 현재 위치부터 줄 끝(LF/CR/U+2028/U+2029)까지 스킵하고 주석을 기록한다.
+    /// // 주석, <!-- 주석, --> 주석에서 공통으로 사용.
+    fn skipLineAndRecordComment(self: *Scanner, check_pure: bool) !void {
         const comment_start = self.current;
-
-        // 줄 끝까지 스킵
         while (!self.isAtEnd()) {
             const c = self.peek();
             if (c == '\n' or c == '\r') break;
-            // U+2028, U+2029
             if (c == 0xE2 and self.current + 2 < self.source.len and
                 self.source[self.current + 1] == 0x80 and
                 (self.source[self.current + 2] == 0xA8 or self.source[self.current + 2] == 0xA9))
@@ -875,17 +853,19 @@ pub const Scanner = struct {
             }
             self.current += 1;
         }
-
         const comment_text = self.source[comment_start..self.current];
-        self.checkPureComment(comment_text);
-
-        // 주석을 기록한다 (start = 첫 번째 '/' 위치, end = 줄바꿈 직전)
+        if (check_pure) self.checkPureComment(comment_text);
         try self.comments.append(self.allocator, .{
             .start = self.start,
             .end = self.current,
             .is_multiline = false,
             .is_legal = isLegalComment(comment_text, false),
         });
+    }
+
+    fn scanSingleLineComment(self: *Scanner) !void {
+        self.current += 1; // skip second '/'
+        try self.skipLineAndRecordComment(true);
     }
 
     /// multi-line comment를 스캔한다 (/* ... */).
@@ -1025,27 +1005,8 @@ pub const Scanner = struct {
         // `<` 이미 소비됨, 다음이 `!--`이면 줄 끝까지 주석으로 처리.
         if (!self.is_module and self.peek() == '!' and self.peekAt(1) == '-' and self.peekAt(2) == '-') {
             self.current += 3; // skip !--
-            // scanSingleLineComment와 동일: 줄 끝까지 스킵
-            const comment_start = self.current;
-            while (!self.isAtEnd()) {
-                const c = self.peek();
-                if (c == '\n' or c == '\r') break;
-                if (c == 0xE2 and self.current + 2 < self.source.len and
-                    self.source[self.current + 1] == 0x80 and
-                    (self.source[self.current + 2] == 0xA8 or self.source[self.current + 2] == 0xA9))
-                {
-                    break;
-                }
-                self.current += 1;
-            }
-            const comment_text = self.source[comment_start..self.current];
-            try self.comments.append(self.allocator, .{
-                .start = self.start,
-                .end = self.current,
-                .is_multiline = false,
-                .is_legal = isLegalComment(comment_text, false),
-            });
-            return .undetermined; // 주석이므로 다음 토큰 스캔 계속
+            try self.skipLineAndRecordComment(false);
+            return .undetermined;
         }
 
         if (self.peek() == '<') {
