@@ -355,8 +355,11 @@ pub const Codegen = struct {
                 i += 1;
             } else if (c >= 0x80 and self.options.ascii_only) {
                 // non-ASCII → \uXXXX (ascii_only 모드)
-                try self.writeAsciiOnly(content[i .. i + 1]);
-                i += 1;
+                // UTF-8 멀티바이트 문자의 전체 바이트를 전달해야 함
+                const byte_len: usize = if (c < 0xC0) 1 else if (c < 0xE0) 2 else if (c < 0xF0) 3 else 4;
+                const end = @min(i + byte_len, content.len);
+                try self.writeAsciiOnly(content[i..end]);
+                i = end;
             } else {
                 try self.writeByte(c);
                 i += 1;
