@@ -344,13 +344,18 @@ fn parseTsTypeParameter(self: *Parser) ParseError2!NodeIndex {
 
     // TS 4.7+ 타입 파라미터 수정자: const, in, out (oxc parse_ts_type_parameter)
     // <const T>, <in T>, <out T>, <in out T>, <const in out T>
-    // 렉서가 const→kw_const, in→kw_in으로 토큰화하므로 둘 다 처리
+    // 주의: <in out>에서 out은 수정자가 아닌 이름 — 다음 토큰으로 구분
     while (true) {
         if (self.current() == .kw_const or self.current() == .kw_in) {
+            // 다음 토큰이 > , extends = 이면 현재가 이름임 (수정자 아님)
+            const peek = try self.peekNextKind();
+            if (peek == .r_angle or peek == .comma or peek == .kw_extends or peek == .eq) break;
             try self.advance();
         } else if (self.current() == .identifier) {
             const text = self.tokenText();
             if (std.mem.eql(u8, text, "out") or std.mem.eql(u8, text, "const") or std.mem.eql(u8, text, "in")) {
+                const peek = try self.peekNextKind();
+                if (peek == .r_angle or peek == .comma or peek == .kw_extends or peek == .eq) break;
                 try self.advance();
             } else break;
         } else break;
@@ -591,13 +596,13 @@ fn parseTypeOperatorOrHigher(self: *Parser) ParseError2!NodeIndex {
             const name_span = self.currentSpan();
             try self.advance(); // type param name
             // 선택적 constraint: infer T extends U (TS 4.7+)
+            // disallow_conditional_types 컨텍스트에서만 infer constraint가 가능
+            // (조건부 타입의 extends와 ambiguity 방지)
             var constraint = NodeIndex.none;
-            if (self.current() == .identifier and self.isContextual("extends")) {
-                const saved = self.ctx;
-                self.ctx.disallow_conditional_types = true;
+            if (self.ctx.disallow_conditional_types and self.current() == .kw_extends) {
                 try self.advance(); // skip 'extends'
-                constraint = try parseType(self);
-                self.ctx = saved;
+                // constraint 타입은 union/intersection을 포함하지 않음 (oxc: parseTypeOperatorOrHigher)
+                constraint = try parseTypeOperatorOrHigher(self);
             }
             return try self.ast.addNode(.{
                 .tag = .ts_infer_type,
@@ -997,9 +1002,14 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
 /// ( 이후 현재 토큰이 함수 타입 파라미터 시작인지 판별
 /// identifier/this 다음에 : 또는 ? 가 오면 함수 타입 파라미터
 fn isFunctionTypeParam(self: *Parser) bool {
-    if (self.current() != .identifier and self.current() != .kw_this) return false;
-    const next = self.peekNextKind() catch return false;
-    return next == .colon or next == .question;
+    // identifier/this 다음에 : 또는 ? → 확정 함수 파라미터
+    if (self.current() == .identifier or self.current() == .kw_this) {
+        const next = self.peekNextKind() catch return false;
+        return next == .colon or next == .question;
+    }
+    // destructuring 패턴: [...] 또는 {...} → 함수 파라미터
+    if (self.current() == .l_bracket or self.current() == .l_curly) return true;
+    return false;
 }
 
 /// 함수 타입 파라미터 리스트를 파싱하여 함수 타입 노드 생성
@@ -1244,6 +1254,7 @@ fn parseTypeMemberParam(self: *Parser) ParseError2!NodeIndex {
     }
 
     // this 파라미터: this: Type
+    // destructuring: [a, b]: Type, {x, y}: Type
     const name = if (self.current() == .kw_this) blk: {
         const this_span = self.currentSpan();
         try self.advance();
@@ -1252,7 +1263,10 @@ fn parseTypeMemberParam(self: *Parser) ParseError2!NodeIndex {
             .span = this_span,
             .data = .{ .none = 0 },
         });
-    } else try self.parsePropertyKey();
+    } else if (self.current() == .l_bracket or self.current() == .l_curly)
+        try self.parseBindingName()
+    else
+        try self.parsePropertyKey();
 
     _ = try self.eat(.question); // optional
     var type_ann = NodeIndex.none;
