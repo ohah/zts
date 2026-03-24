@@ -25,6 +25,16 @@ const ts_class_modifiers: []const []const u8 = &.{ "readonly", "abstract", "over
 
 /// 수식어 뒤에 이 토큰이 오면 수식어가 아니라 멤버 이름으로 판단.
 /// 예: class C { override() {} } → 'override'는 메서드 이름.
+/// 현재 토큰이 abstract/declare 수식어이면 해당 비트를 반환.
+/// bit5=abstract (0x20), bit6=declare (0x40).
+fn detectAbstractDeclare(self: *Parser) u16 {
+    if (self.current() != .identifier) return 0;
+    const text = self.scanner.source[self.scanner.token.span.start..self.scanner.token.span.end];
+    if (std.mem.eql(u8, text, "abstract")) return 0x20;
+    if (std.mem.eql(u8, text, "declare")) return 0x40;
+    return 0;
+}
+
 fn isModifierTerminator(kind: Kind) bool {
     return kind == .l_paren or kind == .colon or kind == .eq or
         kind == .semicolon or kind == .r_curly or kind == .bang or kind == .question;
@@ -470,12 +480,7 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         self.isContextualAny(ts_class_modifiers))
     {
         if (isModifierTerminator(try self.peekNextKind())) break;
-        // abstract/declare 수식어는 플래그에 기록 (런타임에 제거해야 하므로)
-        if (self.current() == .identifier) {
-            const text = self.scanner.source[self.scanner.token.span.start..self.scanner.token.span.end];
-            if (std.mem.eql(u8, text, "abstract")) flags |= 0x20;
-            if (std.mem.eql(u8, text, "declare")) flags |= 0x40;
-        }
+        flags |= detectAbstractDeclare(self);
         try self.advance(); // skip modifier (스트리핑 대상이므로 AST에 저장 불필요)
     }
 
