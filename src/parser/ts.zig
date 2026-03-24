@@ -515,8 +515,10 @@ pub fn parseType(self: *Parser) ParseError2!NodeIndex {
 
     // 조건부 타입: T extends U ? X : Y (oxc parse_ts_type L21-41)
     // disallow_conditional_types 컨텍스트에서는 중첩 방지
-    // 줄바꿈이 extends 앞에 있으면 conditional type이 아님
-    // (예: { y: T \n extends: number } — extends는 프로퍼티 이름)
+    // 조건부 타입: T extends U ? X : Y
+    // disallow_conditional_types 컨텍스트에서는 중첩 방지
+    // 줄바꿈 전 extends는 object type에서 프로퍼티 이름일 수 있음
+    // (예: { y: T \n extends: number } — 한 줄이면 conditional, 줄바꿈이면 프로퍼티)
     if (!self.ctx.disallow_conditional_types and
         self.current() == .kw_extends and
         !self.scanner.token.has_newline_before)
