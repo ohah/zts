@@ -174,12 +174,10 @@ function extractSwcCases(): TestCase[] {
 // ============================================================
 
 function normalize(s: string): string {
-  return (
-    s
-      .replace(/\r\n/g, "\n")
-      .replace(/\s+$/gm, "") // trailing whitespace 제거
-      .trim()
-  );
+  return s
+    .replace(/\r\n/g, "\n")
+    .replace(/\s+$/gm, "") // trailing whitespace 제거
+    .trim();
 }
 
 function runZts(input: string, isTsx: boolean): { ok: boolean; output: string; error: string } {
