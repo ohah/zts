@@ -231,15 +231,13 @@ fn parseTsModuleBody(self: *Parser, start: u32) ParseError2!NodeIndex {
     // 여기서 직접 블록을 파싱하여 is_top_level=true를 유지한다
     // in_namespace 설정: namespace body 안에서는 await를 식별자로 사용 가능
     // (namespace는 IIFE로 변환되므로 top-level module code가 아님)
-    const saved_module = self.is_module;
     const saved_namespace = self.in_namespace;
     const saved_ctx = self.ctx;
+    defer self.in_namespace = saved_namespace;
+    defer self.ctx = saved_ctx;
     self.in_namespace = true;
     self.ctx.is_top_level = true;
     const body = try parseNamespaceBlock(self);
-    self.is_module = saved_module;
-    self.in_namespace = saved_namespace;
-    self.ctx = saved_ctx;
 
     return try self.ast.addNode(.{
         .tag = .ts_module_declaration,
