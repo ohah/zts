@@ -152,10 +152,13 @@ pub fn extractImportBindings(
 }
 
 /// AST에서 export 바인딩 상세를 추출한다.
+/// import_bindings가 주어지면 barrel re-export 패턴을 자동 감지한다.
+/// (Rolldown 방식: export symbol이 import binding에 있으면 .re_export로 분류)
 pub fn extractExportBindings(
     allocator: std.mem.Allocator,
     ast: *const Ast,
     import_records: []const types.ImportRecord,
+    import_bindings: []const ImportBinding,
 ) ![]ExportBinding {
     var bindings: std.ArrayList(ExportBinding) = .empty;
     errdefer bindings.deinit(allocator);
@@ -230,12 +233,32 @@ pub fn extractExportBindings(
                             local_node;
                         const exported_name = ast.source[exported_node.span.start..exported_node.span.end];
 
+                        // Rolldown 방식: from 절이 없어도 local_name이 import binding이면
+                        // barrel re-export로 분류 (import { X } from './a'; export { X })
+                        var kind: ExportBinding.Kind = if (has_source) .re_export else .local;
+                        var final_rec_idx: ?u32 = rec_idx;
+                        // barrel re-export의 local_name은 소스 모듈에서의 export 이름이어야 한다.
+                        // export { foo } from './a' → local_name = "foo" (소스의 export 이름)
+                        // import { foo as bar } from './a'; export { bar } → local_name = "foo" (imported_name)
+                        var final_local_name = local_name;
+                        if (!has_source) {
+                            for (import_bindings) |ib| {
+                                if (std.mem.eql(u8, ib.local_name, local_name)) {
+                                    kind = .re_export;
+                                    final_rec_idx = ib.import_record_index;
+                                    // alias가 있으면 imported_name을 사용 (소스 모듈의 export 이름)
+                                    final_local_name = ib.imported_name;
+                                    break;
+                                }
+                            }
+                        }
+
                         try bindings.append(allocator, .{
                             .exported_name = exported_name,
-                            .local_name = local_name,
+                            .local_name = final_local_name,
                             .local_span = local_node.span,
-                            .kind = if (has_source) .re_export else .local,
-                            .import_record_index = rec_idx,
+                            .kind = kind,
+                            .import_record_index = final_rec_idx,
                         });
                     }
                 }
@@ -437,7 +460,7 @@ fn parseAndExtractBindings(allocator: std.mem.Allocator, source: []const u8) !st
     const records = try import_scanner.extractImports(allocator, &parser.ast);
 
     const import_bindings = try extractImportBindings(allocator, &parser.ast, records);
-    const export_bindings = try extractExportBindings(allocator, &parser.ast, records);
+    const export_bindings = try extractExportBindings(allocator, &parser.ast, records, import_bindings);
 
     return .{
         .import_bindings = import_bindings,
@@ -635,5 +658,82 @@ test "destructuring re-export: export const { X } = importDefault" {
     try std.testing.expectEqualStrings("Command", r.export_bindings[0].exported_name);
     try std.testing.expectEqual(ExportBinding.Kind.local, r.export_bindings[0].kind);
     try std.testing.expectEqualStrings("Option", r.export_bindings[1].exported_name);
+    try std.testing.expectEqual(ExportBinding.Kind.local, r.export_bindings[1].kind);
+}
+
+test "barrel re-export: import then export (Rolldown classification)" {
+    const alloc = std.testing.allocator;
+    var r = try parseAndExtractBindings(alloc,
+        \\import { x } from './a';
+        \\export { x };
+    );
+    defer r.arena.deinit();
+    defer alloc.free(r.import_bindings);
+    defer alloc.free(r.export_bindings);
+    defer alloc.free(r.import_records);
+
+    try std.testing.expectEqual(@as(usize, 1), r.export_bindings.len);
+    try std.testing.expectEqualStrings("x", r.export_bindings[0].exported_name);
+    // barrel re-export는 .re_export로 분류되어야 함 (이전에는 .local이었음)
+    try std.testing.expectEqual(ExportBinding.Kind.re_export, r.export_bindings[0].kind);
+    try std.testing.expect(r.export_bindings[0].import_record_index != null);
+    // local_name은 소스 모듈의 export 이름 (imported_name)
+    try std.testing.expectEqualStrings("x", r.export_bindings[0].local_name);
+}
+
+test "barrel re-export with alias: import { foo as bar }; export { bar }" {
+    const alloc = std.testing.allocator;
+    var r = try parseAndExtractBindings(alloc,
+        \\import { foo as bar } from './a';
+        \\export { bar };
+    );
+    defer r.arena.deinit();
+    defer alloc.free(r.import_bindings);
+    defer alloc.free(r.export_bindings);
+    defer alloc.free(r.import_records);
+
+    try std.testing.expectEqual(@as(usize, 1), r.export_bindings.len);
+    try std.testing.expectEqualStrings("bar", r.export_bindings[0].exported_name);
+    try std.testing.expectEqual(ExportBinding.Kind.re_export, r.export_bindings[0].kind);
+    // local_name은 소스 모듈의 export 이름 "foo" (imported_name, not local alias)
+    try std.testing.expectEqualStrings("foo", r.export_bindings[0].local_name);
+}
+
+test "barrel re-export: namespace import stays namespace" {
+    const alloc = std.testing.allocator;
+    var r = try parseAndExtractBindings(alloc,
+        \\import * as ns from './dep';
+        \\export { ns };
+    );
+    defer r.arena.deinit();
+    defer alloc.free(r.import_bindings);
+    defer alloc.free(r.export_bindings);
+    defer alloc.free(r.import_records);
+
+    try std.testing.expectEqual(@as(usize, 1), r.export_bindings.len);
+    try std.testing.expectEqualStrings("ns", r.export_bindings[0].exported_name);
+    try std.testing.expectEqual(ExportBinding.Kind.re_export, r.export_bindings[0].kind);
+    // namespace import의 local_name은 "*" (소스 모듈에서 전체 namespace)
+    try std.testing.expectEqualStrings("*", r.export_bindings[0].local_name);
+}
+
+test "barrel re-export: mixed local and re-export" {
+    const alloc = std.testing.allocator;
+    var r = try parseAndExtractBindings(alloc,
+        \\import { x } from './a';
+        \\const y = 1;
+        \\export { x, y };
+    );
+    defer r.arena.deinit();
+    defer alloc.free(r.import_bindings);
+    defer alloc.free(r.export_bindings);
+    defer alloc.free(r.import_records);
+
+    try std.testing.expectEqual(@as(usize, 2), r.export_bindings.len);
+    // x는 import binding이므로 .re_export
+    try std.testing.expectEqualStrings("x", r.export_bindings[0].exported_name);
+    try std.testing.expectEqual(ExportBinding.Kind.re_export, r.export_bindings[0].kind);
+    // y는 로컬 변수이므로 .local
+    try std.testing.expectEqualStrings("y", r.export_bindings[1].exported_name);
     try std.testing.expectEqual(ExportBinding.Kind.local, r.export_bindings[1].kind);
 }

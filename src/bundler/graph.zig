@@ -264,7 +264,7 @@ pub const ModuleGraph = struct {
 
         // Import/Export 바인딩 상세 추출 — linker에서 사용
         module.import_bindings = binding_scanner_mod.extractImportBindings(self.allocator, &parser.ast, scan_result.records) catch &.{};
-        module.export_bindings = binding_scanner_mod.extractExportBindings(self.allocator, &parser.ast, scan_result.records) catch &.{};
+        module.export_bindings = binding_scanner_mod.extractExportBindings(self.allocator, &parser.ast, scan_result.records, module.import_bindings) catch &.{};
 
         module.ast = parser.ast;
         module.line_offsets = scanner.line_offsets.items;

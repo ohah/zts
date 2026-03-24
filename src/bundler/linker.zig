@@ -633,12 +633,15 @@ pub const Linker = struct {
 
     /// transformer 이후의 new_ast를 기반으로 LinkingMetadata를 생성한다.
     /// skip_nodes와 renames가 new_ast의 노드 인덱스와 일치.
+    pub const OutputFormat = enum { esm, cjs, iife };
+
     pub fn buildMetadataForAst(
         self: *const Linker,
         new_ast: *const Ast,
         module_index: u32,
         is_entry: bool,
         override_symbol_ids: ?[]const ?u32,
+        output_format: OutputFormat,
     ) !LinkingMetadata {
         if (module_index >= self.modules.len) {
             return .{
@@ -685,6 +688,43 @@ pub const Linker = struct {
 
         var skip_nodes = try buildSkipNodes(self.allocator, new_ast);
         errdefer skip_nodes.deinit();
+
+        // ESM 출력: external import/re-export 문을 그대로 유지 (skip 해제).
+        // CJS/IIFE에서는 require() preamble로 대체하지만, ESM에서는 원본 import 문이 필요.
+        if (output_format == .esm) {
+            var source_to_record = std.AutoHashMap(u64, u32).init(self.allocator);
+            defer source_to_record.deinit();
+            for (m.import_records, 0..) |rec, i| {
+                try source_to_record.put(types.spanKey(rec.span), @intCast(i));
+            }
+            for (new_ast.nodes.items, 0..) |node, node_idx| {
+                const source_nidx: NodeIndex = switch (node.tag) {
+                    .import_declaration => blk: {
+                        const e = node.data.extra;
+                        if (e + 2 >= new_ast.extra_data.items.len) continue;
+                        break :blk @enumFromInt(new_ast.extra_data.items[e + 2]);
+                    },
+                    .export_named_declaration => blk: {
+                        // extra[3] = source_idx
+                        const e = node.data.extra;
+                        if (e + 3 >= new_ast.extra_data.items.len) continue;
+                        break :blk @enumFromInt(new_ast.extra_data.items[e + 3]);
+                    },
+                    .export_all_declaration => blk: {
+                        // binary.right = source_idx
+                        break :blk node.data.binary.right;
+                    },
+                    else => continue,
+                };
+                if (source_nidx.isNone()) continue;
+                const source_node = new_ast.getNode(source_nidx);
+                const rec_idx = source_to_record.get(types.spanKey(source_node.span)) orelse continue;
+                if (rec_idx < m.import_records.len and m.import_records[rec_idx].resolved.isNone()) {
+                    skip_nodes.unset(node_idx);
+                }
+            }
+        }
+
         var renames = std.AutoHashMap(u32, []const u8).init(self.allocator);
         errdefer renames.deinit();
 
@@ -729,12 +769,14 @@ pub const Linker = struct {
                 if (ib.import_record_index >= m.import_records.len) continue;
                 const rec = m.import_records[ib.import_record_index];
 
-                // External 모듈 (Node.js 빌트인, --external): resolved가 없지만
-                // import 바인딩이 존재 → preamble에 require() 호출을 생성하여 변수 바인딩 유지.
-                // 예: import url from 'url' → var url = require("url")
+                // External 모듈 (Node.js 빌트인, --external): resolved가 없음.
                 if (rec.resolved.isNone()) {
-                    if (rec.kind == .static_import or rec.kind == .side_effect or rec.kind == .re_export) {
-                        // var <local> = require("<specifier>")[.<imported>];
+                    if (output_format == .esm) {
+                        // ESM 출력: import 문을 그대로 유지. preamble 불필요.
+                        // skip_nodes에서 해당 import_declaration을 복원한다.
+                        // (아래 un-skip 로직에서 처리)
+                    } else if (rec.kind == .static_import or rec.kind == .side_effect or rec.kind == .re_export) {
+                        // CJS/IIFE 출력: var <local> = require("<specifier>")[.<imported>];
                         try cjs_preamble_buf.appendSlice(self.allocator, "var ");
                         try cjs_preamble_buf.appendSlice(self.allocator, ib.local_name);
                         try cjs_preamble_buf.appendSlice(self.allocator, " = require(\"");
@@ -1371,37 +1413,23 @@ pub const Linker = struct {
                     if (rec_idx < m.import_records.len) {
                         const source_mod = m.import_records[rec_idx].resolved;
                         if (!source_mod.isNone()) {
+                            // namespace re-export (import * as ns; export { ns }):
+                            // local_name이 "*"이면 소스 모듈에서 named export를 찾을 수 없으므로
+                            // 현재 모듈의 바인딩을 반환 (namespace 객체는 linker가 생성)
+                            if (std.mem.eql(u8, entry.binding.local_name, "*")) {
+                                return .{
+                                    .module_index = module_idx,
+                                    .export_name = name,
+                                };
+                            }
                             return self.resolveExportChain(source_mod, entry.binding.local_name, depth + 1);
                         }
                     }
                 }
                 return null;
             }
-            // local export: 이 모듈의 심볼이지만, barrel re-export 패턴인지 확인.
-            // `import { X } from './a'; export { X }` 는 binding_scanner에서 .local로
-            // 분류되지만 실제로는 import binding이므로 소스 모듈로 따라가야 한다.
-            const m_local = self.modules[mod_i];
-            for (m_local.import_bindings) |ib| {
-                if (std.mem.eql(u8, ib.local_name, entry.binding.local_name)) {
-                    // 이 로컬 이름은 import binding → 소스 모듈의 export를 따라간다
-                    if (ib.import_record_index < m_local.import_records.len) {
-                        const source_mod = m_local.import_records[ib.import_record_index].resolved;
-                        if (!source_mod.isNone()) {
-                            // namespace import (`import * as ns from './dep'; export { ns }`)인 경우
-                            // 소스 모듈에서 "*"를 named export로 찾을 수 없으므로,
-                            // 현재 모듈의 로컬 바인딩을 그대로 반환한다 (namespace 객체는 linker가 생성).
-                            if (std.mem.eql(u8, ib.imported_name, "*")) {
-                                return .{
-                                    .module_index = module_idx,
-                                    .export_name = name,
-                                };
-                            }
-                            return self.resolveExportChain(source_mod, ib.imported_name, depth + 1);
-                        }
-                    }
-                    break;
-                }
-            }
+            // binding_scanner가 barrel re-export를 .re_export로 정확히 분류하므로
+            // 여기 도달하면 진짜 로컬 export다.
             return .{
                 .module_index = module_idx,
                 .export_name = name,
