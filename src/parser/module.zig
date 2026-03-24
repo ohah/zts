@@ -105,6 +105,31 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     // 스펙ifier 파싱
     const scratch_top = self.saveScratch();
 
+    // TS import-equals: import x = require('y') → const x = require('y')
+    // import x = Namespace.Member → const x = Namespace.Member
+    if (self.current() == .identifier or
+        (self.current().isKeyword() and !self.current().isReservedKeyword()))
+    {
+        const next = try self.peekNextKind();
+        if (next == .eq) {
+            const name_span = self.currentSpan();
+            try self.advance(); // skip name
+            try self.advance(); // skip =
+            // require('y') 또는 Namespace.Member
+            const value = try self.parseAssignmentExpression();
+            _ = try self.eat(.semicolon);
+            return try self.ast.addNode(.{
+                .tag = .ts_import_equals_declaration,
+                .span = .{ .start = start, .end = self.currentSpan().start },
+                .data = .{ .binary = .{ .left = try self.ast.addNode(.{
+                    .tag = .identifier_reference,
+                    .span = name_span,
+                    .data = .{ .none = 0 },
+                }), .right = value, .flags = 0 } },
+            });
+        }
+    }
+
     // default import: import foo from "module"
     // contextual keyword (get/set/number/string/object/type 등)도 import 이름으로 유효
     var has_default = false;

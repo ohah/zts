@@ -212,12 +212,47 @@ fn parseTsModuleBody(self: *Parser, start: u32) ParseError2!NodeIndex {
         });
     }
 
-    const body = try self.parseBlockStatement();
+    // namespace body에서는 export/import 허용 (모듈과 동일한 컨텍스트)
+    // parseBlockStatement는 내부에서 is_top_level=false로 설정하므로
+    // 여기서 직접 블록을 파싱하여 is_top_level=true를 유지한다
+    const saved_module = self.is_module;
+    const saved_ctx = self.ctx;
+    self.is_module = true;
+    self.ctx.is_top_level = true;
+    const body = try parseNamespaceBlock(self);
+    self.is_module = saved_module;
+    self.ctx = saved_ctx;
 
     return try self.ast.addNode(.{
         .tag = .ts_module_declaration,
         .span = .{ .start = start, .end = self.currentSpan().start },
         .data = .{ .binary = .{ .left = name, .right = body, .flags = 0 } },
+    });
+}
+
+/// namespace body 블록 파싱 — parseBlockStatement와 동일하되 is_top_level을 유지
+fn parseNamespaceBlock(self: *Parser) ParseError2!NodeIndex {
+    const block_start = self.currentSpan().start;
+    try self.expect(.l_curly);
+
+    var stmts: std.ArrayList(NodeIndex) = .empty;
+    defer stmts.deinit(self.allocator);
+
+    while (self.current() != .r_curly and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
+        const stmt = try self.parseStatement();
+        if (!stmt.isNone()) try stmts.append(self.allocator, stmt);
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
+    }
+
+    const end = self.currentSpan().end;
+    try self.expect(.r_curly);
+
+    const node_list = try self.ast.addNodeList(stmts.items);
+    return try self.ast.addNode(.{
+        .tag = .block_statement,
+        .span = .{ .start = block_start, .end = end },
+        .data = .{ .list = node_list },
     });
 }
 
@@ -306,6 +341,21 @@ pub fn parseTsTypeParameterDeclaration(self: *Parser) ParseError2!NodeIndex {
 
 fn parseTsTypeParameter(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
+
+    // TS 4.7+ 타입 파라미터 수정자: const, in, out (oxc parse_ts_type_parameter)
+    // <const T>, <in T>, <out T>, <in out T>, <const in out T>
+    // 렉서가 const→kw_const, in→kw_in으로 토큰화하므로 둘 다 처리
+    while (true) {
+        if (self.current() == .kw_const or self.current() == .kw_in) {
+            try self.advance();
+        } else if (self.current() == .identifier) {
+            const text = self.tokenText();
+            if (std.mem.eql(u8, text, "out") or std.mem.eql(u8, text, "const") or std.mem.eql(u8, text, "in")) {
+                try self.advance();
+            } else break;
+        } else break;
+    }
+
     const name = try self.parseSimpleIdentifier();
 
     // T extends U
@@ -346,15 +396,216 @@ pub fn tryParseTypeAnnotation(self: *Parser) ParseError2!NodeIndex {
 }
 
 /// 리턴 타입 어노테이션 (`: Type`). 함수 선언에서 사용.
+/// 타입 프레디케이트도 여기서 감지: x is Type, asserts x is Type, asserts x, this is Type
+/// oxc parse_type_or_type_predicate 대응
 pub fn tryParseReturnType(self: *Parser) ParseError2!NodeIndex {
     if (self.current() != .colon) return NodeIndex.none;
     try self.advance();
+    return parseTypeOrTypePredicate(self);
+}
+
+/// 타입 또는 타입 프레디케이트를 파싱
+/// oxc parse_type_or_type_predicate (L1287-1306)
+fn parseTypeOrTypePredicate(self: *Parser) ParseError2!NodeIndex {
+    const start = self.currentSpan().start;
+
+    // asserts 프레디케이트: asserts x, asserts x is Type, asserts this is Type
+    if (self.current() == .identifier and self.isContextual("asserts")) {
+        const next = try self.peekNextKind();
+        // asserts 다음에 identifier 또는 this가 오면 asserts 프레디케이트
+        if (next == .identifier or next == .kw_this) {
+            try self.advance(); // skip 'asserts'
+            const param_name = if (self.current() == .kw_this) blk: {
+                const this_span = self.currentSpan();
+                try self.advance();
+                break :blk try self.ast.addNode(.{
+                    .tag = .ts_this_type,
+                    .span = this_span,
+                    .data = .{ .none = 0 },
+                });
+            } else blk: {
+                const id_span = self.currentSpan();
+                try self.advance();
+                break :blk try self.ast.addNode(.{
+                    .tag = .identifier_reference,
+                    .span = id_span,
+                    .data = .{ .none = 0 },
+                });
+            };
+            // 선택적 is Type
+            var type_ann = NodeIndex.none;
+            if (self.current() == .identifier and self.isContextual("is")) {
+                try self.advance(); // skip 'is'
+                type_ann = try parseType(self);
+            }
+            return try self.ast.addNode(.{
+                .tag = .ts_type_predicate,
+                .span = .{ .start = start, .end = self.currentSpan().start },
+                .data = .{ .binary = .{ .left = param_name, .right = type_ann, .flags = 1 } }, // flags=1: asserts
+            });
+        }
+    }
+
+    // x is Type 또는 this is Type 판별
+    // identifier/this 다음에 'is'가 같은 줄에 오면 타입 프레디케이트
+    if (self.current() == .identifier or self.current() == .kw_this) {
+        const next = try self.peekNextKind();
+        if (next == .identifier) {
+            // identifier 다음의 identifier가 'is'인지 확인
+            // peekNextKind만으로는 텍스트 확인 불가 → 일단 파싱 시도
+            const saved_pos = self.scanner.token.span.start;
+            const param_node = if (self.current() == .kw_this) blk: {
+                const this_span = self.currentSpan();
+                try self.advance();
+                break :blk try self.ast.addNode(.{
+                    .tag = .ts_this_type,
+                    .span = this_span,
+                    .data = .{ .none = 0 },
+                });
+            } else blk: {
+                const id_span = self.currentSpan();
+                try self.advance();
+                break :blk try self.ast.addNode(.{
+                    .tag = .identifier_reference,
+                    .span = id_span,
+                    .data = .{ .none = 0 },
+                });
+            };
+            _ = saved_pos;
+            if (self.current() == .identifier and self.isContextual("is")) {
+                try self.advance(); // skip 'is'
+                const ty = try parseType(self);
+                return try self.ast.addNode(.{
+                    .tag = .ts_type_predicate,
+                    .span = .{ .start = start, .end = self.currentSpan().start },
+                    .data = .{ .binary = .{ .left = param_node, .right = ty, .flags = 0 } }, // flags=0: not asserts
+                });
+            }
+            // 'is'가 아니면 일반 타입 — 하지만 이미 identifier를 소비함
+            // param_node를 타입 참조로 취급하고 계속 파싱
+            // postfix ([], indexed access) 처리
+            var base = param_node;
+            // 타입 참조에 제네릭이 있을 수 있음
+            if (self.current() == .l_angle) {
+                // 이미 소비한 identifier를 ts_type_reference로 교체
+                const node = self.ast.getNode(param_node);
+                const ref_extra = try self.ast.addExtra(node.span.start);
+                _ = try self.ast.addExtra(node.span.end);
+                const type_args = try parseTypeArguments(self);
+                _ = try self.ast.addExtra(@intFromEnum(type_args));
+                base = try self.ast.addNode(.{
+                    .tag = .ts_type_reference,
+                    .span = .{ .start = node.span.start, .end = self.currentSpan().start },
+                    .data = .{ .extra = ref_extra },
+                });
+            }
+            // dot access: Foo.Bar
+            while (self.current() == .dot) {
+                try self.advance();
+                if (self.current() == .identifier or self.current().isKeyword()) {
+                    try self.advance();
+                }
+                if (self.current() == .l_angle) {
+                    _ = try parseTypeArguments(self);
+                }
+            }
+            // postfix [] 처리
+            while (self.current() == .l_bracket) {
+                const pstart = self.ast.getNode(base).span.start;
+                if (try self.peekNextKind() == .r_bracket) {
+                    try self.advance(); // [
+                    try self.advance(); // ]
+                    base = try self.ast.addNode(.{
+                        .tag = .ts_array_type,
+                        .span = .{ .start = pstart, .end = self.currentSpan().start },
+                        .data = .{ .unary = .{ .operand = base, .flags = 0 } },
+                    });
+                } else {
+                    try self.advance(); // [
+                    const idx = try parseType(self);
+                    try self.expect(.r_bracket);
+                    base = try self.ast.addNode(.{
+                        .tag = .ts_indexed_access_type,
+                        .span = .{ .start = pstart, .end = self.currentSpan().start },
+                        .data = .{ .binary = .{ .left = base, .right = idx, .flags = 0 } },
+                    });
+                }
+            }
+            // union/intersection 처리
+            if (self.current() == .pipe) {
+                while (self.current() == .pipe) {
+                    const ustart = self.ast.getNode(base).span.start;
+                    try self.advance();
+                    const right = try parseIntersectionType(self);
+                    base = try self.ast.addNode(.{
+                        .tag = .ts_union_type,
+                        .span = .{ .start = ustart, .end = self.currentSpan().start },
+                        .data = .{ .binary = .{ .left = base, .right = right, .flags = 0 } },
+                    });
+                }
+            }
+            if (self.current() == .amp) {
+                while (self.current() == .amp) {
+                    const istart = self.ast.getNode(base).span.start;
+                    try self.advance();
+                    const right = try parseTypeOperatorOrHigher(self);
+                    base = try self.ast.addNode(.{
+                        .tag = .ts_intersection_type,
+                        .span = .{ .start = istart, .end = self.currentSpan().start },
+                        .data = .{ .binary = .{ .left = base, .right = right, .flags = 0 } },
+                    });
+                }
+            }
+            // 조건부 타입
+            if (!self.ctx.disallow_conditional_types and self.current() == .kw_extends) {
+                const cstart = self.ast.getNode(base).span.start;
+                try self.advance();
+                const saved_ctx = self.ctx;
+                self.ctx.disallow_conditional_types = true;
+                const extends_type = try parseType(self);
+                self.ctx = saved_ctx;
+                try self.expect(.question);
+                const true_type = try parseType(self);
+                try self.expect(.colon);
+                const false_type = try parseType(self);
+                const extra = try self.ast.addExtras(&.{
+                    @intFromEnum(base),
+                    @intFromEnum(extends_type),
+                    @intFromEnum(true_type),
+                    @intFromEnum(false_type),
+                });
+                return try self.ast.addNode(.{
+                    .tag = .ts_conditional_type,
+                    .span = .{ .start = cstart, .end = self.currentSpan().start },
+                    .data = .{ .extra = extra },
+                });
+            }
+            return base;
+        }
+    }
+
     return parseType(self);
 }
 
 /// TS 타입을 파싱한다. 조건부 > 유니온 > 인터섹션 > postfix > primary 우선순위.
 /// oxc의 parse_ts_type와 동일한 구조.
+/// 함수 타입/컨스트럭터 타입은 유니온보다 먼저 감지 (oxc parse_function_or_constructor_type)
 pub fn parseType(self: *Parser) ParseError2!NodeIndex {
+    // 컨스트럭터 타입: new (x: T) => R, abstract new (x: T) => R
+    if (self.current() == .kw_new) {
+        const next = try self.peekNextKind();
+        if (next == .l_paren or next == .l_angle) {
+            return parseFunctionOrConstructorType(self, false);
+        }
+    }
+    // abstract new (x: T) => R
+    if (self.current() == .identifier and self.isContextual("abstract")) {
+        const next = try self.peekNextKind();
+        if (next == .kw_new) {
+            return parseFunctionOrConstructorType(self, true);
+        }
+    }
+
     const left = try parseUnionType(self);
 
     // 조건부 타입: T extends U ? X : Y (oxc parse_ts_type L21-41)
@@ -563,7 +814,9 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
                 .data = .{ .none = 0 },
             });
         },
-        .decimal, .float, .hex, .string_literal => {
+        .decimal, .float, .hex, .string_literal,
+        .decimal_bigint, .hex_bigint, .octal_bigint, .binary_bigint,
+        => {
             try self.advance();
             return try self.ast.addNode(.{
                 .tag = .ts_literal_type,
@@ -583,6 +836,35 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
                 return try parseMappedType(self);
             }
             return parseObjectType(self);
+        },
+        // 제네릭 함수 타입: <T>(x: T) => R
+        .l_angle => {
+            const type_params = try parseTsTypeParameterDeclaration(self);
+            try self.expect(.l_paren);
+            const scratch_top = self.saveScratch();
+            while (self.current() != .r_paren and self.current() != .eof) {
+                const loop_guard_pos = self.scanner.token.span.start;
+                const param = try parseTypeMemberParam(self);
+                try self.scratch.append(self.allocator, param);
+                if (!try self.eat(.comma)) break;
+                if (try self.ensureLoopProgress(loop_guard_pos)) break;
+            }
+            const params = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+            self.restoreScratch(scratch_top);
+            try self.expect(.r_paren);
+            try self.expect(.arrow);
+            const return_type = try parseType(self);
+            const extra = try self.ast.addExtras(&.{
+                @intFromEnum(type_params),
+                params.start,
+                params.len,
+                @intFromEnum(return_type),
+            });
+            return try self.ast.addNode(.{
+                .tag = .ts_function_type,
+                .span = .{ .start = span.start, .end = self.currentSpan().start },
+                .data = .{ .extra = extra },
+            });
         },
         // 튜플 타입: [T, U]
         .l_bracket => return parseTupleType(self),
@@ -605,7 +887,10 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
         // 음수 리터럴 타입: -1, -2n (oxc L406-418)
         .minus => {
             try self.advance(); // skip -
-            if (self.current() == .decimal or self.current() == .float or self.current() == .hex) {
+            if (self.current() == .decimal or self.current() == .float or self.current() == .hex or
+                self.current() == .decimal_bigint or self.current() == .hex_bigint or
+                self.current() == .octal_bigint or self.current() == .binary_bigint)
+            {
                 try self.advance();
                 return try self.ast.addNode(.{
                     .tag = .ts_literal_type,
@@ -686,6 +971,52 @@ pub fn parseTypeArguments(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
+/// 컨스트럭터 타입: new (x: T) => R, abstract new (x: T) => R
+/// oxc parse_function_or_constructor_type 대응
+fn parseFunctionOrConstructorType(self: *Parser, is_abstract: bool) ParseError2!NodeIndex {
+    const start = self.currentSpan().start;
+    if (is_abstract) try self.advance(); // skip 'abstract'
+    try self.advance(); // skip 'new'
+
+    // 제네릭 파라미터
+    var type_params = NodeIndex.none;
+    if (self.current() == .l_angle) {
+        type_params = try parseTsTypeParameterDeclaration(self);
+    }
+    // 파라미터 리스트
+    try self.expect(.l_paren);
+    const scratch_top = self.saveScratch();
+    while (self.current() != .r_paren and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
+        const param = try parseTypeMemberParam(self);
+        try self.scratch.append(self.allocator, param);
+        if (!try self.eat(.comma)) break;
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
+    }
+    const params = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+    self.restoreScratch(scratch_top);
+    try self.expect(.r_paren);
+    // =>
+    try self.expect(.arrow);
+    const return_type = try parseType(self);
+
+    const extra = try self.ast.addExtras(&.{
+        @intFromEnum(type_params),
+        params.start,
+        params.len,
+        @intFromEnum(return_type),
+    });
+    return try self.ast.addNode(.{
+        .tag = .ts_constructor_type,
+        .span = .{ .start = start, .end = self.currentSpan().start },
+        .data = .{ .extra = extra },
+    });
+}
+
+/// 괄호 타입 또는 함수 타입 파싱
+/// (Type) → 괄호 타입
+/// () => R, (a: T) => R, (a: T, b: U) => R → 함수 타입
+/// oxc: is_start_of_function_type_or_constructor_type + parse_function_or_constructor_type
 fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     try self.advance(); // skip (
@@ -706,8 +1037,68 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
         return try self.ast.addNode(.{ .tag = .ts_void_keyword, .span = .{ .start = start, .end = self.currentSpan().start }, .data = .{ .none = 0 } });
     }
 
-    // 파라미터가 있는 경우 — 단순히 첫 번째 타입을 파싱하고 ) 뒤에 =>가 있으면 함수 타입
+    // ... (rest parameter) → 무조건 함수 타입
+    if (self.current() == .dot3) {
+        return parseFunctionTypeParams(self, start);
+    }
+
+    // 함수 타입 판별: identifier/this 다음에 : 또는 , 또는 ? 가 오면 함수 타입
+    if (isFunctionTypeParam(self)) {
+        return parseFunctionTypeParams(self, start);
+    }
+
+    // 그 외: 먼저 타입으로 파싱, 콤마가 오면 함수 타입, ) => 가 오면 함수 타입
     const inner = try parseType(self);
+
+    // 콤마가 오면 다중 파라미터 함수 타입
+    if (self.current() == .comma) {
+        // inner를 첫 번째 파라미터로 취급하고 나머지 파싱
+        const scratch_top = self.saveScratch();
+        // 첫 번째는 이미 타입으로 파싱됨 — 파라미터 노드로 래핑
+        try self.scratch.append(self.allocator, inner);
+        while (try self.eat(.comma)) {
+            if (self.current() == .r_paren) break;
+            if (self.current() == .dot3) {
+                // rest parameter
+                const rest_start = self.currentSpan().start;
+                try self.advance(); // skip ...
+                const rest_type = try parseType(self);
+                try self.scratch.append(self.allocator, try self.ast.addNode(.{
+                    .tag = .ts_rest_type,
+                    .span = .{ .start = rest_start, .end = self.currentSpan().start },
+                    .data = .{ .unary = .{ .operand = rest_type, .flags = 0 } },
+                }));
+                break;
+            }
+            const param = try parseType(self);
+            try self.scratch.append(self.allocator, param);
+        }
+        const params = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        self.restoreScratch(scratch_top);
+        try self.expect(.r_paren);
+        if (self.current() == .arrow) {
+            try self.advance();
+            const return_type = try parseType(self);
+            const extra = try self.ast.addExtras(&.{
+                @intFromEnum(NodeIndex.none), // no type params
+                params.start,
+                params.len,
+                @intFromEnum(return_type),
+            });
+            return try self.ast.addNode(.{
+                .tag = .ts_function_type,
+                .span = .{ .start = start, .end = self.currentSpan().start },
+                .data = .{ .extra = extra },
+            });
+        }
+        // no arrow — error recovery: treat as parenthesized
+        return try self.ast.addNode(.{
+            .tag = .ts_parenthesized_type,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .unary = .{ .operand = inner, .flags = 0 } },
+        });
+    }
+
     if (self.current() == .r_paren) {
         try self.advance();
         if (self.current() == .arrow) {
@@ -728,6 +1119,44 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
         .tag = .ts_parenthesized_type,
         .span = .{ .start = start, .end = self.currentSpan().start },
         .data = .{ .unary = .{ .operand = inner, .flags = 0 } },
+    });
+}
+
+/// ( 이후 현재 토큰이 함수 타입 파라미터 시작인지 판별
+/// identifier/this 다음에 : 또는 ? 가 오면 함수 타입 파라미터
+fn isFunctionTypeParam(self: *Parser) bool {
+    if (self.current() != .identifier and self.current() != .kw_this) return false;
+    const next = self.peekNextKind() catch return false;
+    return next == .colon or next == .question;
+}
+
+/// 함수 타입 파라미터 리스트를 파싱하여 함수 타입 노드 생성
+/// ( 는 이미 소비된 상태, start는 ( 의 위치
+fn parseFunctionTypeParams(self: *Parser, start: u32) ParseError2!NodeIndex {
+    const scratch_top = self.saveScratch();
+    while (self.current() != .r_paren and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
+        const param = try parseTypeMemberParam(self);
+        try self.scratch.append(self.allocator, param);
+        if (!try self.eat(.comma)) break;
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
+    }
+    const params = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+    self.restoreScratch(scratch_top);
+    try self.expect(.r_paren);
+    try self.expect(.arrow);
+    const return_type = try parseType(self);
+
+    const extra = try self.ast.addExtras(&.{
+        @intFromEnum(NodeIndex.none), // no type params (제네릭은 parsePrimaryType에서 < 감지)
+        params.start,
+        params.len,
+        @intFromEnum(return_type),
+    });
+    return try self.ast.addNode(.{
+        .tag = .ts_function_type,
+        .span = .{ .start = start, .end = self.currentSpan().start },
+        .data = .{ .extra = extra },
     });
 }
 
@@ -761,18 +1190,276 @@ fn parseObjectType(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
+/// 타입 리터럴 / 인터페이스 멤버 파싱 (oxc parse_ts_type_signature 대응)
+/// 7가지 시그니처 지원:
+/// 1. 콜 시그니처: (): Type, <T>(): Type
+/// 2. 컨스트럭트 시그니처: new(): Type, new<T>(): Type
+/// 3. 인덱스 시그니처: [key: string]: Type
+/// 4. getter 시그니처: get x(): Type
+/// 5. setter 시그니처: set x(v: Type)
+/// 6. 메서드 시그니처: foo(): Type, foo<T>(x: U): V
+/// 7. 프로퍼티 시그니처: key: Type, readonly key?: Type
 fn parseTypeMember(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
-    // 간단: key: Type 또는 key?: Type
+
+    // 1. 콜 시그니처: ( 또는 < 로 시작
+    if (self.current() == .l_paren or self.current() == .l_angle) {
+        return parseSignatureMember(self, start, false);
+    }
+
+    // 2. 컨스트럭트 시그니처: new ( 또는 new <
+    if (self.current() == .kw_new) {
+        const next = try self.peekNextKind();
+        if (next == .l_paren or next == .l_angle) {
+            try self.advance(); // skip 'new'
+            return parseSignatureMember(self, start, true);
+        }
+    }
+
+    // readonly 수정자 (프로퍼티/인덱스 시그니처에서만 유효)
+    var is_readonly = false;
+    if (self.current() == .identifier and self.isContextual("readonly")) {
+        // readonly 다음이 [ 이면 인덱스 시그니처, 아니면 프로퍼티
+        const next = try self.peekNextKind();
+        if (next != .l_paren and next != .l_angle and next != .colon and next != .comma and
+            next != .semicolon and next != .r_curly and next != .question)
+        {
+            is_readonly = true;
+            try self.advance(); // skip 'readonly'
+        }
+    }
+
+    // 3. 인덱스 시그니처: [key: string]: Type
+    if (self.current() == .l_bracket) {
+        if (try isIndexSignature(self)) {
+            return parseIndexSignature(self, start, is_readonly);
+        }
+    }
+
+    // 4. getter 시그니처: get x(): Type
+    if (self.current() == .identifier and self.isContextual("get")) {
+        const next = try self.peekNextKind();
+        // get 다음에 프로퍼티 이름이 오면 getter (get 자체가 프로퍼티 이름이 아님)
+        if (next != .l_paren and next != .colon and next != .comma and
+            next != .semicolon and next != .r_curly and next != .question and
+            next != .l_angle)
+        {
+            try self.advance(); // skip 'get'
+            const key = try self.parsePropertyKey();
+            // 파라미터 파싱 (getter는 파라미터 없어야 함)
+            try self.expect(.l_paren);
+            try self.expect(.r_paren);
+            const return_type = try tryParseReturnType(self);
+            return try self.ast.addNode(.{
+                .tag = .ts_getter_signature,
+                .span = .{ .start = start, .end = self.currentSpan().start },
+                .data = .{ .binary = .{ .left = key, .right = return_type, .flags = 0 } },
+            });
+        }
+    }
+
+    // 5. setter 시그니처: set x(v: Type)
+    if (self.current() == .identifier and self.isContextual("set")) {
+        const next = try self.peekNextKind();
+        if (next != .l_paren and next != .colon and next != .comma and
+            next != .semicolon and next != .r_curly and next != .question and
+            next != .l_angle)
+        {
+            try self.advance(); // skip 'set'
+            const key = try self.parsePropertyKey();
+            // 파라미터 파싱 (setter는 파라미터 1개)
+            try self.expect(.l_paren);
+            _ = try parseTypeMemberParam(self);
+            try self.expect(.r_paren);
+            const return_type = try tryParseReturnType(self);
+            return try self.ast.addNode(.{
+                .tag = .ts_setter_signature,
+                .span = .{ .start = start, .end = self.currentSpan().start },
+                .data = .{ .binary = .{ .left = key, .right = return_type, .flags = 0 } },
+            });
+        }
+    }
+
+    // 6/7. 프로퍼티 이름 파싱 후 메서드 vs 프로퍼티 분기
     const key = try self.parsePropertyKey();
     _ = try self.eat(.question); // optional
-    try self.expect(.colon);
-    const value_type = try parseType(self);
 
+    // 6. 메서드 시그니처: 이름 뒤에 ( 또는 < 가 오면 메서드
+    if (self.current() == .l_paren or self.current() == .l_angle) {
+        // 제네릭 파라미터
+        var type_params = NodeIndex.none;
+        if (self.current() == .l_angle) {
+            type_params = try parseTsTypeParameterDeclaration(self);
+        }
+        // 파라미터 리스트
+        try self.expect(.l_paren);
+        const scratch_top = self.saveScratch();
+        while (self.current() != .r_paren and self.current() != .eof) {
+            const loop_guard_pos = self.scanner.token.span.start;
+            const param = try parseTypeMemberParam(self);
+            try self.scratch.append(self.allocator, param);
+            if (!try self.eat(.comma)) break;
+            if (try self.ensureLoopProgress(loop_guard_pos)) break;
+        }
+        const params = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+        self.restoreScratch(scratch_top);
+        try self.expect(.r_paren);
+        const return_type = try tryParseReturnType(self);
+
+        const extra = try self.ast.addExtras(&.{
+            @intFromEnum(key),
+            @intFromEnum(type_params),
+            params.start,
+            params.len,
+            @intFromEnum(return_type),
+        });
+        return try self.ast.addNode(.{
+            .tag = .ts_method_signature,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .extra = extra },
+        });
+    }
+
+    // 7. 프로퍼티 시그니처: key: Type
+    if (try self.eat(.colon)) {
+        const value_type = try parseType(self);
+        return try self.ast.addNode(.{
+            .tag = .ts_property_signature,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .binary = .{ .left = key, .right = value_type, .flags = if (is_readonly) @as(u2, 1) else 0 } },
+        });
+    }
+
+    // 타입 어노테이션 없는 프로퍼티 (예: interface에서 `foo;` 또는 `foo?;`)
     return try self.ast.addNode(.{
         .tag = .ts_property_signature,
         .span = .{ .start = start, .end = self.currentSpan().start },
-        .data = .{ .binary = .{ .left = key, .right = value_type, .flags = 0 } },
+        .data = .{ .binary = .{ .left = key, .right = NodeIndex.none, .flags = if (is_readonly) @as(u2, 1) else 0 } },
+    });
+}
+
+/// 콜/컨스트럭트 시그니처 공통 파싱
+/// 콜: (): Type, <T>(): Type
+/// 컨스트럭트: new(): Type, new<T>(): Type
+fn parseSignatureMember(self: *Parser, start: u32, is_constructor: bool) ParseError2!NodeIndex {
+    // 제네릭 파라미터
+    var type_params = NodeIndex.none;
+    if (self.current() == .l_angle) {
+        type_params = try parseTsTypeParameterDeclaration(self);
+    }
+    // 파라미터 리스트
+    try self.expect(.l_paren);
+    const scratch_top = self.saveScratch();
+    while (self.current() != .r_paren and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
+        const param = try parseTypeMemberParam(self);
+        try self.scratch.append(self.allocator, param);
+        if (!try self.eat(.comma)) break;
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
+    }
+    const params = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+    self.restoreScratch(scratch_top);
+    try self.expect(.r_paren);
+    const return_type = try tryParseReturnType(self);
+
+    const extra = try self.ast.addExtras(&.{
+        @intFromEnum(type_params),
+        params.start,
+        params.len,
+        @intFromEnum(return_type),
+    });
+    return try self.ast.addNode(.{
+        .tag = if (is_constructor) .ts_construct_signature else .ts_call_signature,
+        .span = .{ .start = start, .end = self.currentSpan().start },
+        .data = .{ .extra = extra },
+    });
+}
+
+/// 타입 멤버의 파라미터 하나 파싱: name: Type, name?: Type, ...name: Type
+fn parseTypeMemberParam(self: *Parser) ParseError2!NodeIndex {
+    const param_start = self.currentSpan().start;
+
+    // rest 파라미터: ...name
+    var is_rest = false;
+    if (try self.eat(.dot3)) {
+        is_rest = true;
+    }
+
+    // this 파라미터: this: Type
+    const name = if (self.current() == .kw_this) blk: {
+        const this_span = self.currentSpan();
+        try self.advance();
+        break :blk try self.ast.addNode(.{
+            .tag = .this_expression,
+            .span = this_span,
+            .data = .{ .none = 0 },
+        });
+    } else try self.parsePropertyKey();
+
+    _ = try self.eat(.question); // optional
+    var type_ann = NodeIndex.none;
+    if (try self.eat(.colon)) {
+        type_ann = try parseType(self);
+    }
+    // 기본값: name: Type = value (인터페이스에서는 드물지만 지원)
+    if (try self.eat(.eq)) {
+        _ = try self.parseAssignmentExpression();
+    }
+
+    const tag: Tag = if (is_rest) .ts_rest_type else .ts_property_signature;
+    return try self.ast.addNode(.{
+        .tag = tag,
+        .span = .{ .start = param_start, .end = self.currentSpan().start },
+        .data = .{ .binary = .{ .left = name, .right = type_ann, .flags = 0 } },
+    });
+}
+
+/// 인덱스 시그니처 여부 판별: [key: string] 패턴
+/// (매핑 타입 [K in T]과 구분)
+fn isIndexSignature(self: *Parser) ParseError2!bool {
+    // [ 다음 토큰이 identifier이고, 그 다음이 : 또는 , 이면 인덱스 시그니처
+    // [ 다음이 ...이면 인덱스 시그니처
+    const next = try self.peekNextKind();
+    if (next == .dot3) return true;
+    // identifier가 아니면 인덱스 시그니처 아님
+    if (next != .identifier and next != .kw_this) return false;
+    // identifier 다음 토큰을 확인하려면 더 봐야 하지만,
+    // 매핑 타입은 isMappedType에서 먼저 걸러지므로 여기서는 true 반환
+    return true;
+}
+
+/// 인덱스 시그니처 파싱: [key: string]: Type
+fn parseIndexSignature(self: *Parser, start: u32, is_readonly: bool) ParseError2!NodeIndex {
+    try self.advance(); // skip [
+    // 파라미터: key: Type
+    const param_start = self.currentSpan().start;
+    const param_name = try self.parsePropertyKey();
+    var param_type = NodeIndex.none;
+    if (try self.eat(.colon)) {
+        param_type = try parseType(self);
+    }
+    try self.expect(.r_bracket);
+
+    // : ValueType
+    var value_type = NodeIndex.none;
+    if (try self.eat(.colon)) {
+        value_type = try parseType(self);
+    }
+
+    const extra = try self.ast.addExtras(&.{
+        @intFromEnum(try self.ast.addNode(.{
+            .tag = .ts_property_signature,
+            .span = .{ .start = param_start, .end = self.currentSpan().start },
+            .data = .{ .binary = .{ .left = param_name, .right = param_type, .flags = 0 } },
+        })),
+        @intFromEnum(value_type),
+        @as(u32, if (is_readonly) 1 else 0),
+    });
+
+    return try self.ast.addNode(.{
+        .tag = .ts_index_signature,
+        .span = .{ .start = start, .end = self.currentSpan().start },
+        .data = .{ .extra = extra },
     });
 }
 
@@ -825,9 +1512,10 @@ fn parseTupleElement(self: *Parser) ParseError2!NodeIndex {
 
 /// 라벨드 여부 판별 + 선택적(?) 처리
 fn parseTupleElementInner(self: *Parser) ParseError2!NodeIndex {
-    // 라벨드 튜플: name: T 또는 name?: T
-    // lookahead: identifier 다음에 : 또는 ? 가 오는지
-    if (self.current() == .identifier) {
+    // 라벨드 튜플: name: T, name?: T, false: T, true: T, null: T 등
+    // 키워드도 라벨 이름으로 허용 (TS 스펙)
+    // lookahead: identifier/keyword 다음에 : 또는 ? 가 오는지
+    if (self.current() == .identifier or self.current().isKeyword()) {
         const next = try self.peekNextKind();
         if (next == .colon or next == .question) {
             const name_span = self.currentSpan();
@@ -867,21 +1555,49 @@ fn parseTupleElementInner(self: *Parser) ParseError2!NodeIndex {
 
 /// 매핑 타입 여부 판별: { [K in T]: V } 또는 { readonly [K in T]?: V }
 /// { 다음에 [, +, -, readonly 중 하나가 오고 ... in ... 패턴이면 매핑 타입.
+/// 매핑 타입 여부 판별: { [K in T]: V } 또는 { readonly [K in T]?: V }
+/// oxc is_start_of_mapped_type 대응 — checkpoint/rewind 패턴
 fn isMappedType(self: *Parser) ParseError2!bool {
     if (self.current() != .l_curly) return false;
-    const saved_pos = self.scanner.token.span.start;
-    _ = saved_pos;
-    // 간단한 lookahead: { 다음 토큰 확인
-    const next = try self.peekNextKind();
-    // { [ → 가능성 있음 (일반 인덱스 시그니처일 수도)
-    // { + 또는 { - → 매핑 타입 확정 (+readonly, -readonly)
-    // { readonly → 매핑 타입 가능성
-    if (next == .plus or next == .minus) return true;
-    if (next == .identifier) {
-        // { readonly [ 패턴
-        // TODO: 더 정확한 lookahead (현재는 보수적)
+    const state = self.saveState();
+    const err_count = self.errors.items.len;
+    defer {
+        self.restoreState(state);
+        // lookahead 중 추가된 에러 되돌리기
+        self.errors.shrinkRetainingCapacity(err_count);
+    }
+
+    try self.advance(); // skip {
+
+    // { + 또는 { - → +readonly/-readonly 수정자 → 매핑 타입 확정
+    if (self.current() == .plus or self.current() == .minus) return true;
+
+    // { readonly → readonly 다음에 [ 이면 매핑 타입
+    if (self.current() == .identifier and self.isContextual("readonly")) {
+        try self.advance(); // skip 'readonly'
+        // readonly 다음에 [ 이면 매핑 타입 (인덱스 시그니처는 readonly 뒤에 [ 사용 안 함)
+        if (self.current() == .l_bracket) {
+            try self.advance(); // skip [
+            // [identifier in → 매핑 타입
+            if (self.current() == .identifier) {
+                try self.advance();
+                return self.current() == .kw_in;
+            }
+            return false;
+        }
         return false;
     }
+
+    // { [ → [ 뒤에 identifier in 패턴이면 매핑 타입
+    if (self.current() == .l_bracket) {
+        try self.advance(); // skip [
+        if (self.current() == .identifier) {
+            try self.advance();
+            return self.current() == .kw_in;
+        }
+        return false;
+    }
+
     return false;
 }
 

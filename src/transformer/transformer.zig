@@ -385,6 +385,9 @@ pub const Transformer = struct {
             .ts_module_declaration => self.visitNamespaceDeclaration(node),
             .ts_module_block => self.visitListNode(node),
 
+            // import x = require('y') → const x = require('y')
+            .ts_import_equals_declaration => self.visitImportEqualsDeclaration(node),
+
             // === 나머지: invalid + TS 타입 전용 노드 ===
             // TS 타입 노드는 isTypeOnlyNode 검사(위)에서 이미 .none으로 반환됨.
             // 여기 도달하면 strip_types=false인 경우 → 그대로 복사.
@@ -659,6 +662,38 @@ pub const Transformer = struct {
     /// ts_module_declaration: binary = { left=name, right=body_or_inner, flags }
     /// flags=1: ambient module declaration (`declare module "*.css" { ... }`) → strip.
     /// flags=0: 일반 namespace → 새 AST에 복사. codegen에서 IIFE로 출력.
+    /// import x = require('y') → const x = require('y')
+    /// import x = Namespace.Member → const x = Namespace.Member
+    fn visitImportEqualsDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
+        const name_idx = node.data.binary.left;
+        const value_idx = node.data.binary.right;
+        const new_name = try self.visitNode(name_idx);
+        const new_value = try self.visitNode(value_idx);
+        // variable_declarator: extra = [name, type_ann(none), init]
+        const decl_extra = try self.new_ast.addExtras(&.{
+            @intFromEnum(new_name),
+            @intFromEnum(NodeIndex.none), // type_ann (stripped)
+            @intFromEnum(new_value),
+        });
+        const declarator = try self.new_ast.addNode(.{
+            .tag = .variable_declarator,
+            .span = node.span,
+            .data = .{ .extra = decl_extra },
+        });
+        const scratch_top = self.scratch.items.len;
+        try self.scratch.append(self.allocator, declarator);
+        const list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+        self.scratch.shrinkRetainingCapacity(scratch_top);
+        // variable_declaration: extra = [kind_flags, list.start, list.len]
+        // kind_flags=2: const
+        const var_extra = try self.new_ast.addExtras(&.{ 2, list.start, list.len });
+        return try self.new_ast.addNode(.{
+            .tag = .variable_declaration,
+            .span = node.span,
+            .data = .{ .extra = var_extra },
+        });
+    }
+
     fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
         // declare module "*.css" { ... } 같은 ambient module은 런타임 코드 없음 → strip
         if (node.data.binary.flags == 1) return .none;
@@ -1186,7 +1221,7 @@ pub const Transformer = struct {
             // ts_namespace_export_declaration은 타입 전용 (export as namespace X)
             .ts_namespace_export_declaration,
             // TS import/export 특수 형태
-            .ts_import_equals_declaration,
+            // ts_import_equals_declaration은 런타임 코드 생성 — visitNode에서 별도 처리
             .ts_external_module_reference,
             .ts_export_assignment,
             // enum은 타입 전용이 아님 — 런타임 코드 생성이 필요
