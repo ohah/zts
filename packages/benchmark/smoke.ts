@@ -505,10 +505,14 @@ const projects: ProjectConfig[] = [
     pkg: "hookable",
     entry: `import { createHooks } from 'hookable';\nconst hooks = createHooks();\nconsole.log(typeof hooks.hook);`,
   },
+  // minimatch: "type":"module" .js를 ESM으로 인식 못함 — 별도 이슈
+  {
+    name: "cheerio",
+    pkg: "cheerio",
+    entry: `import { load } from 'cheerio';\nconst doc = load('<h1>Hello</h1>');\nconsole.log(doc('h1').text());`,
+  },
   // --- 제외 패키지 (ISSUES.md 참조) ---
-  // zx: Node 내장 서브패스(stream/web) 미해석 — resolver 수정 필요
-  // cheerio: 번들 OK, 실행 시 출력 없음 — 조사 필요
-  // minimatch: "type":"module" .js를 ESM으로 인식 못함 — graph.zig 수정 필요
+  // zx: ESM 번들에 CJS require 혼입 — CJS interop 개선 필요
 ];
 
 // ============================================================
