@@ -21,6 +21,7 @@ const ExportBinding = @import("binding_scanner.zig").ExportBinding;
 const Span = @import("../lexer/token.zig").Span;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const Ast = @import("../parser/ast.zig").Ast;
+const OutputFormat = @import("emitter.zig").EmitOptions.Format;
 
 /// 크로스 모듈 심볼 참조. 어떤 모듈의 어떤 export를 가리키는지.
 /// codegen에 전달하는 per-module 메타데이터.
@@ -633,8 +634,6 @@ pub const Linker = struct {
 
     /// transformer 이후의 new_ast를 기반으로 LinkingMetadata를 생성한다.
     /// skip_nodes와 renames가 new_ast의 노드 인덱스와 일치.
-    pub const OutputFormat = enum { esm, cjs, iife };
-
     pub fn buildMetadataForAst(
         self: *const Linker,
         new_ast: *const Ast,
@@ -770,13 +769,11 @@ pub const Linker = struct {
                 const rec = m.import_records[ib.import_record_index];
 
                 // External 모듈 (Node.js 빌트인, --external): resolved가 없음.
+                // ESM 출력: import 문 유지 (위 un-skip 로직), CJS/IIFE: require() preamble 생성.
                 if (rec.resolved.isNone()) {
-                    if (output_format == .esm) {
-                        // ESM 출력: import 문을 그대로 유지. preamble 불필요.
-                        // skip_nodes에서 해당 import_declaration을 복원한다.
-                        // (아래 un-skip 로직에서 처리)
-                    } else if (rec.kind == .static_import or rec.kind == .side_effect or rec.kind == .re_export) {
-                        // CJS/IIFE 출력: var <local> = require("<specifier>")[.<imported>];
+                    if (output_format != .esm and
+                        (rec.kind == .static_import or rec.kind == .side_effect or rec.kind == .re_export))
+                    {
                         try cjs_preamble_buf.appendSlice(self.allocator, "var ");
                         try cjs_preamble_buf.appendSlice(self.allocator, ib.local_name);
                         try cjs_preamble_buf.appendSlice(self.allocator, " = require(\"");

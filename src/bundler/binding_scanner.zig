@@ -171,6 +171,13 @@ pub fn extractExportBindings(
         try source_to_record.put(key, @intCast(i));
     }
 
+    // import local_name → ImportBinding 매핑 (barrel re-export O(1) 조회)
+    var import_by_name: std.StringHashMapUnmanaged(ImportBinding) = .{};
+    defer import_by_name.deinit(allocator);
+    for (import_bindings) |ib| {
+        try import_by_name.put(allocator, ib.local_name, ib);
+    }
+
     for (ast.nodes.items) |node| {
         switch (node.tag) {
             .export_named_declaration => {
@@ -237,19 +244,14 @@ pub fn extractExportBindings(
                         // barrel re-export로 분류 (import { X } from './a'; export { X })
                         var kind: ExportBinding.Kind = if (has_source) .re_export else .local;
                         var final_rec_idx: ?u32 = rec_idx;
-                        // barrel re-export의 local_name은 소스 모듈에서의 export 이름이어야 한다.
-                        // export { foo } from './a' → local_name = "foo" (소스의 export 이름)
-                        // import { foo as bar } from './a'; export { bar } → local_name = "foo" (imported_name)
                         var final_local_name = local_name;
                         if (!has_source) {
-                            for (import_bindings) |ib| {
-                                if (std.mem.eql(u8, ib.local_name, local_name)) {
-                                    kind = .re_export;
-                                    final_rec_idx = ib.import_record_index;
-                                    // alias가 있으면 imported_name을 사용 (소스 모듈의 export 이름)
-                                    final_local_name = ib.imported_name;
-                                    break;
-                                }
+                            if (import_by_name.get(local_name)) |ib| {
+                                kind = .re_export;
+                                final_rec_idx = ib.import_record_index;
+                                // barrel re-export의 local_name은 소스 모듈의 export 이름
+                                // import { foo as bar } → local_name = "foo" (imported_name)
+                                final_local_name = ib.imported_name;
                             }
                         }
 
