@@ -29,20 +29,13 @@ const ParseError2 = @import("parser.zig").ParseError2;
 /// 그렇지 않은 것(세미콜론, 콤마, 괄호 닫기 등)이면 true를 반환한다.
 fn canFollowTypeArgumentsInExpression(kind: Kind) bool {
     return switch (kind) {
-        // 호출/멤버 접근 — 가장 흔한 case: f<T>(), f<T>.prop, f<T>?.()
         .l_paren, .dot, .question_dot => true,
-        // 닫는 구분자 — 괄호/배열/블록 내부: (f<T>), [f<T>], {f<T>}
         .r_paren, .r_bracket, .r_curly => true,
-        // 구분자/종결자 — 문(statement) 끝이나 리스트 구분
         .semicolon, .comma, .colon, .eof => true,
-        // 등호 — 삼항의 : 뒤, 조건 등: f<T> == g
         .eq2, .eq3, .neq, .neq2 => true,
-        // 논리/비트 연산 — f<T> && g, f<T> ?? g (비교 아님이 확실)
         .amp2, .pipe2, .question2 => true,
         .caret, .amp, .pipe => true,
-        // 삼항 — f<T> ? a : b
         .question => true,
-        // 템플릿 리터럴 — f<T>`str`
         .no_substitution_template, .template_head => true,
         else => false,
     };
@@ -859,8 +852,8 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                     });
                 }
             },
-            .l_angle, .shift_left, .lt_eq, .shift_left_eq => {
-                // TS generic type arguments in call expression: foo<Type>() or foo<<T>() => T>()
+            .l_angle, .shift_left => {
+                // TS generic type arguments: foo<Type>() or foo<<T>() => T>()
                 // shift_left (<<) is split into two < by expectOpeningAngleBracket in parseTypeArguments.
                 // Speculative parse: try parsing <Type>, check if followed by ( or `
                 // If not, restore state and let binary expression handle < as comparison.
@@ -1754,52 +1747,32 @@ fn parseTSTypeAssertion(self: *Parser) ParseError2!NodeIndex {
 }
 
 /// TSX 모드에서 `<`가 제네릭 arrow function인지 JSX인지 구별 (oxc arrow.rs:166-197).
-/// `<T,>`, `<T extends X>`, `<T = X>` → 제네릭 arrow.
-/// `<T>` (단일 타입 파라미터, disambiguator 없음) → JSX.
-/// `<const T ...>` → const 건너뛰고 같은 규칙 적용.
-/// 현재 토큰이 `<`인 상태에서 호출. saveState/restoreState로 토큰을 소비하지 않음.
+/// trailing comma(<T,>), constraint(<T extends X>), default(<T = X>) → 제네릭 arrow.
+/// 그 외 (`<T>` 등) → JSX. 현재 토큰이 `<`인 상태에서 호출.
 fn isTsxGenericArrow(self: *Parser) ParseError2!bool {
     const saved = self.saveState();
     defer self.restoreState(saved);
-
     try self.advance(); // skip <
-
-    // <const T ...> — optional const modifier
-    if (self.current() == .kw_const) try self.advance();
-
-    // 타입 파라미터 이름이 식별자(또는 키워드)여야 함
-    if (self.current() != .identifier and !self.current().isKeyword()) return false;
-    try self.advance(); // skip identifier
-
-    return isTsxGenericArrowDisambiguator(self.current());
+    return try checkTsxGenericArrowTypeParam(self);
 }
 
 /// async <T>() => body 형태에서의 TSX 제네릭 arrow 감지.
-/// 현재 토큰이 `async`인 상태에서 호출. async 다음의 `<`부터 검사.
+/// 현재 토큰이 `async`인 상태에서 호출.
 fn isTsxGenericArrowAfterAsync(self: *Parser) ParseError2!bool {
     const saved = self.saveState();
     defer self.restoreState(saved);
-
     try self.advance(); // skip async
     if (self.current() != .l_angle) return false;
     try self.advance(); // skip <
-
-    // <const T ...>
-    if (self.current() == .kw_const) try self.advance();
-
-    if (self.current() != .identifier and !self.current().isKeyword()) return false;
-    try self.advance(); // skip identifier
-
-    return isTsxGenericArrowDisambiguator(self.current());
+    return try checkTsxGenericArrowTypeParam(self);
 }
 
-/// TSX에서 타입 파라미터 이름 다음 토큰으로 제네릭 arrow를 구별.
-/// - `,` → trailing comma (<T,>) → 확실히 arrow
-/// - `=` → default (<T = X>) → 확실히 arrow
-/// - `extends` → constraint (<T extends X>) → 확실히 arrow
-///   (oxc는 extends 뒤 토큰도 체크하지만, extends가 나오면 JSX에서는 불가능하므로 충분)
-/// 그 외 → JSX
-fn isTsxGenericArrowDisambiguator(kind: Kind) bool {
+/// `<` 다음 위치에서 `[const] Ident (,|=|extends)` 패턴을 확인.
+fn checkTsxGenericArrowTypeParam(self: *Parser) ParseError2!bool {
+    if (self.current() == .kw_const) try self.advance();
+    if (self.current() != .identifier and !self.current().isKeyword()) return false;
+    try self.advance();
+    const kind = self.current();
     return kind == .comma or kind == .eq or kind == .kw_extends;
 }
 
