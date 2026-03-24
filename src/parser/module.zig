@@ -75,7 +75,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     // import defer / import source — Stage 3 proposals
     // defer/source를 스킵하고 나머지는 일반 import로 처리
     var has_phase_modifier = false;
-    if (self.current() == .kw_defer or self.current() == .kw_source or self.isContextual("source")) {
+    if (self.current() == .kw_defer or self.current() == .kw_source) {
         has_phase_modifier = true;
         try self.advance(); // skip defer/source
     }
@@ -473,11 +473,14 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
     }
 
     // TS: export as namespace ns — 타입 전용 (완전 제거)
+    // peek로 'as' 소비 전에 'namespace'가 따르는지 확인 (잘못된 구문에서 복구 불능 방지)
     if (self.current() == .identifier and self.isContextual("as")) {
-        try self.advance(); // skip 'as'
-        if (self.current() == .identifier and self.isContextual("namespace")) {
+        const peek = try self.peekNextKind();
+        if (peek == .identifier) {
+            try self.advance(); // skip 'as'
             try self.advance(); // skip 'namespace'
-            _ = try self.parseSimpleIdentifier(); // skip name
+            if (self.current() == .identifier or self.current().isKeyword())
+                try self.advance(); // skip name
             _ = try self.eat(.semicolon);
             return NodeIndex.none;
         }
