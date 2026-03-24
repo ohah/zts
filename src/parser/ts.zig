@@ -232,7 +232,7 @@ fn parseTsModuleBody(self: *Parser, start: u32) ParseError2!NodeIndex {
 }
 
 /// namespace body 블록 파싱 — parseBlockStatement와 동일하되 is_top_level을 유지
-fn parseNamespaceBlock(self: *Parser) ParseError2!NodeIndex {
+pub fn parseNamespaceBlock(self: *Parser) ParseError2!NodeIndex {
     const block_start = self.currentSpan().start;
     try self.expect(.l_curly);
 
@@ -1115,9 +1115,10 @@ fn parseTypeMember(self: *Parser) ParseError2!NodeIndex {
     }
 
     // static 수정자 (interface에서 static accessor x 등)
-    if (self.current() == .identifier and self.isContextual("static")) {
+    // static은 kw_static 토큰이므로 별도 체크 필요
+    if (self.current() == .kw_static or (self.current() == .identifier and self.isContextual("static"))) {
         const next = try self.peekNextKind();
-        if (isFollowedByTypeMemberName(next)) {
+        if (isFollowedByTypeMemberName(next) or next == .kw_accessor) {
             try self.advance(); // skip 'static'
         }
     }

@@ -1700,6 +1700,10 @@ pub const Parser = struct {
         return ts.parseTsAbstractClass(self);
     }
 
+    pub fn parseTsNamespaceBlock(self: *Parser) ParseError2!NodeIndex {
+        return ts.parseNamespaceBlock(self);
+    }
+
     pub fn parseDecoratedStatement(self: *Parser) ParseError2!NodeIndex {
         return ts.parseDecoratedStatement(self);
     }
