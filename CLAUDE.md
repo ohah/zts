@@ -660,6 +660,53 @@ zig build test     # 유닛 테스트
 zig build test262  # Test262 러너 테스트
 ```
 
+## ZTS CLI 옵션 (현재 지원)
+
+### 트랜스파일
+```bash
+zts <file.ts>                    # 트랜스파일 → stdout
+zts <file.ts> -o <out.js>       # 트랜스파일 → 파일
+zts <dir/> --outdir <out/>      # 디렉토리 재귀 변환
+zts - < input.ts                # stdin 입력
+```
+
+### 번들
+```bash
+zts --bundle <entry.ts>                          # 번들 → stdout
+zts --bundle <entry.ts> -o out.js                # 번들 → 파일
+zts --bundle <entry.ts> --splitting --outdir dist  # 코드 스플리팅
+```
+
+### 공통 옵션
+```
+--format=esm|cjs|iife            모듈 포맷 (기본: esm, --platform=browser 시 iife)
+--platform=browser|node|neutral  타겟 플랫폼 (기본: browser)
+--minify                         출력 압축
+--sourcemap                      소스맵 생성 (.js.map)
+--ascii-only                     non-ASCII를 \uXXXX로 이스케이프
+--drop=console                   console.* 호출 제거
+--drop=debugger                  debugger 문 제거
+--define:KEY=VALUE               글로벌 치환 (예: --define:DEBUG=false)
+--external <pkg>                 패키지를 번들에서 제외 (반복 가능)
+-w, --watch                      파일 변경 감시
+-p, --project <path>             tsconfig.json 경로
+```
+
+### Dev 서버
+```
+--serve [dir]                    정적 파일 서버 (기본: .)
+--serve --bundle <entry.ts>      번들+서빙 (HMR 지원)
+--port <number>                  서버 포트 (기본: 3000)
+```
+
+### 자동 동작 (esbuild 호환)
+- `--platform=browser` + `--bundle` → format 기본값 IIFE (글로벌 스코프 오염 방지)
+- `--platform=browser` + `--bundle` → `process.env.NODE_ENV`를 `"production"`으로 자동 define
+- `--platform=browser` → Node 내장 모듈(fs, path, util 등) 빈 모듈로 대체
+- `--platform=browser` → `package.json "browser"` 필드에서 disabled 파일 감지
+- `--platform=node` → Node 내장 모듈 + 서브패스(fs/promises, stream/web) 자동 external
+- `import.meta` → CJS+node: `require("url").pathToFileURL(__filename).href` / CJS+browser: `""`
+
 ## Development Workflow
 
 ### 구현 규칙
