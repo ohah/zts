@@ -238,103 +238,9 @@ pub fn emitWithTreeShaking(
         }
     }
 
-    // ESM 출력: external import를 번들 최상단에 한 번만 출력 (esbuild 방식).
-    // 각 모듈의 import_declaration은 skip되고 preamble도 생성되지 않으므로,
-    // emitter가 모든 external import binding을 수집하여 중복 제거 후 출력.
-    if (options.format == .esm) {
-        // specifier → { named imports (imported_name → local_name), default local, namespace local }
-        const ExternalImportInfo = struct {
-            named: std.ArrayList([2][]const u8), // [imported_name, local_name] pairs
-            default_local: ?[]const u8,
-            namespace_local: ?[]const u8,
-        };
-        var ext_map = std.StringArrayHashMap(ExternalImportInfo).init(allocator);
-        defer {
-            for (ext_map.values()) |*v| v.named.deinit(allocator);
-            ext_map.deinit();
-        }
-
-        for (sorted.items) |m| {
-            for (m.import_bindings) |ib| {
-                if (ib.import_record_index >= m.import_records.len) continue;
-                const rec = m.import_records[ib.import_record_index];
-                if (!rec.is_external) continue;
-
-                const gop = try ext_map.getOrPut(rec.specifier);
-                if (!gop.found_existing) {
-                    gop.value_ptr.* = .{
-                        .named = .empty,
-                        .default_local = null,
-                        .namespace_local = null,
-                    };
-                }
-                if (ib.kind == .namespace) {
-                    gop.value_ptr.namespace_local = ib.local_name;
-                } else if (std.mem.eql(u8, ib.imported_name, "default")) {
-                    gop.value_ptr.default_local = ib.local_name;
-                } else {
-                    // 중복 named import 방지
-                    var found = false;
-                    for (gop.value_ptr.named.items) |pair| {
-                        if (std.mem.eql(u8, pair[0], ib.imported_name)) {
-                            found = true;
-                            break;
-                        }
-                    }
-                    if (!found) {
-                        try gop.value_ptr.named.append(allocator, .{ ib.imported_name, ib.local_name });
-                    }
-                }
-            }
-        }
-
-        // import 문 출력
-        for (ext_map.keys(), ext_map.values()) |specifier, info| {
-            var has_output = false;
-            try output.appendSlice(allocator, "import ");
-
-            // default import
-            if (info.default_local) |dl| {
-                try output.appendSlice(allocator, dl);
-                has_output = true;
-            }
-
-            // namespace import
-            if (info.namespace_local) |nl| {
-                if (has_output) try output.appendSlice(allocator, ", ");
-                try output.appendSlice(allocator, "* as ");
-                try output.appendSlice(allocator, nl);
-                has_output = true;
-            }
-
-            // named imports
-            if (info.named.items.len > 0) {
-                if (has_output) try output.appendSlice(allocator, ", ");
-                try output.appendSlice(allocator, "{ ");
-                for (info.named.items, 0..) |pair, i| {
-                    if (i > 0) try output.appendSlice(allocator, ", ");
-                    try output.appendSlice(allocator, pair[0]);
-                    if (!std.mem.eql(u8, pair[0], pair[1])) {
-                        try output.appendSlice(allocator, " as ");
-                        try output.appendSlice(allocator, pair[1]);
-                    }
-                }
-                try output.appendSlice(allocator, " }");
-                has_output = true;
-            }
-
-            if (!has_output) {
-                // side-effect import: import 'pkg';
-                try output.appendSlice(allocator, "'");
-                try output.appendSlice(allocator, specifier);
-                try output.appendSlice(allocator, "';\n");
-            } else {
-                try output.appendSlice(allocator, " from '");
-                try output.appendSlice(allocator, specifier);
-                try output.appendSlice(allocator, "';\n");
-            }
-        }
-    }
+    // ESM 출력 + external: esbuild와 동일하게 require() preamble만 사용.
+    // import 구문이 없으면 Node가 CJS로 파싱하여 require()가 동작한다.
+    // (createRequire shim은 ESM 파싱을 유발하여 var 재선언 에러를 일으킴)
 
     // 엔트리 모듈 인덱스 (final exports용)
     const entry_idx: ?u32 = if (sorted.items.len > 0)
@@ -1165,7 +1071,6 @@ pub fn emitModule(
             @intFromEnum(module.index),
             is_entry,
             override_syms,
-            options.format,
         );
         // transformer가 전파한 new_symbol_ids를 메타데이터에 설정
         if (override_syms) |syms| {

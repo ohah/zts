@@ -1600,7 +1600,7 @@ test "Edge: multiple external packages" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "'yes'") != null);
 }
 
-test "ESM external: import statements preserved (no require)" {
+test "ESM external: require preamble (esbuild compatible, no import)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts",
@@ -1623,10 +1623,10 @@ test "ESM external: import statements preserved (no require)" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // ESM 출력: import 문이 유지되어야 함
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "import ") != null);
-    // ESM 출력: require()가 없어야 함
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(") == null);
+    // esbuild 호환: require() preamble 사용 (import 구문 없음 → Node CJS 파싱)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(") != null);
+    // import 구문이 없어야 함 (있으면 Node가 ESM으로 파싱하여 var 재선언 에러)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "import ") == null);
 }
 
 test "CJS external: require preamble generated" {

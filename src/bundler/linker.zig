@@ -21,7 +21,6 @@ const ExportBinding = @import("binding_scanner.zig").ExportBinding;
 const Span = @import("../lexer/token.zig").Span;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const Ast = @import("../parser/ast.zig").Ast;
-const OutputFormat = @import("emitter.zig").EmitOptions.Format;
 
 /// 크로스 모듈 심볼 참조. 어떤 모듈의 어떤 export를 가리키는지.
 /// codegen에 전달하는 per-module 메타데이터.
@@ -640,7 +639,6 @@ pub const Linker = struct {
         module_index: u32,
         is_entry: bool,
         override_symbol_ids: ?[]const ?u32,
-        output_format: OutputFormat,
     ) !LinkingMetadata {
         if (module_index >= self.modules.len) {
             return .{
@@ -733,12 +731,10 @@ pub const Linker = struct {
                 const rec = m.import_records[ib.import_record_index];
 
                 // resolve 미완료: external 또는 resolve 실패.
-                // ESM + external: import 문이 un-skip되어 그대로 출력 → preamble 불필요.
-                // 그 외 (resolve 실패 / CJS/IIFE external): require() preamble 생성.
+                // 모든 포맷에서 require() preamble 생성.
+                // ESM에서는 emitter가 createRequire shim을 주입하여 require() 동작.
                 if (rec.resolved.isNone()) {
-                    if (!(rec.is_external and output_format == .esm) and
-                        (rec.kind == .static_import or rec.kind == .side_effect or rec.kind == .re_export))
-                    {
+                    if (rec.kind == .static_import or rec.kind == .side_effect or rec.kind == .re_export) {
                         try cjs_preamble_buf.appendSlice(self.allocator, "var ");
                         try cjs_preamble_buf.appendSlice(self.allocator, ib.local_name);
                         try cjs_preamble_buf.appendSlice(self.allocator, " = require(\"");
