@@ -27,11 +27,12 @@
 
 ## 구조적 개선 (후순위)
 
-### `"type": "module"` .js 파일을 ESM으로 인식 못함 (minimatch)
-- **증상**: minimatch의 `dist/esm/escape.js`가 스크립트 모드로 파싱 → `export` 에러
-- **원인**: 파서에 `is_module` 플래그를 전달해야 함 (determineExportsKind가 아님)
-- **esbuild/rolldown**: package.json type 필드를 파서에 전달하여 .js를 ESM 모드로 파싱
-- **주의**: exports_kind를 바꾸면 CJS wrapper 생성에 영향 → regression 위험
+### JS 모드에서 destructuring default 파싱 오류 (minimatch)
+- **증상**: `.js`/`.mjs` 파일에서 `{ x = false, y = 1 }` destructuring default가 `{ x: false, y: 1 }` (property shorthand)로 잘못 파싱
+- **원인**: JS 모드(comptime TS 비활성) 파서의 cover grammar 처리가 다르게 동작
+- **영향**: minimatch, 기타 JS-only 패키지의 destructuring default 사용 시 번들 에러
+- **TS 모드**: 정상 동작 (`{ x:x=false }`)
+- **재현**: `echo 'const f = ({ x = 1 } = {}) => x;' > test.js && zts test.js` → `{ x:1 }` (잘못됨)
 
 ### zx — ESM 번들에 CJS require 혼입
 - **증상**: ESM 번들에 `require` 호출이 남아있어 Node ESM에서 에러
