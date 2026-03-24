@@ -444,6 +444,71 @@ const projects: ProjectConfig[] = [
     pkg: "drizzle-orm",
     entry: `import { sql } from 'drizzle-orm';\nconsole.log(typeof sql);`,
   },
+  // --- 추가 패키지 ---
+  {
+    name: "tslib",
+    pkg: "tslib",
+    entry: `import { __awaiter } from 'tslib';\nconsole.log(typeof __awaiter);`,
+  },
+  {
+    name: "iconv-lite",
+    pkg: "iconv-lite",
+    entry: `import iconv from 'iconv-lite';\nconsole.log(typeof iconv.encode);`,
+  },
+  {
+    name: "qs",
+    pkg: "qs",
+    entry: `import qs from 'qs';\nconsole.log(qs.stringify({ a: 1, b: 2 }));`,
+  },
+  {
+    name: "change-case",
+    pkg: "change-case",
+    entry: `import { camelCase } from 'change-case';\nconsole.log(camelCase('hello-world'));`,
+  },
+  {
+    name: "path-to-regexp",
+    pkg: "path-to-regexp",
+    entry: `import { match } from 'path-to-regexp';\nconst fn = match('/user/:id');\nconsole.log(typeof fn);`,
+  },
+  {
+    name: "mime-types",
+    pkg: "mime-types",
+    entry: `import mime from 'mime-types';\nconsole.log(mime.lookup('test.js'));`,
+  },
+  {
+    name: "ajv",
+    pkg: "ajv",
+    entry: `import Ajv from 'ajv';\nconst ajv = new Ajv();\nconst v = ajv.compile({type:'number'});\nconsole.log(v(42));`,
+  },
+  {
+    name: "cac",
+    pkg: "cac",
+    entry: `import cac from 'cac';\nconst cli = cac('test');\nconsole.log(typeof cli.parse);`,
+  },
+  {
+    name: "defu",
+    pkg: "defu",
+    entry: `import { defu } from 'defu';\nconsole.log(JSON.stringify(defu({ a: 1 }, { a: 2, b: 3 })));`,
+  },
+  {
+    name: "pathe",
+    pkg: "pathe",
+    entry: `import { join } from 'pathe';\nconsole.log(join('a', 'b', 'c'));`,
+  },
+  {
+    name: "destr",
+    pkg: "destr",
+    entry: `import { destr } from 'destr';\nconsole.log(destr('{"a":1}').a);`,
+  },
+  {
+    name: "hookable",
+    pkg: "hookable",
+    entry: `import { createHooks } from 'hookable';\nconst hooks = createHooks();\nconsole.log(typeof hooks.hook);`,
+  },
+  // --- 제외 패키지 (ISSUES.md 참조) ---
+  // zx: Node 내장 서브패스(stream/web) 미해석 — resolver 수정 필요
+  // cheerio: 번들 OK, 실행 시 출력 없음 — 조사 필요
+  // minimatch: "type":"module" .js를 ESM으로 인식 못함 — graph.zig 수정 필요
 ];
 
 // ============================================================
