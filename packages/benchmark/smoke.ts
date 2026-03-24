@@ -708,17 +708,10 @@ const projects: ProjectConfig[] = [
     entry: `import { createNanoEvents } from 'nanoevents';\nconst e = createNanoEvents();\nconsole.log(typeof e.on);`,
   },
   {
-    name: "p-limit",
-    pkg: "p-limit",
-    entry: `import pLimit from 'p-limit';\nconst l = pLimit(1);\nconsole.log(typeof l);`,
+    name: "zx",
+    pkg: "zx",
+    entry: `import { $ } from 'zx';\nconsole.log(typeof $);`,
   },
-  {
-    name: "lru-cache",
-    pkg: "lru-cache",
-    entry: `import { LRUCache } from 'lru-cache';\nconst c = new LRUCache({ max: 10 });\nc.set('a', 1);\nconsole.log(c.get('a'));`,
-  },
-  // --- 제외 패키지 (ISSUES.md 참조) ---
-  // zx: ESM 번들에 CJS require 혼입 — CJS interop 개선 필요
 ];
 
 // ============================================================
