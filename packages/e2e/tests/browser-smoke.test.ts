@@ -40,14 +40,12 @@ const cases: BrowserSmokeCase[] = [
     pkg: "immer",
     entry: `import { produce } from 'immer';\nconst n = produce({ a: 1 }, d => { d.a = 2; });\nconsole.log(n.a);`,
     expected: "2",
-    extraArgs: ['--define:process.env.NODE_ENV="production"'],
   },
   {
     name: "mobx",
     pkg: "mobx",
     entry: `import { observable } from 'mobx';\nconst o = observable({ v: 0 });\no.v = 42;\nconsole.log(o.v);`,
     expected: "42",
-    extraArgs: ['--define:process.env.NODE_ENV="production"'],
   },
   {
     name: "clsx",
@@ -126,7 +124,6 @@ const cases: BrowserSmokeCase[] = [
     pkg: "vue",
     entry: `import { ref } from 'vue';\nconsole.log(ref(0).value);`,
     expected: "0",
-    extraArgs: ['--define:process.env.NODE_ENV="production"'],
   },
   {
     name: "svelte",
@@ -139,7 +136,6 @@ const cases: BrowserSmokeCase[] = [
     pkg: "react",
     entry: `import React from 'react';\nconsole.log(typeof React.createElement);`,
     expected: "function",
-    extraArgs: ['--define:process.env.NODE_ENV="production"'],
   },
   {
     name: "graphql",
@@ -164,7 +160,6 @@ const cases: BrowserSmokeCase[] = [
     pkg: "tiny-invariant",
     entry: `import invariant from 'tiny-invariant';\ninvariant(true, 'ok');\nconsole.log('pass');`,
     expected: "pass",
-    extraArgs: ['--define:process.env.NODE_ENV="production"'],
   },
   {
     name: "tanstack-query",
@@ -172,9 +167,60 @@ const cases: BrowserSmokeCase[] = [
     entry: `import { QueryClient } from '@tanstack/query-core';\nconst qc = new QueryClient();\nconsole.log(typeof qc.fetchQuery);`,
     expected: "function",
   },
-  // effect: scope hoisting에서 "window" 글로벌 충돌 — deconflict 개선 후 추가
-  // jotai, valtio: import.meta outside module — ESM 출력 또는 import.meta polyfill 필요
-  // fp-ts: 동일 import.meta 이슈
+  {
+    name: "effect",
+    pkg: "effect",
+    entry: `import { Effect, pipe } from 'effect';\nconst p = pipe(Effect.succeed(42), Effect.map((n) => n + 1));\nEffect.runPromise(p).then(r => console.log(r));`,
+    expected: "43",
+  },
+  {
+    name: "minimatch",
+    pkg: "minimatch",
+    entry: `import { minimatch } from 'minimatch';\nconsole.log(minimatch('foo.js', '*.js'));`,
+    expected: "true",
+  },
+  {
+    name: "fast-deep-equal",
+    pkg: "fast-deep-equal",
+    entry: `import eq from 'fast-deep-equal';\nconsole.log(eq({ a: 1 }, { a: 1 }));`,
+    expected: "true",
+  },
+  {
+    name: "deepmerge",
+    pkg: "deepmerge",
+    entry: `import dm from 'deepmerge';\nconsole.log(JSON.stringify(dm({ a: 1 }, { b: 2 })));`,
+    expected: '{"a":1,"b":2}',
+  },
+  {
+    name: "picomatch",
+    pkg: "picomatch",
+    entry: `import pm from 'picomatch';\nconsole.log(pm.isMatch('foo.js', '*.js'));`,
+    expected: "true",
+  },
+  {
+    name: "camelcase",
+    pkg: "camelcase",
+    entry: `import cc from 'camelcase';\nconsole.log(cc('foo-bar'));`,
+    expected: "fooBar",
+  },
+  {
+    name: "memoize-one",
+    pkg: "memoize-one",
+    entry: `import mo from 'memoize-one';\nconst fn = mo((a) => a * 2);\nconsole.log(fn(5));`,
+    expected: "10",
+  },
+  {
+    name: "nanoevents",
+    pkg: "nanoevents",
+    entry: `import { createNanoEvents } from 'nanoevents';\nconst e = createNanoEvents();\nconsole.log(typeof e.on);`,
+    expected: "function",
+  },
+  {
+    name: "ohash",
+    pkg: "ohash",
+    entry: `import { hash } from 'ohash';\nconsole.log(typeof hash({ a: 1 }));`,
+    expected: "string",
+  },
   {
     name: "neverthrow",
     pkg: "neverthrow",
@@ -216,7 +262,104 @@ const cases: BrowserSmokeCase[] = [
     pkg: "react-dom@18 react@18",
     entry: `import { renderToString } from 'react-dom/server';\nimport { createElement } from 'react';\nconsole.log(renderToString(createElement('div', null, 'Hello')));`,
     expected: "<div>Hello</div>",
-    extraArgs: ['--define:process.env.NODE_ENV="production"'],
+  },
+  // --- 추가 브라우저 호환 패키지 ---
+  {
+    name: "ajv",
+    pkg: "ajv",
+    entry: `import Ajv from 'ajv';\nconst a = new Ajv();\nconsole.log(typeof a.compile);`,
+    expected: "function",
+  },
+  {
+    name: "change-case",
+    pkg: "change-case",
+    entry: `import { camelCase } from 'change-case';\nconsole.log(camelCase('foo-bar'));`,
+    expected: "fooBar",
+  },
+  {
+    name: "escape-string-regexp",
+    pkg: "escape-string-regexp",
+    entry: `import esc from 'escape-string-regexp';\nconsole.log(esc('a.b'));`,
+    expected: "a\\.b",
+  },
+  {
+    name: "is-glob",
+    pkg: "is-glob",
+    entry: `import isGlob from 'is-glob';\nconsole.log(isGlob('*.js'));`,
+    expected: "true",
+  },
+  {
+    name: "flat",
+    pkg: "flat",
+    entry: `import { flatten } from 'flat';\nconsole.log(JSON.stringify(flatten({ a: { b: 1 } })));`,
+    expected: '{"a.b":1}',
+  },
+  {
+    name: "decamelize",
+    pkg: "decamelize",
+    entry: `import dc from 'decamelize';\nconsole.log(dc('fooBar'));`,
+    expected: "foo_bar",
+  },
+  {
+    name: "rfdc",
+    pkg: "rfdc",
+    entry: `import rfdc from 'rfdc';\nconsole.log(JSON.stringify(rfdc()({ a: 1 })));`,
+    expected: '{"a":1}',
+  },
+  {
+    name: "defu",
+    pkg: "defu",
+    entry: `import { defu } from 'defu';\nconsole.log(JSON.stringify(defu({ a: 1 }, { b: 2 })));`,
+    expected: '{"b":2,"a":1}',
+  },
+  {
+    name: "destr",
+    pkg: "destr",
+    entry: `import { destr } from 'destr';\nconsole.log(typeof destr);`,
+    expected: "function",
+  },
+  {
+    name: "hookable",
+    pkg: "hookable",
+    entry: `import { createHooks } from 'hookable';\nconsole.log(typeof createHooks);`,
+    expected: "function",
+  },
+  {
+    name: "pathe",
+    pkg: "pathe",
+    entry: `import { join } from 'pathe';\nconsole.log(join('a', 'b'));`,
+    expected: "a/b",
+  },
+  {
+    name: "cac",
+    pkg: "cac",
+    entry: `import cac from 'cac';\nconsole.log(typeof cac);`,
+    expected: "function",
+  },
+  {
+    name: "lru-cache",
+    pkg: "lru-cache",
+    entry: `import { LRUCache } from 'lru-cache';\nconst c = new LRUCache({ max: 10 });\nc.set('a', 1);\nconsole.log(c.get('a'));`,
+    expected: "1",
+  },
+  {
+    name: "color-convert",
+    pkg: "color-convert",
+    entry: `import c from 'color-convert';\nconsole.log(c.rgb.hex(255, 0, 0));`,
+    expected: "FF0000",
+  },
+  {
+    name: "qs",
+    pkg: "qs",
+    entry: `import qs from 'qs';\nconsole.log(qs.stringify({ a: 1 }));`,
+    expected: "a=1",
+  },
+  // glob-parent, micromatch: path.dirname 등 Node path API가 필수 — polyfill(--alias) 필요
+  {
+    name: "cheerio",
+    pkg: "cheerio",
+    entry: `import { load } from 'cheerio';\nconsole.log(load('<b>hi</b>')('b').text());`,
+    expected: "hi",
   },
 ];
 

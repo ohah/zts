@@ -18,13 +18,15 @@ const ResolveResult = resolver_mod.ResolveResult;
 const ResolveError = resolver_mod.ResolveError;
 const types = @import("types.zig");
 const ImportKind = types.ImportKind;
+const pkg_json = @import("package_json.zig");
 
 /// 타겟 플랫폼. codegen.Platform을 번들러 전체에서 공유.
 pub const Platform = @import("../codegen/codegen.zig").Platform;
 
 /// Node.js 빌트인 모듈 목록 (node: 프리픽스 없이).
 /// platform=node일 때 자동 external로 처리.
-const node_builtins: []const []const u8 = &.{
+/// platform=browser일 때 resolve 실패 시 빈 모듈로 대체 (esbuild "(disabled)" 방식).
+pub const node_builtins: []const []const u8 = &.{
     "assert",         "async_hooks",         "buffer",     "child_process",
     "cluster",        "console",             "constants",  "crypto",
     "dgram",          "diagnostics_channel", "dns",        "domain",
@@ -45,10 +47,20 @@ pub const ResolveCache = struct {
     external_patterns: []const []const u8,
     platform: Platform,
 
+    /// 패키지 디렉토리별 browser 필드 disabled 파일 캐시.
+    /// pkg_dir_path → disabled 상대 경로 집합 (null이면 browser 필드 없음).
+    browser_disabled_cache: std.StringHashMap(?BrowserDisabledSet),
+
+    /// browser 필드에서 false로 매핑된 상대 경로 집합.
+    /// 키: 확장자 있는 형태("util.inspect.js")와 없는 형태("util.inspect") 모두 저장.
+    const BrowserDisabledSet = std.StringHashMap(void);
+
     const CachedResult = union(enum) {
         resolved: ResolveResult,
         external,
         not_found,
+        /// package.json "browser" 필드에서 false로 매핑 — 빈 모듈로 대체
+        disabled: ResolveResult,
     };
 
     /// 플랫폼 + import kind에 따른 package.json exports 조건 세트.
@@ -78,6 +90,7 @@ pub const ResolveCache = struct {
             .cache = std.StringHashMap(CachedResult).init(allocator),
             .external_patterns = external_patterns,
             .platform = platform,
+            .browser_disabled_cache = std.StringHashMap(?BrowserDisabledSet).init(allocator),
         };
     }
 
@@ -88,10 +101,23 @@ pub const ResolveCache = struct {
             self.allocator.free(entry.key_ptr.*);
             switch (entry.value_ptr.*) {
                 .resolved => |r| self.allocator.free(r.path),
+                .disabled => |r| self.allocator.free(r.path),
                 else => {},
             }
         }
         self.cache.deinit();
+
+        // browser disabled 캐시 해제
+        var bd_it = self.browser_disabled_cache.iterator();
+        while (bd_it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            if (entry.value_ptr.*) |*set| {
+                var key_it = set.keyIterator();
+                while (key_it.next()) |key| self.allocator.free(key.*);
+                set.deinit();
+            }
+        }
+        self.browser_disabled_cache.deinit();
     }
 
     /// specifier를 해석한다. 캐시 히트 시 캐시에서 반환.
@@ -116,6 +142,11 @@ pub const ResolveCache = struct {
                     .path = self.allocator.dupe(u8, r.path) catch return error.OutOfMemory,
                     .module_type = r.module_type,
                 },
+                .disabled => |r| ResolveResult{
+                    .path = self.allocator.dupe(u8, r.path) catch return error.OutOfMemory,
+                    .module_type = r.module_type,
+                    .disabled = true,
+                },
                 .external => null,
                 .not_found => error.ModuleNotFound,
             };
@@ -136,7 +167,23 @@ pub const ResolveCache = struct {
             else => return err,
         };
 
-        // 4. 캐시에 저장 (캐시가 path를 소유, caller에게는 별도 복사본)
+        // 4. platform=browser: package.json "browser" 필드 체크.
+        //    해석된 파일이 browser 필드에서 false로 매핑되었으면 disabled 처리.
+        if (self.platform == .browser and self.isBrowserDisabled(result.path)) {
+            const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
+            try self.putCache(cache_key, .{ .disabled = .{
+                .path = cache_path,
+                .module_type = result.module_type,
+            } });
+            // caller에게 disabled 표시된 결과 반환 (path는 resolver가 할당한 것)
+            return ResolveResult{
+                .path = result.path,
+                .module_type = result.module_type,
+                .disabled = true,
+            };
+        }
+
+        // 5. 캐시에 저장 (캐시가 path를 소유, caller에게는 별도 복사본)
         const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
         try self.putCache(cache_key, .{ .resolved = .{
             .path = cache_path,
@@ -154,6 +201,7 @@ pub const ResolveCache = struct {
             self.allocator.free(old.key);
             switch (old.value) {
                 .resolved => |r| self.allocator.free(r.path),
+                .disabled => |r| self.allocator.free(r.path),
                 else => {},
             }
         }
@@ -161,25 +209,124 @@ pub const ResolveCache = struct {
         self.cache.put(key_owned, value) catch return error.OutOfMemory;
     }
 
+    /// 해석된 절대 경로가 package.json "browser" 필드에서 false로 매핑되었는지 판별.
+    /// node_modules 내 파일만 대상. 패키지 루트의 package.json을 찾아 browser 필드 확인.
+    /// 결과는 패키지 디렉토리별로 캐싱하여 동일 패키지의 반복 파싱을 방지.
+    fn isBrowserDisabled(self: *ResolveCache, resolved_path: []const u8) bool {
+        // node_modules 내 파일만 대상
+        const nm = "node_modules" ++ std.fs.path.sep_str;
+        const nm_pos = std.mem.lastIndexOf(u8, resolved_path, nm) orelse return false;
+        const after_nm = resolved_path[nm_pos + nm.len ..];
+
+        // 패키지 디렉토리 찾기: @scope/pkg 또는 pkg
+        var pkg_end: usize = 0;
+        if (after_nm.len > 0 and after_nm[0] == '@') {
+            // scoped: @scope/pkg
+            if (std.mem.indexOf(u8, after_nm, std.fs.path.sep_str)) |first_slash| {
+                if (std.mem.indexOfPos(u8, after_nm, first_slash + 1, std.fs.path.sep_str)) |second_slash| {
+                    pkg_end = second_slash;
+                } else {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        } else {
+            // unscoped: pkg
+            pkg_end = std.mem.indexOf(u8, after_nm, std.fs.path.sep_str) orelse return false;
+        }
+
+        const pkg_dir_path = resolved_path[0 .. nm_pos + nm.len + pkg_end];
+
+        // 캐시 조회: 이미 이 패키지의 browser 필드를 파싱한 적이 있으면 재사용
+        const disabled_set = self.browser_disabled_cache.get(pkg_dir_path) orelse blk: {
+            // 캐시 미스: package.json 파싱하여 disabled 집합 구축
+            const set = self.buildBrowserDisabledSet(pkg_dir_path);
+            // 캐시에 저장 (키는 소유 복사본)
+            const key_owned = self.allocator.dupe(u8, pkg_dir_path) catch return false;
+            self.browser_disabled_cache.put(key_owned, set) catch {
+                self.allocator.free(key_owned);
+                return false;
+            };
+            break :blk set;
+        };
+
+        // browser 필드가 없거나 disabled 항목이 없으면 false
+        const set = disabled_set orelse return false;
+
+        // resolved_path에서 패키지 루트 이후의 상대 경로 추출
+        const relative_in_pkg = resolved_path[nm_pos + nm.len + pkg_end ..];
+        const dot_relative = if (relative_in_pkg.len > 0 and relative_in_pkg[0] == std.fs.path.sep)
+            relative_in_pkg[1..] // "/util.inspect.js" → "util.inspect.js"
+        else
+            relative_in_pkg;
+
+        // 정확한 매칭 (확장자 있는 형태)
+        if (set.contains(dot_relative)) return true;
+
+        // 확장자 제거 후 매칭 ("util.inspect.js" → "util.inspect")
+        const ext = std.fs.path.extension(dot_relative);
+        if (ext.len > 0) {
+            const without_ext = dot_relative[0 .. dot_relative.len - ext.len];
+            if (set.contains(without_ext)) return true;
+        }
+
+        return false;
+    }
+
+    /// package.json의 browser 필드에서 false로 매핑된 상대 경로 집합을 구축.
+    /// browser 필드가 없으면 null 반환.
+    fn buildBrowserDisabledSet(self: *ResolveCache, pkg_dir_path: []const u8) ?BrowserDisabledSet {
+        var pkg_dir = std.fs.cwd().openDir(pkg_dir_path, .{}) catch return null;
+        defer pkg_dir.close();
+
+        var parsed = pkg_json.parsePackageJson(std.heap.page_allocator, pkg_dir) catch return null;
+        defer parsed.deinit();
+
+        const browser_map = parsed.pkg.browser_map orelse return null;
+        const browser_obj = browser_map.object;
+
+        var set = BrowserDisabledSet.init(self.allocator);
+
+        var kit = browser_obj.iterator();
+        while (kit.next()) |entry| {
+            const key = entry.key_ptr.*;
+            const val = entry.value_ptr.*;
+
+            // false 값만 처리 (대체 경로는 현재 미지원)
+            if (val != .bool or val.bool != false) continue;
+
+            // 키에서 "./" 프리픽스 제거하여 저장
+            const key_relative = if (std.mem.startsWith(u8, key, "./"))
+                key[2..]
+            else
+                key;
+
+            const owned_key = self.allocator.dupe(u8, key_relative) catch continue;
+            set.put(owned_key, {}) catch {
+                self.allocator.free(owned_key);
+                continue;
+            };
+        }
+
+        // disabled 항목이 하나도 없으면 빈 set 대신 null 반환
+        if (set.count() == 0) {
+            set.deinit();
+            return null;
+        }
+
+        return set;
+    }
+
     /// specifier가 external인지 판별.
     /// exact match + `*` 글롭 매칭 (D069).
     fn isExternal(self: *const ResolveCache, specifier: []const u8) bool {
-        // node: 프리픽스
-        if (std.mem.startsWith(u8, specifier, "node:")) {
-            return true;
-        }
+        // node: 프리픽스 또는 platform=node에서 node 빌트인 자동 external
+        // isNodeBuiltin이 "node:" 프리픽스와 서브패스("fs/promises" 등)를 모두 처리
+        if (self.platform == .node and isNodeBuiltin(specifier)) return true;
 
-        // platform=node이면 node 빌트인 자동 external (서브패스 포함)
-        // "fs", "fs/promises", "stream/web" 등
-        if (self.platform == .node) {
-            const base = if (std.mem.indexOf(u8, specifier, "/")) |slash|
-                specifier[0..slash]
-            else
-                specifier;
-            for (node_builtins) |builtin| {
-                if (std.mem.eql(u8, base, builtin)) return true;
-            }
-        }
+        // node: 프리픽스는 platform과 무관하게 항상 external
+        if (std.mem.startsWith(u8, specifier, "node:")) return true;
 
         // 사용자 지정 external 패턴
         for (self.external_patterns) |pattern| {
@@ -194,6 +341,25 @@ pub const ResolveCache = struct {
         return std.mem.concat(self.allocator, u8, &.{ source_dir, "\x00", specifier, "\x00", kind_str });
     }
 };
+
+/// specifier가 Node.js 빌트인 모듈인지 판별.
+/// "util", "fs", "node:fs", "util/types" 등을 인식.
+pub fn isNodeBuiltin(specifier: []const u8) bool {
+    // node: 프리픽스 제거
+    const raw = if (std.mem.startsWith(u8, specifier, "node:"))
+        specifier["node:".len..]
+    else
+        specifier;
+    // 서브패스("util/types" 등)에서 기본 이름 추출
+    const base = if (std.mem.indexOf(u8, raw, "/")) |slash|
+        raw[0..slash]
+    else
+        raw;
+    for (node_builtins) |builtin| {
+        if (std.mem.eql(u8, base, builtin)) return true;
+    }
+    return false;
+}
 
 /// 글롭 패턴 매칭. `*`는 `/` 제외 모든 문자에 매칭 (D069).
 /// "react" matches "react"
@@ -256,6 +422,19 @@ test "isExternal: node builtins when platform=node" {
     try std.testing.expect(cache.isExternal("path"));
     try std.testing.expect(cache.isExternal("crypto"));
     try std.testing.expect(!cache.isExternal("react"));
+}
+
+test "isNodeBuiltin" {
+    try std.testing.expect(isNodeBuiltin("util"));
+    try std.testing.expect(isNodeBuiltin("fs"));
+    try std.testing.expect(isNodeBuiltin("path"));
+    try std.testing.expect(isNodeBuiltin("node:fs"));
+    try std.testing.expect(isNodeBuiltin("node:util"));
+    try std.testing.expect(isNodeBuiltin("util/types"));
+    try std.testing.expect(isNodeBuiltin("fs/promises"));
+    try std.testing.expect(!isNodeBuiltin("react"));
+    try std.testing.expect(!isNodeBuiltin("lodash"));
+    try std.testing.expect(!isNodeBuiltin("@babel/core"));
 }
 
 test "isExternal: node builtins NOT external when platform=browser" {

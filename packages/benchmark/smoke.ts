@@ -515,6 +515,208 @@ const projects: ProjectConfig[] = [
     pkg: "cheerio",
     entry: `import { load } from 'cheerio';\nconst doc = load('<h1>Hello</h1>');\nconsole.log(doc('h1').text());`,
   },
+  // --- 추가 패키지 (소형 유틸리티) ---
+  {
+    name: "is-glob",
+    pkg: "is-glob",
+    entry: `import isGlob from 'is-glob';\nconsole.log(isGlob('*.js'));`,
+  },
+  {
+    name: "glob-parent",
+    pkg: "glob-parent",
+    entry: `import gp from 'glob-parent';\nconsole.log(gp('a/b/*.js'));`,
+  },
+  {
+    name: "escape-string-regexp",
+    pkg: "escape-string-regexp",
+    entry: `import esc from 'escape-string-regexp';\nconsole.log(esc('a.b'));`,
+  },
+  {
+    name: "fast-deep-equal",
+    pkg: "fast-deep-equal",
+    entry: `import eq from 'fast-deep-equal';\nconsole.log(eq({ a: 1 }, { a: 1 }));`,
+  },
+  {
+    name: "deepmerge",
+    pkg: "deepmerge",
+    entry: `import dm from 'deepmerge';\nconsole.log(JSON.stringify(dm({ a: 1 }, { b: 2 })));`,
+  },
+  {
+    name: "color-convert",
+    pkg: "color-convert",
+    entry: `import c from 'color-convert';\nconsole.log(c.rgb.hex(255, 0, 0));`,
+  },
+  {
+    name: "picomatch",
+    pkg: "picomatch",
+    entry: `import pm from 'picomatch';\nconsole.log(pm.isMatch('foo.js', '*.js'));`,
+  },
+  {
+    name: "type-is",
+    pkg: "type-is",
+    entry: `import typeis from 'type-is';\nconsole.log(typeof typeis);`,
+  },
+  {
+    name: "object-assign",
+    pkg: "object-assign",
+    entry: `import oa from 'object-assign';\nconsole.log(typeof oa);`,
+  },
+  {
+    name: "has-flag",
+    pkg: "has-flag",
+    entry: `import hf from 'has-flag';\nconsole.log(typeof hf);`,
+  },
+  {
+    name: "p-limit",
+    pkg: "p-limit",
+    entry: `import pLimit from 'p-limit';\nconst l = pLimit(1);\nconsole.log(typeof l);`,
+  },
+  {
+    name: "strip-ansi",
+    pkg: "strip-ansi",
+    entry: `import strip from 'strip-ansi';\nconsole.log(strip('hello'));`,
+  },
+  {
+    name: "ansi-regex",
+    pkg: "ansi-regex",
+    entry: `import ar from 'ansi-regex';\nconsole.log(typeof ar);`,
+  },
+  {
+    name: "wrap-ansi",
+    pkg: "wrap-ansi",
+    entry: `import wrap from 'wrap-ansi';\nconsole.log(typeof wrap);`,
+  },
+  {
+    name: "supports-color",
+    pkg: "supports-color",
+    entry: `import sc from 'supports-color';\nconsole.log(typeof sc);`,
+  },
+  {
+    name: "cross-spawn",
+    pkg: "cross-spawn",
+    entry: `import cs from 'cross-spawn';\nconsole.log(typeof cs.spawn);`,
+  },
+  {
+    name: "lru-cache",
+    pkg: "lru-cache",
+    entry: `import { LRUCache } from 'lru-cache';\nconst c = new LRUCache({ max: 10 });\nc.set('a', 1);\nconsole.log(c.get('a'));`,
+  },
+  {
+    name: "signal-exit",
+    pkg: "signal-exit",
+    entry: `import { onExit } from 'signal-exit';\nconsole.log(typeof onExit);`,
+  },
+  {
+    name: "which",
+    pkg: "which",
+    entry: `import which from 'which';\nconsole.log(typeof which);`,
+  },
+  {
+    name: "string-width",
+    pkg: "string-width",
+    entry: `import sw from 'string-width';\nconsole.log(sw('hello'));`,
+  },
+  // --- 추가 패키지 (CJS 유틸리티 + 마이크로 라이브러리) ---
+  {
+    name: "safe-buffer",
+    pkg: "safe-buffer",
+    entry: `import { Buffer } from 'safe-buffer';\nconsole.log(Buffer.alloc(4).length);`,
+  },
+  {
+    name: "bytes",
+    pkg: "bytes",
+    entry: `import bytes from 'bytes';\nconsole.log(bytes(1024));`,
+  },
+  {
+    name: "depd",
+    pkg: "depd",
+    entry: `import depd from 'depd';\nconsole.log(typeof depd);`,
+  },
+  {
+    name: "merge-descriptors",
+    pkg: "merge-descriptors",
+    entry: `import md from 'merge-descriptors';\nconsole.log(typeof md);`,
+  },
+  {
+    name: "content-type",
+    pkg: "content-type",
+    entry: `import ct from 'content-type';\nconsole.log(ct.parse('text/html').type);`,
+  },
+  {
+    name: "cookie",
+    pkg: "cookie",
+    entry: `import cookie from 'cookie';\nconsole.log(cookie.serialize('a', 'b'));`,
+  },
+  {
+    name: "on-finished",
+    pkg: "on-finished",
+    entry: `import onf from 'on-finished';\nconsole.log(typeof onf);`,
+  },
+  {
+    name: "statuses",
+    pkg: "statuses",
+    entry: `import statuses from 'statuses';\nconsole.log(statuses(200));`,
+  },
+  {
+    name: "etag",
+    pkg: "etag",
+    entry: `import etag from 'etag';\nconsole.log(etag('hello').length > 0);`,
+  },
+  {
+    name: "vary",
+    pkg: "vary",
+    entry: `import vary from 'vary';\nconsole.log(typeof vary);`,
+  },
+  {
+    name: "flat",
+    pkg: "flat",
+    entry: `import { flatten } from 'flat';\nconsole.log(JSON.stringify(flatten({ a: { b: 1 } })));`,
+  },
+  {
+    name: "retry",
+    pkg: "retry",
+    entry: `import retry from 'retry';\nconsole.log(typeof retry.createTimeout);`,
+  },
+  {
+    name: "camelcase",
+    pkg: "camelcase",
+    entry: `import cc from 'camelcase';\nconsole.log(cc('foo-bar'));`,
+  },
+  {
+    name: "decamelize",
+    pkg: "decamelize",
+    entry: `import dc from 'decamelize';\nconsole.log(dc('fooBar'));`,
+  },
+  {
+    name: "memoize-one",
+    pkg: "memoize-one",
+    entry: `import mo from 'memoize-one';\nconst fn = mo((a: number) => a * 2);\nconsole.log(fn(5));`,
+  },
+  {
+    name: "rfdc",
+    pkg: "rfdc",
+    entry: `import rfdc from 'rfdc';\nconst clone = rfdc();\nconsole.log(JSON.stringify(clone({ a: 1 })));`,
+  },
+  {
+    name: "ohash",
+    pkg: "ohash",
+    entry: `import { hash } from 'ohash';\nconsole.log(typeof hash({ a: 1 }));`,
+  },
+  {
+    name: "nanoevents",
+    pkg: "nanoevents",
+    entry: `import { createNanoEvents } from 'nanoevents';\nconst e = createNanoEvents();\nconsole.log(typeof e.on);`,
+  },
+  {
+    name: "p-limit",
+    pkg: "p-limit",
+    entry: `import pLimit from 'p-limit';\nconst l = pLimit(1);\nconsole.log(typeof l);`,
+  },
+  {
+    name: "lru-cache",
+    pkg: "lru-cache",
+    entry: `import { LRUCache } from 'lru-cache';\nconst c = new LRUCache({ max: 10 });\nc.set('a', 1);\nconsole.log(c.get('a'));`,
+  },
   // --- 제외 패키지 (ISSUES.md 참조) ---
   // zx: ESM 번들에 CJS require 혼입 — CJS interop 개선 필요
 ];

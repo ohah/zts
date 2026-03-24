@@ -324,6 +324,7 @@ pub fn main() !void {
     defer define_list.deinit(allocator);
     var platform: lib.bundler.Platform = .browser;
     var bundle_format: lib.bundler.emitter.EmitOptions.Format = .esm;
+    var bundle_format_explicit = false; // 사용자가 --format을 명시했는지 추적
     var test262_dir: ?[]const u8 = null;
     var project_path: ?[]const u8 = null;
 
@@ -353,9 +354,11 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, arg, "--format=cjs")) {
             module_format = .cjs;
             bundle_format = .cjs;
+            bundle_format_explicit = true;
         } else if (std.mem.eql(u8, arg, "--format=esm")) {
             module_format = .esm;
             bundle_format = .esm;
+            bundle_format_explicit = true;
         } else if (std.mem.eql(u8, arg, "--drop=console")) {
             drop_console = true;
         } else if (std.mem.eql(u8, arg, "--drop=debugger")) {
@@ -410,6 +413,7 @@ pub fn main() !void {
             platform = .neutral;
         } else if (std.mem.eql(u8, arg, "--format=iife")) {
             bundle_format = .iife;
+            bundle_format_explicit = true;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try printUsage(stdout);
             return;
@@ -419,6 +423,13 @@ pub fn main() !void {
             try stderr.print("zts: unknown option: {s}\n", .{arg});
             return;
         }
+    }
+
+    // --bundle + --platform=browser + --format 미지정이면 IIFE로 기본 설정 (esbuild 호환).
+    // 브라우저 <script> 태그에서 로드할 때 top-level 선언이 글로벌을 오염시키지 않도록
+    // 번들 전체를 IIFE로 래핑한다. ESM 출력이 필요하면 --format=esm을 명시해야 한다.
+    if (is_bundle and platform == .browser and !bundle_format_explicit) {
+        bundle_format = .iife;
     }
 
     // --bundle + --platform=browser이면 process.env.NODE_ENV를 자동 define (esbuild 호환).
