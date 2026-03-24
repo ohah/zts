@@ -179,8 +179,12 @@ pub fn parseStatement(self: *Parser) ParseError2!NodeIndex {
             if (std.mem.eql(u8, text, "type")) {
                 // type Foo = ... → TS type alias declaration
                 // type = 1, type.x, type() → expression statement (변수로 사용)
-                const next = try self.peekNextKind();
-                if (next == .identifier or next == .l_curly or next == .string_literal) {
+                // type\nFoo = {} → 'type' expression statement + 'Foo = {}' (ASI)
+                // esbuild: !p.lexer.HasNewlineBefore && p.lexer.Token == TIdentifier
+                const next = try self.peekNext();
+                if (!next.has_newline_before and
+                    (next.kind == .identifier or next.kind == .l_curly or next.kind == .string_literal))
+                {
                     break :blk self.parseTsTypeAliasDeclaration();
                 }
             } else if (std.mem.eql(u8, text, "namespace")) {
@@ -200,7 +204,13 @@ pub fn parseStatement(self: *Parser) ParseError2!NodeIndex {
             } else if (std.mem.eql(u8, text, "declare")) {
                 break :blk self.parseTsDeclareStatement();
             } else if (std.mem.eql(u8, text, "abstract")) {
-                break :blk self.parseTsAbstractClass();
+                // abstract class Foo {} → TS abstract class declaration
+                // abstract\nclass Foo {} → 'abstract' expression statement + class declaration (ASI)
+                // esbuild: !p.lexer.HasNewlineBefore && p.lexer.Token == TClass
+                const next = try self.peekNext();
+                if (next.kind == .kw_class and !next.has_newline_before) {
+                    break :blk self.parseTsAbstractClass();
+                }
             } else if (std.mem.eql(u8, text, "global")) {
                 // global { } inside namespace/module — global augmentation
                 const next = try self.peekNextKind();

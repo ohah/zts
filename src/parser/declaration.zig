@@ -479,7 +479,12 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         self.current() == .kw_protected or
         self.isContextualAny(ts_class_modifiers))
     {
-        if (isModifierTerminator(try self.peekNextKind())) break;
+        const next = try self.peekNext();
+        if (isModifierTerminator(next.kind)) break;
+        // abstract/declare 뒤에 줄바꿈이 있으면 수식어가 아니라 멤버 이름 (ASI)
+        // 예: class A { abstract\nfoo(): void {} } → abstract는 필드 이름
+        // esbuild: !p.lexer.HasNewlineBefore
+        if (next.has_newline_before and detectAbstractDeclare(self) != 0) break;
         flags |= detectAbstractDeclare(self);
         try self.advance(); // skip modifier (스트리핑 대상이므로 AST에 저장 불필요)
     }
@@ -546,7 +551,10 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         self.current() == .kw_protected or
         self.isContextualAny(ts_class_modifiers))
     {
-        if (isModifierTerminator(try self.peekNextKind())) break;
+        const next2 = try self.peekNext();
+        if (isModifierTerminator(next2.kind)) break;
+        // abstract/declare 뒤에 줄바꿈이 있으면 수식어가 아니라 멤버 이름 (ASI)
+        if (next2.has_newline_before and detectAbstractDeclare(self) != 0) break;
         if (self.current() == .identifier) {
             const text = self.scanner.source[self.scanner.token.span.start..self.scanner.token.span.end];
             if (std.mem.eql(u8, text, "abstract")) flags |= 0x20;
