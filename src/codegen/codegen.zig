@@ -2110,27 +2110,22 @@ fn e2eCJS(allocator: std.mem.Allocator, source: []const u8) !TestResult {
 }
 
 fn e2eJSX(allocator: std.mem.Allocator, source: []const u8) !TestResult {
-    return e2eFullEx(allocator, source, .{}, .{ .minify = true }, true);
+    return e2eFull(allocator, source, .{}, .{ .minify = true }, ".tsx");
 }
 
 const TransformOptions = @import("../transformer/transformer.zig").TransformOptions;
 
-/// 풀 옵션 e2e.
-fn e2eFull(backing_allocator: std.mem.Allocator, source: []const u8, t_options: TransformOptions, cg_options: CodegenOptions) !TestResult {
-    return e2eFullEx(backing_allocator, source, t_options, cg_options, false);
-}
-
-/// 풀 옵션 e2e (JSX 모드 지정 가능).
+/// 풀 옵션 e2e. ext로 확장자 지정 (".ts" 기본, ".tsx"면 JSX 모드).
 /// Arena로 전체 파이프라인을 실행. output은 arena 메모리를 가리키므로
 /// TestResult.deinit() 전에 사용해야 한다.
-fn e2eFullEx(backing_allocator: std.mem.Allocator, source: []const u8, t_options: TransformOptions, cg_options: CodegenOptions, is_jsx: bool) !TestResult {
+fn e2eFull(backing_allocator: std.mem.Allocator, source: []const u8, t_options: TransformOptions, cg_options: CodegenOptions, ext: []const u8) !TestResult {
     var arena = std.heap.ArenaAllocator.init(backing_allocator);
     errdefer arena.deinit();
     const allocator = arena.allocator();
 
     var scanner = try Scanner.init(allocator, source);
     var parser = Parser.init(allocator, &scanner);
-    parser.is_jsx = is_jsx;
+    parser.configureFromExtension(ext);
     _ = try parser.parse();
 
     var t = Transformer.init(allocator, &parser.ast, t_options);
@@ -2143,7 +2138,7 @@ fn e2eFullEx(backing_allocator: std.mem.Allocator, source: []const u8, t_options
 }
 
 fn e2eWithOptions(allocator: std.mem.Allocator, source: []const u8, cg_options: CodegenOptions) !TestResult {
-    return e2eFull(allocator, source, .{}, cg_options);
+    return e2eFull(allocator, source, .{}, cg_options, ".ts");
 }
 
 test "Codegen: empty program" {
@@ -2208,13 +2203,13 @@ test "Codegen CJS: export default" {
 }
 
 test "Codegen: drop debugger" {
-    var r = try e2eFull(std.testing.allocator, "debugger; const x = 1;", .{ .drop_debugger = true }, .{ .minify = true });
+    var r = try e2eFull(std.testing.allocator, "debugger; const x = 1;", .{ .drop_debugger = true }, .{ .minify = true }, ".ts");
     defer r.deinit();
     try std.testing.expectEqualStrings("const x=1;", r.output);
 }
 
 test "Codegen: drop console" {
-    var r = try e2eFull(std.testing.allocator, "console.log(1); const x = 1;", .{ .drop_console = true }, .{ .minify = true });
+    var r = try e2eFull(std.testing.allocator, "console.log(1); const x = 1;", .{ .drop_console = true }, .{ .minify = true }, ".ts");
     defer r.deinit();
     try std.testing.expectEqualStrings("const x=1;", r.output);
 }

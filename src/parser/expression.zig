@@ -1668,13 +1668,12 @@ fn parseTSTypeAssertion(self: *Parser) ParseError2!NodeIndex {
     try self.advance(); // skip <
     _ = try self.parseType();
     try self.expect(.r_angle);
-    // assertion 대상 표현식 파싱
-    const expr = try parsePrimaryExpression(self);
-    // ts_as_expression과 동일하게 처리 — 트랜스포머에서 타입 제거
+    // oxc: parse_unary_expression_or_higher — <T>-x, <T>await foo() 등 지원
+    const expr = try parseUnaryExpression(self);
     return try self.ast.addNode(.{
-        .tag = .ts_as_expression,
+        .tag = .ts_type_assertion,
         .span = .{ .start = start, .end = self.currentSpan().start },
-        .data = .{ .binary = .{ .left = expr, .right = .none, .flags = 0 } },
+        .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
     });
 }
 

@@ -201,6 +201,19 @@ pub const Parser = struct {
         };
     }
 
+    /// 파일 확장자에 따라 is_module, is_jsx를 설정한다.
+    /// main.zig와 bundler graph.zig에서 중복 없이 사용.
+    pub fn configureFromExtension(self: *Parser, ext: []const u8) void {
+        if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx") or
+            std.mem.eql(u8, ext, ".mts") or std.mem.eql(u8, ext, ".mjs"))
+        {
+            self.is_module = true;
+        }
+        if (std.mem.eql(u8, ext, ".tsx") or std.mem.eql(u8, ext, ".jsx")) {
+            self.is_jsx = true;
+        }
+    }
+
     pub fn deinit(self: *Parser) void {
         self.ast.deinit();
         self.errors.deinit(self.allocator);
