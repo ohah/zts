@@ -265,12 +265,13 @@ pub fn parseTsDeclareStatement(self: *Parser) ParseError2!NodeIndex {
         _ = try parseNamespaceBlock(self);
         return NodeIndex.none;
     }
-    // declare 뒤의 선언은 ambient context (const 이니셜라이저 불필요 등)
+    // declare 뒤의 선언은 ambient context — 런타임 코드 없음 (완전 제거)
+    // 파싱은 완료하되 (구문 검증) 결과는 버린다
     const saved = self.ctx;
     self.ctx.in_ambient = true;
-    const result = try self.parseStatement();
+    _ = try self.parseStatement();
     self.ctx = saved;
-    return result;
+    return NodeIndex.none;
 }
 
 /// abstract class Foo { }
