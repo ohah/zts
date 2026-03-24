@@ -501,7 +501,7 @@ test "Bundler: CJS format" {
     const result = try b.bundle();
     defer result.deinit(std.testing.allocator);
 
-    try std.testing.expect(std.mem.startsWith(u8, result.output, "'use strict';\n"));
+    try std.testing.expect(std.mem.startsWith(u8, result.output, "\"use strict\";\n"));
 }
 
 test "Bundler: multiple entry points" {
@@ -646,7 +646,7 @@ test "Re-export: named re-export" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'hello'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"hello\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log") != null);
 }
 
@@ -881,9 +881,9 @@ test "Circular: three module cycle (A→B→C→A)" {
     }
     try std.testing.expect(has_circular);
     // 모든 모듈의 코드가 번들에 포함
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'A'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'B'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'C'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"A\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"B\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"C\"") != null);
 }
 
 test "Circular: two module cycle with exports" {
@@ -925,14 +925,14 @@ test "Circular: diamond with shared leaf" {
     // shared는 한 번만 포함 (중복 제거)
     var count: usize = 0;
     var search_from: usize = 0;
-    while (std.mem.indexOfPos(u8, result.output, search_from, "'shared'")) |pos| {
+    while (std.mem.indexOfPos(u8, result.output, search_from, "\"shared\"")) |pos| {
         count += 1;
         search_from = pos + 1;
     }
     try std.testing.expectEqual(@as(usize, 1), count);
     // 실행 순서: shared → left → right → entry
-    const shared_pos = std.mem.indexOf(u8, result.output, "'shared'") orelse return error.TestUnexpectedResult;
-    const entry_pos = std.mem.indexOf(u8, result.output, "'entry'") orelse return error.TestUnexpectedResult;
+    const shared_pos = std.mem.indexOf(u8, result.output, "\"shared\"") orelse return error.TestUnexpectedResult;
+    const entry_pos = std.mem.indexOf(u8, result.output, "\"entry\"") orelse return error.TestUnexpectedResult;
     try std.testing.expect(shared_pos < entry_pos);
 }
 
@@ -958,7 +958,7 @@ test "TypeScript: interface stripping across modules" {
     // 인터페이스는 제거됨
     try std.testing.expect(std.mem.indexOf(u8, result.output, "interface") == null);
     // 값 코드는 유지
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'test'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"test\"") != null);
 }
 
 test "TypeScript: enum across modules" {
@@ -1064,7 +1064,7 @@ test "TypeScript: mixed type and value exports" {
     try std.testing.expect(!result.hasErrors());
     // type은 제거, 값은 유지
     try std.testing.expect(std.mem.indexOf(u8, result.output, "type Config") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'https://api.example.com'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"https://api.example.com\"") != null);
 }
 
 // ============================================================
@@ -1089,10 +1089,10 @@ test "Deep chain: four-level (A→B→C→D)" {
 
     try std.testing.expect(!result.hasErrors());
     // 실행 순서: d → c → b → a (DFS 후위)
-    const d_pos = std.mem.indexOf(u8, result.output, "'d'") orelse return error.TestUnexpectedResult;
-    const c_pos = std.mem.indexOf(u8, result.output, "'c'") orelse return error.TestUnexpectedResult;
-    const b_pos = std.mem.indexOf(u8, result.output, "'b'") orelse return error.TestUnexpectedResult;
-    const a_pos = std.mem.indexOf(u8, result.output, "'a'") orelse return error.TestUnexpectedResult;
+    const d_pos = std.mem.indexOf(u8, result.output, "\"d\"") orelse return error.TestUnexpectedResult;
+    const c_pos = std.mem.indexOf(u8, result.output, "\"c\"") orelse return error.TestUnexpectedResult;
+    const b_pos = std.mem.indexOf(u8, result.output, "\"b\"") orelse return error.TestUnexpectedResult;
+    const a_pos = std.mem.indexOf(u8, result.output, "\"a\"") orelse return error.TestUnexpectedResult;
     try std.testing.expect(d_pos < c_pos);
     try std.testing.expect(c_pos < b_pos);
     try std.testing.expect(b_pos < a_pos);
@@ -1118,12 +1118,12 @@ test "Deep chain: wide fan-out (entry imports 5 modules)" {
 
     try std.testing.expect(!result.hasErrors());
     // 모든 모듈 포함
-    for ([_][]const u8{ "'m1'", "'m2'", "'m3'", "'m4'", "'m5'", "'done'" }) |needle| {
+    for ([_][]const u8{ "\"m1\"", "\"m2\"", "\"m3\"", "\"m4\"", "\"m5\"", "\"done\"" }) |needle| {
         try std.testing.expect(std.mem.indexOf(u8, result.output, needle) != null);
     }
     // entry(done)이 가장 마지막
-    const done_pos = std.mem.indexOf(u8, result.output, "'done'") orelse return error.TestUnexpectedResult;
-    for ([_][]const u8{ "'m1'", "'m2'", "'m3'", "'m4'", "'m5'" }) |needle| {
+    const done_pos = std.mem.indexOf(u8, result.output, "\"done\"") orelse return error.TestUnexpectedResult;
+    for ([_][]const u8{ "\"m1\"", "\"m2\"", "\"m3\"", "\"m4\"", "\"m5\"" }) |needle| {
         const pos = std.mem.indexOf(u8, result.output, needle) orelse return error.TestUnexpectedResult;
         try std.testing.expect(pos < done_pos);
     }
@@ -1213,7 +1213,7 @@ test "Real-world: constants module" {
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "MAX_RETRIES = 3") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "TIMEOUT = 5000") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'/api/v1'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"/api/v1\"") != null);
 }
 
 test "Real-world: class with imported dependency" {
@@ -1336,7 +1336,7 @@ test "Format: ESM preserves export in entry" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'1.0.0'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"1.0.0\"") != null);
 }
 
 test "Format: CJS with multiple modules" {
@@ -1357,8 +1357,8 @@ test "Format: CJS with multiple modules" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.startsWith(u8, result.output, "'use strict';\n"));
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'cjs-test'") != null);
+    try std.testing.expect(std.mem.startsWith(u8, result.output, "\"use strict\";\n"));
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"cjs-test\"") != null);
 }
 
 test "Format: IIFE with multiple modules" {
@@ -1426,7 +1426,7 @@ test "Format: minified CJS" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.startsWith(u8, result.output, "'use strict';\n"));
+    try std.testing.expect(std.mem.startsWith(u8, result.output, "\"use strict\";\n"));
 }
 
 // ============================================================
@@ -1448,7 +1448,7 @@ test "Edge: empty module" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'ok'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"ok\"") != null);
 }
 
 test "Edge: module with only comments" {
@@ -1466,7 +1466,7 @@ test "Edge: module with only comments" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'works'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"works\"") != null);
 }
 
 test "Edge: side-effect only imports preserve execution order" {
@@ -1487,10 +1487,10 @@ test "Edge: side-effect only imports preserve execution order" {
 
     try std.testing.expect(!result.hasErrors());
     // import 순서대로 실행: init1 → init2 → init3 → app
-    const p1 = std.mem.indexOf(u8, result.output, "'init1'") orelse return error.TestUnexpectedResult;
-    const p2 = std.mem.indexOf(u8, result.output, "'init2'") orelse return error.TestUnexpectedResult;
-    const p3 = std.mem.indexOf(u8, result.output, "'init3'") orelse return error.TestUnexpectedResult;
-    const pa = std.mem.indexOf(u8, result.output, "'app'") orelse return error.TestUnexpectedResult;
+    const p1 = std.mem.indexOf(u8, result.output, "\"init1\"") orelse return error.TestUnexpectedResult;
+    const p2 = std.mem.indexOf(u8, result.output, "\"init2\"") orelse return error.TestUnexpectedResult;
+    const p3 = std.mem.indexOf(u8, result.output, "\"init3\"") orelse return error.TestUnexpectedResult;
+    const pa = std.mem.indexOf(u8, result.output, "\"app\"") orelse return error.TestUnexpectedResult;
     try std.testing.expect(p1 < p2);
     try std.testing.expect(p2 < p3);
     try std.testing.expect(p3 < pa);
@@ -1522,7 +1522,7 @@ test "Edge: same module imported by multiple parents (dedup)" {
     // shared 모듈의 코드는 한 번만 포함
     var count: usize = 0;
     var search_from: usize = 0;
-    while (std.mem.indexOfPos(u8, result.output, search_from, "'shared_value'")) |pos| {
+    while (std.mem.indexOfPos(u8, result.output, search_from, "\"shared_value\"")) |pos| {
         count += 1;
         search_from = pos + 1;
     }
@@ -1544,7 +1544,7 @@ test "Edge: deeply nested directory imports" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'connected'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"connected\"") != null);
 }
 
 test "Edge: export function and class from same module" {
@@ -1597,7 +1597,7 @@ test "Edge: multiple external packages" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'yes'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"yes\"") != null);
 }
 
 test "ESM external: require preamble (esbuild compatible, no import)" {
@@ -1669,7 +1669,7 @@ test "Edge: import with .js extension resolves to .ts" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'from-ts'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-ts\"") != null);
 }
 
 test "Edge: index.ts resolution (directory import)" {
@@ -1687,7 +1687,7 @@ test "Edge: index.ts resolution (directory import)" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'world'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"world\"") != null);
 }
 
 // ============================================================
@@ -1716,9 +1716,9 @@ test "Complex: mixed import styles in one file" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'default_val'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'named_val'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'side'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"default_val\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"named_val\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"side\"") != null);
 }
 
 test "Complex: transitive import chain with values" {
@@ -1773,9 +1773,9 @@ test "Complex: multiple entry points sharing a module" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'common'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'page1'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'page2'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"common\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"page1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"page2\"") != null);
 }
 
 test "Complex: platform node with external builtins" {
@@ -1917,7 +1917,7 @@ test "Rollup: export * with local override" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'from-source'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-source\"") != null);
 }
 
 test "Rollup: chained re-exports through three modules" {
@@ -1938,7 +1938,7 @@ test "Rollup: chained re-exports through three modules" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'leaf-value'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"leaf-value\"") != null);
     // 중간 re-export 모듈들의 import/export는 제거
     try std.testing.expect(std.mem.indexOf(u8, result.output, "import ") == null);
 }
@@ -1967,9 +1967,9 @@ test "Rollup: side-effect free import ordering" {
 
     try std.testing.expect(!result.hasErrors());
     // polyfill → setup → app → entry 순서
-    const poly_pos = std.mem.indexOf(u8, result.output, "'polyfill'") orelse return error.TestUnexpectedResult;
-    const setup_pos = std.mem.indexOf(u8, result.output, "'setup'") orelse return error.TestUnexpectedResult;
-    const app_pos = std.mem.indexOf(u8, result.output, "'ready'") orelse return error.TestUnexpectedResult;
+    const poly_pos = std.mem.indexOf(u8, result.output, "\"polyfill\"") orelse return error.TestUnexpectedResult;
+    const setup_pos = std.mem.indexOf(u8, result.output, "\"setup\"") orelse return error.TestUnexpectedResult;
+    const app_pos = std.mem.indexOf(u8, result.output, "\"ready\"") orelse return error.TestUnexpectedResult;
     try std.testing.expect(poly_pos < setup_pos);
     try std.testing.expect(setup_pos < app_pos);
 }
@@ -2032,7 +2032,7 @@ test "esbuild: external glob pattern" {
 
     try std.testing.expect(!result.hasErrors());
     // react, react-dom 둘 다 external
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'bundled'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"bundled\"") != null);
 }
 
 test "esbuild: node builtins auto-external" {
@@ -2058,7 +2058,7 @@ test "esbuild: node builtins auto-external" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'local-value'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"local-value\"") != null);
 }
 
 test "esbuild: define global replacement" {
@@ -2080,7 +2080,7 @@ test "esbuild: define global replacement" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'dev'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"dev\"") != null);
 }
 
 test "esbuild: ESM to CJS format conversion with imports" {
@@ -2107,7 +2107,7 @@ test "esbuild: ESM to CJS format conversion with imports" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.startsWith(u8, result.output, "'use strict';\n"));
+    try std.testing.expect(std.mem.startsWith(u8, result.output, "\"use strict\";\n"));
     try std.testing.expect(std.mem.indexOf(u8, result.output, "function helper") != null);
 }
 
@@ -2169,7 +2169,7 @@ test "Bun: barrel file with selective import" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'btn'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"btn\"") != null);
 }
 
 test "Bun: TypeScript interface-only module" {
@@ -2245,7 +2245,7 @@ test "Bun: extension resolution priority (.ts over .js)" {
 
     try std.testing.expect(!result.hasErrors());
     // .ts가 .js보다 우선
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'from-ts'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-ts\"") != null);
 }
 
 test "Bun: complex real-world component pattern" {
@@ -2351,8 +2351,8 @@ test "Rolldown: export default function with rename" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'from-module'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'local'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-module\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"local\"") != null);
 }
 
 test "Rolldown: deep re-export with export *" {
@@ -2376,7 +2376,7 @@ test "Rolldown: deep re-export with export *" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'deep-star'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"deep-star\"") != null);
 }
 
 test "Rolldown: mixed default and named imports from same module" {
@@ -2401,8 +2401,8 @@ test "Rolldown: mixed default and named imports from same module" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'2.0'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'myapp'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"2.0\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"myapp\"") != null);
 }
 
 // ============================================================
@@ -2467,8 +2467,8 @@ test "Webpack: import order matches dependency graph" {
 
     try std.testing.expect(!result.hasErrors());
     // shared → a → b → entry 순서 (shared가 가장 먼저)
-    const shared_pos = std.mem.indexOf(u8, result.output, "'base'") orelse return error.TestUnexpectedResult;
-    const a_pos = std.mem.indexOf(u8, result.output, "'-a'") orelse return error.TestUnexpectedResult;
+    const shared_pos = std.mem.indexOf(u8, result.output, "\"base\"") orelse return error.TestUnexpectedResult;
+    const a_pos = std.mem.indexOf(u8, result.output, "\"-a\"") orelse return error.TestUnexpectedResult;
     try std.testing.expect(shared_pos < a_pos);
 }
 
@@ -2492,7 +2492,7 @@ test "Webpack: re-export with alias name" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'orig-value'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"orig-value\"") != null);
 }
 
 // ============================================================
@@ -2525,8 +2525,8 @@ test "Stress: 10 modules in chain" {
 
     try std.testing.expect(!result.hasErrors());
     // m9가 가장 먼저, m0이 가장 나중
-    const m9_pos = std.mem.indexOf(u8, result.output, "'m9'") orelse return error.TestUnexpectedResult;
-    const m0_pos = std.mem.indexOf(u8, result.output, "'m0'") orelse return error.TestUnexpectedResult;
+    const m9_pos = std.mem.indexOf(u8, result.output, "\"m9\"") orelse return error.TestUnexpectedResult;
+    const m0_pos = std.mem.indexOf(u8, result.output, "\"m0\"") orelse return error.TestUnexpectedResult;
     try std.testing.expect(m9_pos < m0_pos);
 }
 
@@ -2555,7 +2555,7 @@ test "Stress: wide fan-in (many modules import same leaf)" {
     // leaf 코드는 한 번만 포함
     var count: usize = 0;
     var search_from: usize = 0;
-    while (std.mem.indexOfPos(u8, result.output, search_from, "'shared'")) |pos| {
+    while (std.mem.indexOfPos(u8, result.output, search_from, "\"shared\"")) |pos| {
         count += 1;
         search_from = pos + 1;
     }
@@ -2584,9 +2584,9 @@ test "Stress: multiple entry points with deep shared graph" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'shared-base'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'e1'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'e2'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"shared-base\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"e1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"e2\"") != null);
 }
 
 // ============================================================
@@ -2664,7 +2664,7 @@ test "Default: re-export default from another module" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'real-value'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"real-value\"") != null);
 }
 
 test "Default: default export with same-name local variable" {
@@ -2689,7 +2689,7 @@ test "Default: default export with same-name local variable" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'local'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"local\"") != null);
 }
 
 test "Default: multiple modules with default exports" {
@@ -2714,9 +2714,9 @@ test "Default: multiple modules with default exports" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'alpha'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'beta'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'gamma'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"alpha\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"beta\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"gamma\"") != null);
 }
 
 // ============================================================
@@ -2864,7 +2864,7 @@ test "Assignment: export const with complex initializer" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'production'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"production\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "String(42)") != null);
 }
 
@@ -2985,7 +2985,7 @@ test "TypeScript: string enum across modules" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'ACTIVE'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"ACTIVE\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "Status") != null);
 }
 
@@ -3046,7 +3046,7 @@ test "Circular: four module cycle (A→B→C→D→A)" {
     }
     try std.testing.expect(has_circular);
     // 모든 모듈 포함
-    for ([_][]const u8{ "'A'", "'B'", "'C'", "'D'" }) |needle| {
+    for ([_][]const u8{ "\"A\"", "\"B\"", "\"C\"", "\"D\"" }) |needle| {
         try std.testing.expect(std.mem.indexOf(u8, result.output, needle) != null);
     }
 }
@@ -3082,8 +3082,8 @@ test "Circular: mutual import with re-exports" {
 
     // 순환이 있어도 번들은 생성됨
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'FOO'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'BAR'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"FOO\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"BAR\"") != null);
 }
 
 test "Circular: entry depends on circular pair" {
@@ -3112,8 +3112,8 @@ test "Circular: entry depends on circular pair" {
 
     try std.testing.expect(!result.hasErrors());
     // entry가 마지막
-    const entry_pos = std.mem.indexOf(u8, result.output, "'entry done'") orelse return error.TestUnexpectedResult;
-    const a_pos = std.mem.indexOf(u8, result.output, "'a'") orelse return error.TestUnexpectedResult;
+    const entry_pos = std.mem.indexOf(u8, result.output, "\"entry done\"") orelse return error.TestUnexpectedResult;
+    const a_pos = std.mem.indexOf(u8, result.output, "\"a\"") orelse return error.TestUnexpectedResult;
     try std.testing.expect(a_pos < entry_pos);
 }
 
@@ -3139,7 +3139,7 @@ test "Resolution: parent directory traversal (../../)" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'3.0.0'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"3.0.0\"") != null);
 }
 
 test "Resolution: .tsx extension for React components" {
@@ -3185,7 +3185,7 @@ test "Resolution: mixed .ts and .tsx imports" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'utility'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"utility\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "function View") != null);
 }
 
@@ -3320,7 +3320,7 @@ test "Real-world: state management pattern (Redux-like)" {
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "function createStore") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "function counterReducer") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'INCREMENT'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"INCREMENT\"") != null);
 }
 
 test "Real-world: middleware chain pattern" {
@@ -3449,7 +3449,7 @@ test "Format: all three formats produce valid output for same input" {
     const r2 = try b2.bundle();
     defer r2.deinit(std.testing.allocator);
     try std.testing.expect(!r2.hasErrors());
-    try std.testing.expect(std.mem.startsWith(u8, r2.output, "'use strict';\n"));
+    try std.testing.expect(std.mem.startsWith(u8, r2.output, "\"use strict\";\n"));
     try std.testing.expect(std.mem.indexOf(u8, r2.output, "n * n") != null);
 
     // IIFE
@@ -3550,8 +3550,8 @@ test "Mixed: import default + named from same module, re-exported" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'2.0'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'MyAPI'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"2.0\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"MyAPI\"") != null);
 }
 
 test "Mixed: export * and named export same module" {
@@ -3578,9 +3578,9 @@ test "Mixed: export * and named export same module" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'from-m1'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'from-m2'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'also-m2'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-m1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-m2\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"also-m2\"") != null);
 }
 
 test "Mixed: deeply nested barrel with re-exports and defaults" {
@@ -3614,8 +3614,8 @@ test "Mixed: deeply nested barrel with re-exports and defaults" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'utils-pkg'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'helpers-pkg'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"utils-pkg\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"helpers-pkg\"") != null);
 }
 
 test "Mixed: template literals and tagged templates across modules" {
@@ -3778,15 +3778,15 @@ test "Stress: 20 modules in diamond lattice" {
 
     try std.testing.expect(!result.hasErrors());
     // c 모듈들이 b 모듈들보다 먼저, b가 entry보다 먼저
-    const c1_pos = std.mem.indexOf(u8, result.output, "'c1'") orelse return error.TestUnexpectedResult;
-    const b1_pos = std.mem.indexOf(u8, result.output, "'b1'") orelse return error.TestUnexpectedResult;
-    const e_pos = std.mem.indexOf(u8, result.output, "'entry'") orelse return error.TestUnexpectedResult;
+    const c1_pos = std.mem.indexOf(u8, result.output, "\"c1\"") orelse return error.TestUnexpectedResult;
+    const b1_pos = std.mem.indexOf(u8, result.output, "\"b1\"") orelse return error.TestUnexpectedResult;
+    const e_pos = std.mem.indexOf(u8, result.output, "\"entry\"") orelse return error.TestUnexpectedResult;
     try std.testing.expect(c1_pos < b1_pos);
     try std.testing.expect(b1_pos < e_pos);
     // c 모듈은 각각 한 번만 포함 (dedup)
     var c1_count: usize = 0;
     var sf: usize = 0;
-    while (std.mem.indexOfPos(u8, result.output, sf, "'c1'")) |pos| {
+    while (std.mem.indexOfPos(u8, result.output, sf, "\"c1\"")) |pos| {
         c1_count += 1;
         sf = pos + 1;
     }
@@ -3844,8 +3844,8 @@ test "Export: empty export clause" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'side-effect'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'main'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"side-effect\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"main\"") != null);
 }
 
 test "Export: multiple imports from same module (dedup bindings)" {
@@ -3875,13 +3875,13 @@ test "Export: multiple imports from same module (dedup bindings)" {
     // lib init은 한 번만 포함
     var count: usize = 0;
     var sf: usize = 0;
-    while (std.mem.indexOfPos(u8, result.output, sf, "'lib init'")) |pos| {
+    while (std.mem.indexOfPos(u8, result.output, sf, "\"lib init\"")) |pos| {
         count += 1;
         sf = pos + 1;
     }
     try std.testing.expectEqual(@as(usize, 1), count);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'FOO'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'BAR'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"FOO\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"BAR\"") != null);
 }
 
 test "Export: export let with later mutation" {
@@ -3937,7 +3937,7 @@ test "Hoisting: var declarations across modules" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'hoisted-value'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"hoisted-value\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "function getValue") != null);
 }
 
@@ -3994,7 +3994,7 @@ test "TypeScript: declare module stripped" {
     try std.testing.expect(!result.hasErrors());
     // declare module 제거
     try std.testing.expect(std.mem.indexOf(u8, result.output, "declare") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'processing'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"processing\"") != null);
 }
 
 test "TypeScript: readonly and access modifiers stripped" {
@@ -4084,7 +4084,7 @@ test "TypeScript: as const and satisfies stripped" {
 
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "as const") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'#ff0000'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"#ff0000\"") != null);
 }
 
 test "TypeScript: parameter property transform in bundle" {
@@ -4138,7 +4138,7 @@ test "Scope hoisting: imported value used as object key" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'myKey'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"myKey\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "[KEY]") != null);
 }
 
@@ -4160,7 +4160,7 @@ test "Scope hoisting: imported value in template literal" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'Alice'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"Alice\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "${name}") != null);
 }
 
@@ -4206,7 +4206,7 @@ test "Scope hoisting: imported value in ternary" {
 
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "DEBUG") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'verbose'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"verbose\"") != null);
 }
 
 // ============================================================
@@ -4290,9 +4290,9 @@ test "Re-export: export * from multiple sources" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'A'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'B'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'C'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"A\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"B\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"C\"") != null);
 }
 
 test "Re-export: mixed named and star from same module" {
@@ -4322,9 +4322,9 @@ test "Re-export: mixed named and star from same module" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'X'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'Y'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'Z'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"X\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"Y\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"Z\"") != null);
 }
 
 test "Re-export: re-export default as named" {
@@ -4347,7 +4347,7 @@ test "Re-export: re-export default as named" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'default-foo'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"default-foo\"") != null);
 }
 
 test "Stress: all formats + minify combinations" {
@@ -4409,7 +4409,7 @@ test "TypeScript: import type only specifiers all stripped" {
 
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "interface") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'no types used'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"no types used\"") != null);
 }
 
 test "TypeScript: import { type } as value name" {
@@ -4431,7 +4431,7 @@ test "TypeScript: import { type } as value name" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'my-type-value'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"my-type-value\"") != null);
 }
 
 // ============================================================
@@ -4461,7 +4461,7 @@ test "TypeScript: declare module '*.svg' stripped" {
 
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "declare") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'rendered'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"rendered\"") != null);
 }
 
 // ============================================================
@@ -4629,7 +4629,7 @@ test "Default: default export object literal" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'localhost'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"localhost\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "8080") != null);
 }
 
@@ -4653,8 +4653,8 @@ test "Default: default export array literal" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'a'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'b'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"a\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"b\"") != null);
 }
 
 test "Default: default export used in expression" {
@@ -4887,7 +4887,7 @@ test "Expression: nullish coalescing across modules" {
 
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "??") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'default'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"default\"") != null);
 }
 
 test "Expression: logical assignment across modules" {
@@ -4941,7 +4941,7 @@ test "Module: re-export with rename chain" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'renamed-three-times'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"renamed-three-times\"") != null);
 }
 
 test "Module: side-effect import between value imports" {
@@ -4967,9 +4967,9 @@ test "Module: side-effect import between value imports" {
 
     try std.testing.expect(!result.hasErrors());
     // side-effect는 a와 b 사이에 실행
-    const a_pos = std.mem.indexOf(u8, result.output, "'A'") orelse return error.TestUnexpectedResult;
-    const side_pos = std.mem.indexOf(u8, result.output, "'SIDE'") orelse return error.TestUnexpectedResult;
-    const b_pos = std.mem.indexOf(u8, result.output, "'B'") orelse return error.TestUnexpectedResult;
+    const a_pos = std.mem.indexOf(u8, result.output, "\"A\"") orelse return error.TestUnexpectedResult;
+    const side_pos = std.mem.indexOf(u8, result.output, "\"SIDE\"") orelse return error.TestUnexpectedResult;
+    const b_pos = std.mem.indexOf(u8, result.output, "\"B\"") orelse return error.TestUnexpectedResult;
     try std.testing.expect(a_pos < side_pos);
     try std.testing.expect(side_pos < b_pos);
 }
@@ -4994,8 +4994,8 @@ test "Module: import same default from two different modules" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'A'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'B'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"A\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"B\"") != null);
 }
 
 // ============================================================
@@ -5089,7 +5089,7 @@ test "Stress: 15 modules with mixed patterns" {
     // shared는 한 번만 포함
     var count: usize = 0;
     var sf: usize = 0;
-    while (std.mem.indexOfPos(u8, result.output, sf, "'SHARED'")) |pos| {
+    while (std.mem.indexOfPos(u8, result.output, sf, "\"SHARED\"")) |pos| {
         count += 1;
         sf = pos + 1;
     }
@@ -5851,8 +5851,8 @@ test "Deconflict: imported name shadowed in nested scope" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'module'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'local'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"module\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"local\"") != null);
 }
 
 test "Deconflict: seven modules same name" {
@@ -5911,7 +5911,7 @@ test "Re-export: rename chain (A→B→C→D)" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'renamed-three-times'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"renamed-three-times\"") != null);
 }
 
 test "Re-export: overlapping export * names" {
@@ -5969,7 +5969,7 @@ test "Real-world: CLI tool pattern" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    for ([_][]const u8{ "function parseArgs", "function runCommand", "function log", "'3.1.4'" }) |needle| {
+    for ([_][]const u8{ "function parseArgs", "function runCommand", "function log", "\"3.1.4\"" }) |needle| {
         try std.testing.expect(std.mem.indexOf(u8, result.output, needle) != null);
     }
 }
@@ -6183,7 +6183,7 @@ test "PackageJson: exports string shorthand" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'from-exports'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-exports\"") != null);
 }
 
 test "PackageJson: exports condition import" {
@@ -6204,7 +6204,7 @@ test "PackageJson: exports condition import" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'esm-path'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"esm-path\"") != null);
 }
 
 test "PackageJson: subpath exports" {
@@ -6224,7 +6224,7 @@ test "PackageJson: subpath exports" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'btn-component'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"btn-component\"") != null);
 }
 
 test "PackageJson: wildcard exports" {
@@ -6244,7 +6244,7 @@ test "PackageJson: wildcard exports" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'wildcard-resolved'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"wildcard-resolved\"") != null);
 }
 
 // ============================================================
@@ -6269,7 +6269,7 @@ test "PackageJson: module field preferred over main" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'from-module-field'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-module-field\"") != null);
 }
 
 test "PackageJson: main field fallback" {
@@ -6289,7 +6289,7 @@ test "PackageJson: main field fallback" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'from-main'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-main\"") != null);
 }
 
 test "PackageJson: no package.json index.js fallback" {
@@ -6306,7 +6306,7 @@ test "PackageJson: no package.json index.js fallback" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'index-fallback'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"index-fallback\"") != null);
 }
 
 // ============================================================
@@ -6327,7 +6327,7 @@ test "Extension: import .mts file" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'from-mts'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-mts\"") != null);
 }
 
 test "Extension: import .cts file via .cjs" {
@@ -6344,7 +6344,7 @@ test "Extension: import .cts file via .cjs" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'from-cts'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-cts\"") != null);
 }
 
 test "Extension: direct .mts import without .mjs" {
@@ -6361,7 +6361,7 @@ test "Extension: direct .mts import without .mjs" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'mts-direct'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"mts-direct\"") != null);
 }
 
 // ============================================================
@@ -6386,7 +6386,7 @@ test "DynamicImport: static path in import()" {
 
     // 단일 번들 모드에서 lazy 모듈 코드가 포함되어야 함
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'lazy-loaded'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"lazy-loaded\"") != null);
 }
 
 test "DynamicImport: external dynamic import preserved" {
@@ -6429,7 +6429,7 @@ test "DynamicImport: combined with static import" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'shared-val'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"shared-val\"") != null);
 }
 
 // ============================================================
@@ -6458,7 +6458,7 @@ test "Format: CJS scope_hoist entry exports" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.startsWith(u8, result.output, "'use strict';\n"));
+    try std.testing.expect(std.mem.startsWith(u8, result.output, "\"use strict\";\n"));
     try std.testing.expect(std.mem.indexOf(u8, result.output, "function helper") != null);
 }
 
@@ -6510,7 +6510,7 @@ test "Default: anonymous string default export imported" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'hello world'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"hello world\"") != null);
 }
 
 // ============================================================
@@ -6537,7 +6537,7 @@ test "Default: export named as default then import" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'named-as-default'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"named-as-default\"") != null);
 }
 
 // ============================================================
@@ -6613,7 +6613,7 @@ test "Resolution: scoped package @scope/pkg" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'scoped-pkg'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"scoped-pkg\"") != null);
 }
 
 // ============================================================
@@ -6670,8 +6670,8 @@ test "Deconflict: rename avoids nested scope variable" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'entry-x'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'other-x'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"entry-x\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"other-x\"") != null);
 }
 
 // ============================================================
@@ -6701,7 +6701,7 @@ test "Re-export: 10-level chain" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'deep-10'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"deep-10\"") != null);
 }
 
 // ============================================================
@@ -6739,7 +6739,7 @@ test "MultiEntry: scope hoist with shared dep name conflict" {
     try std.testing.expect(!result.hasErrors());
     // 3개 모듈의 'name' 충돌 → 리네임
     try std.testing.expect(std.mem.indexOf(u8, result.output, "name$") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'common'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"common\"") != null);
 }
 
 // ============================================================
@@ -6769,8 +6769,8 @@ test "Export: empty export {} stripped in scope hoist" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'side'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'main'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"side\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"main\"") != null);
     // export {} 가 번들에 남아있으면 안 됨
     try std.testing.expect(std.mem.indexOf(u8, result.output, "export {}") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "export{}") == null);
@@ -6897,10 +6897,10 @@ test "TreeShaking: only used exports from dependency" {
 
     try std.testing.expect(!result.hasErrors());
     // used는 출력에 존재
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'yes'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"yes\"") != null);
     // unused도 같은 모듈이라 출력에 존재 (모듈 수준 tree-shaking이므로)
     // 1단계에서는 모듈 전체를 포함/제거. export 수준 제거는 2단계.
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'no'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"no\"") != null);
 }
 
 test "TreeShaking: re-export chain dependency included" {
@@ -7418,9 +7418,9 @@ test "Integration: barrel file tree-shaking with sideEffects=false" {
 
     try std.testing.expect(!result.hasErrors());
     // used가 포함되어야 함
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'a'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"a\"") != null);
     // sideEffects=false이므로 b.ts가 미사용 → 제거됨
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'b'") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"b\"") == null);
 }
 
 test "Integration: barrel file without sideEffects keeps all" {
@@ -7454,7 +7454,7 @@ test "Integration: barrel file without sideEffects keeps all" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'a'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"a\"") != null);
     // sideEffects 없으므로 b.ts의 side effect 코드 유지
     try std.testing.expect(std.mem.indexOf(u8, result.output, "b side effect") != null);
 }
@@ -7482,8 +7482,8 @@ test "Integration: diamond re-export resolves to same symbol" {
 
     try std.testing.expect(!result.hasErrors());
     // shared 선언이 한 번만 존재해야 함 (중복 불가)
-    const first = std.mem.indexOf(u8, result.output, "'original'") orelse return error.TestUnexpectedResult;
-    try std.testing.expect(std.mem.indexOf(u8, result.output[first + 1 ..], "'original'") == null);
+    const first = std.mem.indexOf(u8, result.output, "\"original\"") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, result.output[first + 1 ..], "\"original\"") == null);
 }
 
 test "Integration: class extends across module boundary" {
@@ -7548,7 +7548,7 @@ test "Integration: default and named re-export combined" {
 
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "function lib") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'named'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"named\"") != null);
 }
 
 test "Integration: side-effect order with export star" {
@@ -7608,7 +7608,7 @@ test "Integration: deeply nested barrel re-exports" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'found'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"found\"") != null);
 }
 
 test "Integration: mixed default/named import from same module" {
@@ -7634,7 +7634,7 @@ test "Integration: mixed default/named import from same module" {
 
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "class App") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "'1.0'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"1.0\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "debug") != null);
 }
 
@@ -7744,7 +7744,7 @@ test "CJS: mixed ESM and CJS modules" {
 
     try std.testing.expect(!result.hasErrors());
     // ESM 모듈은 스코프 호이스팅 (import 제거)
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "const x = 'esm'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "const x = \"esm\"") != null);
     // CJS 모듈은 __commonJS 래핑
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require_lib") != null);
@@ -8535,7 +8535,7 @@ test "CodeSplitting: shared module produces common chunk" {
     // shared 모듈의 코드는 정확히 하나의 청크에만 포함 (중복 없음)
     var shared_count: usize = 0;
     for (outs) |o| {
-        if (std.mem.indexOf(u8, o.contents, "'common'") != null) shared_count += 1;
+        if (std.mem.indexOf(u8, o.contents, "\"common\"") != null) shared_count += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), shared_count);
 }
@@ -8573,8 +8573,8 @@ test "CodeSplitting: cross-chunk import statement" {
     // side-effect: import './chunk-N.js'
     var has_cross_import = false;
     for (outs) |o| {
-        if (std.mem.indexOf(u8, o.contents, "import './") != null or
-            std.mem.indexOf(u8, o.contents, "from './") != null)
+        if (std.mem.indexOf(u8, o.contents, "import \"./") != null or
+            std.mem.indexOf(u8, o.contents, "from \"./") != null)
         {
             has_cross_import = true;
             break;
@@ -8738,7 +8738,7 @@ test "CodeSplitting: multiple named imports from common chunk" {
             std.mem.indexOf(u8, o.contents, "import {") != null) and
             std.mem.indexOf(u8, o.contents, "x") != null and
             std.mem.indexOf(u8, o.contents, "y") != null and
-            std.mem.indexOf(u8, o.contents, "from './") != null)
+            std.mem.indexOf(u8, o.contents, "from \"./") != null)
         {
             has_multi_import = true;
             break;
@@ -8818,12 +8818,12 @@ test "CodeSplitting: re-export chain across chunks" {
     var has_cross_import = false;
     var has_val_inline = false;
     for (outs) |o| {
-        if (std.mem.indexOf(u8, o.contents, "from './") != null or
-            std.mem.indexOf(u8, o.contents, "import './") != null)
+        if (std.mem.indexOf(u8, o.contents, "from \"./") != null or
+            std.mem.indexOf(u8, o.contents, "import \"./") != null)
         {
             has_cross_import = true;
         }
-        if (std.mem.indexOf(u8, o.contents, "'hello'") != null) {
+        if (std.mem.indexOf(u8, o.contents, "\"hello\"") != null) {
             has_val_inline = true;
         }
     }
@@ -8868,12 +8868,12 @@ test "CodeSplitting: per-chunk rename — 다른 청크의 같은 이름은 충�
     var a_has_x = false;
     var b_has_x = false;
     for (outs) |o| {
-        if (std.mem.indexOf(u8, o.contents, "'from-a'") != null and
+        if (std.mem.indexOf(u8, o.contents, "\"from-a\"") != null and
             std.mem.indexOf(u8, o.contents, "const x") != null)
         {
             a_has_x = true;
         }
-        if (std.mem.indexOf(u8, o.contents, "'from-b'") != null and
+        if (std.mem.indexOf(u8, o.contents, "\"from-b\"") != null and
             std.mem.indexOf(u8, o.contents, "const x") != null)
         {
             b_has_x = true;
@@ -8997,7 +8997,7 @@ test "CodeSplitting: cross-chunk import binding does not collide with local name
     for (outputs) |o| {
         // entry 청크의 코드에서 SyntaxError 패턴 검사
         // const value = 'local'과 import { value }가 동시에 있으면 안 됨
-        if (std.mem.indexOf(u8, o.contents, "'local'") != null) {
+        if (std.mem.indexOf(u8, o.contents, "\"local\"") != null) {
             // 이 청크에 import { value }도 있으면 충돌
             if (std.mem.indexOf(u8, o.contents, "import {") != null and
                 std.mem.indexOf(u8, o.contents, "const value") != null)

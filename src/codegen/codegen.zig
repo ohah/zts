@@ -43,8 +43,16 @@ pub const IndentChar = enum {
 /// codegen이 import 스킵 + 식별자 리네임에 사용.
 pub const LinkingMetadata = @import("../bundler/linker.zig").LinkingMetadata;
 
+pub const QuoteStyle = enum {
+    double, // " (기본, esbuild/oxc/SWC 호환)
+    single, // '
+    preserve, // 원본 유지
+};
+
 pub const CodegenOptions = struct {
     module_format: ModuleFormat = .esm,
+    /// 문자열 따옴표 스타일 (기본: 쌍따옴표, esbuild/oxc 호환)
+    quote_style: QuoteStyle = .double,
     /// 들여쓰기 문자 (D044: Tab 기본)
     indent_char: IndentChar = .tab,
     /// Space일 때 들여쓰기 너비 (기본 2)
@@ -297,6 +305,66 @@ pub const Codegen = struct {
         try self.writeSpan(node.span);
     }
 
+    /// 문자열 리터럴 출력. quote_style 옵션에 따라 따옴표를 변환.
+    /// preserve이면 원본 그대로, double/single이면 따옴표 교체 + 내부 이스케이프 처리.
+    fn writeStringLiteral(self: *Codegen, span: Span) !void {
+        const text = self.ast.getText(span);
+        if (text.len < 2) {
+            try self.write(text);
+            return;
+        }
+
+        const src_quote = text[0];
+        const target_quote: u8 = switch (self.options.quote_style) {
+            .double => '"',
+            .single => '\'',
+            .preserve => src_quote,
+        };
+
+        // 따옴표가 같으면 원본 그대로 출력 (fast path)
+        if (src_quote == target_quote) {
+            if (self.options.ascii_only) {
+                try self.writeAsciiOnly(text);
+            } else {
+                try self.write(text);
+            }
+            return;
+        }
+
+        // 따옴표 변환: 첫/끝 바이트 교체 + 내부 이스케이프 처리
+        try self.writeByte(target_quote);
+        const content = text[1 .. text.len - 1];
+        var i: usize = 0;
+        while (i < content.len) {
+            const c = content[i];
+            if (c == '\\' and i + 1 < content.len) {
+                // 이스케이프 시퀀스
+                if (content[i + 1] == src_quote) {
+                    // 원본 따옴표 이스케이프 → target에서는 이스케이프 불필요
+                    // \' → ' (double로 변환 시) 또는 \" → " (single로 변환 시)
+                    try self.writeByte(src_quote);
+                    i += 2;
+                } else {
+                    try self.writeByte(c);
+                    i += 1;
+                }
+            } else if (c == target_quote) {
+                // target 따옴표가 내용에 있으면 이스케이프 추가
+                try self.writeByte('\\');
+                try self.writeByte(c);
+                i += 1;
+            } else if (c >= 0x80 and self.options.ascii_only) {
+                // non-ASCII → \uXXXX (ascii_only 모드)
+                try self.writeAsciiOnly(content[i .. i + 1]);
+                i += 1;
+            } else {
+                try self.writeByte(c);
+                i += 1;
+            }
+        }
+        try self.writeByte(target_quote);
+    }
+
     // ================================================================
     // 주석 출력
     // ================================================================
@@ -378,10 +446,11 @@ pub const Codegen = struct {
             .boolean_literal,
             .null_literal,
             .numeric_literal,
-            .string_literal,
             .bigint_literal,
             .regexp_literal,
             => try self.writeNodeSpan(node),
+
+            .string_literal => try self.writeStringLiteral(node.span),
 
             // Identifiers — 번들 모드에서 symbol_id 기반 리네임 적용
             .identifier_reference,
@@ -2395,19 +2464,19 @@ test "Codegen: nullish assign" {
 test "Codegen: import default" {
     var r = try e2e(std.testing.allocator, "import foo from './foo';");
     defer r.deinit();
-    try std.testing.expectEqualStrings("import foo from './foo';", r.output);
+    try std.testing.expectEqualStrings("import foo from \"./foo\";", r.output);
 }
 
 test "Codegen: import named" {
     var r = try e2e(std.testing.allocator, "import { a, b } from './foo';");
     defer r.deinit();
-    try std.testing.expectEqualStrings("import {a,b} from './foo';", r.output);
+    try std.testing.expectEqualStrings("import {a,b} from \"./foo\";", r.output);
 }
 
 test "Codegen: import namespace" {
     var r = try e2e(std.testing.allocator, "import * as ns from './foo';");
     defer r.deinit();
-    try std.testing.expectEqualStrings("import * as ns from './foo';", r.output);
+    try std.testing.expectEqualStrings("import * as ns from \"./foo\";", r.output);
 }
 
 test "Codegen: export named" {
@@ -2505,19 +2574,19 @@ test "Codegen CJS: import named" {
     // CJS named import uses writeNodeSpan which preserves trailing space from source
     var r = try e2eCJS(std.testing.allocator, "import { foo } from './bar';");
     defer r.deinit();
-    try std.testing.expectEqualStrings("const {foo }=require('./bar');", r.output);
+    try std.testing.expectEqualStrings("const {foo }=require(\"./bar\");", r.output);
 }
 
 test "Codegen CJS: import default" {
     var r = try e2eCJS(std.testing.allocator, "import bar from './bar';");
     defer r.deinit();
-    try std.testing.expectEqualStrings("const bar=require('./bar').default;", r.output);
+    try std.testing.expectEqualStrings("const bar=require(\"./bar\").default;", r.output);
 }
 
 test "Codegen CJS: import namespace" {
     var r = try e2eCJS(std.testing.allocator, "import * as bar from './bar';");
     defer r.deinit();
-    try std.testing.expectEqualStrings("const bar=require('./bar');", r.output);
+    try std.testing.expectEqualStrings("const bar=require(\"./bar\");", r.output);
 }
 
 test "Codegen CJS: export all" {

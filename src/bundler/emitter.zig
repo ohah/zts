@@ -203,7 +203,7 @@ pub fn emitWithTreeShaking(
     // 포맷별 prologue
     switch (options.format) {
         .iife => try output.appendSlice(allocator, "(function() {\n"),
-        .cjs => try output.appendSlice(allocator, "'use strict';\n"),
+        .cjs => try output.appendSlice(allocator, "\"use strict\";\n"),
         .esm => {},
     }
 
@@ -749,24 +749,24 @@ pub fn emitChunks(
                     }
                 }
                 if (!options.minify) {
-                    try chunk_output.appendSlice(allocator, " } from './");
+                    try chunk_output.appendSlice(allocator, " } from \"./");
                     try chunk_output.appendSlice(allocator, dep_stem);
-                    try chunk_output.appendSlice(allocator, ".js';\n");
+                    try chunk_output.appendSlice(allocator, ".js\";\n");
                 } else {
-                    try chunk_output.appendSlice(allocator, "}from'./");
+                    try chunk_output.appendSlice(allocator, "}from\"./");
                     try chunk_output.appendSlice(allocator, dep_stem);
-                    try chunk_output.appendSlice(allocator, ".js';");
+                    try chunk_output.appendSlice(allocator, ".js\";");
                 }
             } else {
                 // 심볼 정보 없음 → side-effect import (실행 순서 보장용)
                 if (!options.minify) {
-                    try chunk_output.appendSlice(allocator, "import './");
+                    try chunk_output.appendSlice(allocator, "import \"./");
                     try chunk_output.appendSlice(allocator, dep_stem);
-                    try chunk_output.appendSlice(allocator, ".js';\n");
+                    try chunk_output.appendSlice(allocator, ".js\";\n");
                 } else {
-                    try chunk_output.appendSlice(allocator, "import'./");
+                    try chunk_output.appendSlice(allocator, "import\"./");
                     try chunk_output.appendSlice(allocator, dep_stem);
-                    try chunk_output.appendSlice(allocator, ".js';");
+                    try chunk_output.appendSlice(allocator, ".js\";");
                 }
             }
         }
@@ -1388,7 +1388,7 @@ test "emitter: CJS format" {
     const output = try emit(std.testing.allocator, &result.graph, .{ .format = .cjs }, null);
     defer std.testing.allocator.free(output);
 
-    try std.testing.expect(std.mem.startsWith(u8, output, "'use strict';\n"));
+    try std.testing.expect(std.mem.startsWith(u8, output, "\"use strict\";\n"));
 }
 
 test "emitter: empty graph" {
@@ -1418,9 +1418,9 @@ test "emitter: chain A → B → C order" {
     defer std.testing.allocator.free(output);
 
     // C → B → A 순서
-    const c_pos = std.mem.indexOf(u8, output, "const c = 'c';") orelse return error.TestUnexpectedResult;
-    const b_pos = std.mem.indexOf(u8, output, "const b = 'b';") orelse return error.TestUnexpectedResult;
-    const a_pos = std.mem.indexOf(u8, output, "const a = 'a';") orelse return error.TestUnexpectedResult;
+    const c_pos = std.mem.indexOf(u8, output, "const c = \"c\";") orelse return error.TestUnexpectedResult;
+    const b_pos = std.mem.indexOf(u8, output, "const b = \"b\";") orelse return error.TestUnexpectedResult;
+    const a_pos = std.mem.indexOf(u8, output, "const a = \"a\";") orelse return error.TestUnexpectedResult;
     try std.testing.expect(c_pos < b_pos);
     try std.testing.expect(b_pos < a_pos);
 }
@@ -1540,7 +1540,7 @@ test "emitChunks: two entries with shared module — 3 OutputFiles" {
     // shared 코드는 정확히 1개의 출력에만 포함
     var shared_count: usize = 0;
     for (outputs) |o| {
-        if (std.mem.indexOf(u8, o.contents, "'shared'") != null) shared_count += 1;
+        if (std.mem.indexOf(u8, o.contents, "\"shared\"") != null) shared_count += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), shared_count);
 }
