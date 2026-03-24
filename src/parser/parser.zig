@@ -392,8 +392,14 @@ pub const Parser = struct {
 
     /// rest parameter가 마지막이 아니면 에러.
     /// spread_element 뒤에 comma가 오면 rest가 마지막이 아닌 것.
+    /// 단, ambient context (declare)에서 trailing comma (,...) → ) 는 허용.
     pub fn checkRestParameterLast(self: *Parser, param: NodeIndex) ParseError2!void {
         if (!param.isNone() and self.ast.getNode(param).tag == .spread_element and self.current() == .comma) {
+            // ambient context에서 trailing comma (rest 뒤 comma + r_paren)는 허용
+            if (self.ctx.in_ambient) {
+                const next = try self.peekNextKind();
+                if (next == .r_paren) return;
+            }
             try self.addError(self.currentSpan(), "Rest parameter must be last formal parameter");
         }
     }

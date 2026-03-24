@@ -468,7 +468,8 @@ fn parseVariableDeclarator(self: *Parser) ParseError2!NodeIndex {
     const name = try self.parseBindingName();
 
     // TS definite assignment assertion: let x!: Type (simple identifier만, destructuring 제외)
-    if (self.current() == .bang and !name.isNone() and self.ast.getNode(name).tag == .binding_identifier) {
+    // 줄바꿈 후 !는 ASI 경계이므로 definite assignment가 아님 (예: var a\n!b)
+    if (self.current() == .bang and !self.scanner.token.has_newline_before and !name.isNone() and self.ast.getNode(name).tag == .binding_identifier) {
         _ = try self.eat(.bang);
     }
 
