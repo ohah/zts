@@ -1838,10 +1838,12 @@ pub const Codegen = struct {
     /// attributes → ,{key:val,...} or ,null
     fn emitJSXAttrs(self: *Codegen, attrs_start: u32, attrs_len: u32) !void {
         if (attrs_len > 0) {
-            try self.write(",{");
+            if (self.options.minify) try self.write(",{") else try self.write(", { ");
             const attr_indices = self.ast.extra_data.items[attrs_start .. attrs_start + attrs_len];
             for (attr_indices, 0..) |raw_idx, i| {
-                if (i > 0) try self.writeByte(',');
+                if (i > 0) {
+                    if (self.options.minify) try self.writeByte(',') else try self.write(", ");
+                }
                 const attr = self.ast.getNode(@enumFromInt(raw_idx));
                 if (attr.tag == .jsx_attribute) {
                     try self.emitJSXAttribute(attr);
@@ -1850,9 +1852,9 @@ pub const Codegen = struct {
                     try self.emitNode(attr.data.unary.operand);
                 }
             }
-            try self.writeByte('}');
+            if (self.options.minify) try self.writeByte('}') else try self.write(" }");
         } else {
-            try self.write(",null");
+            if (self.options.minify) try self.write(",null") else try self.write(", null");
         }
     }
 
@@ -1866,11 +1868,11 @@ pub const Codegen = struct {
                 const text = self.ast.source[child.span.start..child.span.end];
                 const trimmed = std.mem.trim(u8, text, " \t\n\r");
                 if (trimmed.len == 0) continue;
-                try self.write(",\"");
+                if (self.options.minify) try self.write(",\"") else try self.write(", \"");
                 try self.write(trimmed);
                 try self.writeByte('"');
             } else {
-                try self.writeByte(',');
+                if (self.options.minify) try self.writeByte(',') else try self.write(", ");
                 try self.emitNode(@enumFromInt(raw_idx));
             }
         }
@@ -1878,14 +1880,12 @@ pub const Codegen = struct {
 
     /// JSX attribute: name={value} or name="value"
     fn emitJSXAttribute(self: *Codegen, node: Node) !void {
-        // name
         try self.emitNode(node.data.binary.left);
-        // value
         if (!node.data.binary.right.isNone()) {
-            try self.writeByte(':');
+            if (self.options.minify) try self.writeByte(':') else try self.write(": ");
             try self.emitNode(node.data.binary.right);
         } else {
-            try self.write(":true");
+            if (self.options.minify) try self.write(":true") else try self.write(": true");
         }
     }
 
