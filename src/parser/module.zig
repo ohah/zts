@@ -57,15 +57,12 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     // import type Foo from 'bar'
     // import type { Foo } from 'bar'
     // import type * as ns from 'bar'
-    var is_type_only = false;
     if (self.current() == .identifier and self.isContextual("type")) {
-        // type 다음에 { 또는 * 또는 identifier가 오면 type-only import
         const next = try self.peekNextKind();
         if (next == .l_curly or next == .star or next == .identifier or
             (next.isKeyword() and !next.isReservedKeyword()))
         {
-            is_type_only = true;
-            try self.advance(); // skip 'type'
+            try self.advance(); // skip 'type' — type-only import는 트랜스포머에서 제거
         }
     }
 

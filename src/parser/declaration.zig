@@ -23,6 +23,15 @@ const ParseError2 = @import("parser.zig").ParseError2;
 /// TS class member modifier (contextual keywords). parseClassMember에서 2번 사용.
 const ts_class_modifiers: []const []const u8 = &.{ "readonly", "abstract", "override", "declare" };
 
+/// 함수 body 또는 TS 오버로드 시그니처 (세미콜론으로 끝나면 body 없음)
+fn parseFunctionBodyOrOverload(self: *Parser) ParseError2!NodeIndex {
+    if (self.current() == .semicolon or self.current() == .eof) {
+        _ = try self.eat(.semicolon);
+        return NodeIndex.none;
+    }
+    return self.parseFunctionBody();
+}
+
 pub fn parseFunctionDeclaration(self: *Parser) ParseError2!NodeIndex {
     return parseFunctionDeclarationWithFlags(self, 0);
 }
@@ -75,11 +84,7 @@ fn parseFunctionDeclarationWithFlags(self: *Parser, extra_flags: u32) ParseError
 
     self.has_simple_params = self.checkSimpleParams(scratch_top);
     try self.checkDuplicateParams(scratch_top);
-    // TS 함수 오버로드 시그니처: function foo(): void; (body 없이 세미콜론)
-    const body = if (self.current() == .semicolon or self.current() == .eof) blk: {
-        _ = try self.eat(.semicolon);
-        break :blk NodeIndex.none;
-    } else try self.parseFunctionBody();
+    const body = try parseFunctionBodyOrOverload(self);
 
     // retroactive strict mode checks: "use strict" directive가 있으면
     // 함수 이름과 파라미터를 소급 검증 (ECMAScript 14.1.2)
@@ -188,11 +193,7 @@ fn parseFunctionDeclarationWithFlagsOptionalName(self: *Parser, extra_flags: u32
 
     self.has_simple_params = self.checkSimpleParams(scratch_top);
     try self.checkDuplicateParams(scratch_top);
-    // TS 함수 오버로드 시그니처: function foo(): void; (body 없이 세미콜론)
-    const body = if (self.current() == .semicolon or self.current() == .eof) blk: {
-        _ = try self.eat(.semicolon);
-        break :blk NodeIndex.none;
-    } else try self.parseFunctionBody();
+    const body = try parseFunctionBodyOrOverload(self);
 
     // retroactive strict mode checks
     if (self.is_strict_mode and !saved_ctx.is_strict_mode) {
