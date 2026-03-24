@@ -66,6 +66,7 @@ fn parseFunctionDeclarationWithFlags(self: *Parser, extra_flags: u32) ParseError
 
     try self.expect(.l_paren);
     self.in_formal_parameters = true;
+    try self.trySkipThisParameter();
     const scratch_top = self.saveScratch();
     while (self.current() != .r_paren and self.current() != .eof) {
         const loop_guard_pos = self.scanner.token.span.start;
@@ -176,6 +177,7 @@ fn parseFunctionDeclarationWithFlagsOptionalName(self: *Parser, extra_flags: u32
 
     try self.expect(.l_paren);
     self.in_formal_parameters = true;
+    try self.trySkipThisParameter();
     const scratch_top = self.saveScratch();
     while (self.current() != .r_paren and self.current() != .eof) {
         const loop_guard_pos = self.scanner.token.span.start;
@@ -257,6 +259,7 @@ pub fn parseFunctionExpressionWithFlags(self: *Parser, extra_flags: u32) ParseEr
 
     try self.expect(.l_paren);
     self.in_formal_parameters = true;
+    try self.trySkipThisParameter();
     const scratch_top = self.saveScratch();
     while (self.current() != .r_paren and self.current() != .eof) {
         const loop_guard_pos = self.scanner.token.span.start;
@@ -591,6 +594,7 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         self.allow_super_property = true;
         try self.expect(.l_paren);
         self.in_formal_parameters = true;
+        try self.trySkipThisParameter();
         const param_top = self.saveScratch();
         while (self.current() != .r_paren and self.current() != .eof) {
             const loop_guard_pos = self.scanner.token.span.start;

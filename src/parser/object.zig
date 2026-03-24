@@ -170,6 +170,7 @@ pub fn parseObjectMethodBody(self: *Parser, start: u32, key: NodeIndex, flags: u
 
     try self.expect(.l_paren);
     self.in_formal_parameters = true;
+    try self.trySkipThisParameter();
     const scratch_top = self.saveScratch();
     while (self.current() != .r_paren and self.current() != .eof) {
         const loop_guard_pos = self.scanner.token.span.start;

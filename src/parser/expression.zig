@@ -177,8 +177,13 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
                 const saved = self.saveState();
                 try self.advance(); // skip 'async'
 
-                // () 빈 파라미터 체크
-                if (self.current() == .l_paren and try self.peekNextKind() == .r_paren) {
+                // TS typed arrow 먼저 시도: async (a: Type): ReturnType => body
+                // 빈 파라미터 + 리턴 타입 (async (): void => {})도 isTypedArrowFunction이 감지
+                if (try self.isTypedArrowFunction()) {
+                    if (try self.parseTypedArrowParams(async_span.start, true)) |arrow| return arrow;
+                    self.restoreState(saved);
+                } else if (self.current() == .l_paren and try self.peekNextKind() == .r_paren) {
+                    // () 빈 파라미터 체크 (타입 없는 경우)
                     try self.advance(); // skip (
                     try self.advance(); // skip )
                     if (self.current() == .arrow and !self.scanner.token.has_newline_before) {
@@ -193,10 +198,6 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
                             });
                         }
                     }
-                    self.restoreState(saved);
-                } else if (try self.isTypedArrowFunction()) {
-                    // async (a: Type) => body — TS typed async arrow
-                    if (try self.parseTypedArrowParams(async_span.start, true)) |arrow| return arrow;
                     self.restoreState(saved);
                 } else {
                     // 괄호를 expression으로 파싱 (parenthesized_expression)

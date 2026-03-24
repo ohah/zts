@@ -467,6 +467,11 @@ fn parseVariableDeclarator(self: *Parser) ParseError2!NodeIndex {
     // variable declarator에서 `=`는 initializer이므로 여기서 소비하면 안 됨.
     const name = try self.parseBindingName();
 
+    // TS definite assignment assertion: let x!: Type (simple identifier만, destructuring 제외)
+    if (self.current() == .bang and !name.isNone() and self.ast.getNode(name).tag == .binding_identifier) {
+        _ = try self.eat(.bang);
+    }
+
     // TS 타입 어노테이션 (: Type)
     const type_ann = try self.tryParseTypeAnnotation();
 
