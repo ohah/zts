@@ -13,6 +13,7 @@ const ast_mod = @import("ast.zig");
 const Node = ast_mod.Node;
 const Tag = Node.Tag;
 const NodeIndex = ast_mod.NodeIndex;
+const Kind = @import("../lexer/token.zig").Kind;
 
 /// TS 키워드 타입 이름 → AST Tag 매핑 (parsePrimaryType에서 사용)
 const ts_type_keywords = std.StaticStringMap(Tag).initComptime(.{
@@ -235,20 +236,19 @@ fn parseNamespaceBlock(self: *Parser) ParseError2!NodeIndex {
     const block_start = self.currentSpan().start;
     try self.expect(.l_curly);
 
-    var stmts: std.ArrayList(NodeIndex) = .empty;
-    defer stmts.deinit(self.allocator);
-
+    const scratch_top = self.saveScratch();
     while (self.current() != .r_curly and self.current() != .eof) {
         const loop_guard_pos = self.scanner.token.span.start;
         const stmt = try self.parseStatement();
-        if (!stmt.isNone()) try stmts.append(self.allocator, stmt);
+        if (!stmt.isNone()) try self.scratch.append(self.allocator, stmt);
         if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
 
     const end = self.currentSpan().end;
     try self.expect(.r_curly);
 
-    const node_list = try self.ast.addNodeList(stmts.items);
+    const node_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+    self.restoreScratch(scratch_top);
     return try self.ast.addNode(.{
         .tag = .block_statement,
         .span = .{ .start = block_start, .end = end },
@@ -412,26 +412,9 @@ fn parseTypeOrTypePredicate(self: *Parser) ParseError2!NodeIndex {
     // asserts 프레디케이트: asserts x, asserts x is Type, asserts this is Type
     if (self.current() == .identifier and self.isContextual("asserts")) {
         const next = try self.peekNextKind();
-        // asserts 다음에 identifier 또는 this가 오면 asserts 프레디케이트
         if (next == .identifier or next == .kw_this) {
             try self.advance(); // skip 'asserts'
-            const param_name = if (self.current() == .kw_this) blk: {
-                const this_span = self.currentSpan();
-                try self.advance();
-                break :blk try self.ast.addNode(.{
-                    .tag = .ts_this_type,
-                    .span = this_span,
-                    .data = .{ .none = 0 },
-                });
-            } else blk: {
-                const id_span = self.currentSpan();
-                try self.advance();
-                break :blk try self.ast.addNode(.{
-                    .tag = .identifier_reference,
-                    .span = id_span,
-                    .data = .{ .none = 0 },
-                });
-            };
+            const param_name = try parsePredicateSubject(self);
             // 선택적 is Type
             var type_ann = NodeIndex.none;
             if (self.current() == .identifier and self.isContextual("is")) {
@@ -447,144 +430,49 @@ fn parseTypeOrTypePredicate(self: *Parser) ParseError2!NodeIndex {
     }
 
     // x is Type 또는 this is Type 판별
-    // identifier/this 다음에 'is'가 같은 줄에 오면 타입 프레디케이트
+    // saveState/restoreState로 speculative 파싱 — 'is' 확인 후 commit 또는 rollback
     if (self.current() == .identifier or self.current() == .kw_this) {
         const next = try self.peekNextKind();
         if (next == .identifier) {
-            // identifier 다음의 identifier가 'is'인지 확인
-            // peekNextKind만으로는 텍스트 확인 불가 → 일단 파싱 시도
-            const saved_pos = self.scanner.token.span.start;
-            const param_node = if (self.current() == .kw_this) blk: {
-                const this_span = self.currentSpan();
-                try self.advance();
-                break :blk try self.ast.addNode(.{
-                    .tag = .ts_this_type,
-                    .span = this_span,
-                    .data = .{ .none = 0 },
-                });
-            } else blk: {
-                const id_span = self.currentSpan();
-                try self.advance();
-                break :blk try self.ast.addNode(.{
-                    .tag = .identifier_reference,
-                    .span = id_span,
-                    .data = .{ .none = 0 },
-                });
-            };
-            _ = saved_pos;
+            const saved = self.saveState();
+            const err_count = self.errors.items.len;
+            const param_node = try parsePredicateSubject(self);
             if (self.current() == .identifier and self.isContextual("is")) {
-                try self.advance(); // skip 'is'
+                try self.advance();
                 const ty = try parseType(self);
                 return try self.ast.addNode(.{
                     .tag = .ts_type_predicate,
                     .span = .{ .start = start, .end = self.currentSpan().start },
-                    .data = .{ .binary = .{ .left = param_node, .right = ty, .flags = 0 } }, // flags=0: not asserts
+                    .data = .{ .binary = .{ .left = param_node, .right = ty, .flags = 0 } },
                 });
             }
-            // 'is'가 아니면 일반 타입 — 하지만 이미 identifier를 소비함
-            // param_node를 타입 참조로 취급하고 계속 파싱
-            // postfix ([], indexed access) 처리
-            var base = param_node;
-            // 타입 참조에 제네릭이 있을 수 있음
-            if (self.current() == .l_angle) {
-                // 이미 소비한 identifier를 ts_type_reference로 교체
-                const node = self.ast.getNode(param_node);
-                const ref_extra = try self.ast.addExtra(node.span.start);
-                _ = try self.ast.addExtra(node.span.end);
-                const type_args = try parseTypeArguments(self);
-                _ = try self.ast.addExtra(@intFromEnum(type_args));
-                base = try self.ast.addNode(.{
-                    .tag = .ts_type_reference,
-                    .span = .{ .start = node.span.start, .end = self.currentSpan().start },
-                    .data = .{ .extra = ref_extra },
-                });
-            }
-            // dot access: Foo.Bar
-            while (self.current() == .dot) {
-                try self.advance();
-                if (self.current() == .identifier or self.current().isKeyword()) {
-                    try self.advance();
-                }
-                if (self.current() == .l_angle) {
-                    _ = try parseTypeArguments(self);
-                }
-            }
-            // postfix [] 처리
-            while (self.current() == .l_bracket) {
-                const pstart = self.ast.getNode(base).span.start;
-                if (try self.peekNextKind() == .r_bracket) {
-                    try self.advance(); // [
-                    try self.advance(); // ]
-                    base = try self.ast.addNode(.{
-                        .tag = .ts_array_type,
-                        .span = .{ .start = pstart, .end = self.currentSpan().start },
-                        .data = .{ .unary = .{ .operand = base, .flags = 0 } },
-                    });
-                } else {
-                    try self.advance(); // [
-                    const idx = try parseType(self);
-                    try self.expect(.r_bracket);
-                    base = try self.ast.addNode(.{
-                        .tag = .ts_indexed_access_type,
-                        .span = .{ .start = pstart, .end = self.currentSpan().start },
-                        .data = .{ .binary = .{ .left = base, .right = idx, .flags = 0 } },
-                    });
-                }
-            }
-            // union/intersection 처리
-            if (self.current() == .pipe) {
-                while (self.current() == .pipe) {
-                    const ustart = self.ast.getNode(base).span.start;
-                    try self.advance();
-                    const right = try parseIntersectionType(self);
-                    base = try self.ast.addNode(.{
-                        .tag = .ts_union_type,
-                        .span = .{ .start = ustart, .end = self.currentSpan().start },
-                        .data = .{ .binary = .{ .left = base, .right = right, .flags = 0 } },
-                    });
-                }
-            }
-            if (self.current() == .amp) {
-                while (self.current() == .amp) {
-                    const istart = self.ast.getNode(base).span.start;
-                    try self.advance();
-                    const right = try parseTypeOperatorOrHigher(self);
-                    base = try self.ast.addNode(.{
-                        .tag = .ts_intersection_type,
-                        .span = .{ .start = istart, .end = self.currentSpan().start },
-                        .data = .{ .binary = .{ .left = base, .right = right, .flags = 0 } },
-                    });
-                }
-            }
-            // 조건부 타입
-            if (!self.ctx.disallow_conditional_types and self.current() == .kw_extends) {
-                const cstart = self.ast.getNode(base).span.start;
-                try self.advance();
-                const saved_ctx = self.ctx;
-                self.ctx.disallow_conditional_types = true;
-                const extends_type = try parseType(self);
-                self.ctx = saved_ctx;
-                try self.expect(.question);
-                const true_type = try parseType(self);
-                try self.expect(.colon);
-                const false_type = try parseType(self);
-                const extra = try self.ast.addExtras(&.{
-                    @intFromEnum(base),
-                    @intFromEnum(extends_type),
-                    @intFromEnum(true_type),
-                    @intFromEnum(false_type),
-                });
-                return try self.ast.addNode(.{
-                    .tag = .ts_conditional_type,
-                    .span = .{ .start = cstart, .end = self.currentSpan().start },
-                    .data = .{ .extra = extra },
-                });
-            }
-            return base;
+            // 'is'가 아니면 일반 타입 — 상태 복원 후 parseType에 위임
+            self.restoreState(saved);
+            self.errors.shrinkRetainingCapacity(err_count);
         }
     }
 
     return parseType(self);
+}
+
+/// asserts/is 프레디케이트의 subject 파싱: this 또는 identifier
+fn parsePredicateSubject(self: *Parser) ParseError2!NodeIndex {
+    if (self.current() == .kw_this) {
+        const this_span = self.currentSpan();
+        try self.advance();
+        return try self.ast.addNode(.{
+            .tag = .ts_this_type,
+            .span = this_span,
+            .data = .{ .none = 0 },
+        });
+    }
+    const id_span = self.currentSpan();
+    try self.advance();
+    return try self.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = id_span,
+        .data = .{ .none = 0 },
+    });
 }
 
 /// TS 타입을 파싱한다. 조건부 > 유니온 > 인터섹션 > postfix > primary 우선순위.
@@ -847,17 +735,7 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
         .l_angle => {
             const type_params = try parseTsTypeParameterDeclaration(self);
             try self.expect(.l_paren);
-            const scratch_top = self.saveScratch();
-            while (self.current() != .r_paren and self.current() != .eof) {
-                const loop_guard_pos = self.scanner.token.span.start;
-                const param = try parseTypeMemberParam(self);
-                try self.scratch.append(self.allocator, param);
-                if (!try self.eat(.comma)) break;
-                if (try self.ensureLoopProgress(loop_guard_pos)) break;
-            }
-            const params = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-            self.restoreScratch(scratch_top);
-            try self.expect(.r_paren);
+            const params = try parseTypeMemberParamList(self);
             try self.expect(.arrow);
             const return_type = try parseType(self);
             const extra = try self.ast.addExtras(&.{
@@ -989,20 +867,8 @@ fn parseFunctionOrConstructorType(self: *Parser, is_abstract: bool) ParseError2!
     if (self.current() == .l_angle) {
         type_params = try parseTsTypeParameterDeclaration(self);
     }
-    // 파라미터 리스트
     try self.expect(.l_paren);
-    const scratch_top = self.saveScratch();
-    while (self.current() != .r_paren and self.current() != .eof) {
-        const loop_guard_pos = self.scanner.token.span.start;
-        const param = try parseTypeMemberParam(self);
-        try self.scratch.append(self.allocator, param);
-        if (!try self.eat(.comma)) break;
-        if (try self.ensureLoopProgress(loop_guard_pos)) break;
-    }
-    const params = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-    self.restoreScratch(scratch_top);
-    try self.expect(.r_paren);
-    // =>
+    const params = try parseTypeMemberParamList(self);
     try self.expect(.arrow);
     const return_type = try parseType(self);
 
@@ -1139,17 +1005,7 @@ fn isFunctionTypeParam(self: *Parser) bool {
 /// 함수 타입 파라미터 리스트를 파싱하여 함수 타입 노드 생성
 /// ( 는 이미 소비된 상태, start는 ( 의 위치
 fn parseFunctionTypeParams(self: *Parser, start: u32) ParseError2!NodeIndex {
-    const scratch_top = self.saveScratch();
-    while (self.current() != .r_paren and self.current() != .eof) {
-        const loop_guard_pos = self.scanner.token.span.start;
-        const param = try parseTypeMemberParam(self);
-        try self.scratch.append(self.allocator, param);
-        if (!try self.eat(.comma)) break;
-        if (try self.ensureLoopProgress(loop_guard_pos)) break;
-    }
-    const params = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-    self.restoreScratch(scratch_top);
-    try self.expect(.r_paren);
+    const params = try parseTypeMemberParamList(self);
     try self.expect(.arrow);
     const return_type = try parseType(self);
 
@@ -1245,11 +1101,7 @@ fn parseTypeMember(self: *Parser) ParseError2!NodeIndex {
     // 4. getter 시그니처: get x(): Type
     if (self.current() == .identifier and self.isContextual("get")) {
         const next = try self.peekNextKind();
-        // get 다음에 프로퍼티 이름이 오면 getter (get 자체가 프로퍼티 이름이 아님)
-        if (next != .l_paren and next != .colon and next != .comma and
-            next != .semicolon and next != .r_curly and next != .question and
-            next != .l_angle)
-        {
+        if (isFollowedByTypeMemberName(next)) {
             try self.advance(); // skip 'get'
             const key = try self.parsePropertyKey();
             // 파라미터 파싱 (getter는 파라미터 없어야 함)
@@ -1267,10 +1119,7 @@ fn parseTypeMember(self: *Parser) ParseError2!NodeIndex {
     // 5. setter 시그니처: set x(v: Type)
     if (self.current() == .identifier and self.isContextual("set")) {
         const next = try self.peekNextKind();
-        if (next != .l_paren and next != .colon and next != .comma and
-            next != .semicolon and next != .r_curly and next != .question and
-            next != .l_angle)
-        {
+        if (isFollowedByTypeMemberName(next)) {
             try self.advance(); // skip 'set'
             const key = try self.parsePropertyKey();
             // 파라미터 파싱 (setter는 파라미터 1개)
@@ -1297,19 +1146,8 @@ fn parseTypeMember(self: *Parser) ParseError2!NodeIndex {
         if (self.current() == .l_angle) {
             type_params = try parseTsTypeParameterDeclaration(self);
         }
-        // 파라미터 리스트
         try self.expect(.l_paren);
-        const scratch_top = self.saveScratch();
-        while (self.current() != .r_paren and self.current() != .eof) {
-            const loop_guard_pos = self.scanner.token.span.start;
-            const param = try parseTypeMemberParam(self);
-            try self.scratch.append(self.allocator, param);
-            if (!try self.eat(.comma)) break;
-            if (try self.ensureLoopProgress(loop_guard_pos)) break;
-        }
-        const params = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-        self.restoreScratch(scratch_top);
-        try self.expect(.r_paren);
+        const params = try parseTypeMemberParamList(self);
         const return_type = try tryParseReturnType(self);
 
         const extra = try self.ast.addExtras(&.{
@@ -1353,19 +1191,8 @@ fn parseSignatureMember(self: *Parser, start: u32, is_constructor: bool) ParseEr
     if (self.current() == .l_angle) {
         type_params = try parseTsTypeParameterDeclaration(self);
     }
-    // 파라미터 리스트
     try self.expect(.l_paren);
-    const scratch_top = self.saveScratch();
-    while (self.current() != .r_paren and self.current() != .eof) {
-        const loop_guard_pos = self.scanner.token.span.start;
-        const param = try parseTypeMemberParam(self);
-        try self.scratch.append(self.allocator, param);
-        if (!try self.eat(.comma)) break;
-        if (try self.ensureLoopProgress(loop_guard_pos)) break;
-    }
-    const params = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-    self.restoreScratch(scratch_top);
-    try self.expect(.r_paren);
+    const params = try parseTypeMemberParamList(self);
     const return_type = try tryParseReturnType(self);
 
     const extra = try self.ast.addExtras(&.{
@@ -1379,6 +1206,31 @@ fn parseSignatureMember(self: *Parser, start: u32, is_constructor: bool) ParseEr
         .span = .{ .start = start, .end = self.currentSpan().start },
         .data = .{ .extra = extra },
     });
+}
+
+/// contextual keyword (get/set/readonly) 다음 토큰이 프로퍼티 이름인지 판별.
+/// 프로퍼티 이름이 아닌 토큰 (: , ; } ? <)이면 keyword 자체가 프로퍼티 이름.
+fn isFollowedByTypeMemberName(next: Kind) bool {
+    return next != .l_paren and next != .colon and next != .comma and
+        next != .semicolon and next != .r_curly and next != .question and
+        next != .l_angle;
+}
+
+/// 타입 멤버 파라미터 리스트 파싱: (param, param, ...) → NodeList
+/// l_paren은 이미 소비된 상태. r_paren은 이 함수가 소비.
+fn parseTypeMemberParamList(self: *Parser) ParseError2!ast_mod.NodeList {
+    const scratch_top = self.saveScratch();
+    while (self.current() != .r_paren and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
+        const param = try parseTypeMemberParam(self);
+        try self.scratch.append(self.allocator, param);
+        if (!try self.eat(.comma)) break;
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
+    }
+    const params = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+    self.restoreScratch(scratch_top);
+    try self.expect(.r_paren);
+    return params;
 }
 
 /// 타입 멤버의 파라미터 하나 파싱: name: Type, name?: Type, ...name: Type
