@@ -83,6 +83,8 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         last_class_is_class_escape: bool = false,
         /// v-flag class의 contents kind (parseClassSetExpression이 설정).
         last_class_contents_kind: ast.CharacterClassContentsKind = .@"union",
+        /// v-flag class에서 property of strings가 포함되었는지 (negated class 검증용).
+        class_has_string_property: bool = false,
 
         // ── AST 모드 전용 필드 ──
         // emit_ast=false일 때는 void 타입 (0바이트, 메모리 사용 없음)
@@ -251,18 +253,23 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 return;
             }
 
-            // named back reference가 정의된 named group을 참조하는지 검증
-            for (self.named_refs_buf[0..self.named_refs_len]) |ref_name| {
-                var found = false;
-                for (self.named_groups_buf[0..self.named_groups_len]) |entry| {
-                    if (std.mem.eql(u8, ref_name, entry.name)) {
-                        found = true;
-                        break;
+            // named back reference가 정의된 named group을 참조하는지 검증.
+            // Annex B: non-unicode mode에서 named group이 하나도 없으면
+            // \k<name>은 identity escape로 처리되므로 검증을 건너뛴다.
+            const should_validate_refs = self.flags.hasUnicodeMode() or self.named_groups_len > 0;
+            if (should_validate_refs) {
+                for (self.named_refs_buf[0..self.named_refs_len]) |ref_name| {
+                    var found = false;
+                    for (self.named_groups_buf[0..self.named_groups_len]) |entry| {
+                        if (std.mem.eql(u8, ref_name, entry.name)) {
+                            found = true;
+                            break;
+                        }
                     }
-                }
-                if (!found) {
-                    self.err_message = "invalid named back reference: group not defined";
-                    return;
+                    if (!found) {
+                        self.err_message = "invalid named back reference: group not defined";
+                        return;
+                    }
                 }
             }
 
@@ -658,9 +665,12 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     return true;
                 },
                 // Control escape
-                'f', 'n', 'r', 't', 'v' => {
+                // 'b' is word boundary outside character class (handled in parseAtom),
+                // but inside character class it means backspace (U+0008) per ClassEscape :: b.
+                'b', 'f', 'n', 'r', 't', 'v' => {
                     self.advance();
                     const value: u32 = switch (c) {
+                        'b' => 0x08,
                         'f' => 0x0C,
                         'n' => 0x0A,
                         'r' => 0x0D,
@@ -866,6 +876,9 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                                         return false;
                                     }
                                     is_valid = true;
+                                    // Track for negated character class validation:
+                                    // [^\p{Basic_Emoji}]/v is an error.
+                                    self.class_has_string_property = true;
                                 }
                             }
                             if (!is_valid) {
@@ -1002,11 +1015,19 @@ pub fn PatternParser(comptime emit_ast: bool) type {
 
             // nested class에서 outer 상태를 보존하기 위해 save/restore
             const saved_contents_kind = self.last_class_contents_kind;
+            const saved_has_string_property = self.class_has_string_property;
 
             if (self.flags.v) {
                 self.last_class_contents_kind = .@"union";
+                self.class_has_string_property = false;
                 self.parseClassSetExpression(&buf, &buf_len);
                 if (self.err_message != null) return false;
+                // v-flag: negated class with property of strings is an error.
+                // e.g., /[^\p{Basic_Emoji}]/v → SyntaxError
+                if (negated and self.class_has_string_property) {
+                    self.setError("negated character class may not contain a string property");
+                    return false;
+                }
             } else {
                 // ── 기존 모드: 단순 atom + range ──
                 while (!self.isEnd() and self.peek() != ']') {
@@ -1089,6 +1110,9 @@ pub fn PatternParser(comptime emit_ast: bool) type {
 
             // outer class의 contents kind 복원 (nested class 호출 후)
             self.last_class_contents_kind = saved_contents_kind;
+            // Propagate string property flag upward: if this (nested) class
+            // contained a string property, the outer class also contains one.
+            self.class_has_string_property = self.class_has_string_property or saved_has_string_property;
             return true;
         }
 
@@ -1889,6 +1913,8 @@ pub fn PatternParser(comptime emit_ast: bool) type {
             }
 
             self.last_class_is_class_escape = true; // \q{} 는 range endpoint 불가
+            // \q{...} is a string disjunction — mark for negated class validation.
+            self.class_has_string_property = true;
             if (emit_ast) {
                 const list_start = self.extraLen();
                 for (str_buf[0..str_len]) |idx| self.appendExtra(idx);
@@ -2816,4 +2842,61 @@ test "pre-parse: multiple groups valid" {
     // (a)(b)\1\2 — 2 groups, references 1 and 2 are valid
     var p = P.init("(a)(b)\\1\\2", .{ .u = true });
     try std.testing.expect(p.validate() == null);
+}
+
+// ── Bug fix tests ──
+
+test "bug1: \\b in character class is backspace (U+0008)" {
+    const P = PatternParser(false);
+    // [\b] is valid — \b means backspace inside character class
+    var p1 = P.init("[\\b]", .{ .u = true });
+    try std.testing.expect(p1.validate() == null);
+
+    var p2 = P.init("[\\b]", .{});
+    try std.testing.expect(p2.validate() == null);
+
+    var p3 = P.init("[\\b]", .{ .v = true });
+    try std.testing.expect(p3.validate() == null);
+}
+
+test "bug2: negated class with string property is error in v-flag" {
+    const P = PatternParser(false);
+    // [^\p{Basic_Emoji}]/v → SyntaxError
+    var p1 = P.init("[^\\p{Basic_Emoji}]", .{ .v = true });
+    try std.testing.expect(p1.validate() != null);
+
+    // [\p{Basic_Emoji}]/v → valid (not negated)
+    var p2 = P.init("[\\p{Basic_Emoji}]", .{ .v = true });
+    try std.testing.expect(p2.validate() == null);
+
+    // [^\p{Emoji_Keycap_Sequence}]/v → SyntaxError
+    var p3 = P.init("[^\\p{Emoji_Keycap_Sequence}]", .{ .v = true });
+    try std.testing.expect(p3.validate() != null);
+
+    // [^\p{RGI_Emoji}]/v → SyntaxError
+    var p4 = P.init("[^\\p{RGI_Emoji}]", .{ .v = true });
+    try std.testing.expect(p4.validate() != null);
+
+    // [^\q{abc}]/v → SyntaxError (string disjunction)
+    var p5 = P.init("[^\\q{abc}]", .{ .v = true });
+    try std.testing.expect(p5.validate() != null);
+}
+
+test "bug3: \\k<name> without named group in non-unicode is identity escape" {
+    const P = PatternParser(false);
+    // /\k<x>/ (non-unicode, no named groups) → valid per Annex B
+    var p1 = P.init("\\k<x>", .{});
+    try std.testing.expect(p1.validate() == null);
+
+    // /\k<x>/u (unicode) → error (must have named group)
+    var p2 = P.init("\\k<x>", .{ .u = true });
+    try std.testing.expect(p2.validate() != null);
+
+    // /\k<x>(?<x>a)/ (non-unicode, named group exists) → valid
+    var p3 = P.init("\\k<x>(?<x>a)", .{});
+    try std.testing.expect(p3.validate() == null);
+
+    // /\k<y>(?<x>a)/ (non-unicode, named group exists but wrong name) → error
+    var p4 = P.init("\\k<y>(?<x>a)", .{});
+    try std.testing.expect(p4.validate() != null);
 }
