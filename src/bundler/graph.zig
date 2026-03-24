@@ -216,11 +216,7 @@ pub const ModuleGraph = struct {
         };
 
         var parser = Parser.init(arena_alloc, &scanner);
-        parser.is_module = true;
-        const ext = std.fs.path.extension(module.path);
-        if (std.mem.eql(u8, ext, ".tsx") or std.mem.eql(u8, ext, ".jsx")) {
-            parser.is_jsx = true;
-        }
+        parser.configureFromExtension(std.fs.path.extension(module.path));
         _ = parser.parse() catch {
             self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Parse failed", null);
             module.state = .ready;

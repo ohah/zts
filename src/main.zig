@@ -66,16 +66,7 @@ fn transpileFile(
     // 파싱 — 모든 모듈이 arena_alloc을 사용하므로 개별 deinit 불필요
     var scanner = try Scanner.init(arena_alloc, source);
     var parser = Parser.init(arena_alloc, &scanner);
-    // .ts/.mts/.tsx/.mjs/.js(type=module) → ESM module mode
-    const ext = std.fs.path.extension(file_path);
-    if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx") or
-        std.mem.eql(u8, ext, ".mts") or std.mem.eql(u8, ext, ".mjs"))
-    {
-        parser.is_module = true;
-    }
-    if (std.mem.eql(u8, ext, ".tsx") or std.mem.eql(u8, ext, ".jsx")) {
-        parser.is_jsx = true;
-    }
+    parser.configureFromExtension(std.fs.path.extension(file_path));
     _ = parser.parse() catch |err| {
         try stderr.print("zts: parse error in '{s}': {}\n", .{ file_path, err });
         return;
