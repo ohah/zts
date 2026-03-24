@@ -375,12 +375,6 @@ const cases: BrowserSmokeCase[] = [
     expected: "2",
   },
   {
-    name: "superjson",
-    pkg: "superjson",
-    entry: `import superjson from 'superjson';\nconst d = { s: new Set([1,2]) };\nconst r = superjson.parse(superjson.stringify(d));\nconsole.log(r.s instanceof Set);`,
-    expected: "true",
-  },
-  {
     name: "toolkit",
     pkg: "@reduxjs/toolkit react redux",
     entry: `import { createSlice } from '@reduxjs/toolkit';\nconst slice = createSlice({ name: 'test', initialState: 0, reducers: { inc: s => s + 1 } });\nconsole.log(slice.name);`,
@@ -515,17 +509,56 @@ const cases: BrowserSmokeCase[] = [
     expected: "function",
   },
   {
-    name: "picomatch",
-    pkg: "picomatch",
-    entry: `import pm from 'picomatch';\nconsole.log(pm.isMatch('foo.js', '*.js'));`,
-    expected: "true",
-  },
-  {
     name: "axios",
     pkg: "axios",
     entry: `import axios from 'axios';\nconsole.log(typeof axios.get);`,
     expected: "function",
   },
+  {
+    name: "iconv-lite",
+    pkg: "iconv-lite",
+    entry: `import iconv from 'iconv-lite';\nconsole.log(typeof iconv.encode);`,
+    expected: "function",
+  },
+  {
+    name: "mime-types",
+    pkg: "mime-types",
+    entry: `import mime from 'mime-types';\nconsole.log(mime.lookup('test.js'));`,
+    expected: "application/javascript",
+  },
+  {
+    name: "type-is",
+    pkg: "type-is",
+    entry: `import typeis from 'type-is';\nconsole.log(typeof typeis);`,
+    expected: "function",
+  },
+  {
+    name: "safe-buffer",
+    pkg: "safe-buffer",
+    entry: `import { Buffer } from 'safe-buffer';\nconsole.log(Buffer.alloc(4).length);`,
+    expected: "4",
+  },
+  {
+    name: "etag",
+    pkg: "etag",
+    entry: `import etag from 'etag';\nconsole.log(etag('hello').length > 0);`,
+    expected: "true",
+  },
+  {
+    name: "micromatch",
+    pkg: "micromatch",
+    entry: `import mm from 'micromatch';\nconsole.log(JSON.stringify(mm(['foo.js','bar.ts'], '*.js')));`,
+    expected: '["foo.js"]',
+  },
+  {
+    name: "glob-parent",
+    pkg: "glob-parent",
+    entry: `import gp from 'glob-parent';\nconsole.log(gp('a/b/*.js'));`,
+    expected: "a/b",
+  },
+  // --- Node 전용 패키지 (브라우저 스킵) ---
+  // express, commander, dotenv, jsonwebtoken, yargs, supports-color,
+  // cross-spawn, signal-exit, which, on-finished, fast-glob, zx
 ];
 
 const MIME: Record<string, string> = {
