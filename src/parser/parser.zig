@@ -1764,6 +1764,10 @@ pub const Parser = struct {
         return ts.parseType(self);
     }
 
+    pub fn parseIndexSignature(self: *Parser, start: u32, is_readonly: bool) ParseError2!NodeIndex {
+        return ts.parseIndexSignature(self, start, is_readonly);
+    }
+
     pub fn parseTypeArguments(self: *Parser) ParseError2!NodeIndex {
         return ts.parseTypeArguments(self);
     }

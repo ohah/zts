@@ -16,20 +16,23 @@ const Parser = @import("parser.zig").Parser;
 const ParseError2 = @import("parser.zig").ParseError2;
 
 pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
-    // TS parameter property: public x, private x, protected x, readonly x
-    // flags 비트: 0x01=public, 0x02=private, 0x04=protected, 0x08=readonly
-    // readonly는 contextual keyword (identifier로 토큰화됨)
+    // TS parameter property: public x, private x, protected x, readonly x, override x
+    // flags 비트: 0x01=public, 0x02=private, 0x04=protected, 0x08=readonly, 0x10=override
+    // readonly와 override는 contextual keyword (identifier로 토큰화됨)
     const is_readonly = self.isContextual("readonly");
+    const is_override = self.isContextual("override");
     if (self.current() == .kw_public or self.current() == .kw_private or
-        self.current() == .kw_protected or is_readonly)
+        self.current() == .kw_protected or is_readonly or is_override)
     {
         const modifier_span = self.currentSpan();
         const next = try self.peekNextKind();
         // modifier 뒤에 식별자가 오면 parameter property
-        // readonly는 이제 identifier로 토큰화되므로 next == .identifier에 포함됨
+        // readonly/override는 identifier로 토큰화되므로 next == .identifier에 포함됨
         if (next == .identifier or next == .l_bracket or next == .l_curly) {
             var modifier_flags: u16 = if (is_readonly)
                 0x08
+            else if (is_override)
+                0x10
             else switch (self.current()) {
                 .kw_public => 0x01,
                 .kw_private => 0x02,
@@ -38,9 +41,12 @@ pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
             };
             try self.advance(); // skip first modifier
 
-            // 두 번째 modifier: public readonly x
+            // 두 번째 modifier: public readonly x, override readonly x
             if (self.isContextual("readonly")) {
                 modifier_flags |= 0x08;
+                try self.advance();
+            } else if (self.isContextual("override")) {
+                modifier_flags |= 0x10;
                 try self.advance();
             }
 
