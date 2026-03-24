@@ -293,6 +293,32 @@ pub const Parser = struct {
         }
     }
 
+    /// 제네릭 닫는 꺾쇠 `>` 를 기대한다. (oxc re_lex_ts_r_angle 대응)
+    /// `>>`, `>>>`, `>=`, `>>=`, `>>>=` 를 `>` + 나머지로 분할한다.
+    /// 예: `Array<Map<K,V>>` 에서 `>>` → `>` + `>`
+    /// 예: `(): A<T>=> 0` 에서 `>=` → `>` + `=`
+    pub fn expectClosingAngleBracket(self: *Parser) !void {
+        if (self.current() == .r_angle) {
+            try self.advance();
+        } else if (self.isAtClosingAngleBracket()) {
+            // 토큰의 첫 바이트(>)만 소비하고 나머지는 다음 렉싱에서 처리
+            self.scanner.prev_token_kind = .r_angle;
+            self.scanner.current = self.scanner.token.span.start + 1;
+            try self.advance();
+        } else {
+            try self.expect(.r_angle);
+        }
+    }
+
+    /// 현재 토큰이 `>` 또는 `>`로 시작하는 복합 토큰인지 확인한다.
+    /// 타입 인수/파라미터 루프의 종료 조건으로 사용.
+    pub fn isAtClosingAngleBracket(self: *const Parser) bool {
+        return switch (self.current()) {
+            .r_angle, .shift_right, .shift_right3, .gt_eq, .shift_right_eq, .shift_right3_eq => true,
+            else => false,
+        };
+    }
+
     /// ASI (Automatic Semicolon Insertion) 규칙으로 세미콜론을 처리한다.
     /// - 세미콜론이 있으면 소비
     /// - 현재 토큰 앞에 개행이 있으면 OK (ASI)
@@ -3861,4 +3887,49 @@ test "CoverGrammar: literal keywords parsed as boolean_literal not identifier" {
     try expectNoParseError("const b = false;");
     try expectNoParseError("const c = null;");
     try expectNoParseError("const obj = { true: 1, false: 2, null: 3 };");
+}
+
+// ================================================================
+// 제네릭 토큰 분할 테스트 (>> → > + >, >= → > + = 등)
+// ================================================================
+
+test "TokenSplit: nested generic >> splits to > + >" {
+    // Array<Array<number>> — >> 가 > > 로 분할되어야 함
+    try expectNoParseError("let x: Array<Array<number>>");
+}
+
+test "TokenSplit: triple nested generic >>> splits correctly" {
+    // A<B<C<number>>> — >>> 가 > > > 로 분할
+    try expectNoParseError("let x: A<B<C<number>>>");
+}
+
+test "TokenSplit: >= splits to > + = in arrow return type" {
+    // (): A<T>=> 0 — >= 가 > = 로 분할, arrow function으로 파싱
+    try expectNoParseError("(): A<T>=> 0");
+}
+
+test "TokenSplit: nested generic in return type" {
+    try expectNoParseError("let x: () => A<B<T>>");
+}
+
+test "TokenSplit: type assertion with nested generic" {
+    // <Array<number>>expr — >> 분할 후 type assertion
+    try expectNoParseError("let x = <Array<number>>y");
+}
+
+test "TokenSplit: generic type arguments with nested generics" {
+    try expectNoParseError("type Foo = Map<string, Array<number>>");
+    try expectNoParseError("type Bar = Promise<Map<string, Set<number>>>");
+}
+
+test "TokenSplit: generic function return type with nested generic" {
+    try expectNoParseError("function foo(): Array<Array<number>> { return []; }");
+}
+
+test "TokenSplit: interface with nested generic members" {
+    try expectNoParseError("interface Foo { bar: Map<string, Array<number>> }");
+}
+
+test "TokenSplit: type alias with conditional + nested generic" {
+    try expectNoParseError("type Foo<T> = T extends Array<Array<number>> ? T : never");
 }

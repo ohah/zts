@@ -2560,6 +2560,28 @@ test "Codegen: JSX fragment" {
 }
 
 // ============================================================
+// E2E Tests: Token splitting (>> → > + >, >= → > + = etc.)
+// ============================================================
+
+test "Codegen: nested generic >> splits correctly" {
+    var r = try e2e(std.testing.allocator, "let x: Array<Array<number>>");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x;", r.output);
+}
+
+test "Codegen: arrow with >= split (): A<T>=> 0" {
+    var r = try e2e(std.testing.allocator, "(): A<T>=> 0");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("()=>0;", r.output);
+}
+
+test "Codegen: triple nested generic >>>" {
+    var r = try e2e(std.testing.allocator, "let x: A<B<C<number>>>");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x;", r.output);
+}
+
+// ============================================================
 // E2E Tests: Namespace with export
 // ============================================================
 
