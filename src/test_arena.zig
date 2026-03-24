@@ -47,7 +47,7 @@ test "Arena 파이프라인: 인터페이스 스트리핑" {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const output = try runPipeline(arena.allocator(), "interface Foo { bar: string; } const x: Foo = { bar: 'hello' };");
-    try std.testing.expectEqualStrings("const x={bar:'hello'};", output);
+    try std.testing.expectEqualStrings("const x={bar:\"hello\"};", output);
 }
 
 test "Arena 파이프라인: 타입 별칭" {
@@ -61,7 +61,7 @@ test "Arena 파이프라인: as/satisfies" {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const output = try runPipeline(arena.allocator(), "const x = 'hello' as string; const y = 42 satisfies number;");
-    try std.testing.expectEqualStrings("const x='hello';const y=42;", output);
+    try std.testing.expectEqualStrings("const x=\"hello\";const y=42;", output);
 }
 
 test "Arena 파이프라인: 제네릭 함수" {
@@ -99,5 +99,5 @@ test "Arena reset: 두 번 실행 시 올바른 출력" {
 
     // 두 번째 실행 (다른 소스)
     const output2 = try runPipeline(arena.allocator(), "const x = 'hello' as string;");
-    try std.testing.expectEqualStrings("const x='hello';", output2);
+    try std.testing.expectEqualStrings("const x=\"hello\";", output2);
 }

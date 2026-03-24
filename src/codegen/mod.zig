@@ -10,6 +10,7 @@
 
 pub const codegen = @import("codegen.zig");
 pub const Codegen = codegen.Codegen;
+pub const QuoteStyle = codegen.QuoteStyle;
 pub const sourcemap = @import("sourcemap.zig");
 pub const SourceMapBuilder = sourcemap.SourceMapBuilder;
 pub const mangler = @import("mangler.zig");

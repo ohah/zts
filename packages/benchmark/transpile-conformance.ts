@@ -178,8 +178,6 @@ function normalize(s: string): string {
     s
       .replace(/\r\n/g, "\n")
       .replace(/\s+$/gm, "") // trailing whitespace 제거
-      // esbuild는 쌍따옴표, ZTS는 홑따옴표 → 통일
-      .replace(/'/g, '"')
       .trim()
   );
 }

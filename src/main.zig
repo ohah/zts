@@ -21,6 +21,7 @@ const TranspileOptions = struct {
     drop_debugger: bool = false,
     sourcemap: bool = false,
     ascii_only: bool = false,
+    quote_style: lib.codegen.QuoteStyle = .double,
     define: []const DefineEntry = &.{},
     platform: lib.codegen.codegen.Platform = .browser,
 };
@@ -156,6 +157,7 @@ fn transpileFile(
         .minify = options.minify,
         .sourcemap = options.sourcemap,
         .ascii_only = options.ascii_only,
+        .quote_style = options.quote_style,
         .linking_metadata = if (mangle_metadata) |*mm| mm else null,
         .platform = options.platform,
     });
@@ -311,6 +313,7 @@ pub fn main() !void {
     var drop_debugger = false;
     var sourcemap = false;
     var ascii_only = false;
+    var quote_style: lib.codegen.QuoteStyle = .double;
     var watch = false;
     var is_test262 = false;
     var is_tokenize = false;
@@ -377,6 +380,18 @@ pub fn main() !void {
             }
         } else if (std.mem.eql(u8, arg, "--ascii-only")) {
             ascii_only = true;
+        } else if (std.mem.startsWith(u8, arg, "--quotes=")) {
+            const val = arg["--quotes=".len..];
+            if (std.mem.eql(u8, val, "double")) {
+                quote_style = .double;
+            } else if (std.mem.eql(u8, val, "single")) {
+                quote_style = .single;
+            } else if (std.mem.eql(u8, val, "preserve")) {
+                quote_style = .preserve;
+            } else {
+                try stderr.print("zts: invalid --quotes value: {s} (expected: double, single, preserve)\n", .{val});
+                return;
+            }
         } else if (std.mem.eql(u8, arg, "--sourcemap")) {
             sourcemap = true;
         } else if (std.mem.eql(u8, arg, "--project") or std.mem.eql(u8, arg, "-p")) {
@@ -645,6 +660,7 @@ pub fn main() !void {
         .drop_debugger = drop_debugger,
         .sourcemap = sourcemap,
         .ascii_only = ascii_only,
+        .quote_style = quote_style,
         .define = define_list.items,
         .platform = platform,
     };
@@ -980,6 +996,7 @@ fn printUsage(writer: anytype) !void {
         \\  --define:KEY=VALUE               Replace KEY with VALUE globally
         \\  --sourcemap                      Generate source map (.js.map)
         \\  --ascii-only                     Escape non-ASCII to \uXXXX
+        \\  --quotes=<style>                 String quote style (double|single|preserve)
         \\  -w, --watch                      Watch for file changes
         \\  -p, --project <path>             Path to tsconfig.json directory
         \\  --tokenize                       Print tokens instead of transpiling
