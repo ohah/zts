@@ -1027,17 +1027,13 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
         try self.scratch.append(self.allocator, inner);
         while (try self.eat(.comma)) {
             if (self.current() == .r_paren) break;
-            if (self.current() == .dot3) {
-                // rest parameter
-                const rest_start = self.currentSpan().start;
-                try self.advance(); // skip ...
-                const rest_type = try parseType(self);
-                try self.scratch.append(self.allocator, try self.ast.addNode(.{
-                    .tag = .ts_rest_type,
-                    .span = .{ .start = rest_start, .end = self.currentSpan().start },
-                    .data = .{ .unary = .{ .operand = rest_type, .flags = 0 } },
-                }));
-                break;
+            // 콤마 뒤에 함수 타입 파라미터 패턴이 오면 parseTypeMemberParam으로 파싱
+            // destructuring ([...], {...}), rest (...), identifier: / identifier? 패턴
+            if (self.current() == .dot3 or self.current() == .l_bracket or self.current() == .l_curly or isFunctionTypeParam(self)) {
+                const param = try parseTypeMemberParam(self);
+                try self.scratch.append(self.allocator, param);
+                if (self.current() != .comma) break;
+                continue;
             }
             const param = try parseType(self);
             try self.scratch.append(self.allocator, param);

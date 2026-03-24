@@ -22,6 +22,32 @@ const Span = token_mod.Span;
 const Parser = @import("parser.zig").Parser;
 const ParseError2 = @import("parser.zig").ParseError2;
 
+/// TypeScript의 canFollowTypeArgumentsInExpression 대응.
+/// `f<Type>` 다음에 올 수 있는 토큰인지 판별한다.
+/// `<`가 비교 연산자가 아니라 타입 인수의 시작임을 확인하기 위해,
+/// `>` 다음 토큰이 새 expression의 시작이 될 수 있는 것(식별자, 숫자 등)이면 false,
+/// 그렇지 않은 것(세미콜론, 콤마, 괄호 닫기 등)이면 true를 반환한다.
+fn canFollowTypeArgumentsInExpression(kind: Kind) bool {
+    return switch (kind) {
+        // 호출/멤버 접근 — 가장 흔한 case: f<T>(), f<T>.prop, f<T>?.()
+        .l_paren, .dot, .question_dot => true,
+        // 닫는 구분자 — 괄호/배열/블록 내부: (f<T>), [f<T>], {f<T>}
+        .r_paren, .r_bracket, .r_curly => true,
+        // 구분자/종결자 — 문(statement) 끝이나 리스트 구분
+        .semicolon, .comma, .colon, .eof => true,
+        // 등호 — 삼항의 : 뒤, 조건 등: f<T> == g
+        .eq2, .eq3, .neq, .neq2 => true,
+        // 논리/비트 연산 — f<T> && g, f<T> ?? g (비교 아님이 확실)
+        .amp2, .pipe2, .question2 => true,
+        .caret, .amp, .pipe => true,
+        // 삼항 — f<T> ? a : b
+        .question => true,
+        // 템플릿 리터럴 — f<T>`str`
+        .no_substitution_template, .template_head => true,
+        else => false,
+    };
+}
+
 /// 콤마 연산자(sequence expression)를 포함한 최상위 표현식 파싱.
 /// ECMAScript: Expression = AssignmentExpression (',' AssignmentExpression)*
 /// 콤마가 없으면 단일 AssignmentExpression을 그대로 반환하고,
@@ -124,9 +150,12 @@ pub fn parseArrowBody(self: *Parser, is_async: bool, param_idx: NodeIndex) Parse
 
 pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
     // TS 제네릭 arrow function: <T>() => body, <const T>() => body
-    // TSX 모드에서는 <가 JSX이므로 제네릭 arrow 시도하지 않음
-    if (self.current() == .l_angle and !self.is_jsx) {
-        if (try tryParseGenericArrow(self, false)) |arrow| return arrow;
+    // TSX 모드에서는 trailing comma(<T,>), constraint(<T extends X>), default(<T = X>)가
+    // 있을 때만 제네릭 arrow로 시도 (oxc arrow.rs:166-197 참고)
+    if (self.current() == .l_angle) {
+        if (!self.is_jsx or try isTsxGenericArrow(self)) {
+            if (try tryParseGenericArrow(self, false)) |arrow| return arrow;
+        }
     }
 
     // async arrow function 감지 (2가지 형태)
@@ -135,12 +164,15 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
         const peek = try self.peekNext();
 
         if (!peek.has_newline_before) {
-            // TS async 제네릭 arrow: async <T>() => body (TSX에서는 비활성)
-            if (peek.kind == .l_angle and !self.is_jsx) {
-                const saved = self.saveState();
-                try self.advance(); // skip 'async'
-                if (try tryParseGenericArrow(self, true)) |arrow| return arrow;
-                self.restoreState(saved);
+            // TS async 제네릭 arrow: async <T>() => body
+            // TSX에서는 disambiguating signal이 있을 때만 시도
+            if (peek.kind == .l_angle) {
+                if (!self.is_jsx or try isTsxGenericArrowAfterAsync(self)) {
+                    const saved = self.saveState();
+                    try self.advance(); // skip 'async'
+                    if (try tryParseGenericArrow(self, true)) |arrow| return arrow;
+                    self.restoreState(saved);
+                }
             }
 
             // 형태 1: async x => body (단순 식별자)
@@ -827,8 +859,9 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                     });
                 }
             },
-            .l_angle => {
-                // TS generic type arguments in call expression: foo<Type>()
+            .l_angle, .shift_left, .lt_eq, .shift_left_eq => {
+                // TS generic type arguments in call expression: foo<Type>() or foo<<T>() => T>()
+                // shift_left (<<) is split into two < by expectOpeningAngleBracket in parseTypeArguments.
                 // Speculative parse: try parsing <Type>, check if followed by ( or `
                 // If not, restore state and let binary expression handle < as comparison.
                 const saved_scanner = self.saveState();
@@ -842,9 +875,13 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                     _ = self.parseTypeArguments() catch {
                         break :blk false;
                     };
+                    // If the speculative parse produced any errors, it means the type
+                    // arguments were not syntactically valid (e.g., `a << b;` where
+                    // the inner `<b` is not a valid type parameter list).
+                    if (self.errors.items.len > saved_errors_len) break :blk false;
                     // After >, check if next token can follow type arguments
                     const next = self.current();
-                    break :blk (next == .l_paren or next == .no_substitution_template or next == .template_head);
+                    break :blk canFollowTypeArgumentsInExpression(next);
                 };
 
                 // AST rollback (타입 인자 노드 제거 — 성공/실패 공통)
@@ -1714,6 +1751,56 @@ fn parseTSTypeAssertion(self: *Parser) ParseError2!NodeIndex {
         .span = .{ .start = start, .end = self.currentSpan().start },
         .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
     });
+}
+
+/// TSX 모드에서 `<`가 제네릭 arrow function인지 JSX인지 구별 (oxc arrow.rs:166-197).
+/// `<T,>`, `<T extends X>`, `<T = X>` → 제네릭 arrow.
+/// `<T>` (단일 타입 파라미터, disambiguator 없음) → JSX.
+/// `<const T ...>` → const 건너뛰고 같은 규칙 적용.
+/// 현재 토큰이 `<`인 상태에서 호출. saveState/restoreState로 토큰을 소비하지 않음.
+fn isTsxGenericArrow(self: *Parser) ParseError2!bool {
+    const saved = self.saveState();
+    defer self.restoreState(saved);
+
+    try self.advance(); // skip <
+
+    // <const T ...> — optional const modifier
+    if (self.current() == .kw_const) try self.advance();
+
+    // 타입 파라미터 이름이 식별자(또는 키워드)여야 함
+    if (self.current() != .identifier and !self.current().isKeyword()) return false;
+    try self.advance(); // skip identifier
+
+    return isTsxGenericArrowDisambiguator(self.current());
+}
+
+/// async <T>() => body 형태에서의 TSX 제네릭 arrow 감지.
+/// 현재 토큰이 `async`인 상태에서 호출. async 다음의 `<`부터 검사.
+fn isTsxGenericArrowAfterAsync(self: *Parser) ParseError2!bool {
+    const saved = self.saveState();
+    defer self.restoreState(saved);
+
+    try self.advance(); // skip async
+    if (self.current() != .l_angle) return false;
+    try self.advance(); // skip <
+
+    // <const T ...>
+    if (self.current() == .kw_const) try self.advance();
+
+    if (self.current() != .identifier and !self.current().isKeyword()) return false;
+    try self.advance(); // skip identifier
+
+    return isTsxGenericArrowDisambiguator(self.current());
+}
+
+/// TSX에서 타입 파라미터 이름 다음 토큰으로 제네릭 arrow를 구별.
+/// - `,` → trailing comma (<T,>) → 확실히 arrow
+/// - `=` → default (<T = X>) → 확실히 arrow
+/// - `extends` → constraint (<T extends X>) → 확실히 arrow
+///   (oxc는 extends 뒤 토큰도 체크하지만, extends가 나오면 JSX에서는 불가능하므로 충분)
+/// 그 외 → JSX
+fn isTsxGenericArrowDisambiguator(kind: Kind) bool {
+    return kind == .comma or kind == .eq or kind == .kw_extends;
 }
 
 /// TS 제네릭 arrow function 파싱 시도: <T>() => body, <const T>() => body
