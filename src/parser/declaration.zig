@@ -25,15 +25,9 @@ const ts_class_modifiers: []const []const u8 = &.{ "readonly", "abstract", "over
 
 /// 함수 body 또는 TS 오버로드 시그니처 (세미콜론으로 끝나면 body 없음)
 fn parseFunctionBodyOrOverload(self: *Parser) ParseError2!NodeIndex {
-    // TS function overload (body 없는 선언)은 세미콜론 또는 ASI로 끝날 수 있다.
-    // 예: function foo(x: boolean): asserts<T>\nx → overload + expression 'x'
-    // 줄바꿈 뒤에 '{'가 아닌 토큰이 오면 ASI가 적용되어 body 없는 overload로 처리.
+    // TS function overload: 세미콜론 또는 EOF로 body 없음
     if (self.current() == .semicolon or self.current() == .eof) {
         _ = try self.eat(.semicolon);
-        return NodeIndex.none;
-    }
-    // ASI: 줄바꿈 후 '{'가 아닌 토큰 → body 없는 overload
-    if (self.scanner.token.has_newline_before and self.current() != .l_curly) {
         return NodeIndex.none;
     }
     return self.parseFunctionBody();

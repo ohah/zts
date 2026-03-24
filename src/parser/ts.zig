@@ -195,10 +195,8 @@ fn parseTsModuleBody(self: *Parser, start: u32) ParseError2!NodeIndex {
             .data = .{ .none = 0 },
         });
         try self.advance();
-        // body 없는 shorthand: declare module 'X'; 또는 declare module 'X'\n
-        if (self.current() == .semicolon or self.current() == .eof or
-            (self.scanner.token.has_newline_before and self.current() != .l_curly))
-        {
+        // body 없는 shorthand: declare module 'X';
+        if (self.current() == .semicolon or self.current() == .eof) {
             _ = try self.eat(.semicolon);
             return try self.ast.addNode(.{
                 .tag = .ts_module_declaration,
