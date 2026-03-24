@@ -452,7 +452,9 @@ fn parseTypeOrTypePredicate(self: *Parser) ParseError2!NodeIndex {
             const saved = self.saveState();
             const err_count = self.errors.items.len;
             const param_node = try parsePredicateSubject(self);
-            if (self.current() == .identifier and self.isContextual("is")) {
+            // 줄바꿈이 is 앞에 있으면 type predicate가 아님
+            // (예: { foo(): Foo \n is: Bar } — is는 프로퍼티 이름)
+            if (self.current() == .identifier and self.isContextual("is") and !self.scanner.token.has_newline_before) {
                 try self.advance();
                 const ty = try parseType(self);
                 return try self.ast.addNode(.{
@@ -513,8 +515,11 @@ pub fn parseType(self: *Parser) ParseError2!NodeIndex {
 
     // 조건부 타입: T extends U ? X : Y (oxc parse_ts_type L21-41)
     // disallow_conditional_types 컨텍스트에서는 중첩 방지
+    // 줄바꿈이 extends 앞에 있으면 conditional type이 아님
+    // (예: { y: T \n extends: number } — extends는 프로퍼티 이름)
     if (!self.ctx.disallow_conditional_types and
-        self.current() == .kw_extends)
+        self.current() == .kw_extends and
+        !self.scanner.token.has_newline_before)
     {
         const start = self.ast.getNode(left).span.start;
         try self.advance(); // skip 'extends'
@@ -621,13 +626,26 @@ fn parseTypeOperatorOrHigher(self: *Parser) ParseError2!NodeIndex {
             const name_span = self.currentSpan();
             try self.advance(); // type param name
             // 선택적 constraint: infer T extends U (TS 4.7+)
-            // disallow_conditional_types 컨텍스트에서만 infer constraint가 가능
-            // (조건부 타입의 extends와 ambiguity 방지)
+            // oxc try_parse_constraint_of_infer_type 대응:
+            // speculative 파싱으로 constraint 시도. extends 뒤에 타입을 파싱하되,
+            // 외부가 disallow_conditional_types가 아닌데 ? 가 오면 rollback
+            // (그 extends는 조건부 타입의 extends이므로 infer constraint가 아님)
             var constraint = NodeIndex.none;
-            if (self.ctx.disallow_conditional_types and self.current() == .kw_extends) {
+            if (self.current() == .kw_extends) {
+                const infer_saved = self.saveState();
+                const infer_err_count = self.errors.items.len;
                 try self.advance(); // skip 'extends'
-                // constraint 타입은 union/intersection을 포함하지 않음 (oxc: parseTypeOperatorOrHigher)
-                constraint = try parseTypeOperatorOrHigher(self);
+                // constraint 타입: parseType with disallow_conditional_types=true
+                const ctx_saved = self.ctx;
+                self.ctx.disallow_conditional_types = true;
+                constraint = try parseType(self);
+                self.ctx = ctx_saved;
+                // 외부 컨텍스트가 disallow가 아닌데 ? 가 오면 → extends는 조건부 타입의 것
+                if (!ctx_saved.disallow_conditional_types and self.current() == .question) {
+                    self.restoreState(infer_saved);
+                    self.errors.shrinkRetainingCapacity(infer_err_count);
+                    constraint = NodeIndex.none;
+                }
             }
             return try self.ast.addNode(.{
                 .tag = .ts_infer_type,
@@ -1420,10 +1438,23 @@ fn parseTupleElement(self: *Parser) ParseError2!NodeIndex {
 fn parseTupleElementInner(self: *Parser) ParseError2!NodeIndex {
     // 라벨드 튜플: name: T, name?: T, false: T, true: T, null: T 등
     // 키워드도 라벨 이름으로 허용 (TS 스펙)
-    // lookahead: identifier/keyword 다음에 : 또는 ? 가 오는지
+    // lookahead: identifier/keyword 다음에 : 또는 ?: 가 오는지
+    // name: T → 라벨드 튜플, name?: T → 선택적 라벨드 튜플
+    // name? 다음에 : 가 아니면 → 일반 optional type (예: number?)
     if (self.current() == .identifier or self.current().isKeyword()) {
         const next = try self.peekNextKind();
-        if (next == .colon or next == .question) {
+        const is_labeled = next == .colon or (next == .question and blk: {
+            // name? 다음이 : 인지 확인 (name?: T vs number?)
+            const saved = self.saveState();
+            const err_count = self.errors.items.len;
+            self.advance() catch break :blk false; // skip name
+            self.advance() catch break :blk false; // skip ?
+            const after_question = self.current();
+            self.restoreState(saved);
+            self.errors.shrinkRetainingCapacity(err_count);
+            break :blk after_question == .colon;
+        });
+        if (is_labeled) {
             const name_span = self.currentSpan();
             try self.advance(); // skip name
             const optional = try self.eat(.question);

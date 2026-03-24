@@ -62,10 +62,23 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
         const next = try self.peekNextKind();
         // import type { ... } / import type * / import type Foo from
         // 주의: import type from 'bar'는 'type'이라는 이름의 default import
-        // → next가 kw_from이면 type-only가 아님
+        //   → next가 kw_from이고 그 다음이 string_literal이면 type-only가 아님
+        //   → next가 kw_from이고 그 다음이 string이 아니면 type-only
+        //     (예: import type from from 'bar' — from이 default import 이름)
         // 비예약 키워드도 타입 이름으로 유효 (import type async from 'bar')
         if (next == .l_curly or next == .star or next == .identifier or
-            (next != .kw_from and next.isKeyword() and !next.isReservedKeyword()))
+            (next != .kw_from and next.isKeyword() and !next.isReservedKeyword()) or
+            (next == .kw_from and blk: {
+                // 2-token lookahead: from 다음이 string이 아니면 type-only
+                const saved = self.saveState();
+                const err_count = self.errors.items.len;
+                self.advance() catch break :blk false; // skip 'type'
+                self.advance() catch break :blk false; // skip 'from'
+                const after_from = self.current();
+                self.restoreState(saved);
+                self.errors.shrinkRetainingCapacity(err_count);
+                break :blk after_from != .string_literal;
+            }))
         {
             is_type_only = true;
             try self.advance(); // skip 'type'
