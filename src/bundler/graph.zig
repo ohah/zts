@@ -41,6 +41,8 @@ pub const ModuleGraph = struct {
     path_to_module: std.StringHashMap(ModuleIndex),
     diagnostics: std.ArrayList(BundlerDiagnostic),
     resolve_cache: *ResolveCache,
+    /// 병렬 파싱 시 diagnostics 보호용 mutex
+    diag_mutex: std.Thread.Mutex = .{},
 
     /// 패키지별 sideEffects 캐시. pkg_dir_path → SideEffects.
     /// 같은 패키지의 여러 모듈이 동일 package.json을 반복 읽지 않도록.
@@ -86,15 +88,41 @@ pub const ModuleGraph = struct {
     /// Phase 2: DFS로 exec_index + 순환 감지
     pub fn build(self: *ModuleGraph, entry_points: []const []const u8) !void {
         // Phase 1: BFS로 모든 모듈 등록 + 의존성 resolve
+        // 병렬 파싱: 슬롯 예약 → 배치 파싱 → import resolve → 반복
         for (entry_points) |entry_path| {
             _ = try self.addModule(entry_path);
         }
 
-        // BFS 큐: addModule에서 추가된 모듈들의 import를 resolve.
-        // modules 배열이 커질 수 있으므로 인덱스로 순회 (포인터 무효화 방지).
-        var i: usize = 0;
-        while (i < self.modules.items.len) : (i += 1) {
-            try self.resolveModuleImports(@enumFromInt(@as(u32, @intCast(i))));
+        // 파싱 배치 루프
+        var parse_start: usize = 0;
+        while (parse_start < self.modules.items.len) {
+            const parse_end = self.modules.items.len;
+
+            // 미파싱 모듈들을 병렬 파싱
+            if (parse_end - parse_start >= 4) {
+                // 4개 이상이면 스레드 풀 사용
+                try self.parseModulesBatch(parse_start, parse_end);
+            } else {
+                // 소수면 순차 파싱 (스레드 오버헤드 방지)
+                var j: usize = parse_start;
+                while (j < parse_end) : (j += 1) {
+                    self.parseModule(@enumFromInt(@as(u32, @intCast(j))));
+                }
+            }
+
+            // 파싱된 모듈의 import 추출 (graph allocator 사용 — 메인 스레드에서만)
+            var j2: usize = parse_start;
+            while (j2 < parse_end) : (j2 += 1) {
+                self.finalizeModule(@enumFromInt(@as(u32, @intCast(j2))));
+            }
+
+            // 파싱된 모듈들의 import를 resolve → 새 모듈이 modules에 추가될 수 있음
+            var i: usize = parse_start;
+            while (i < parse_end) : (i += 1) {
+                try self.resolveModuleImports(@enumFromInt(@as(u32, @intCast(i))));
+            }
+
+            parse_start = parse_end;
         }
 
         // Phase 2: DFS로 exec_index + 순환 감지
@@ -136,9 +164,7 @@ pub const ModuleGraph = struct {
         try self.modules.append(self.allocator, module);
         try self.path_to_module.put(path_owned, index);
 
-        // 파싱
-        self.parseModule(index);
-
+        // 파싱은 build()의 배치 루프에서 수행
         return index;
     }
 
@@ -168,6 +194,38 @@ pub const ModuleGraph = struct {
         try self.path_to_module.put(disabled_path, index);
 
         return index;
+    }
+
+    /// 여러 모듈을 병렬 파싱한다 (Thread.spawn per module).
+    /// 각 모듈의 파싱은 독립적 (파일별 Arena, 전역 상태 없음).
+    /// import_records 추출은 graph allocator를 사용하므로 mutex로 보호.
+    fn parseModulesBatch(self: *ModuleGraph, start: usize, end: usize) !void {
+        const count = end - start;
+        if (count == 0) return;
+
+        // 스레드 핸들 저장
+        var threads = try self.allocator.alloc(std.Thread, count);
+        defer self.allocator.free(threads);
+
+        var spawned: usize = 0;
+        for (start..end) |i| {
+            threads[i - start] = std.Thread.spawn(.{}, parseModuleThread, .{ self, @as(ModuleIndex, @enumFromInt(@as(u32, @intCast(i)))) }) catch {
+                // 스레드 생성 실패 시 순차 파싱으로 폴백
+                self.parseModule(@enumFromInt(@as(u32, @intCast(i))));
+                continue;
+            };
+            spawned += 1;
+        }
+
+        // 모든 스레드 대기
+        for (threads[0..spawned]) |t| {
+            t.join();
+        }
+    }
+
+    /// 스레드에서 실행되는 모듈 파싱 래퍼.
+    fn parseModuleThread(self: *ModuleGraph, idx: ModuleIndex) void {
+        self.parseModule(idx);
     }
 
     /// 단일 모듈을 파싱하고 import를 추출한다.
@@ -263,26 +321,38 @@ pub const ModuleGraph = struct {
             module.uses_top_level_await = analyzer.has_top_level_await;
         }
 
-        // Import 추출 + CJS 감지 (D079) — graph allocator로 할당
-        const scan_result = import_scanner.extractImportsWithCjsDetection(self.allocator, &parser.ast) catch {
+        module.ast = parser.ast;
+        module.line_offsets = scanner.line_offsets.items;
+
+        // Phase A 완료 — AST/semantic만 저장. import 추출은 finalizeModule에서.
+        module.state = .parsed;
+    }
+
+    /// 파싱 완료된 모듈의 import/export 추출 + sideEffects 반영 (메인 스레드에서 호출).
+    /// graph allocator를 사용하므로 스레드 안전하지 않음.
+    fn finalizeModule(self: *ModuleGraph, idx: ModuleIndex) void {
+        const mod_idx = @intFromEnum(idx);
+        if (mod_idx >= self.modules.items.len) return;
+        const module = &self.modules.items[mod_idx];
+        if (module.state != .parsed) return;
+
+        const ast = &(module.ast orelse {
+            module.state = .ready;
+            return;
+        });
+
+        const scan_result = import_scanner.extractImportsWithCjsDetection(self.allocator, ast) catch {
             module.state = .ready;
             return;
         };
         module.import_records = scan_result.records;
 
-        // CJS/ESM 판별 — 스캔 결과 + 확장자 + package.json type 필드
         module.exports_kind = determineExportsKind(scan_result, module.path);
-        // CJS 모듈은 __commonJS 팩토리 함수로 래핑
         module.wrap_kind = if (module.exports_kind == .commonjs) .cjs else .none;
 
-        // Import/Export 바인딩 상세 추출 — linker에서 사용
-        module.import_bindings = binding_scanner_mod.extractImportBindings(self.allocator, &parser.ast, scan_result.records) catch &.{};
-        module.export_bindings = binding_scanner_mod.extractExportBindings(self.allocator, &parser.ast, scan_result.records, module.import_bindings) catch &.{};
+        module.import_bindings = binding_scanner_mod.extractImportBindings(self.allocator, ast, scan_result.records) catch &.{};
+        module.export_bindings = binding_scanner_mod.extractExportBindings(self.allocator, ast, scan_result.records, module.import_bindings) catch &.{};
 
-        module.ast = parser.ast;
-        module.line_offsets = scanner.line_offsets.items;
-
-        // package.json sideEffects 필드 반영 (node_modules 패키지만)
         self.applySideEffectsFromPackageJson(module);
 
         module.state = .ready;
@@ -621,6 +691,8 @@ pub const ModuleGraph = struct {
         message: []const u8,
         suggestion: ?[]const u8,
     ) void {
+        self.diag_mutex.lock();
+        defer self.diag_mutex.unlock();
         self.diagnostics.append(self.allocator, .{
             .code = code,
             .severity = severity,
