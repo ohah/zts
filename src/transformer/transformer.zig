@@ -24,6 +24,7 @@ const Ast = ast_mod.Ast;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es2016 = @import("es2016.zig");
+const es2019 = @import("es2019.zig");
 const es2020 = @import("es2020.zig");
 const es2021 = @import("es2021.zig");
 const es2022 = @import("es2022.zig");
@@ -91,6 +92,10 @@ pub const TransformOptions = struct {
         /// 해당 타겟에서 class static block 변환이 필요한지
         pub fn needsClassStaticBlock(self: Target) bool {
             return @intFromEnum(self) < @intFromEnum(Target.es2022);
+        }
+        /// 해당 타겟에서 optional catch binding 변환이 필요한지
+        pub fn needsOptionalCatchBinding(self: Target) bool {
+            return @intFromEnum(self) < @intFromEnum(Target.es2019);
         }
     };
 };
@@ -445,8 +450,12 @@ pub const Transformer = struct {
             .import_declaration => self.visitImportDeclaration(node),
             .export_named_declaration => self.visitExportNamedDeclaration(node),
             .export_default_declaration => self.visitUnaryNode(node),
-            .export_all_declaration,
-            .catch_clause,
+            .export_all_declaration, .catch_clause => {
+                if (self.options.target.needsOptionalCatchBinding()) {
+                    return es2019.ES2019(Transformer).lowerOptionalCatchBinding(self, node);
+                }
+                return self.visitBinaryNode(node);
+            },
             .binding_property,
             .assignment_pattern,
             => self.visitBinaryNode(node),
