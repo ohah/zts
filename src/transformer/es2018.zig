@@ -61,7 +61,7 @@ pub fn ES2018(comptime Transformer: type) type {
                 if (child.tag == .spread_element) {
                     // 1) 쌓아둔 non-spread 그룹을 object literal로 플러시
                     if (self.scratch.items.len > group_start) {
-                        const obj = try buildObjectLiteral(self,node.span, self.scratch.items[group_start..]);
+                        const obj = try buildObjectLiteral(self, node.span, self.scratch.items[group_start..]);
                         // group 영역을 줄이고, 결과 노드를 인자로 추가
                         self.scratch.shrinkRetainingCapacity(group_start);
                         try self.scratch.append(self.allocator, obj);
@@ -83,7 +83,7 @@ pub fn ES2018(comptime Transformer: type) type {
 
             // 마지막 남은 non-spread 그룹 플러시
             if (self.scratch.items.len > group_start) {
-                const obj = try buildObjectLiteral(self,node.span, self.scratch.items[group_start..]);
+                const obj = try buildObjectLiteral(self, node.span, self.scratch.items[group_start..]);
                 self.scratch.shrinkRetainingCapacity(group_start);
                 try self.scratch.append(self.allocator, obj);
             }
@@ -100,7 +100,7 @@ pub fn ES2018(comptime Transformer: type) type {
 
             if (need_empty_target) {
                 // 빈 object literal {} 생성
-                const empty_obj = try buildObjectLiteral(self,node.span, &.{});
+                const empty_obj = try buildObjectLiteral(self, node.span, &.{});
                 // args_slice 앞에 삽입: scratch에 빈 obj를 끼워넣기
                 // 간단한 방법: 새 scratch 영역에 [empty_obj] + args_slice 복사
                 const old_args_len = args_slice.len;
