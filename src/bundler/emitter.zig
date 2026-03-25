@@ -705,6 +705,13 @@ pub fn emitChunks(
                 try chunk_output.appendSlice(allocator, TOESM_RUNTIME);
             }
         }
+        if (options.experimental_decorators) {
+            if (options.minify) {
+                try chunk_output.appendSlice(allocator, DECORATOR_RUNTIME_MIN);
+            } else {
+                try chunk_output.appendSlice(allocator, DECORATOR_RUNTIME);
+            }
+        }
 
         // 크로스 청크 import deconfliction:
         // 여러 청크에서 같은 이름의 심볼을 import할 때 충돌 방지.
