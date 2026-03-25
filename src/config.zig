@@ -40,6 +40,10 @@ pub const TsConfig = struct {
     experimental_decorators: bool = false,
     /// "emitDecoratorMetadata": 데코레이터 메타데이터 emit 여부
     emit_decorator_metadata: bool = false,
+    /// "useDefineForClassFields": class field를 define(ES 표준) 또는 assign(legacy) semantics로 처리.
+    /// null = 설정 안 됨 (기본값은 target에 따라 결정: ES2022+ → true, 이전 → false).
+    /// ZTS에서는 명시적으로 false로 설정한 경우에만 assign semantics 적용.
+    use_define_for_class_fields: ?bool = null,
 
     /// allocator로 할당된 문자열들을 해제하기 위한 참조.
     /// load()에서 내부적으로 사용하며, deinit() 시 해제된다.
@@ -189,6 +193,9 @@ pub const TsConfig = struct {
                 if (co.get("emitDecoratorMetadata")) |v| {
                     if (v == .bool) config.emit_decorator_metadata = v.bool;
                 }
+                if (co.get("useDefineForClassFields")) |v| {
+                    if (v == .bool) config.use_define_for_class_fields = v.bool;
+                }
             }
         }
 
@@ -234,6 +241,10 @@ pub const TsConfig = struct {
         if (base.strict) target.strict = true;
         if (base.experimental_decorators) target.experimental_decorators = true;
         if (base.emit_decorator_metadata) target.emit_decorator_metadata = true;
+        // optional bool: target이 null이면 base에서 상속
+        if (target.use_define_for_class_fields == null) {
+            target.use_define_for_class_fields = base.use_define_for_class_fields;
+        }
     }
 };
 

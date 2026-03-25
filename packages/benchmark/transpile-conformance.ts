@@ -181,13 +181,26 @@ function normalize(s: string): string {
     .trim();
 }
 
-function runZts(input: string, isTsx: boolean): { ok: boolean; output: string; error: string } {
+function runZts(
+  input: string,
+  isTsx: boolean,
+  category?: string,
+): { ok: boolean; output: string; error: string } {
   const tmpDir = mkdtempSync(join(tmpdir(), "zts-conform-"));
   const ext = isTsx ? "input.tsx" : "input.ts";
   const inputPath = join(tmpDir, ext);
   writeFileSync(inputPath, input);
 
-  const result = spawnSync(ZTS_BIN, [inputPath], {
+  const args = [inputPath];
+  // 카테고리별 CLI 옵션 추가
+  if (category === "AssignSemanticsTS") {
+    args.push("--use-define-for-class-fields=false");
+  }
+  if (category === "ExperimentalDecoratorTS") {
+    args.push("--experimental-decorators");
+  }
+
+  const result = spawnSync(ZTS_BIN, args, {
     stdio: "pipe",
     timeout: 5000,
   });
@@ -229,7 +242,7 @@ let errors = 0;
 for (let i = 0; i < allCases.length; i++) {
   const c = allCases[i];
   const isTsx = c.category === "TSX";
-  const { ok, output, error } = runZts(c.input, isTsx);
+  const { ok, output, error } = runZts(c.input, isTsx, c.category);
 
   // ZTS가 에러를 출력해도 exit 0으로 나올 수 있음 (에러 복구)
   const hasParseError = error.includes("error:");
