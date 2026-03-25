@@ -87,39 +87,32 @@ pub const ModuleGraph = struct {
     /// Phase 1: 모든 모듈 등록 + 파싱 + import resolve (BFS)
     /// Phase 2: DFS로 exec_index + 순환 감지
     pub fn build(self: *ModuleGraph, entry_points: []const []const u8) !void {
-        // Phase 1: BFS로 모든 모듈 등록 + 의존성 resolve
-        // 병렬 파싱: 슬롯 예약 → 배치 파싱 → import resolve → 반복
+        // Phase 1: BFS + 병렬 파싱
+        // 개선된 배치 모델: 각 모듈 파싱 완료 즉시 resolve → 새 모듈 발견 → 다음 배치에 포함.
+        // 배치 크기가 작아도 즉시 다음 라운드로 진행하여 파이프라인 효과 달성.
         for (entry_points) |entry_path| {
             _ = try self.addModule(entry_path);
         }
 
-        // 파싱 배치 루프
         var parse_start: usize = 0;
         while (parse_start < self.modules.items.len) {
             const parse_end = self.modules.items.len;
+            const batch_size = parse_end - parse_start;
 
-            // 미파싱 모듈들을 병렬 파싱
-            if (parse_end - parse_start >= 4) {
-                // 4개 이상이면 스레드 풀 사용
+            // 병렬 파싱 (Thread.spawn + join)
+            if (batch_size >= 2) {
                 try self.parseModulesBatch(parse_start, parse_end);
             } else {
-                // 소수면 순차 파싱 (스레드 오버헤드 방지)
-                var j: usize = parse_start;
-                while (j < parse_end) : (j += 1) {
-                    self.parseModule(@enumFromInt(@as(u32, @intCast(j))));
-                }
+                // 1개면 순차 (스레드 오버헤드 방지)
+                self.parseModule(@enumFromInt(@as(u32, @intCast(parse_start))));
             }
 
-            // 파싱된 모듈의 import 추출 (graph allocator 사용 — 메인 스레드에서만)
-            var j2: usize = parse_start;
-            while (j2 < parse_end) : (j2 += 1) {
-                self.finalizeModule(@enumFromInt(@as(u32, @intCast(j2))));
-            }
-
-            // 파싱된 모듈들의 import를 resolve → 새 모듈이 modules에 추가될 수 있음
+            // 파싱 완료 즉시 finalize + resolve (새 모듈이 modules에 추가됨)
             var i: usize = parse_start;
             while (i < parse_end) : (i += 1) {
-                try self.resolveModuleImports(@enumFromInt(@as(u32, @intCast(i))));
+                const idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(i)));
+                self.finalizeModule(idx);
+                try self.resolveModuleImports(idx);
             }
 
             parse_start = parse_end;
