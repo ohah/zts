@@ -24,6 +24,7 @@ const Ast = ast_mod.Ast;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es2016 = @import("es2016.zig");
+const es2018 = @import("es2018.zig");
 const es2019 = @import("es2019.zig");
 const es2020 = @import("es2020.zig");
 const es2021 = @import("es2021.zig");
@@ -96,6 +97,10 @@ pub const TransformOptions = struct {
         /// 해당 타겟에서 optional catch binding 변환이 필요한지
         pub fn needsOptionalCatchBinding(self: Target) bool {
             return @intFromEnum(self) < @intFromEnum(Target.es2019);
+        }
+        /// 해당 타겟에서 object spread 변환이 필요한지
+        pub fn needsObjectSpread(self: Target) bool {
+            return @intFromEnum(self) < @intFromEnum(Target.es2018);
         }
     };
 };
@@ -288,7 +293,6 @@ pub const Transformer = struct {
             .program,
             .block_statement,
             .array_expression,
-            .object_expression,
             .sequence_expression,
             .class_body,
             .formal_parameters,
@@ -297,6 +301,16 @@ pub const Transformer = struct {
             .jsx_fragment,
             .function_body,
             => self.visitListNode(node),
+
+            // object_expression: spread가 있으면 ES2018 다운레벨링 대상
+            .object_expression => {
+                if (self.options.target.needsObjectSpread()) {
+                    if (es2018.ES2018(Transformer).hasSpreadProperty(self, node)) {
+                        return es2018.ES2018(Transformer).lowerObjectSpread(self, node);
+                    }
+                }
+                return self.visitListNode(node);
+            },
 
             // JSX element/opening_element: .extra 형식 (tag, attrs, children)
             .jsx_element => self.visitJSXElement(node),
