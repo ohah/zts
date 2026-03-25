@@ -1082,6 +1082,7 @@ pub const Transformer = struct {
         // computed key 호이스트: class 전에 var _a; _a = foo; 삽입 (esbuild 호환)
         // assign semantics에서 computed key는 class 평가 전에 한 번만 평가되어야 함
         if (!self.options.use_define_for_class_fields) {
+            var computed_idx: u8 = 0;
             for (field_assignments.items) |*field| {
                 if (field.is_computed) {
                     const key_node = self.new_ast.getNode(field.key);
@@ -1090,8 +1091,12 @@ pub const Transformer = struct {
                     else
                         field.key;
 
-                    // var _a; 선언
-                    const temp_span = try self.new_ast.addString("_a");
+                    // var _a; / var _b; / ... (computed field별 고유 이름)
+                    var name_buf: [4]u8 = undefined;
+                    name_buf[0] = '_';
+                    name_buf[1] = 'a' + computed_idx;
+                    const temp_span = try self.new_ast.addString(name_buf[0..2]);
+                    computed_idx += 1;
                     const temp_binding = try self.new_ast.addNode(.{
                         .tag = .binding_identifier,
                         .span = temp_span,
