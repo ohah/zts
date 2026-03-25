@@ -3591,6 +3591,44 @@ test "ES2022: static block with methods preserved" {
     try std.testing.expectEqualStrings("class Foo{method(){return 1;}}(()=>{init();})();", r.output);
 }
 
+// --- ES2017: async/await → generator ---
+
+test "ES2017: async function declaration" {
+    var r = try e2eFull(std.testing.allocator, "export async function foo() { return await bar(); }", .{ .target = .es2016 }, .{ .minify = true }, ".mts");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("export function foo(){return __async(function*(){return (yield bar());});}", r.output);
+}
+
+test "ES2017: async arrow block body" {
+    var r = try e2eFull(std.testing.allocator, "export const f = async () => { await x; };", .{ .target = .es2016 }, .{ .minify = true }, ".mts");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("export const f=()=>__async(function*(){(yield x);});", r.output);
+}
+
+test "ES2017: async arrow expression body" {
+    var r = try e2eFull(std.testing.allocator, "export const f = async () => await x;", .{ .target = .es2016 }, .{ .minify = true }, ".mts");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("export const f=()=>__async(function*(){return (yield x);});", r.output);
+}
+
+test "ES2017: no transform on es2017" {
+    var r = try e2eFull(std.testing.allocator, "export async function foo() { await x; }", .{ .target = .es2017 }, .{ .minify = true }, ".mts");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("export async function foo(){await x;}", r.output);
+}
+
+test "ES2017: no transform on esnext" {
+    var r = try e2eFull(std.testing.allocator, "export async function foo() { await x; }", .{ .target = .esnext }, .{ .minify = true }, ".mts");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("export async function foo(){await x;}", r.output);
+}
+
+test "ES2017: non-async function unchanged" {
+    var r = try e2eFull(std.testing.allocator, "export function foo() { return 1; }", .{ .target = .es2016 }, .{ .minify = true }, ".mts");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("export function foo(){return 1;}", r.output);
+}
+
 // --- ES2018: object spread ---
 
 test "ES2018: spread only" {

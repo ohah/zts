@@ -25,6 +25,7 @@ const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es2016 = @import("es2016.zig");
 const es2018 = @import("es2018.zig");
+const es2017_mod = @import("es2017.zig");
 const es2019 = @import("es2019.zig");
 const es2020 = @import("es2020.zig");
 const es2021 = @import("es2021.zig");
@@ -97,6 +98,10 @@ pub const TransformOptions = struct {
         /// 해당 타겟에서 optional catch binding 변환이 필요한지
         pub fn needsOptionalCatchBinding(self: Target) bool {
             return @intFromEnum(self) < @intFromEnum(Target.es2019);
+        }
+        /// 해당 타겟에서 async/await 변환이 필요한지
+        pub fn needsAsyncAwait(self: Target) bool {
+            return @intFromEnum(self) < @intFromEnum(Target.es2017);
         }
         /// 해당 타겟에서 object spread 변환이 필요한지
         pub fn needsObjectSpread(self: Target) bool {
@@ -337,7 +342,12 @@ pub const Transformer = struct {
                 }
                 return self.visitUnaryNode(node);
             },
-            .await_expression,
+            .await_expression => {
+                if (self.options.target.needsAsyncAwait()) {
+                    return es2017_mod.ES2017(Transformer).lowerAwaitExpression(self, node);
+                }
+                return self.visitUnaryNode(node);
+            },
             .yield_expression,
             .rest_element,
             .decorator,
@@ -437,9 +447,29 @@ pub const Transformer = struct {
             .variable_declarator => self.visitVariableDeclarator(node),
             .function_declaration,
             .function_expression,
+            => {
+                if (self.options.target.needsAsyncAwait()) {
+                    // async flag 확인 (extra data의 flags 필드)
+                    const extras = self.old_ast.extra_data.items;
+                    const e = node.data.extra;
+                    if (e + 4 < extras.len and (extras[e + 4] & ast_mod.FunctionFlags.is_async) != 0) {
+                        return es2017_mod.ES2017(Transformer).lowerAsyncFunction(self, node);
+                    }
+                }
+                return self.visitFunction(node);
+            },
             .function,
             => self.visitFunction(node),
-            .arrow_function_expression => self.visitArrowFunction(node),
+            .arrow_function_expression => {
+                if (self.options.target.needsAsyncAwait()) {
+                    const extras = self.old_ast.extra_data.items;
+                    const e = node.data.extra;
+                    if (e + 2 < extras.len and (extras[e + 2] & ast_mod.ArrowFlags.is_async) != 0) {
+                        return es2017_mod.ES2017(Transformer).lowerAsyncArrow(self, node);
+                    }
+                }
+                return self.visitArrowFunction(node);
+            },
             .class_declaration,
             .class_expression,
             => self.visitClass(node),
