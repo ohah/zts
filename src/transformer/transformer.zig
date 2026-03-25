@@ -1528,11 +1528,14 @@ pub const Transformer = struct {
             .data = .{ .none = 0 },
         });
 
-        // computed key: this[key] = value, 일반: this.key = value
-        const member = if (field.is_computed) blk: {
+        // computed key 또는 string/numeric literal key: this[key] = value
+        // 일반 identifier key: this.key = value
+        // string literal ("foo")이나 numeric literal (0)은 dot notation 불가 → bracket notation
+        const key_node = self.new_ast.getNode(field.key);
+        const needs_bracket = field.is_computed or key_node.tag == .string_literal or key_node.tag == .numeric_literal;
+        const member = if (needs_bracket) blk: {
             // computed_property_key의 내부 expression을 꺼냄
-            const inner_key = self.new_ast.getNode(field.key);
-            const actual_key = if (inner_key.tag == .computed_property_key) inner_key.data.unary.operand else field.key;
+            const actual_key = if (key_node.tag == .computed_property_key) key_node.data.unary.operand else field.key;
             const member_extra = try self.new_ast.addExtras(&.{ @intFromEnum(this_node), @intFromEnum(actual_key), 0 });
             break :blk try self.new_ast.addNode(.{
                 .tag = .computed_member_expression,
@@ -1947,9 +1950,6 @@ pub const Transformer = struct {
     // accessor_property: extra = [key, init_val, flags, deco_start, deco_len]
     fn visitAccessorProperty(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
-        const flags = self.readU32(e, 2);
-        // abstract(0x20) 또는 declare(0x40) accessor는 타입 전용 → 완전 제거
-        if (self.options.strip_types and (flags & 0x60) != 0) return NodeIndex.none;
         const new_key = try self.visitNode(self.readNodeIdx(e, 0));
         const new_value = try self.visitNode(self.readNodeIdx(e, 1));
         const new_decos = try self.visitExtraList(self.readU32(e, 3), self.readU32(e, 4));
