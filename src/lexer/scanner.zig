@@ -569,6 +569,7 @@ pub const Scanner = struct {
         const c = self.advance();
         self.token.kind = switch (c) {
             '>' => .r_angle,
+            '<' => .l_angle, // TS JSX type arguments: <Foo<T>/>
             '/' => .slash,
             '=' => .eq,
             '{' => blk: {
