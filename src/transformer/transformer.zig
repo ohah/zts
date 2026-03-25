@@ -21,7 +21,8 @@ const Data = Node.Data;
 const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
 const Ast = ast_mod.Ast;
-const Span = @import("../lexer/token.zig").Span;
+const token_mod = @import("../lexer/token.zig");
+const Span = token_mod.Span;
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 
 /// define 치환 엔트리. key=식별자 텍스트, value=치환 문자열.
@@ -50,6 +51,35 @@ pub const TransformOptions = struct {
     /// false(기본값)이면 decorator를 TC39 Stage 3 형태로 그대로 출력.
     /// true이면 class/method/property decorator를 esbuild 호환 __decorateClass 호출로 변환.
     experimental_decorators: bool = false,
+    /// ES 타겟 레벨. 이 버전 이하의 문법을 하위 호환 코드로 변환.
+    /// esnext(기본값)이면 변환 없음.
+    target: Target = .esnext,
+
+    pub const Target = enum {
+        es2015,
+        es2016,
+        es2017,
+        es2018,
+        es2019,
+        es2020,
+        es2021,
+        es2022,
+        es2024,
+        esnext,
+
+        /// 해당 타겟에서 nullish coalescing (??) 변환이 필요한지
+        pub fn needsNullishCoalescing(self: Target) bool {
+            return @intFromEnum(self) < @intFromEnum(Target.es2020);
+        }
+        /// 해당 타겟에서 optional chaining (?.) 변환이 필요한지
+        pub fn needsOptionalChaining(self: Target) bool {
+            return @intFromEnum(self) < @intFromEnum(Target.es2020);
+        }
+        /// 해당 타겟에서 logical assignment (??=, ||=, &&=) 변환이 필요한지
+        pub fn needsLogicalAssignment(self: Target) bool {
+            return @intFromEnum(self) < @intFromEnum(Target.es2021);
+        }
+    };
 };
 
 /// AST-to-AST 변환기.
@@ -93,6 +123,10 @@ pub const Transformer = struct {
     /// define value의 string_table Span 캐시. options.define과 동일 인덱스.
     /// transform() 시작 시 한 번 빌드하여, tryDefineReplace에서 addString 중복 호출을 방지.
     define_spans: []Span = &.{},
+
+    /// ES 다운레벨링 임시 변수 카운터.
+    /// `foo() ?? bar` → `(_a = foo()) != null ? _a : bar`에서 _a, _b, _c, ... 생성에 사용.
+    temp_var_counter: u32 = 0,
 
     /// React Fast Refresh: 감지된 컴포넌트 등록 목록.
     /// transform 완료 후 프로그램 끝에 $RefreshReg$ 호출로 주입.
@@ -290,7 +324,30 @@ pub const Transformer = struct {
             // === 이항 노드: 자식 2개 재귀 방문 ===
             .binary_expression,
             .logical_expression,
-            .assignment_expression,
+            => {
+                // ES 다운레벨링: ?? → ternary
+                if (self.options.target.needsNullishCoalescing() and node.tag == .logical_expression) {
+                    const op: token_mod.Kind = @enumFromInt(node.data.binary.flags);
+                    if (op == .question2) {
+                        return self.lowerNullishCoalescing(node);
+                    }
+                }
+                return self.visitBinaryNode(node);
+            },
+            .assignment_expression => {
+                // ES 다운레벨링: ??=, ||=, &&= (es2021)
+                if (self.options.target.needsLogicalAssignment()) {
+                    const op: token_mod.Kind = @enumFromInt(node.data.binary.flags);
+                    if (op == .question2_eq) {
+                        return self.lowerNullishAssignment(node);
+                    } else if (op == .pipe2_eq) {
+                        return self.lowerLogicalAssignment(node, .pipe2);
+                    } else if (op == .amp2_eq) {
+                        return self.lowerLogicalAssignment(node, .amp2);
+                    }
+                }
+                return self.visitBinaryNode(node);
+            },
             .while_statement,
             .do_while_statement,
             .labeled_statement,
@@ -472,6 +529,238 @@ pub const Transformer = struct {
                 .left = new_left,
                 .right = new_right,
                 .flags = node.data.binary.flags,
+            } },
+        });
+    }
+
+    /// ES 다운레벨링용 임시 변수명 생성: _a, _b, _c, ..., _a2, _b2, ...
+    fn makeTempVarSpan(self: *Transformer) Error!Span {
+        const idx = self.temp_var_counter;
+        self.temp_var_counter += 1;
+        var buf: [16]u8 = undefined;
+        // 0→_a, 1→_b, ..., 25→_z, 26→_a2, 27→_b2, ...
+        const letter: u8 = 'a' + @as(u8, @intCast(idx % 26));
+        const cycle = idx / 26;
+        const name = if (cycle == 0)
+            std.fmt.bufPrint(&buf, "_{c}", .{letter}) catch return error.OutOfMemory
+        else
+            std.fmt.bufPrint(&buf, "_{c}{d}", .{ letter, cycle + 1 }) catch return error.OutOfMemory;
+        return self.new_ast.addString(name);
+    }
+
+    /// 임시 변수 identifier_reference 노드 생성.
+    fn makeTempVarRef(self: *Transformer, span: Span, node_span: Span) Error!NodeIndex {
+        return self.new_ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = node_span,
+            .data = .{ .string_ref = span },
+        });
+    }
+
+    /// left 노드가 단순 식별자(부작용 없음)인지 판단.
+    fn isSimpleIdentifier(self: *Transformer, left_idx: NodeIndex) bool {
+        const left_node = self.old_ast.getNode(left_idx);
+        return left_node.tag == .identifier_reference;
+    }
+
+    /// ES 다운레벨링: `a ?? b` → `a != null ? a : b`
+    /// a가 단순 식별자면 임시 변수 불필요.
+    /// a가 부작용이 있으면 임시 변수 사용: `(_a = foo()) != null ? _a : b`
+    /// (esbuild 호환: `!= null`은 null과 undefined 모두 체크)
+    fn lowerNullishCoalescing(self: *Transformer, node: Node) Error!NodeIndex {
+        const old_left_idx = node.data.binary.left;
+        const simple = self.isSimpleIdentifier(old_left_idx);
+
+        const new_left = try self.visitNode(old_left_idx);
+        const new_right = try self.visitNode(node.data.binary.right);
+
+        // null 리터럴 (합성 — string_table에 "null" 저장)
+        const null_span = try self.new_ast.addString("null");
+        const null_node = try self.new_ast.addNode(.{
+            .tag = .null_literal,
+            .span = null_span,
+            .data = .{ .none = 0 },
+        });
+
+        if (simple) {
+            // 단순 식별자: a != null ? a : b (임시 변수 불필요)
+            const left_copy_node = self.new_ast.getNode(new_left);
+            const left_copy = try self.new_ast.addNode(left_copy_node);
+
+            const neq_null = try self.new_ast.addNode(.{
+                .tag = .binary_expression,
+                .span = node.span,
+                .data = .{ .binary = .{
+                    .left = new_left,
+                    .right = null_node,
+                    .flags = @intFromEnum(token_mod.Kind.neq),
+                } },
+            });
+
+            return self.new_ast.addNode(.{
+                .tag = .conditional_expression,
+                .span = node.span,
+                .data = .{ .ternary = .{
+                    .a = neq_null,
+                    .b = left_copy,
+                    .c = new_right,
+                } },
+            });
+        } else {
+            // 부작용이 있는 식: (_a = foo()) != null ? _a : bar
+            const temp_span = try self.makeTempVarSpan();
+
+            // _a = foo() (assignment)
+            const temp_ref1 = try self.makeTempVarRef(temp_span, node.span);
+            const assign_node = try self.new_ast.addNode(.{
+                .tag = .assignment_expression,
+                .span = node.span,
+                .data = .{ .binary = .{
+                    .left = temp_ref1,
+                    .right = new_left,
+                    .flags = @intFromEnum(token_mod.Kind.eq),
+                } },
+            });
+
+            // (_a = foo()) — 괄호로 감싸기 (sequence/comma와 혼동 방지)
+            const paren_assign = try self.new_ast.addNode(.{
+                .tag = .parenthesized_expression,
+                .span = node.span,
+                .data = .{ .unary = .{ .operand = assign_node, .flags = 0 } },
+            });
+
+            // (_a = foo()) != null
+            const neq_null = try self.new_ast.addNode(.{
+                .tag = .binary_expression,
+                .span = node.span,
+                .data = .{ .binary = .{
+                    .left = paren_assign,
+                    .right = null_node,
+                    .flags = @intFromEnum(token_mod.Kind.neq),
+                } },
+            });
+
+            // _a (second reference for the true branch)
+            const temp_ref2 = try self.makeTempVarRef(temp_span, node.span);
+
+            // (_a = foo()) != null ? _a : bar
+            return self.new_ast.addNode(.{
+                .tag = .conditional_expression,
+                .span = node.span,
+                .data = .{ .ternary = .{
+                    .a = neq_null,
+                    .b = temp_ref2,
+                    .c = new_right,
+                } },
+            });
+        }
+    }
+
+    /// ES 다운레벨링: `a ??= b` → `a ?? (a = b)` (es2021→es2020)
+    /// 타겟이 es2020 미만이면 ?? 도 추가 변환: `a != null ? a : (a = b)`
+    fn lowerNullishAssignment(self: *Transformer, node: Node) Error!NodeIndex {
+        const new_left = try self.visitNode(node.data.binary.left);
+        const new_right = try self.visitNode(node.data.binary.right);
+
+        // left 복사 (assignment의 left로 재사용)
+        const left_copy1 = try self.new_ast.addNode(self.new_ast.getNode(new_left));
+
+        // (a = b)
+        const assign = try self.new_ast.addNode(.{
+            .tag = .assignment_expression,
+            .span = node.span,
+            .data = .{ .binary = .{
+                .left = left_copy1,
+                .right = new_right,
+                .flags = @intFromEnum(token_mod.Kind.eq),
+            } },
+        });
+
+        // 괄호로 감싸기
+        const paren_assign = try self.new_ast.addNode(.{
+            .tag = .parenthesized_expression,
+            .span = node.span,
+            .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
+        });
+
+        if (self.options.target.needsNullishCoalescing()) {
+            // 타겟 < es2020: a != null ? a : (a = b)
+            const left_copy2 = try self.new_ast.addNode(self.new_ast.getNode(new_left));
+
+            const null_span = try self.new_ast.addString("null");
+            const null_node = try self.new_ast.addNode(.{
+                .tag = .null_literal,
+                .span = null_span,
+                .data = .{ .none = 0 },
+            });
+
+            const neq_null = try self.new_ast.addNode(.{
+                .tag = .binary_expression,
+                .span = node.span,
+                .data = .{ .binary = .{
+                    .left = new_left,
+                    .right = null_node,
+                    .flags = @intFromEnum(token_mod.Kind.neq),
+                } },
+            });
+
+            return self.new_ast.addNode(.{
+                .tag = .conditional_expression,
+                .span = node.span,
+                .data = .{ .ternary = .{
+                    .a = neq_null,
+                    .b = left_copy2,
+                    .c = paren_assign,
+                } },
+            });
+        } else {
+            // 타겟 >= es2020: a ?? (a = b)
+            return self.new_ast.addNode(.{
+                .tag = .logical_expression,
+                .span = node.span,
+                .data = .{ .binary = .{
+                    .left = new_left,
+                    .right = paren_assign,
+                    .flags = @intFromEnum(token_mod.Kind.question2),
+                } },
+            });
+        }
+    }
+
+    /// ES 다운레벨링: `a ||= b` → `a || (a = b)`, `a &&= b` → `a && (a = b)`
+    fn lowerLogicalAssignment(self: *Transformer, node: Node, logical_op: token_mod.Kind) Error!NodeIndex {
+        const new_left = try self.visitNode(node.data.binary.left);
+        const new_right = try self.visitNode(node.data.binary.right);
+
+        // left 복사 (assignment의 left로 재사용)
+        const left_copy = try self.new_ast.addNode(self.new_ast.getNode(new_left));
+
+        // (a = b)
+        const assign = try self.new_ast.addNode(.{
+            .tag = .assignment_expression,
+            .span = node.span,
+            .data = .{ .binary = .{
+                .left = left_copy,
+                .right = new_right,
+                .flags = @intFromEnum(token_mod.Kind.eq),
+            } },
+        });
+
+        // 괄호로 감싸기
+        const paren_assign = try self.new_ast.addNode(.{
+            .tag = .parenthesized_expression,
+            .span = node.span,
+            .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
+        });
+
+        // a || (a = b) 또는 a && (a = b)
+        return self.new_ast.addNode(.{
+            .tag = .logical_expression,
+            .span = node.span,
+            .data = .{ .binary = .{
+                .left = new_left,
+                .right = paren_assign,
+                .flags = @intFromEnum(logical_op),
             } },
         });
     }
