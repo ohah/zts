@@ -536,9 +536,10 @@ pub const Codegen = struct {
                     }
                 }
                 // namespace IIFE 내부: export된 변수의 "참조"를 ns.name으로 치환.
-                // binding_identifier(선언 위치)는 치환하지 않음 — let x = 1에서 x는 원래 이름 유지.
+                // identifier_reference(값 참조)와 assignment_target_identifier(대입 대상) 모두 치환.
+                // binding_identifier(선언 위치)는 치환하지 않음 — 선언은 emitNamespaceVarDirectAssign에서 처리.
                 if (self.ns_prefix) |prefix| {
-                    if (node.tag == .identifier_reference) {
+                    if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
                         const name = self.ast.getText(node.data.string_ref);
                         if (self.ns_exports) |exports| {
                             if (exports.contains(name)) {
@@ -2066,6 +2067,34 @@ pub const Codegen = struct {
         const name_node = self.ast.getNode(name_idx);
         const name_text = self.ast.getText(name_node.span);
 
+        // 각 멤버의 resolved 값을 수집 (멤버 간 참조 인라이닝용)
+        const member_indices = self.ast.extra_data.items[members_start .. members_start + members_len];
+
+        // 멤버 이름→값 매핑 (enum 자기 참조 인라이닝용)
+        var member_values: std.StringHashMapUnmanaged(EnumMemberValue) = .{};
+        defer member_values.deinit(self.allocator);
+
+        // IIFE 파라미터 이름: 멤버 중 enum 이름과 같은 것이 있으면 _EnumName 사용
+        var needs_rename = false;
+        for (member_indices) |raw_idx| {
+            const member = self.ast.getNode(@enumFromInt(raw_idx));
+            const member_name = self.ast.getNode(member.data.binary.left);
+            const raw_text = self.ast.getText(member_name.span);
+            const mt = stripStringQuotes(raw_text);
+            if (std.mem.eql(u8, mt, name_text)) {
+                needs_rename = true;
+                break;
+            }
+        }
+
+        var param_buf: [256]u8 = undefined;
+        const param_name = if (needs_rename) blk: {
+            const len = @min(name_text.len + 1, param_buf.len);
+            param_buf[0] = '_';
+            @memcpy(param_buf[1..len], name_text[0 .. len - 1]);
+            break :blk param_buf[0..len];
+        } else name_text;
+
         // var Color;
         try self.write("var ");
         try self.write(name_text);
@@ -2073,13 +2102,69 @@ pub const Codegen = struct {
 
         // ((Color) => { ... })(Color || (Color = {}));
         try self.write("((");
-        try self.write(name_text);
+        try self.write(param_name);
         try self.write(") => {");
 
-        // 각 멤버 출력
-        const member_indices = self.ast.extra_data.items[members_start .. members_start + members_len];
-        var auto_value: i64 = 0;
+        // 1차 패스: 멤버 값 수집 (상수 폴딩 + 자기참조 인라이닝용)
+        {
+            var auto_value: i64 = 0;
+            var auto_valid = true; // auto_value가 유효한지 (비숫자 초기화 이후 false)
+            for (member_indices) |raw_idx| {
+                const member = self.ast.getNode(@enumFromInt(raw_idx));
+                const member_name = self.ast.getNode(member.data.binary.left);
+                const raw_text = self.ast.getText(member_name.span);
+                const mt = stripStringQuotes(raw_text);
+                const member_init_idx = member.data.binary.right;
 
+                if (!member_init_idx.isNone()) {
+                    const init_node = self.ast.getNode(member_init_idx);
+                    if (init_node.tag == .numeric_literal) {
+                        const num_text = self.ast.getText(init_node.span);
+                        if (std.fmt.parseInt(i64, num_text, 10)) |v| {
+                            member_values.put(self.allocator, mt, .{ .int = v }) catch {};
+                            auto_value = v + 1;
+                            auto_valid = true;
+                        } else |_| {
+                            // float 등 — 원본 텍스트로 저장
+                            member_values.put(self.allocator, mt, .{ .raw = num_text }) catch {};
+                            auto_valid = false;
+                        }
+                    } else if (init_node.tag == .identifier_reference) {
+                        // 다른 enum 멤버를 참조하는 경우 → resolve
+                        const ref_text = self.ast.getText(init_node.span);
+                        if (member_values.get(ref_text)) |resolved| {
+                            member_values.put(self.allocator, mt, resolved) catch {};
+                            switch (resolved) {
+                                .int => |v| {
+                                    auto_value = v + 1;
+                                    auto_valid = true;
+                                },
+                                .raw, .str => {
+                                    auto_valid = false;
+                                },
+                            }
+                        } else {
+                            auto_valid = false;
+                        }
+                    } else if (init_node.tag == .string_literal) {
+                        const str_text = self.ast.getText(init_node.span);
+                        member_values.put(self.allocator, mt, .{ .str = str_text }) catch {};
+                        auto_valid = false;
+                    } else {
+                        auto_valid = false;
+                    }
+                } else {
+                    // 자동 증가 값
+                    if (auto_valid) {
+                        member_values.put(self.allocator, mt, .{ .int = auto_value }) catch {};
+                        auto_value += 1;
+                    }
+                }
+            }
+        }
+
+        // 2차 패스: 각 멤버 출력
+        var auto_value: i64 = 0;
         for (member_indices) |raw_idx| {
             const member = self.ast.getNode(@enumFromInt(raw_idx));
             // ts_enum_member: binary = { left=name, right=init_val }
@@ -2087,21 +2172,41 @@ pub const Codegen = struct {
             const member_init_idx = member.data.binary.right;
 
             const member_name = self.ast.getNode(member_name_idx);
-            const member_text = self.ast.getText(member_name.span);
+            const raw_text = self.ast.getText(member_name.span);
+            // 문자열 리터럴 키의 따옴표 제거: 'a' → a, "a b" → a b
+            const member_text = stripStringQuotes(raw_text);
 
             // Color[Color["Red"] = 0] = "Red";
-            try self.write(name_text);
+            try self.write(param_name);
             try self.writeByte('[');
-            try self.write(name_text);
+            try self.write(param_name);
             try self.write("[\"");
             try self.write(member_text);
             try self.write("\"]=");
 
             if (!member_init_idx.isNone()) {
-                // 이니셜라이저가 있으면 그대로 출력
-                try self.emitNode(member_init_idx);
-                // 이니셜라이저가 숫자 리터럴이면 auto_value 업데이트
                 const init_node = self.ast.getNode(member_init_idx);
+                // enum 멤버가 다른 멤버를 참조하는 경우 → 인라이닝
+                if (init_node.tag == .identifier_reference) {
+                    const ref_text = self.ast.getText(init_node.span);
+                    if (member_values.get(ref_text)) |resolved| {
+                        // 인라인된 값 출력 + 원본을 주석으로
+                        switch (resolved) {
+                            .int => |v| try self.emitInt(v),
+                            .raw => |r| try self.write(r),
+                            .str => |s| try self.write(s),
+                        }
+                        try self.write(" /* ");
+                        try self.write(ref_text);
+                        try self.write(" */");
+                    } else {
+                        try self.emitNode(member_init_idx);
+                    }
+                } else {
+                    // 이니셜라이저가 있으면 그대로 출력
+                    try self.emitNode(member_init_idx);
+                }
+                // 이니셜라이저가 숫자 리터럴이면 auto_value 업데이트
                 if (init_node.tag == .numeric_literal) {
                     const num_text = self.ast.getText(init_node.span);
                     auto_value = std.fmt.parseInt(i64, num_text, 10) catch auto_value;
@@ -2120,6 +2225,25 @@ pub const Codegen = struct {
 
         try self.emitIIFEClosing(name_text);
     }
+
+    /// 문자열 리터럴의 외부 따옴표를 제거한다.
+    /// 'a' → a, "a b" → a b, Red → Red (따옴표 없으면 그대로)
+    fn stripStringQuotes(text: []const u8) []const u8 {
+        if (text.len >= 2) {
+            const first = text[0];
+            const last = text[text.len - 1];
+            if ((first == '\'' or first == '"') and first == last) {
+                return text[1 .. text.len - 1];
+            }
+        }
+        return text;
+    }
+
+    const EnumMemberValue = union(enum) {
+        int: i64,
+        raw: []const u8, // float 등 숫자 원본 텍스트
+        str: []const u8, // 문자열 리터럴 원본 텍스트
+    };
 
     // ================================================================
     // TS namespace → IIFE 출력
@@ -2254,6 +2378,12 @@ pub const Codegen = struct {
                             // export namespace bar {} → 중첩 namespace (부모 이름 전달)
                             if (decl_node.tag == .ts_module_declaration) {
                                 try self.emitNamespaceIIFEInner(decl_node, param_name);
+                            } else if (decl_node.tag == .variable_declaration) {
+                                // Bug 1 & 3 fix: variable 선언은 local 변수 없이 직접 ns.prop = init 형태로 출력.
+                                // 이유: (1) reserved word(await, yield 등)는 let await = 1이 SyntaxError
+                                //        (2) local 변수 + ns.prop 이중 할당 시 mutation이 local에만 반영되어 stale
+                                // 예: namespace x { export let a = 1, b = a } → x.a=1;x.b=x.a;
+                                try self.emitNamespaceVarDirectAssign(param_name, decl_idx);
                             } else {
                                 try self.emitNode(decl_idx);
                                 try self.emitNamespaceExport(param_name, decl_idx);
@@ -2344,6 +2474,36 @@ pub const Codegen = struct {
                 }
             },
             else => {},
+        }
+    }
+
+    /// namespace 내부의 export variable_declaration을 직접 ns.prop = init 형태로 출력.
+    /// local 변수를 만들지 않으므로 reserved word 문제(let await)와 stale local 문제를 모두 해결.
+    /// 예: export let a = 1, b = a → ns.a=1;ns.b=ns.a;
+    fn emitNamespaceVarDirectAssign(self: *Codegen, ns_name: []const u8, decl_idx: NodeIndex) !void {
+        const decl = self.ast.getNode(decl_idx);
+        const e = decl.data.extra;
+        const extras = self.ast.extra_data.items[e .. e + 3];
+        const list_start = extras[1];
+        const list_len = extras[2];
+        const declarators = self.ast.extra_data.items[list_start .. list_start + list_len];
+        for (declarators) |raw_idx| {
+            const declarator = self.ast.getNode(@enumFromInt(raw_idx));
+            const de = declarator.data.extra;
+            const d_extras = self.ast.extra_data.items[de .. de + 3];
+            const name_idx: NodeIndex = @enumFromInt(d_extras[0]);
+            const init_idx: NodeIndex = @enumFromInt(d_extras[2]);
+            const var_name_node = self.ast.getNode(name_idx);
+            const var_name = self.ast.getText(var_name_node.span);
+            // ns.prop = init; (init 없으면 ns.prop = void 0; — undefined 초기화)
+            try self.write(ns_name);
+            try self.writeByte('.');
+            try self.write(var_name);
+            if (!init_idx.isNone()) {
+                try self.writeByte('=');
+                try self.emitNode(init_idx);
+            }
+            try self.writeByte(';');
         }
     }
 
@@ -2884,7 +3044,7 @@ test "Codegen: namespace with export const" {
     var r = try e2e(std.testing.allocator, "namespace Foo { export const x = 1; }");
     defer r.deinit();
     try std.testing.expectEqualStrings(
-        "var Foo;((Foo) => {const x=1;Foo.x=x;})(Foo || (Foo = {}));",
+        "var Foo;((Foo) => {Foo.x=1;})(Foo || (Foo = {}));",
         r.output,
     );
 }
@@ -2917,6 +3077,33 @@ test "Codegen: namespace export reference — function" {
     var r = try e2e(std.testing.allocator, "namespace ns { export function foo() {} console.log(foo); }");
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "console.log(ns.foo)") != null);
+}
+
+test "Codegen: namespace export var — direct property assignment (no local var)" {
+    // Bug 1 fix: reserved word (await, yield) as export var name should not emit local variable.
+    // export let foo = 1 → ns.foo=1; (not let foo=1;ns.foo=foo;)
+    var r = try e2e(std.testing.allocator, "namespace x { export let foo = 1, bar = foo; }");
+    defer r.deinit();
+    try std.testing.expectEqualStrings(
+        "var x;((x) => {x.foo=1;x.bar=x.foo;})(x || (x = {}));",
+        r.output,
+    );
+}
+
+test "Codegen: namespace export declare — reference rewriting" {
+    // Bug 2 fix: export declare const L1 → references to L1 should be rewritten to ns.L1.
+    var r = try e2e(std.testing.allocator, "namespace ns { export declare const L1; console.log(L1); }");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "console.log(ns.L1)") != null);
+}
+
+test "Codegen: namespace nested export mutation — uses property access" {
+    // Bug 3 fix: mutations to exported vars should use ns.prop, not stale local.
+    // foo += foo → B.foo += B.foo (not foo += B.foo)
+    var r = try e2e(std.testing.allocator, "namespace A { export namespace B { export let foo = 1; foo += foo } }");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "B.foo+=B.foo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "B.foo=1") != null);
 }
 
 // ============================================================
