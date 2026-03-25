@@ -1094,8 +1094,24 @@ pub const Codegen = struct {
     fn emitObjectProperty(self: *Codegen, node: Node) !void {
         const key = node.data.binary.left;
         const value = node.data.binary.right;
-        try self.emitNode(key);
-        if (!value.isNone()) {
+        if (value.isNone()) {
+            // shorthand: { x } — key만 출력.
+            // 단, scope hoisting으로 식별자가 리네임된 경우 shorthand를 풀어야 함:
+            // { x } → { x: x$1 }  (프로퍼티 이름은 원본, 값은 리네임된 이름)
+            if (self.identifierHasRename(key)) {
+                const key_node = self.ast.getNode(key);
+                try self.writeSpan(key_node.data.string_ref);
+                if (self.options.minify) {
+                    try self.writeByte(':');
+                } else {
+                    try self.write(": ");
+                }
+                try self.emitNode(key);
+            } else {
+                try self.emitNode(key);
+            }
+        } else {
+            try self.emitNode(key);
             if (self.options.minify) {
                 try self.writeByte(':');
             } else {
@@ -1103,6 +1119,31 @@ pub const Codegen = struct {
             }
             try self.emitNode(value);
         }
+    }
+
+    /// 식별자 노드가 scope hoisting에 의해 리네임되는지 확인.
+    /// linking_metadata.renames 또는 ns_prefix 치환 대상이면 true.
+    fn identifierHasRename(self: *Codegen, idx: NodeIndex) bool {
+        const key_node = self.ast.getNode(idx);
+        // linking_metadata renames 확인
+        if (self.options.linking_metadata) |meta| {
+            const node_i = @intFromEnum(idx);
+            if (node_i < meta.symbol_ids.len) {
+                if (meta.symbol_ids[node_i]) |sym_id| {
+                    if (meta.renames.get(sym_id) != null) return true;
+                }
+            }
+        }
+        // ns_prefix 치환 확인
+        if (self.ns_prefix) |_| {
+            if (key_node.tag == .identifier_reference or key_node.tag == .assignment_target_identifier) {
+                const name = self.ast.getText(key_node.data.string_ref);
+                if (self.ns_exports) |exports| {
+                    if (exports.contains(name)) return true;
+                }
+            }
+        }
+        return false;
     }
 
     fn emitComputedKey(self: *Codegen, node: Node) !void {
