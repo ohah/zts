@@ -849,6 +849,13 @@ pub const Transformer = struct {
     ///   constructor(x) { this.x = x; }
     fn visitFunction(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
+
+        // TS function overload signature: body가 없으면 제거
+        // function foo(): void;  ← overload signature (body 없음)
+        // function foo(x: number): void;  ← overload signature
+        // function foo(x?: number) {}  ← 구현체 (body 있음)
+        if (self.readNodeIdx(e, 3).isNone()) return NodeIndex.none;
+
         const new_name = try self.visitNode(self.readNodeIdx(e, 0));
 
         // 파라미터 방문 + parameter property 수집
@@ -1903,6 +1910,8 @@ pub const Transformer = struct {
         const flags = self.readU32(e, 4);
         // abstract 메서드는 타입 전용이므로 완전히 스트리핑
         if (self.options.strip_types and (flags & 0x20) != 0) return NodeIndex.none;
+        // TS method overload signature: body가 없으면 제거
+        if (self.readNodeIdx(e, 3).isNone()) return NodeIndex.none;
         const new_key = try self.visitNode(self.readNodeIdx(e, 0));
 
         // 파라미터 방문 — parameter property 감지
@@ -1956,6 +1965,9 @@ pub const Transformer = struct {
     // accessor_property: extra = [key, init_val, flags, deco_start, deco_len]
     fn visitAccessorProperty(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
+        const flags = self.readU32(e, 2);
+        // declare accessor는 타입 전용이므로 완전히 스트리핑
+        if (self.options.strip_types and (flags & 0x40) != 0) return NodeIndex.none;
         const new_key = try self.visitNode(self.readNodeIdx(e, 0));
         const new_value = try self.visitNode(self.readNodeIdx(e, 1));
         const new_decos = try self.visitExtraList(self.readU32(e, 3), self.readU32(e, 4));
