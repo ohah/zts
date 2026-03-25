@@ -2375,11 +2375,14 @@ pub const Codegen = struct {
                             if (decl_node.tag == .ts_module_declaration) {
                                 try self.emitNamespaceIIFEInner(decl_node, param_name);
                             } else if (decl_node.tag == .variable_declaration) {
-                                // Bug 1 & 3 fix: variable 선언은 local 변수 없이 직접 ns.prop = init 형태로 출력.
-                                // 이유: (1) reserved word(await, yield 등)는 let await = 1이 SyntaxError
-                                //        (2) local 변수 + ns.prop 이중 할당 시 mutation이 local에만 반영되어 stale
-                                // 예: namespace x { export let a = 1, b = a } → x.a=1;x.b=x.a;
-                                try self.emitNamespaceVarDirectAssign(param_name, decl_idx);
+                                // 단순 바인딩(identifier)은 직접 프로퍼티 할당: ns.a=1;
+                                // destructuring(array_pattern/object_pattern)은 폴백: var [...]=ref; ns.a=a;
+                                if (self.isSimpleVarDeclaration(decl_idx)) {
+                                    try self.emitNamespaceVarDirectAssign(param_name, decl_idx);
+                                } else {
+                                    try self.emitNode(decl_idx);
+                                    try self.emitNamespaceExport(param_name, decl_idx);
+                                }
                             } else {
                                 try self.emitNode(decl_idx);
                                 try self.emitNamespaceExport(param_name, decl_idx);
@@ -2433,6 +2436,7 @@ pub const Codegen = struct {
         switch (decl.tag) {
             .variable_declaration => {
                 // const x = 1, y = 2; → Foo.x = x; Foo.y = y;
+                // var [a, b] = ref; → Foo.a = a; Foo.b = b;
                 const e = decl.data.extra;
                 const extras = self.ast.extra_data.items[e .. e + 3];
                 const list_start = extras[1];
@@ -2443,14 +2447,7 @@ pub const Codegen = struct {
                     const de = declarator.data.extra;
                     const d_extras = self.ast.extra_data.items[de .. de + 3];
                     const name_idx: NodeIndex = @enumFromInt(d_extras[0]);
-                    const var_name_node = self.ast.getNode(name_idx);
-                    const var_name = self.ast.getText(var_name_node.span);
-                    try self.write(ns_name);
-                    try self.writeByte('.');
-                    try self.write(var_name);
-                    try self.writeByte('=');
-                    try self.write(var_name);
-                    try self.writeByte(';');
+                    try self.emitNamespaceBindingExport(ns_name, name_idx);
                 }
             },
             .function_declaration, .class_declaration => {
@@ -2471,6 +2468,73 @@ pub const Codegen = struct {
             },
             else => {},
         }
+    }
+
+    /// 바인딩 패턴에서 모든 binding_identifier를 추출하여 ns.name = name; 형태로 출력.
+    /// binding_identifier → ns.x = x;
+    /// array_pattern → 각 요소 재귀
+    /// object_pattern → 각 프로퍼티의 value 재귀
+    fn emitNamespaceBindingExport(self: *Codegen, ns_name: []const u8, name_idx: NodeIndex) !void {
+        if (name_idx.isNone()) return;
+        const node = self.ast.getNode(name_idx);
+        switch (node.tag) {
+            .binding_identifier => {
+                const var_name = self.ast.getText(node.span);
+                try self.write(ns_name);
+                try self.writeByte('.');
+                try self.write(var_name);
+                try self.writeByte('=');
+                try self.write(var_name);
+                try self.writeByte(';');
+            },
+            .array_pattern => {
+                // list의 각 요소를 재귀 처리
+                const elements = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+                for (elements) |raw_idx| {
+                    try self.emitNamespaceBindingExport(ns_name, @enumFromInt(raw_idx));
+                }
+            },
+            .object_pattern => {
+                const props = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+                for (props) |raw_idx| {
+                    const prop = self.ast.getNode(@enumFromInt(raw_idx));
+                    // property_property: binary.right = value (binding pattern)
+                    // rest_element: unary.operand
+                    if (prop.tag == .rest_element or prop.tag == .assignment_target_rest) {
+                        try self.emitNamespaceBindingExport(ns_name, prop.data.unary.operand);
+                    } else {
+                        try self.emitNamespaceBindingExport(ns_name, prop.data.binary.right);
+                    }
+                }
+            },
+            .assignment_target_with_default => {
+                // { x = defaultVal } → x
+                try self.emitNamespaceBindingExport(ns_name, node.data.binary.left);
+            },
+            .rest_element, .assignment_target_rest => {
+                try self.emitNamespaceBindingExport(ns_name, node.data.unary.operand);
+            },
+            else => {},
+        }
+    }
+
+    /// variable_declaration의 모든 declarator가 단순 binding_identifier인지 확인.
+    /// destructuring (array_pattern, object_pattern)이 있으면 false.
+    fn isSimpleVarDeclaration(self: *const Codegen, decl_idx: NodeIndex) bool {
+        const decl = self.ast.getNode(decl_idx);
+        const e = decl.data.extra;
+        const extras = self.ast.extra_data.items[e .. e + 3];
+        const list_start = extras[1];
+        const list_len = extras[2];
+        const declarators = self.ast.extra_data.items[list_start .. list_start + list_len];
+        for (declarators) |raw_idx| {
+            const declarator = self.ast.getNode(@enumFromInt(raw_idx));
+            const de = declarator.data.extra;
+            const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[de]);
+            const name_node = self.ast.getNode(name_idx);
+            if (name_node.tag != .binding_identifier) return false;
+        }
+        return true;
     }
 
     /// namespace 내부의 export variable_declaration을 직접 ns.prop = init 형태로 출력.
