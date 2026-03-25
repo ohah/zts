@@ -1635,7 +1635,7 @@ pub const Parser = struct {
     const PeekResult = struct { kind: Kind, has_newline_before: bool };
 
     /// 스캐너 상태를 저장한다. lookahead 후 restoreState로 되돌릴 때 사용.
-    const ScannerState = struct {
+    pub const ScannerState = struct {
         current: u32,
         start: u32,
         token: Token,

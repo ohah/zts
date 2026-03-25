@@ -76,8 +76,8 @@ pub fn parse(self: *Parser) !NodeIndex {
 pub fn parseStatementChecked(self: *Parser, comptime is_loop_body: bool) ParseError2!NodeIndex {
     switch (self.current()) {
         .kw_const => {
-            // const enum은 TS에서 완전히 지워지므로 (declare enum처럼) label 위치 허용
-            if (try self.peekNextKind() != .kw_enum) {
+            // TS const enum은 완전히 지워지므로 label 위치 허용
+            if (!self.is_ts or try self.peekNextKind() != .kw_enum) {
                 try self.addError(self.currentSpan(), "Lexical declaration is not allowed in statement position");
             }
         },
