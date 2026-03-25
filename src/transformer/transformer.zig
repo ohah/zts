@@ -1079,6 +1079,72 @@ pub const Transformer = struct {
             try self.classifyClassMember(raw_idx, &ctx);
         }
 
+        // computed key 호이스트: class 전에 var _a; _a = foo; 삽입 (esbuild 호환)
+        // assign semantics에서 computed key는 class 평가 전에 한 번만 평가되어야 함
+        if (!self.options.use_define_for_class_fields) {
+            for (field_assignments.items) |*field| {
+                if (field.is_computed) {
+                    const key_node = self.new_ast.getNode(field.key);
+                    const actual_key = if (key_node.tag == .computed_property_key)
+                        key_node.data.unary.operand
+                    else
+                        field.key;
+
+                    // var _a; 선언
+                    const temp_span = try self.new_ast.addString("_a");
+                    const temp_binding = try self.new_ast.addNode(.{
+                        .tag = .binding_identifier,
+                        .span = temp_span,
+                        .data = .{ .string_ref = temp_span },
+                    });
+                    const declarator_extra = try self.new_ast.addExtras(&.{
+                        @intFromEnum(temp_binding),
+                        @intFromEnum(NodeIndex.none),
+                        @intFromEnum(NodeIndex.none),
+                    });
+                    const declarator = try self.new_ast.addNode(.{
+                        .tag = .variable_declarator,
+                        .span = field.span,
+                        .data = .{ .extra = declarator_extra },
+                    });
+                    const decl_list = try self.new_ast.addNodeList(&.{declarator});
+                    const var_decl_extra = try self.new_ast.addExtras(&.{ 0, decl_list.start, decl_list.len });
+                    const var_decl = try self.new_ast.addNode(.{
+                        .tag = .variable_declaration,
+                        .span = field.span,
+                        .data = .{ .extra = var_decl_extra },
+                    });
+                    try self.pending_nodes.append(self.allocator, var_decl);
+
+                    // _a = foo; 대입
+                    const temp_ref = try self.new_ast.addNode(.{
+                        .tag = .identifier_reference,
+                        .span = temp_span,
+                        .data = .{ .string_ref = temp_span },
+                    });
+                    const assign = try self.new_ast.addNode(.{
+                        .tag = .assignment_expression,
+                        .span = field.span,
+                        .data = .{ .binary = .{ .left = temp_ref, .right = actual_key, .flags = 0 } },
+                    });
+                    const assign_stmt = try self.new_ast.addNode(.{
+                        .tag = .expression_statement,
+                        .span = field.span,
+                        .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
+                    });
+                    try self.pending_nodes.append(self.allocator, assign_stmt);
+
+                    // field의 key를 임시 변수로 교체
+                    const new_computed = try self.new_ast.addNode(.{
+                        .tag = .computed_property_key,
+                        .span = field.span,
+                        .data = .{ .unary = .{ .operand = temp_ref, .flags = 0 } },
+                    });
+                    field.key = new_computed;
+                }
+            }
+        }
+
         // instance field를 constructor에 삽입 (useDefineForClassFields=false)
         if (field_assignments.items.len > 0) {
             try self.applyFieldAssignments(
