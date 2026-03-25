@@ -364,10 +364,10 @@ pub const Transformer = struct {
             .private_field_expression,
             => {
                 // ES 다운레벨링: ?. → ternary (target < es2020)
-                if (self.options.target.needsOptionalChaining() and
-                    self.isOptionalChainRoot(node))
-                {
-                    return self.lowerOptionalChain(node);
+                if (self.options.target.needsOptionalChaining()) {
+                    if (self.findOptionalChainBase(node)) |base_idx| {
+                        return self.lowerOptionalChain(node, base_idx);
+                    }
                 }
                 return self.visitMemberExpression(node);
             },
@@ -402,10 +402,10 @@ pub const Transformer = struct {
             .switch_case => self.visitSwitchCase(node),
             .call_expression => {
                 // ES 다운레벨링: ?.() → ternary (target < es2020)
-                if (self.options.target.needsOptionalChaining() and
-                    self.isOptionalChainRoot(node))
-                {
-                    return self.lowerOptionalChain(node);
+                if (self.options.target.needsOptionalChaining()) {
+                    if (self.findOptionalChainBase(node)) |base_idx| {
+                        return self.lowerOptionalChain(node, base_idx);
+                    }
                 }
                 return self.visitCallExpression(node);
             },
@@ -611,18 +611,19 @@ pub const Transformer = struct {
     /// 이 노드가 optional chain의 "루트"인지 판단.
     /// 루트 = (자신 또는 하위 chain에 optional flag가 있음) AND (부모에서 호출되는 시점이므로 부모는 체크 불필요).
     /// 하위 member/call 체인을 따라가며 optional flag가 하나라도 있으면 true.
-    fn isOptionalChainRoot(self: *const Transformer, node: Node) bool {
+    /// 체인을 따라 내려가서 optional flag를 가진 노드의 base를 반환.
+    /// optional chain이 없으면 null 반환 (isOptionalChainRoot + findChainBase 통합).
+    fn findOptionalChainBase(self: *const Transformer, node: Node) ?NodeIndex {
         var current = node;
         while (true) {
-            if (self.hasOptionalFlag(current)) return true;
-            // chain을 따라 내려가며 확인
+            if (self.hasOptionalFlag(current)) return self.getChainObject(current);
             switch (current.tag) {
                 .static_member_expression, .computed_member_expression, .private_field_expression, .call_expression => {
                     const obj_idx = self.getChainObject(current);
-                    if (obj_idx.isNone()) return false;
+                    if (obj_idx.isNone()) return null;
                     current = self.old_ast.getNode(obj_idx);
                 },
-                else => return false,
+                else => return null,
             }
         }
     }
@@ -682,12 +683,7 @@ pub const Transformer = struct {
     ///   3. base가 단순 식별자면 그대로 사용, 아니면 임시 변수(_a)로 캐싱.
     ///   4. rebuildChainNode로 전체 체인을 새 AST에 빌드 (optional flag 제거 + base 교체).
     ///   5. `base == null ? void 0 : rebuilt_chain` 삼항 조건식으로 감싼다.
-    fn lowerOptionalChain(self: *Transformer, node: Node) Error!NodeIndex {
-        // Step 1: 체인을 따라 내려가며 가장 바깥 optional flag를 가진 노드의 base를 찾는다.
-        // `a?.b.c`에서: root=`.c`, 안쪽=`?.b`(optional), base=`a`
-        // `a?.b?.c`에서: root=`?.c`(optional이므로 바로 여기서 멈춤), base=`a?.b`
-        //   → base `a?.b`는 visitNode로 방문 시 다시 lowerOptionalChain에 걸림 (재귀적 lowering)
-        const base_idx = self.findChainBase(node);
+    fn lowerOptionalChain(self: *Transformer, node: Node, base_idx: NodeIndex) Error!NodeIndex {
 
         // Step 2: base 방문 + 단순 식별자 판단
         const simple = self.isSimpleIdentifier(base_idx);
@@ -725,23 +721,6 @@ pub const Transformer = struct {
     }
 
     /// 체인을 따라 내려가서 가장 바깥 optional flag가 있는 노드의 object(base)를 반환.
-    fn findChainBase(self: *const Transformer, node: Node) NodeIndex {
-        var current = node;
-        while (true) {
-            if (self.hasOptionalFlag(current)) {
-                return self.getChainObject(current);
-            }
-            switch (current.tag) {
-                .static_member_expression, .computed_member_expression, .private_field_expression, .call_expression => {
-                    const obj_idx = self.getChainObject(current);
-                    if (obj_idx.isNone()) return obj_idx;
-                    current = self.old_ast.getNode(obj_idx);
-                },
-                else => return NodeIndex.none,
-            }
-        }
-    }
-
     /// optional chain을 재귀적으로 재빌드한다.
     /// old_ast의 노드를 방문하면서 새 AST에 복사하되:
     ///   - optional flag가 있는 노드에서 object를 chain_base로 교체
@@ -833,11 +812,7 @@ pub const Transformer = struct {
                     .data = .{ .extra = new_extra },
                 });
             },
-            else => {
-                // chain이 아닌 노드 — 이론상 여기에 오면 안 됨
-                // (isOptionalChainRoot가 member/call chain만 허용하므로)
-                return NodeIndex.none;
-            },
+            else => unreachable,
         }
     }
 
