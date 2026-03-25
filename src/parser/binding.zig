@@ -18,9 +18,18 @@ const ParseError2 = @import("parser.zig").ParseError2;
 pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
     // TS parameter decorator: @dec x, @dec(() => 0) x
     // 데코레이터는 TS에서 스트리핑되므로 파싱 후 무시한다.
-    // esbuild: `declare class Foo { foo(@dec(() => 0) x) }` 지원
-    while (self.current() == .at) {
-        _ = try self.parseDecorator();
+    // 데코레이터 표현식은 클래스의 외부 스코프에서 평가되므로,
+    // @dec(await x)에서 await이 유효하려면 외부 async 컨텍스트를 복원해야 한다.
+    if (self.current() == .at) {
+        const saved_async = self.ctx.in_async;
+        const saved_formal = self.in_formal_parameters;
+        self.ctx.in_async = self.class_scope_async;
+        self.in_formal_parameters = false;
+        while (self.current() == .at) {
+            _ = try self.parseDecorator();
+        }
+        self.ctx.in_async = saved_async;
+        self.in_formal_parameters = saved_formal;
     }
 
     // TS parameter property: public x, private x, protected x, readonly x, override x
