@@ -1225,8 +1225,7 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
                 // import.source(...), import.defer(...) — script에서도 허용 (dynamic import)
                 const prop_text = self.ast.source[prop_span.start..prop_span.end];
                 if (std.mem.eql(u8, prop_text, "meta")) {
-                    // Unambiguous 모드: import.meta → module 확정
-                    self.has_module_syntax = true;
+                    if (self.is_unambiguous) self.has_module_syntax = true;
                     if (!self.is_module) {
                         try self.addError(.{ .start = span.start, .end = prop_span.end }, "'import.meta' is only allowed in module code");
                     }

@@ -44,6 +44,7 @@ pub fn parse(self: *Parser) !NodeIndex {
         if (in_directive_prologue) {
             if (self.isUseStrictDirective()) {
                 self.is_strict_mode = true;
+                self.strict_from_directive = true;
             } else if (self.current() != .string_literal) {
                 // directive prologue는 문자열 expression statement가 연속되는 동안 유효
                 in_directive_prologue = false;
@@ -405,19 +406,18 @@ fn parseExpressionOrLabeledStatement(self: *Parser) ParseError2!NodeIndex {
                 const esc_text = self.resolveIdentifierText(self.currentSpan());
                 const is_escaped_await = std.mem.eql(u8, esc_text, "await");
                 if (is_escaped_await) {
-                    if ((self.is_module and !self.in_namespace) or self.ctx.in_async) {
-                        // Unambiguous: module에서만 에러이므로 지연
+                    if (self.ctx.in_async) {
+                        try self.addError(self.currentSpan(), "Escaped reserved word cannot be used as label");
+                    } else if (self.is_module and !self.in_namespace) {
                         try self.addModuleError(self.currentSpan(), "Escaped reserved word cannot be used as label");
                     }
                 } else {
                     try self.addError(self.currentSpan(), "Escaped reserved word cannot be used as label");
                 }
             } else if (self.current() == .escaped_strict_reserved and self.is_strict_mode) {
-                // Unambiguous: strict가 module 자동이면 지연
-                try self.addModuleError(self.currentSpan(), "Escaped reserved word cannot be used as label in strict mode");
+                try self.addStrictModuleError(self.currentSpan(), "Escaped reserved word cannot be used as label in strict mode");
             } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
-                // Unambiguous: strict가 module 자동이면 지연
-                try self.addModuleError(self.currentSpan(), "Reserved word in strict mode cannot be used as label");
+                try self.addStrictModuleError(self.currentSpan(), "Reserved word in strict mode cannot be used as label");
             }
             return parseLabeledStatement(self);
         }
@@ -454,9 +454,7 @@ fn parseLabeledStatement(self: *Parser) ParseError2!NodeIndex {
 /// strict mode에서는 SyntaxError (D054)
 fn parseWithStatement(self: *Parser) ParseError2!NodeIndex {
     if (self.is_strict_mode) {
-        // Unambiguous 모드에서 strict가 module 자동 설정에 의한 것이면 지연
-        // (script 확정 시 with 허용). "use strict" directive에 의한 것이면 즉시 에러.
-        try self.addModuleError(self.currentSpan(), "'with' is not allowed in strict mode");
+        try self.addStrictModuleError(self.currentSpan(), "'with' is not allowed in strict mode");
     }
     const start = self.currentSpan().start;
     try self.advance(); // skip 'with'
@@ -585,8 +583,6 @@ fn parseVariableDeclarator(self: *Parser) ParseError2!NodeIndex {
 }
 
 fn parseReturnStatement(self: *Parser) ParseError2!NodeIndex {
-    // return은 함수 안에서만 허용
-    // Unambiguous 모드(.ts/.tsx)에서는 지연: script 확정 시 top-level return 허용
     if (!self.ctx.in_function) {
         try self.addModuleError(self.currentSpan(), "'return' outside of function");
     }
