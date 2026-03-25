@@ -145,6 +145,10 @@ pub const Parser = struct {
     has_cover_init_name: bool = false,
     /// formal parameter 파싱 중인지 (yield/await expression 금지).
     in_formal_parameters: bool = false,
+    /// enum 멤버 초기값 파싱 중인지.
+    /// true이면 await/yield를 키워드가 아닌 식별자로 취급한다.
+    /// (enum 내에서 다른 멤버를 참조: `enum X { await = 1, y = await }`)
+    in_enum_initializer: bool = false,
     /// if/with/labeled body에서 labelled function statement 금지 체크 중인지.
     /// IsLabelledFunction(Statement) is true → SyntaxError
     in_labelled_fn_check: bool = false,
@@ -1145,6 +1149,9 @@ pub const Parser = struct {
     }
 
     pub fn checkYieldAwaitUse(self: *Parser, span: Span, comptime context_noun: []const u8) ParseError2!bool {
+        // enum 초기값에서 await/yield는 다른 멤버를 참조하는 식별자로 허용한다.
+        if (self.in_enum_initializer) return false;
+
         // yield/await는 escaped 형태(yi\u0065ld)도 동일 규칙 적용 (ECMAScript 12.1.1)
         // await는 reserved keyword이므로 escaped_keyword로 분류됨 → 여기서는 yield만 처리
         const is_yield = self.current() == .kw_yield or

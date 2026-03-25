@@ -277,8 +277,12 @@ fn parseImportSpecifier(self: *Parser) ParseError2!NodeIndex {
     // inline type import: import { type Config } from './config'
     // 주의: import { type } from ... → 'type'이라는 값을 import (modifier 아님)
     // 주의: import { type as alias } from ... → 'type'을 alias로 import (modifier 아님)
+    // \u0074ype 같은 unicode escape도 type modifier로 인식 (esbuild 호환)
     var is_type_only: u16 = 0;
-    if (self.isContextual("type")) {
+    if (self.isContextual("type") or
+        (self.current() == .identifier and self.scanner.token.has_escape and
+        std.mem.eql(u8, self.scanner.decodeIdentifierEscapes(self.tokenText()) orelse "", "type")))
+    {
         const next = try self.peekNextKind();
         // 다음이 바인딩 이름으로 사용 가능한 토큰이면 type modifier
         // (identifier 또는 keyword — TS도 모든 keyword 뒤에서 type modifier로 판단)
@@ -303,9 +307,16 @@ fn parseImportSpecifier(self: *Parser) ParseError2!NodeIndex {
                     const saved2 = self.saveState();
                     try self.advance(); // skip 'as'
                     if (self.isContextual("as")) {
-                        // "type as as foo" — type modifier, 'as' imported, 'as' keyword, 'foo' local
-                        self.restoreState(saved2);
-                        is_type_only = 1;
+                        // "type as as" 뒤를 확인: 4번째 토큰 종류로 판별
+                        const after_second_as = try self.peekNextKind();
+                        if (after_second_as == .r_curly or after_second_as == .comma) {
+                            // "type as as }" — 'type'은 값 이름, 'as'는 로컬 바인딩 (modifier 아님)
+                            self.restoreState(saved);
+                        } else {
+                            // "type as as foo" — type modifier, 'as' imported, 'as' keyword, 'foo' local
+                            self.restoreState(saved2);
+                            is_type_only = 1;
+                        }
                     } else {
                         // "type as alias" — 'type'은 값 이름, modifier 아님
                         self.restoreState(saved);
@@ -567,8 +578,12 @@ fn parseExportSpecifier(self: *Parser) ParseError2!NodeIndex {
     // TS inline type modifier: export { type Foo } from 'mod'
     // 주의: export { type } from ... → 'type'이라는 값을 export (modifier 아님)
     // 주의: export { type as alias } from ... → 'type'을 alias로 export (modifier 아님)
+    // \u0074ype 같은 unicode escape도 type modifier로 인식 (esbuild 호환)
     var is_type_only: u16 = 0;
-    if (self.isContextual("type")) {
+    if (self.isContextual("type") or
+        (self.current() == .identifier and self.scanner.token.has_escape and
+        std.mem.eql(u8, self.scanner.decodeIdentifierEscapes(self.tokenText()) orelse "", "type")))
+    {
         const next = try self.peekNextKind();
         // 다음이 이름으로 사용 가능한 토큰이면 type modifier
         // string_literal도 허용: export { type "x" as y } from 'mod'
@@ -587,9 +602,16 @@ fn parseExportSpecifier(self: *Parser) ParseError2!NodeIndex {
                     const saved2 = self.saveState();
                     try self.advance(); // skip 'as'
                     if (self.isContextual("as")) {
-                        // "type as as foo" — type modifier, 'as' local, 'as' keyword, 'foo' exported
-                        self.restoreState(saved2);
-                        is_type_only = 1;
+                        // "type as as" 뒤를 확인: 4번째 토큰 종류로 판별
+                        const after_second_as = try self.peekNextKind();
+                        if (after_second_as == .r_curly or after_second_as == .comma) {
+                            // "type as as }" — 'type'은 값 이름, 'as'는 exported name (modifier 아님)
+                            self.restoreState(saved);
+                        } else {
+                            // "type as as foo" — type modifier, 'as' local, 'as' keyword, 'foo' exported
+                            self.restoreState(saved2);
+                            is_type_only = 1;
+                        }
                     } else {
                         // "type as alias" — 'type'은 값 이름, modifier 아님
                         self.restoreState(saved);

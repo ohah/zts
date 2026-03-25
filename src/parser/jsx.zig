@@ -38,6 +38,26 @@ fn parseJSXChildren(self: *Parser) ParseError2!ast_mod.NodeList {
                 try self.scanner.nextJSXChild();
                 continue;
             }
+            // JSX spread child: {...expr} — React 16+ spread children syntax
+            if (self.current() == .dot3) {
+                try self.advance(); // skip ...
+                const spread_expr = try self.parseAssignmentExpression();
+                if (self.current() != .r_curly) {
+                    try self.errors.append(self.allocator, .{
+                        .span = self.currentSpan(),
+                        .message = Kind.r_curly.symbol(),
+                        .found = self.current().symbol(),
+                    });
+                }
+                const spread_child = try self.ast.addNode(.{
+                    .tag = .jsx_spread_child,
+                    .span = .{ .start = expr_start, .end = self.currentSpan().end },
+                    .data = .{ .unary = .{ .operand = spread_expr, .flags = 0 } },
+                });
+                try self.scratch.append(self.allocator, spread_child);
+                try self.scanner.nextJSXChild();
+                continue;
+            }
             const expr = try self.parseExpression();
             // expect(.r_curly) 대신 수동 체크: JSX children에서는 nextJSXChild()로 스캔해야 함
             if (self.current() != .r_curly) {

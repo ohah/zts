@@ -166,7 +166,18 @@ fn parseTsEnumMember(self: *Parser) ParseError2!NodeIndex {
 
     var init_val = NodeIndex.none;
     if (try self.eat(.eq)) {
+        // enum 초기값에서 await/yield는 다른 멤버를 참조하는 식별자로 취급한다.
+        // 예: enum X { await = 1, y = await } → y의 초기값은 await 멤버 참조
+        // in_async/in_generator를 끄고 in_enum_initializer를 켜서
+        // module-level top-level await도 식별자로 파싱되도록 한다.
+        const saved_ctx = self.ctx;
+        const saved_in_enum = self.in_enum_initializer;
+        self.ctx.in_async = false;
+        self.ctx.in_generator = false;
+        self.in_enum_initializer = true;
         init_val = try self.parseAssignmentExpression();
+        self.ctx = saved_ctx;
+        self.in_enum_initializer = saved_in_enum;
     }
 
     return try self.ast.addNode(.{
@@ -759,10 +770,31 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
     const span = self.currentSpan();
 
     // TS 키워드 타입 (contextual keywords — 렉서에서 .identifier로 토큰화됨)
+    // 단, 키워드 뒤에 '.'이 오면 qualified type name (예: any.z) → typeReference로 처리
     if (self.current() == .identifier) {
         const ts_keyword_tag = ts_type_keywords.get(self.tokenText());
         if (ts_keyword_tag) |tag| {
             try self.advance();
+            // 키워드 뒤에 '.'이 오면 any.z 같은 qualified 타입 → typeReference로 파싱
+            if (self.current() == .dot) {
+                var name_end = span.end;
+                while (try self.eat(.dot)) {
+                    name_end = self.currentSpan().end;
+                    try self.advance(); // 멤버 이름
+                }
+                var type_args = NodeIndex.none;
+                if (self.isAtOpeningAngleBracket() and !self.scanner.token.has_newline_before) {
+                    type_args = try parseTypeArguments(self);
+                }
+                const extra_start = try self.ast.addExtra(span.start);
+                _ = try self.ast.addExtra(name_end);
+                _ = try self.ast.addExtra(@intFromEnum(type_args));
+                return try self.ast.addNode(.{
+                    .tag = .ts_type_reference,
+                    .span = .{ .start = span.start, .end = self.currentSpan().start },
+                    .data = .{ .extra = extra_start },
+                });
+            }
             return try self.ast.addNode(.{
                 .tag = tag,
                 .span = span,

@@ -569,6 +569,11 @@ fn parseUnaryExpression(self: *Parser) ParseError2!NodeIndex {
             }
         },
         .kw_await => {
+            // enum 초기값에서 await은 다른 멤버를 참조하는 식별자로 취급한다.
+            // 예: enum X { await = 1, y = await } → y의 초기값은 await 멤버 참조
+            if (self.in_enum_initializer) {
+                return parsePostfixExpression(self);
+            }
             // static initializer에서 await 사용 금지 (ECMAScript 15.7.14)
             // module mode에서 await expression으로 파싱되기 전에 체크해야 함
             if (self.in_static_initializer) {
@@ -1357,7 +1362,7 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
             if (self.current().isKeyword() and
                 (!self.current().isReservedKeyword() or self.current() == .kw_await or self.current() == .kw_yield))
             {
-                if (self.is_strict_mode and self.current().isStrictModeReserved()) {
+                if (self.is_strict_mode and self.current().isStrictModeReserved() and !self.in_enum_initializer) {
                     try self.addError(span, "Reserved word in strict mode cannot be used as identifier");
                 } else {
                     _ = try self.checkYieldAwaitUse(span, "identifier");
@@ -1736,12 +1741,78 @@ fn getBinaryPrecedence(kind: Kind) u8 {
 /// TS type assertion: <T>expr → expr (타입 스트리핑)
 /// .ts 파일에서만 호출 (TSX에서는 JSX가 우선)
 /// oxc parse_ts_type_assertion 대응
+///
+/// esbuild 호환: <{}>() => {} 및 <[]>(y, z) => {} 같은 패턴에서
+/// <Type>이 type assertion이고 뒤따르는 () => {} 가 arrow function인 경우,
+/// type assertion은 스트리핑되므로 arrow function만 반환한다.
+/// esbuild는 parsePrefix를 호출해서 arrow를 직접 감지하지만, ZTS는
+/// arrow 감지가 parseAssignmentExpression 레벨에서 일어나므로
+/// 여기서 직접 감지해야 한다.
 fn parseTSTypeAssertion(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     try self.advance(); // skip <
     _ = try self.parseType();
     try self.expectClosingAngleBracket();
-    // oxc: parse_unary_expression_or_higher — <T>-x, <T>await foo() 등 지원
+
+    // esbuild 호환: <Type> 뒤에 arrow function이 오는 경우 감지.
+    // <{}>() => {}, <[]>(y, z) => {} 등 — type assertion + arrow function.
+    // type assertion은 변환 시 스트리핑되므로 arrow function만 반환.
+    if (self.current() == .l_paren) {
+        const saved = self.saveState();
+        const err_count = self.errors.items.len;
+
+        // typed arrow 먼저 시도: <Type>(a: T): R => body
+        if (try self.isTypedArrowFunction()) {
+            if (try self.parseTypedArrowParams(self.currentSpan().start, false)) |arrow| return arrow;
+            self.restoreState(saved);
+            self.errors.shrinkRetainingCapacity(err_count);
+        }
+
+        // 빈 파라미터 arrow: <Type>() => body
+        if (self.current() == .l_paren and try self.peekNextKind() == .r_paren) {
+            try self.advance(); // skip (
+            try self.advance(); // skip )
+            if (self.current() == .arrow and !self.scanner.token.has_newline_before) {
+                try self.advance(); // skip =>
+                const body = try parseArrowBody(self, false, .none);
+                const ae = try self.ast.addExtras(&.{ @intFromEnum(NodeIndex.none), @intFromEnum(body), 0 });
+                return try self.ast.addNode(.{
+                    .tag = .arrow_function_expression,
+                    .span = .{ .start = start, .end = self.currentSpan().start },
+                    .data = .{ .extra = ae },
+                });
+            }
+            self.restoreState(saved);
+            self.errors.shrinkRetainingCapacity(err_count);
+        }
+
+        // 파라미터가 있는 arrow: <Type>(x, y) => body
+        // 괄호 표현식을 파싱하고 => 가 따르면 arrow로 변환
+        {
+            const paren_expr = try parseUnaryExpression(self);
+            if (self.current() == .arrow and !self.scanner.token.has_newline_before and
+                self.isValidArrowParamForm(paren_expr))
+            {
+                try self.coverExpressionToArrowParams(paren_expr);
+                try self.advance(); // skip =>
+                const body = try parseArrowBody(self, false, paren_expr);
+                const ae = try self.ast.addExtras(&.{ @intFromEnum(paren_expr), @intFromEnum(body), 0 });
+                return try self.ast.addNode(.{
+                    .tag = .arrow_function_expression,
+                    .span = .{ .start = start, .end = self.currentSpan().start },
+                    .data = .{ .extra = ae },
+                });
+            }
+            // arrow가 아니면 일반 type assertion
+            return try self.ast.addNode(.{
+                .tag = .ts_type_assertion,
+                .span = .{ .start = start, .end = self.currentSpan().start },
+                .data = .{ .unary = .{ .operand = paren_expr, .flags = 0 } },
+            });
+        }
+    }
+
+    // 괄호가 아닌 경우: 기존 동작 — <T>expr
     const expr = try parseUnaryExpression(self);
     return try self.ast.addNode(.{
         .tag = .ts_type_assertion,

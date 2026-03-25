@@ -627,6 +627,7 @@ pub const Codegen = struct {
             .jsx_expression_container => try self.emitNode(node.data.unary.operand),
             .jsx_text => try self.emitJSXText(node),
             .jsx_spread_attribute => try self.emitSpread(node),
+            .jsx_spread_child => try self.emitSpread(node),
 
             // TS enum/namespace → IIFE 출력
             .ts_enum_declaration => try self.emitEnumIIFE(node),
@@ -1950,7 +1951,13 @@ pub const Codegen = struct {
                 // 빈 expression container {} 는 스킵 (esbuild 호환)
                 if (child.tag == .jsx_expression_container and child.data.unary.operand.isNone()) continue;
                 if (self.options.minify) try self.writeByte(',') else try self.write(", ");
-                try self.emitNode(@enumFromInt(raw_idx));
+                // JSX spread child: {...expr} → ...expr (spread argument)
+                if (child.tag == .jsx_spread_child) {
+                    try self.write("...");
+                    try self.emitNode(child.data.unary.operand);
+                } else {
+                    try self.emitNode(@enumFromInt(raw_idx));
+                }
             }
         }
     }
