@@ -3538,6 +3538,26 @@ test "ES2016: **= no transform on es2016" {
     try std.testing.expectEqualStrings("a**=b;", r.output);
 }
 
+// --- catch binding (ES2019) ---
+
+test "ES2019: optional catch binding" {
+    var r = try e2eTarget(std.testing.allocator, "try { x; } catch { y; }", .es2018);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("try{x;}catch(_unused){y;}", r.output);
+}
+
+test "ES2019: catch with binding preserved" {
+    var r = try e2eTarget(std.testing.allocator, "try { x; } catch (e) { y; }", .es2018);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("try{x;}catch(e){y;}", r.output);
+}
+
+test "ES2019: optional catch no transform on es2019" {
+    var r = try e2eTarget(std.testing.allocator, "try { x; } catch { y; }", .es2019);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("try{x;}catch{y;}", r.output);
+}
+
 // --- ES2022: class static block ---
 
 test "ES2022: static block to IIFE" {
