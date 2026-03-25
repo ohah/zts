@@ -2187,13 +2187,10 @@ pub const Codegen = struct {
             break :blk param_buf[0..len];
         } else name_text;
 
-        // var Color;
+        // var Color = /* @__PURE__ */ ((Color) => { ...; return Color; })(Color || {});
         try self.write("var ");
         try self.write(name_text);
-        try self.writeByte(';');
-
-        // ((Color) => { ... })(Color || (Color = {}));
-        try self.write("((");
+        try self.write(" = /* @__PURE__ */ ((");
         try self.write(param_name);
         try self.write(") => {");
 
@@ -2260,7 +2257,12 @@ pub const Codegen = struct {
             try self.write("\";");
         }
 
-        try self.emitIIFEClosing(name_text);
+        // return Color;})(Color || {});
+        try self.write("return ");
+        try self.write(param_name);
+        try self.write(";})(");
+        try self.write(name_text);
+        try self.write(" || {});");
     }
 
     /// 문자열 리터럴의 외부 따옴표를 제거한다.
@@ -2755,7 +2757,7 @@ test "Codegen: enum IIFE" {
     var r = try e2e(std.testing.allocator, "enum Color { Red, Green, Blue }");
     defer r.deinit();
     try std.testing.expectEqualStrings(
-        "var Color;((Color) => {Color[Color[\"Red\"]=0]=\"Red\";Color[Color[\"Green\"]=1]=\"Green\";Color[Color[\"Blue\"]=2]=\"Blue\";})(Color || (Color = {}));",
+        "var Color = /* @__PURE__ */ ((Color) => {Color[Color[\"Red\"]=0]=\"Red\";Color[Color[\"Green\"]=1]=\"Green\";Color[Color[\"Blue\"]=2]=\"Blue\";return Color;})(Color || {});",
         r.output,
     );
 }
@@ -2810,7 +2812,7 @@ test "Codegen: enum with initializer" {
     var r = try e2e(std.testing.allocator, "enum Status { Active = 1, Inactive = 0 }");
     defer r.deinit();
     try std.testing.expectEqualStrings(
-        "var Status;((Status) => {Status[Status[\"Active\"]=1]=\"Active\";Status[Status[\"Inactive\"]=0]=\"Inactive\";})(Status || (Status = {}));",
+        "var Status = /* @__PURE__ */ ((Status) => {Status[Status[\"Active\"]=1]=\"Active\";Status[Status[\"Inactive\"]=0]=\"Inactive\";return Status;})(Status || {});",
         r.output,
     );
 }
