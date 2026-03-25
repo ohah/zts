@@ -219,7 +219,7 @@ pub const Parser = struct {
             self.scanner.is_module = true;
         }
         if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx") or
-            std.mem.eql(u8, ext, ".mts"))
+            std.mem.eql(u8, ext, ".mts") or std.mem.eql(u8, ext, ".cts"))
         {
             self.is_ts = true;
         }
