@@ -1062,15 +1062,15 @@ pub const Transformer = struct {
         var existing_constructor: ?NodeIndex = null;
         var existing_constructor_pos: ?usize = null;
 
+        var ctx = ClassMemberContext{
+            .class_members = &class_members,
+            .field_assignments = &field_assignments,
+            .member_decorators = &member_decorators,
+            .existing_constructor = &existing_constructor,
+            .existing_constructor_pos = &existing_constructor_pos,
+        };
         for (body_members) |raw_idx| {
-            try self.classifyClassMember(
-                raw_idx,
-                &class_members,
-                &field_assignments,
-                &member_decorators,
-                &existing_constructor,
-                &existing_constructor_pos,
-            );
+            try self.classifyClassMember(raw_idx, &ctx);
         }
 
         // instance field를 constructor에 삽입 (useDefineForClassFields=false)
@@ -1128,33 +1128,39 @@ pub const Transformer = struct {
     /// - property_definition: assign semantics 대상이면 field_assignments에, 아니면 class_members에
     /// - method_definition: constructor면 기록, 일반 메서드면 class_members에
     /// - 기타: class_members에 그대로 추가
-    fn classifyClassMember(
-        self: *Transformer,
-        raw_idx: u32,
+    /// visitClassWithAssignSemantics에서 멤버 분류에 사용되는 컨텍스트.
+    /// 6개 포인터 파라미터를 하나로 묶어 함수 시그니처를 단순화.
+    const ClassMemberContext = struct {
         class_members: *std.ArrayList(NodeIndex),
         field_assignments: *std.ArrayList(FieldAssignment),
         member_decorators: *std.ArrayList(MemberDecoratorInfo),
         existing_constructor: *?NodeIndex,
         existing_constructor_pos: *?usize,
+    };
+
+    fn classifyClassMember(
+        self: *Transformer,
+        raw_idx: u32,
+        ctx: *ClassMemberContext,
     ) Error!void {
         const member = self.old_ast.getNode(@enumFromInt(raw_idx));
 
         // property_definition: extra = [key, init_val, flags, deco_start, deco_len]
         if (member.tag == .property_definition) {
-            try self.classifyPropertyDefinition(raw_idx, member, class_members, field_assignments, member_decorators);
+            try self.classifyPropertyDefinition(raw_idx, member, ctx.class_members, ctx.field_assignments, ctx.member_decorators);
             return;
         }
 
         // method_definition: extra = [key, params_start, params_len, body, flags, deco_start, deco_len]
         if (member.tag == .method_definition) {
-            try self.classifyMethodDefinition(member, class_members, member_decorators, existing_constructor, existing_constructor_pos);
+            try self.classifyMethodDefinition(member, ctx.class_members, ctx.member_decorators, ctx.existing_constructor, ctx.existing_constructor_pos);
             return;
         }
 
         // 기타 멤버 (static_block, accessor_property 등): 그대로 방문
         const new_member = try self.visitNode(@enumFromInt(raw_idx));
         if (!new_member.isNone()) {
-            try class_members.append(self.allocator, new_member);
+            try ctx.class_members.append(self.allocator, new_member);
         }
     }
 
