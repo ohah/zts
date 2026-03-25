@@ -21,8 +21,6 @@ const Span = token_mod.Span;
 pub fn ES2019(comptime Transformer: type) type {
     return struct {
         /// `catch { }` → `catch (_unused) { }`
-        /// catch_clause의 binding이 없으면 합성 binding을 추가.
-        /// `catch { }` → `catch (_unused) { }`
         pub fn lowerOptionalCatchBinding(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             // catch_clause: binary = { left=param, right=body }
             const param = node.data.binary.left;
