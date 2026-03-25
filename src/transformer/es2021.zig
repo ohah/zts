@@ -1,0 +1,105 @@
+//! ES2021 다운레벨링: ??= / ||= / &&= (logical assignment)
+//!
+//! --target < es2021 일 때 활성화.
+//! ??= → a ?? (a = b) (또는 target < es2020이면 a != null ? a : (a = b))
+//! ||= → a || (a = b)
+//! &&= → a && (a = b)
+
+const std = @import("std");
+const ast_mod = @import("../parser/ast.zig");
+const Node = ast_mod.Node;
+const NodeIndex = ast_mod.NodeIndex;
+const token_mod = @import("../lexer/token.zig");
+const Span = token_mod.Span;
+
+pub fn ES2021(comptime Transformer: type) type {
+    return struct {
+        /// `a ??= b` → `a ?? (a = b)` (es2021→es2020)
+        /// `a ??= b` → `a != null ? a : (a = b)` (→es2019)
+        pub fn lowerNullishAssignment(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            const new_left = try self.visitNode(node.data.binary.left);
+            const new_right = try self.visitNode(node.data.binary.right);
+            const left_copy1 = try self.new_ast.addNode(self.new_ast.getNode(new_left));
+
+            const assign = try self.new_ast.addNode(.{
+                .tag = .assignment_expression,
+                .span = node.span,
+                .data = .{ .binary = .{
+                    .left = left_copy1,
+                    .right = new_right,
+                    .flags = @intFromEnum(token_mod.Kind.eq),
+                } },
+            });
+            const paren_assign = try self.new_ast.addNode(.{
+                .tag = .parenthesized_expression,
+                .span = node.span,
+                .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
+            });
+
+            if (self.options.target.needsNullishCoalescing()) {
+                const left_copy2 = try self.new_ast.addNode(self.new_ast.getNode(new_left));
+                const null_span = try self.new_ast.addString("null");
+                const null_node = try self.new_ast.addNode(.{
+                    .tag = .null_literal,
+                    .span = null_span,
+                    .data = .{ .none = 0 },
+                });
+                const neq_null = try self.new_ast.addNode(.{
+                    .tag = .binary_expression,
+                    .span = node.span,
+                    .data = .{ .binary = .{
+                        .left = new_left,
+                        .right = null_node,
+                        .flags = @intFromEnum(token_mod.Kind.neq),
+                    } },
+                });
+                return self.new_ast.addNode(.{
+                    .tag = .conditional_expression,
+                    .span = node.span,
+                    .data = .{ .ternary = .{ .a = neq_null, .b = left_copy2, .c = paren_assign } },
+                });
+            } else {
+                return self.new_ast.addNode(.{
+                    .tag = .logical_expression,
+                    .span = node.span,
+                    .data = .{ .binary = .{
+                        .left = new_left,
+                        .right = paren_assign,
+                        .flags = @intFromEnum(token_mod.Kind.question2),
+                    } },
+                });
+            }
+        }
+
+        /// `a ||= b` → `a || (a = b)`, `a &&= b` → `a && (a = b)`
+        pub fn lowerLogicalAssignment(self: *Transformer, node: Node, logical_op: token_mod.Kind) Transformer.Error!NodeIndex {
+            const new_left = try self.visitNode(node.data.binary.left);
+            const new_right = try self.visitNode(node.data.binary.right);
+            const left_copy = try self.new_ast.addNode(self.new_ast.getNode(new_left));
+
+            const assign = try self.new_ast.addNode(.{
+                .tag = .assignment_expression,
+                .span = node.span,
+                .data = .{ .binary = .{
+                    .left = left_copy,
+                    .right = new_right,
+                    .flags = @intFromEnum(token_mod.Kind.eq),
+                } },
+            });
+            const paren_assign = try self.new_ast.addNode(.{
+                .tag = .parenthesized_expression,
+                .span = node.span,
+                .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
+            });
+            return self.new_ast.addNode(.{
+                .tag = .logical_expression,
+                .span = node.span,
+                .data = .{ .binary = .{
+                    .left = new_left,
+                    .right = paren_assign,
+                    .flags = @intFromEnum(logical_op),
+                } },
+            });
+        }
+    };
+}

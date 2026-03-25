@@ -17,6 +17,14 @@ pub const Transformer = transformer.Transformer;
 pub const DefineEntry = transformer.DefineEntry;
 pub const TransformOptions = transformer.TransformOptions;
 
+/// ES 다운레벨링 모듈 (절충안 구조: 파일 분리 + 단일 패스)
+pub const es2020 = @import("es2020.zig");
+pub const es2021 = @import("es2021.zig");
+pub const es_helpers = @import("es_helpers.zig");
+
 test {
     _ = transformer;
+    _ = es2020;
+    _ = es2021;
+    _ = es_helpers;
 }

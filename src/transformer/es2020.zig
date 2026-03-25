@@ -1,0 +1,201 @@
+//! ES2020 다운레벨링: ?? (nullish coalescing) + ?. (optional chaining)
+//!
+//! --target < es2020 일 때 활성화.
+//! ?? → a != null ? a : b
+//! ?. → a == null ? void 0 : a.b
+
+const std = @import("std");
+const ast_mod = @import("../parser/ast.zig");
+const Node = ast_mod.Node;
+const NodeIndex = ast_mod.NodeIndex;
+const Ast = ast_mod.Ast;
+const token_mod = @import("../lexer/token.zig");
+const Span = token_mod.Span;
+const helpers = @import("es_helpers.zig");
+
+/// Transformer 타입 (순환 import 방지를 위해 generic)
+pub fn ES2020(comptime Transformer: type) type {
+    return struct {
+        /// `a ?? b` → `a != null ? a : b`
+        pub fn lowerNullishCoalescing(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            const old_left_idx = node.data.binary.left;
+            const simple = helpers.isSimpleIdentifier(self, old_left_idx);
+
+            const new_left = try self.visitNode(old_left_idx);
+            const new_right = try self.visitNode(node.data.binary.right);
+
+            const null_span = try self.new_ast.addString("null");
+            const null_node = try self.new_ast.addNode(.{
+                .tag = .null_literal,
+                .span = null_span,
+                .data = .{ .none = 0 },
+            });
+
+            if (simple) {
+                const left_copy = try self.new_ast.addNode(self.new_ast.getNode(new_left));
+                const neq_null = try self.new_ast.addNode(.{
+                    .tag = .binary_expression,
+                    .span = node.span,
+                    .data = .{ .binary = .{
+                        .left = new_left,
+                        .right = null_node,
+                        .flags = @intFromEnum(token_mod.Kind.neq),
+                    } },
+                });
+                return self.new_ast.addNode(.{
+                    .tag = .conditional_expression,
+                    .span = node.span,
+                    .data = .{ .ternary = .{ .a = neq_null, .b = left_copy, .c = new_right } },
+                });
+            } else {
+                const temp_span = try helpers.makeTempVarSpan(self);
+                const temp_ref1 = try helpers.makeTempVarRef(self, temp_span, node.span);
+                const assign_node = try self.new_ast.addNode(.{
+                    .tag = .assignment_expression,
+                    .span = node.span,
+                    .data = .{ .binary = .{
+                        .left = temp_ref1,
+                        .right = new_left,
+                        .flags = @intFromEnum(token_mod.Kind.eq),
+                    } },
+                });
+                const paren_assign = try self.new_ast.addNode(.{
+                    .tag = .parenthesized_expression,
+                    .span = node.span,
+                    .data = .{ .unary = .{ .operand = assign_node, .flags = 0 } },
+                });
+                const neq_null = try self.new_ast.addNode(.{
+                    .tag = .binary_expression,
+                    .span = node.span,
+                    .data = .{ .binary = .{
+                        .left = paren_assign,
+                        .right = null_node,
+                        .flags = @intFromEnum(token_mod.Kind.neq),
+                    } },
+                });
+                const temp_ref2 = try helpers.makeTempVarRef(self, temp_span, node.span);
+                return self.new_ast.addNode(.{
+                    .tag = .conditional_expression,
+                    .span = node.span,
+                    .data = .{ .ternary = .{ .a = neq_null, .b = temp_ref2, .c = new_right } },
+                });
+            }
+        }
+
+        // ================================================================
+        // Optional chaining
+        // ================================================================
+
+        pub fn findOptionalChainBase(self: *const Transformer, node: Node) ?NodeIndex {
+            var current = node;
+            while (true) {
+                if (hasOptionalFlag(self, current)) return getChainObject(self, current);
+                switch (current.tag) {
+                    .static_member_expression, .computed_member_expression, .private_field_expression, .call_expression => {
+                        const obj_idx = getChainObject(self, current);
+                        if (obj_idx.isNone()) return null;
+                        current = self.old_ast.getNode(obj_idx);
+                    },
+                    else => return null,
+                }
+            }
+        }
+
+        pub fn lowerOptionalChain(self: *Transformer, node: Node, base_idx: NodeIndex) Transformer.Error!NodeIndex {
+            const simple = helpers.isSimpleIdentifier(self, base_idx);
+            const visited_base = try self.visitNode(base_idx);
+
+            var null_check_base: NodeIndex = undefined;
+            var chain_base: NodeIndex = undefined;
+
+            if (simple) {
+                null_check_base = visited_base;
+                chain_base = try self.new_ast.addNode(self.new_ast.getNode(visited_base));
+            } else {
+                const temp_span = try helpers.makeTempVarSpan(self);
+                const temp_ref1 = try helpers.makeTempVarRef(self, temp_span, node.span);
+                const assign_node = try self.new_ast.addNode(.{
+                    .tag = .assignment_expression,
+                    .span = node.span,
+                    .data = .{ .binary = .{
+                        .left = temp_ref1,
+                        .right = visited_base,
+                        .flags = @intFromEnum(token_mod.Kind.eq),
+                    } },
+                });
+                null_check_base = try self.new_ast.addNode(.{
+                    .tag = .parenthesized_expression,
+                    .span = node.span,
+                    .data = .{ .unary = .{ .operand = assign_node, .flags = 0 } },
+                });
+                chain_base = try helpers.makeTempVarRef(self, temp_span, node.span);
+            }
+
+            const rebuilt_chain = try rebuildChainNode(self, node, chain_base);
+            const eq_null = try helpers.makeEqNull(self, null_check_base, node.span);
+            const void_zero = try helpers.makeVoidZero(self, node.span);
+            return self.new_ast.addNode(.{
+                .tag = .conditional_expression,
+                .span = node.span,
+                .data = .{ .ternary = .{ .a = eq_null, .b = void_zero, .c = rebuilt_chain } },
+            });
+        }
+
+        fn hasOptionalFlag(self: *const Transformer, node: Node) bool {
+            const extras = self.old_ast.extra_data.items;
+            switch (node.tag) {
+                .static_member_expression, .computed_member_expression, .private_field_expression => {
+                    const e = node.data.extra;
+                    if (e + 2 >= extras.len) return false;
+                    return (extras[e + 2] & ast_mod.MemberFlags.optional_chain) != 0;
+                },
+                .call_expression => {
+                    const e = node.data.extra;
+                    if (e + 3 >= extras.len) return false;
+                    return (extras[e + 3] & ast_mod.CallFlags.optional_chain) != 0;
+                },
+                else => return false,
+            }
+        }
+
+        fn getChainObject(self: *const Transformer, node: Node) NodeIndex {
+            const extras = self.old_ast.extra_data.items;
+            const e = node.data.extra;
+            return @enumFromInt(extras[e]);
+        }
+
+        fn rebuildChainNode(self: *Transformer, old_node: Node, chain_base: NodeIndex) Transformer.Error!NodeIndex {
+            const extras = self.old_ast.extra_data.items;
+            switch (old_node.tag) {
+                .static_member_expression, .computed_member_expression, .private_field_expression => {
+                    const e = old_node.data.extra;
+                    if (e + 2 >= extras.len) unreachable;
+                    const old_obj: NodeIndex = @enumFromInt(extras[e]);
+                    const old_prop: NodeIndex = @enumFromInt(extras[e + 1]);
+                    const flags = extras[e + 2];
+                    const is_optional = (flags & ast_mod.MemberFlags.optional_chain) != 0;
+                    const new_obj = if (is_optional) chain_base else try rebuildChainNode(self, self.old_ast.getNode(old_obj), chain_base);
+                    const new_prop = try self.visitNode(old_prop);
+                    const new_flags = flags & ~ast_mod.MemberFlags.optional_chain;
+                    const new_extra = try self.new_ast.addExtras(&.{ @intFromEnum(new_obj), @intFromEnum(new_prop), new_flags });
+                    return self.new_ast.addNode(.{ .tag = old_node.tag, .span = old_node.span, .data = .{ .extra = new_extra } });
+                },
+                .call_expression => {
+                    const e = old_node.data.extra;
+                    if (e + 3 >= extras.len) unreachable;
+                    const old_callee: NodeIndex = @enumFromInt(extras[e]);
+                    const args_start = extras[e + 1];
+                    const args_len = extras[e + 2];
+                    const flags = extras[e + 3];
+                    const is_optional = (flags & ast_mod.CallFlags.optional_chain) != 0;
+                    const new_callee = if (is_optional) chain_base else try rebuildChainNode(self, self.old_ast.getNode(old_callee), chain_base);
+                    const new_args = try self.visitExtraList(args_start, args_len);
+                    const new_flags = flags & ~ast_mod.CallFlags.optional_chain;
+                    const new_extra = try self.new_ast.addExtras(&.{ @intFromEnum(new_callee), new_args.start, new_args.len, new_flags });
+                    return self.new_ast.addNode(.{ .tag = .call_expression, .span = old_node.span, .data = .{ .extra = new_extra } });
+                },
+                else => unreachable,
+            }
+        }
+    };
+}

@@ -23,6 +23,9 @@ const NodeList = ast_mod.NodeList;
 const Ast = ast_mod.Ast;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
+const es2020 = @import("es2020.zig");
+const es2021 = @import("es2021.zig");
+const es_helpers = @import("es_helpers.zig");
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 
 /// define 치환 엔트리. key=식별자 텍스트, value=치환 문자열.
@@ -217,7 +220,7 @@ pub const Transformer = struct {
     /// 재귀 함수에서 Zig가 에러 셋을 추론할 수 없으므로 명시적으로 선언.
     pub const Error = std.mem.Allocator.Error;
 
-    fn visitNode(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
+    pub fn visitNode(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         if (idx.isNone()) return .none;
         const new_idx = try self.visitNodeInner(idx);
         // symbol_id 전파: 원본 node_idx → 새 node_idx
@@ -329,7 +332,7 @@ pub const Transformer = struct {
                 if (self.options.target.needsNullishCoalescing() and node.tag == .logical_expression) {
                     const op: token_mod.Kind = @enumFromInt(node.data.binary.flags);
                     if (op == .question2) {
-                        return self.lowerNullishCoalescing(node);
+                        return es2020.ES2020(Transformer).lowerNullishCoalescing(self, node);
                     }
                 }
                 return self.visitBinaryNode(node);
@@ -339,11 +342,11 @@ pub const Transformer = struct {
                 if (self.options.target.needsLogicalAssignment()) {
                     const op: token_mod.Kind = @enumFromInt(node.data.binary.flags);
                     if (op == .question2_eq) {
-                        return self.lowerNullishAssignment(node);
+                        return es2021.ES2021(Transformer).lowerNullishAssignment(self, node);
                     } else if (op == .pipe2_eq) {
-                        return self.lowerLogicalAssignment(node, .pipe2);
+                        return es2021.ES2021(Transformer).lowerLogicalAssignment(self, node, .pipe2);
                     } else if (op == .amp2_eq) {
-                        return self.lowerLogicalAssignment(node, .amp2);
+                        return es2021.ES2021(Transformer).lowerLogicalAssignment(self, node, .amp2);
                     }
                 }
                 return self.visitBinaryNode(node);
@@ -365,8 +368,8 @@ pub const Transformer = struct {
             => {
                 // ES 다운레벨링: ?. → ternary (target < es2020)
                 if (self.options.target.needsOptionalChaining()) {
-                    if (self.findOptionalChainBase(node)) |base_idx| {
-                        return self.lowerOptionalChain(node, base_idx);
+                    if (es2020.ES2020(Transformer).findOptionalChainBase(self, node)) |base_idx| {
+                        return es2020.ES2020(Transformer).lowerOptionalChain(self, node, base_idx);
                     }
                 }
                 return self.visitMemberExpression(node);
@@ -403,8 +406,8 @@ pub const Transformer = struct {
             .call_expression => {
                 // ES 다운레벨링: ?.() → ternary (target < es2020)
                 if (self.options.target.needsOptionalChaining()) {
-                    if (self.findOptionalChainBase(node)) |base_idx| {
-                        return self.lowerOptionalChain(node, base_idx);
+                    if (es2020.ES2020(Transformer).findOptionalChainBase(self, node)) |base_idx| {
+                        return es2020.ES2020(Transformer).lowerOptionalChain(self, node, base_idx);
                     }
                 }
                 return self.visitCallExpression(node);
@@ -549,474 +552,15 @@ pub const Transformer = struct {
         });
     }
 
-    /// ES 다운레벨링용 임시 변수명 생성: _a, _b, _c, ..., _a2, _b2, ...
+    // ES 다운레벨링 헬퍼 — es_helpers.zig로 위임 (Transformer 메서드 호환)
     fn makeTempVarSpan(self: *Transformer) Error!Span {
-        const idx = self.temp_var_counter;
-        self.temp_var_counter += 1;
-        var buf: [16]u8 = undefined;
-        // 0→_a, 1→_b, ..., 25→_z, 26→_a2, 27→_b2, ...
-        const letter: u8 = 'a' + @as(u8, @intCast(idx % 26));
-        const cycle = idx / 26;
-        const name = if (cycle == 0)
-            std.fmt.bufPrint(&buf, "_{c}", .{letter}) catch return error.OutOfMemory
-        else
-            std.fmt.bufPrint(&buf, "_{c}{d}", .{ letter, cycle + 1 }) catch return error.OutOfMemory;
-        return self.new_ast.addString(name);
+        return es_helpers.makeTempVarSpan(self);
     }
-
-    /// 임시 변수 identifier_reference 노드 생성.
-    fn makeTempVarRef(self: *Transformer, span: Span, node_span: Span) Error!NodeIndex {
-        return self.new_ast.addNode(.{
-            .tag = .identifier_reference,
-            .span = node_span,
-            .data = .{ .string_ref = span },
-        });
-    }
-
-    /// left 노드가 단순 식별자(부작용 없음)인지 판단.
     fn isSimpleIdentifier(self: *Transformer, left_idx: NodeIndex) bool {
-        const left_node = self.old_ast.getNode(left_idx);
-        return left_node.tag == .identifier_reference;
+        return es_helpers.isSimpleIdentifier(self, left_idx);
     }
 
-    // ================================================================
-    // ES 다운레벨링: optional chaining (?.) → ternary
-    // ================================================================
-
-    /// old_ast에서 member/call 노드가 optional chain flag를 가지고 있는지 확인.
-    fn hasOptionalFlag(self: *const Transformer, node: Node) bool {
-        const extras = self.old_ast.extra_data.items;
-        switch (node.tag) {
-            .static_member_expression, .computed_member_expression, .private_field_expression => {
-                const e = node.data.extra;
-                if (e + 2 >= extras.len) return false;
-                return (extras[e + 2] & ast_mod.MemberFlags.optional_chain) != 0;
-            },
-            .call_expression => {
-                const e = node.data.extra;
-                if (e + 3 >= extras.len) return false;
-                return (extras[e + 3] & ast_mod.CallFlags.optional_chain) != 0;
-            },
-            else => return false,
-        }
-    }
-
-    /// old_ast에서 member/call 노드의 object/callee를 가져온다.
-    fn getChainObject(self: *const Transformer, node: Node) NodeIndex {
-        const extras = self.old_ast.extra_data.items;
-        const e = node.data.extra;
-        return @enumFromInt(extras[e]);
-    }
-
-    /// 이 노드가 optional chain의 "루트"인지 판단.
-    /// 루트 = (자신 또는 하위 chain에 optional flag가 있음) AND (부모에서 호출되는 시점이므로 부모는 체크 불필요).
-    /// 하위 member/call 체인을 따라가며 optional flag가 하나라도 있으면 true.
-    /// 체인을 따라 내려가서 optional flag를 가진 노드의 base를 반환.
-    /// optional chain이 없으면 null 반환 (isOptionalChainRoot + findChainBase 통합).
-    fn findOptionalChainBase(self: *const Transformer, node: Node) ?NodeIndex {
-        var current = node;
-        while (true) {
-            if (self.hasOptionalFlag(current)) return self.getChainObject(current);
-            switch (current.tag) {
-                .static_member_expression, .computed_member_expression, .private_field_expression, .call_expression => {
-                    const obj_idx = self.getChainObject(current);
-                    if (obj_idx.isNone()) return null;
-                    current = self.old_ast.getNode(obj_idx);
-                },
-                else => return null,
-            }
-        }
-    }
-
-    /// `void 0` 노드를 새 AST에 생성.
-    fn makeVoidZero(self: *Transformer, span: Span) Error!NodeIndex {
-        // 0 리터럴
-        const zero_span = try self.new_ast.addString("0");
-        const zero_node = try self.new_ast.addNode(.{
-            .tag = .numeric_literal,
-            .span = zero_span,
-            .data = .{ .none = 0 },
-        });
-        // void 0 — unary_expression (operator=kw_void, operand=0)
-        const void_extra = try self.new_ast.addExtras(&.{
-            @intFromEnum(zero_node),
-            @intFromEnum(token_mod.Kind.kw_void),
-        });
-        return self.new_ast.addNode(.{
-            .tag = .unary_expression,
-            .span = span,
-            .data = .{ .extra = void_extra },
-        });
-    }
-
-    /// `base == null` 노드를 새 AST에 생성.
-    fn makeEqNull(self: *Transformer, base: NodeIndex, span: Span) Error!NodeIndex {
-        const null_span = try self.new_ast.addString("null");
-        const null_node = try self.new_ast.addNode(.{
-            .tag = .null_literal,
-            .span = null_span,
-            .data = .{ .none = 0 },
-        });
-        return self.new_ast.addNode(.{
-            .tag = .binary_expression,
-            .span = span,
-            .data = .{ .binary = .{
-                .left = base,
-                .right = null_node,
-                .flags = @intFromEnum(token_mod.Kind.eq2),
-            } },
-        });
-    }
-
-    /// optional chaining 전체를 다운레벨링한다.
-    ///
-    /// 변환 패턴:
-    ///   `a?.b`       → `a == null ? void 0 : a.b`
-    ///   `a?.[0]`     → `a == null ? void 0 : a[0]`
-    ///   `a?.()`      → `a == null ? void 0 : a()`
-    ///   `a?.b.c`     → `a == null ? void 0 : a.b.c`
-    ///   `foo()?.bar` → `(_a = foo()) == null ? void 0 : _a.bar`
-    ///
-    /// 핵심 알고리즘:
-    ///   1. old_ast 체인을 바깥→안쪽으로 재귀 순회하여 `?.` 지점(optional flag)을 찾는다.
-    ///   2. optional 노드의 object가 "base" (null 체크 대상).
-    ///   3. base가 단순 식별자면 그대로 사용, 아니면 임시 변수(_a)로 캐싱.
-    ///   4. rebuildChainNode로 전체 체인을 새 AST에 빌드 (optional flag 제거 + base 교체).
-    ///   5. `base == null ? void 0 : rebuilt_chain` 삼항 조건식으로 감싼다.
-    fn lowerOptionalChain(self: *Transformer, node: Node, base_idx: NodeIndex) Error!NodeIndex {
-
-        // Step 2: base 방문 + 단순 식별자 판단
-        const simple = self.isSimpleIdentifier(base_idx);
-        const visited_base = try self.visitNode(base_idx);
-
-        var null_check_base: NodeIndex = undefined;
-        var chain_base: NodeIndex = undefined;
-
-        if (simple) {
-            null_check_base = visited_base;
-            chain_base = try self.new_ast.addNode(self.new_ast.getNode(visited_base));
-        } else {
-            // 부작용이 있는 식: (_a = foo())를 null 체크, _a를 chain에서 사용
-            const temp_span = try self.makeTempVarSpan();
-            const temp_ref1 = try self.makeTempVarRef(temp_span, node.span);
-            const assign_node = try self.new_ast.addNode(.{
-                .tag = .assignment_expression,
-                .span = node.span,
-                .data = .{ .binary = .{
-                    .left = temp_ref1,
-                    .right = visited_base,
-                    .flags = @intFromEnum(token_mod.Kind.eq),
-                } },
-            });
-            null_check_base = try self.new_ast.addNode(.{
-                .tag = .parenthesized_expression,
-                .span = node.span,
-                .data = .{ .unary = .{ .operand = assign_node, .flags = 0 } },
-            });
-            chain_base = try self.makeTempVarRef(temp_span, node.span);
-        }
-
-        // Step 3: 체인 재빌드 + 삼항식 래핑
-        return self.rebuildOptionalChain(node, null_check_base, chain_base);
-    }
-
-    /// 체인을 따라 내려가서 가장 바깥 optional flag가 있는 노드의 object(base)를 반환.
-    /// optional chain을 재귀적으로 재빌드한다.
-    /// old_ast의 노드를 방문하면서 새 AST에 복사하되:
-    ///   - optional flag가 있는 노드에서 object를 chain_base로 교체
-    ///   - optional flag를 제거
-    ///   - 그 외 노드는 정상 방문
-    /// 최종적으로 `null_check_base == null ? void 0 : rebuilt_chain` 삼항식을 반환.
-    fn rebuildOptionalChain(self: *Transformer, root: Node, null_check_base: NodeIndex, chain_base: NodeIndex) Error!NodeIndex {
-        // chain을 재빌드: root 노드부터 시작, optional 노드까지 재귀
-        const rebuilt_chain = try self.rebuildChainNode(root, chain_base);
-
-        // base == null
-        const eq_null = try self.makeEqNull(null_check_base, root.span);
-
-        // void 0
-        const void_zero = try self.makeVoidZero(root.span);
-
-        // base == null ? void 0 : rebuilt_chain
-        return self.new_ast.addNode(.{
-            .tag = .conditional_expression,
-            .span = root.span,
-            .data = .{ .ternary = .{
-                .a = eq_null,
-                .b = void_zero,
-                .c = rebuilt_chain,
-            } },
-        });
-    }
-
-    /// old_ast chain 노드를 새 AST에 재빌드한다.
-    /// optional flag가 있는 노드에서 object를 chain_base로 교체하고 flag를 제거.
-    /// 비-optional 노드는 object를 재귀적으로 rebuildChainNode로 처리.
-    fn rebuildChainNode(self: *Transformer, old_node: Node, chain_base: NodeIndex) Error!NodeIndex {
-        const extras = self.old_ast.extra_data.items;
-        switch (old_node.tag) {
-            .static_member_expression, .computed_member_expression, .private_field_expression => {
-                const e = old_node.data.extra;
-                if (e + 2 >= extras.len) return NodeIndex.none;
-                const old_obj: NodeIndex = @enumFromInt(extras[e]);
-                const old_prop: NodeIndex = @enumFromInt(extras[e + 1]);
-                const flags = extras[e + 2];
-                const is_optional = (flags & ast_mod.MemberFlags.optional_chain) != 0;
-
-                // object를 재빌드: optional이면 chain_base 사용, 아니면 재귀
-                const new_obj = if (is_optional)
-                    chain_base
-                else
-                    try self.rebuildChainNode(self.old_ast.getNode(old_obj), chain_base);
-
-                // property 방문 (computed는 임의 expression, static/private는 식별자 리프)
-                const new_prop = try self.visitNode(old_prop);
-
-                // optional flag를 제거
-                const new_flags = flags & ~ast_mod.MemberFlags.optional_chain;
-                const new_extra = try self.new_ast.addExtras(&.{
-                    @intFromEnum(new_obj), @intFromEnum(new_prop), new_flags,
-                });
-                return self.new_ast.addNode(.{
-                    .tag = old_node.tag,
-                    .span = old_node.span,
-                    .data = .{ .extra = new_extra },
-                });
-            },
-            .call_expression => {
-                const e = old_node.data.extra;
-                if (e + 3 >= extras.len) return NodeIndex.none;
-                const old_callee: NodeIndex = @enumFromInt(extras[e]);
-                const args_start = extras[e + 1];
-                const args_len = extras[e + 2];
-                const flags = extras[e + 3];
-                const is_optional = (flags & ast_mod.CallFlags.optional_chain) != 0;
-
-                // callee를 재빌드: optional이면 chain_base 사용, 아니면 재귀
-                const new_callee = if (is_optional)
-                    chain_base
-                else
-                    try self.rebuildChainNode(self.old_ast.getNode(old_callee), chain_base);
-
-                // args는 정상 방문
-                const new_args = try self.visitExtraList(args_start, args_len);
-
-                // optional flag를 제거
-                const new_flags = flags & ~ast_mod.CallFlags.optional_chain;
-                const new_extra = try self.new_ast.addExtras(&.{
-                    @intFromEnum(new_callee), new_args.start, new_args.len, new_flags,
-                });
-                return self.new_ast.addNode(.{
-                    .tag = .call_expression,
-                    .span = old_node.span,
-                    .data = .{ .extra = new_extra },
-                });
-            },
-            else => unreachable,
-        }
-    }
-
-    /// ES 다운레벨링: `a ?? b` → `a != null ? a : b`
-    /// a가 단순 식별자면 임시 변수 불필요.
-    /// a가 부작용이 있으면 임시 변수 사용: `(_a = foo()) != null ? _a : bar`
-    /// (esbuild 호환: `!= null`은 null과 undefined 모두 체크)
-    fn lowerNullishCoalescing(self: *Transformer, node: Node) Error!NodeIndex {
-        const old_left_idx = node.data.binary.left;
-        const simple = self.isSimpleIdentifier(old_left_idx);
-
-        const new_left = try self.visitNode(old_left_idx);
-        const new_right = try self.visitNode(node.data.binary.right);
-
-        // null 리터럴 (합성 — string_table에 "null" 저장)
-        const null_span = try self.new_ast.addString("null");
-        const null_node = try self.new_ast.addNode(.{
-            .tag = .null_literal,
-            .span = null_span,
-            .data = .{ .none = 0 },
-        });
-
-        if (simple) {
-            // 단순 식별자: a != null ? a : b (임시 변수 불필요)
-            const left_copy_node = self.new_ast.getNode(new_left);
-            const left_copy = try self.new_ast.addNode(left_copy_node);
-
-            const neq_null = try self.new_ast.addNode(.{
-                .tag = .binary_expression,
-                .span = node.span,
-                .data = .{ .binary = .{
-                    .left = new_left,
-                    .right = null_node,
-                    .flags = @intFromEnum(token_mod.Kind.neq),
-                } },
-            });
-
-            return self.new_ast.addNode(.{
-                .tag = .conditional_expression,
-                .span = node.span,
-                .data = .{ .ternary = .{
-                    .a = neq_null,
-                    .b = left_copy,
-                    .c = new_right,
-                } },
-            });
-        } else {
-            // 부작용이 있는 식: (_a = foo()) != null ? _a : bar
-            const temp_span = try self.makeTempVarSpan();
-
-            // _a = foo() (assignment)
-            const temp_ref1 = try self.makeTempVarRef(temp_span, node.span);
-            const assign_node = try self.new_ast.addNode(.{
-                .tag = .assignment_expression,
-                .span = node.span,
-                .data = .{ .binary = .{
-                    .left = temp_ref1,
-                    .right = new_left,
-                    .flags = @intFromEnum(token_mod.Kind.eq),
-                } },
-            });
-
-            // (_a = foo()) — 괄호로 감싸기 (sequence/comma와 혼동 방지)
-            const paren_assign = try self.new_ast.addNode(.{
-                .tag = .parenthesized_expression,
-                .span = node.span,
-                .data = .{ .unary = .{ .operand = assign_node, .flags = 0 } },
-            });
-
-            // (_a = foo()) != null
-            const neq_null = try self.new_ast.addNode(.{
-                .tag = .binary_expression,
-                .span = node.span,
-                .data = .{ .binary = .{
-                    .left = paren_assign,
-                    .right = null_node,
-                    .flags = @intFromEnum(token_mod.Kind.neq),
-                } },
-            });
-
-            // _a (second reference for the true branch)
-            const temp_ref2 = try self.makeTempVarRef(temp_span, node.span);
-
-            // (_a = foo()) != null ? _a : bar
-            return self.new_ast.addNode(.{
-                .tag = .conditional_expression,
-                .span = node.span,
-                .data = .{ .ternary = .{
-                    .a = neq_null,
-                    .b = temp_ref2,
-                    .c = new_right,
-                } },
-            });
-        }
-    }
-
-    /// ES 다운레벨링: `a ??= b` → `a ?? (a = b)` (es2021→es2020)
-    /// 타겟이 es2020 미만이면 ?? 도 추가 변환: `a != null ? a : (a = b)`
-    fn lowerNullishAssignment(self: *Transformer, node: Node) Error!NodeIndex {
-        const new_left = try self.visitNode(node.data.binary.left);
-        const new_right = try self.visitNode(node.data.binary.right);
-
-        // left 복사 (assignment의 left로 재사용)
-        const left_copy1 = try self.new_ast.addNode(self.new_ast.getNode(new_left));
-
-        // (a = b)
-        const assign = try self.new_ast.addNode(.{
-            .tag = .assignment_expression,
-            .span = node.span,
-            .data = .{ .binary = .{
-                .left = left_copy1,
-                .right = new_right,
-                .flags = @intFromEnum(token_mod.Kind.eq),
-            } },
-        });
-
-        // 괄호로 감싸기
-        const paren_assign = try self.new_ast.addNode(.{
-            .tag = .parenthesized_expression,
-            .span = node.span,
-            .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
-        });
-
-        if (self.options.target.needsNullishCoalescing()) {
-            // 타겟 < es2020: a != null ? a : (a = b)
-            const left_copy2 = try self.new_ast.addNode(self.new_ast.getNode(new_left));
-
-            const null_span = try self.new_ast.addString("null");
-            const null_node = try self.new_ast.addNode(.{
-                .tag = .null_literal,
-                .span = null_span,
-                .data = .{ .none = 0 },
-            });
-
-            const neq_null = try self.new_ast.addNode(.{
-                .tag = .binary_expression,
-                .span = node.span,
-                .data = .{ .binary = .{
-                    .left = new_left,
-                    .right = null_node,
-                    .flags = @intFromEnum(token_mod.Kind.neq),
-                } },
-            });
-
-            return self.new_ast.addNode(.{
-                .tag = .conditional_expression,
-                .span = node.span,
-                .data = .{ .ternary = .{
-                    .a = neq_null,
-                    .b = left_copy2,
-                    .c = paren_assign,
-                } },
-            });
-        } else {
-            // 타겟 >= es2020: a ?? (a = b)
-            return self.new_ast.addNode(.{
-                .tag = .logical_expression,
-                .span = node.span,
-                .data = .{ .binary = .{
-                    .left = new_left,
-                    .right = paren_assign,
-                    .flags = @intFromEnum(token_mod.Kind.question2),
-                } },
-            });
-        }
-    }
-
-    /// ES 다운레벨링: `a ||= b` → `a || (a = b)`, `a &&= b` → `a && (a = b)`
-    fn lowerLogicalAssignment(self: *Transformer, node: Node, logical_op: token_mod.Kind) Error!NodeIndex {
-        const new_left = try self.visitNode(node.data.binary.left);
-        const new_right = try self.visitNode(node.data.binary.right);
-
-        // left 복사 (assignment의 left로 재사용)
-        const left_copy = try self.new_ast.addNode(self.new_ast.getNode(new_left));
-
-        // (a = b)
-        const assign = try self.new_ast.addNode(.{
-            .tag = .assignment_expression,
-            .span = node.span,
-            .data = .{ .binary = .{
-                .left = left_copy,
-                .right = new_right,
-                .flags = @intFromEnum(token_mod.Kind.eq),
-            } },
-        });
-
-        // 괄호로 감싸기
-        const paren_assign = try self.new_ast.addNode(.{
-            .tag = .parenthesized_expression,
-            .span = node.span,
-            .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
-        });
-
-        // a || (a = b) 또는 a && (a = b)
-        return self.new_ast.addNode(.{
-            .tag = .logical_expression,
-            .span = node.span,
-            .data = .{ .binary = .{
-                .left = new_left,
-                .right = paren_assign,
-                .flags = @intFromEnum(logical_op),
-            } },
-        });
-    }
+    // ES 다운레벨링 함수는 es2020.zig, es2021.zig, es_helpers.zig로 분리됨.
 
     /// unary/update expression: extra = [operand, operator_and_flags]
     fn visitUnaryExtra(self: *Transformer, node: Node) Error!NodeIndex {
@@ -1082,7 +626,7 @@ pub const Transformer = struct {
     /// 해당 자식 앞에 삽입한다. 이를 통해 1→N 노드 확장이 가능하다.
     /// 예: enum 변환 시 visitNode가 IIFE를 반환하면서 `var Color;`을
     ///     pending_nodes에 push → 리스트에 `var Color;` + IIFE 순서로 삽입.
-    fn visitExtraList(self: *Transformer, start: u32, len: u32) Error!NodeList {
+    pub fn visitExtraList(self: *Transformer, start: u32, len: u32) Error!NodeList {
         const old_indices = self.old_ast.extra_data.items[start .. start + len];
 
         const scratch_top = self.scratch.items.len;
