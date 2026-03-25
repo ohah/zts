@@ -1005,9 +1005,9 @@ pub const Transformer = struct {
     /// class: extra = [name, super, body, type_params, impl_start, impl_len, deco_start, deco_len]
     fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
-        const has_super = !self.readNodeIdx(e, 1).isNone();
 
-        // useDefineForClassFields=false가 아니고 experimentalDecorators도 아니면 기존 동작
+        // Fast path: useDefineForClassFields=true AND !experimentalDecorators → 기존 동작
+        // 멤버별 분류가 불필요하므로 body를 통째로 방문한다.
         if (self.options.use_define_for_class_fields and !self.options.experimental_decorators) {
             const new_name = try self.visitNode(self.readNodeIdx(e, 0));
             const new_super = try self.visitNode(self.readNodeIdx(e, 1));
@@ -1021,9 +1021,17 @@ pub const Transformer = struct {
             });
         }
 
-        // === useDefineForClassFields=false / experimentalDecorators 처리 ===
+        // Slow path: useDefineForClassFields=false 또는 experimentalDecorators
         // 클래스 바디의 멤버들을 개별로 분석해야 하므로, class_body를 직접 순회한다.
+        return self.visitClassWithAssignSemantics(node);
+    }
 
+    /// useDefineForClassFields=false / experimentalDecorators 처리.
+    /// 멤버를 개별 분류하여 instance field를 constructor로 이동하고,
+    /// experimental decorator를 __decorateClass 호출로 변환한다.
+    fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeIndex {
+        const e = node.data.extra;
+        const has_super = !self.readNodeIdx(e, 1).isNone();
         const new_name = try self.visitNode(self.readNodeIdx(e, 0));
         const new_super = try self.visitNode(self.readNodeIdx(e, 1));
 
@@ -1032,21 +1040,17 @@ pub const Transformer = struct {
         const body_node = self.old_ast.getNode(body_idx);
         const body_members = self.old_ast.extra_data.items[body_node.data.list.start .. body_node.data.list.start + body_node.data.list.len];
 
-        // 1단계: 멤버들을 분류하면서 방문
-        // instance fields (non-static, assign semantics용)를 수집하고,
-        // member decorators (experimental decorators용)를 수집한다.
+        // 멤버 분류: class_members(새 body), field_assignments(constructor 이동 대상),
+        // member_decorators(experimental decorator 대상)를 동시에 수집한다.
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-        // class body 멤버 (새 AST)
         var class_members: std.ArrayList(NodeIndex) = .empty;
         defer class_members.deinit(self.allocator);
 
-        // useDefineForClassFields=false: instance field → constructor 이동용 수집
         var field_assignments: std.ArrayList(FieldAssignment) = .empty;
         defer field_assignments.deinit(self.allocator);
 
-        // experimentalDecorators: member decorator 수집
         var member_decorators: std.ArrayList(MemberDecoratorInfo) = .empty;
         defer {
             for (member_decorators.items) |md| {
@@ -1055,133 +1059,32 @@ pub const Transformer = struct {
             member_decorators.deinit(self.allocator);
         }
 
-        var existing_constructor: ?NodeIndex = null; // 기존 constructor의 new AST index
-        var existing_constructor_pos: ?usize = null; // class_members 내 위치
+        var existing_constructor: ?NodeIndex = null;
+        var existing_constructor_pos: ?usize = null;
 
         for (body_members) |raw_idx| {
-            const member = self.old_ast.getNode(@enumFromInt(raw_idx));
-
-            // property_definition: extra = [key, init_val, flags, deco_start, deco_len]
-            if (member.tag == .property_definition) {
-                const me = member.data.extra;
-                const flags = self.readU32(me, 2);
-                const is_static = (flags & 0x01) != 0;
-                const is_abstract = (flags & 0x20) != 0;
-                const is_declare = (flags & 0x40) != 0;
-
-                // abstract/declare는 항상 스트리핑
-                if (self.options.strip_types and (flags & 0x60) != 0) {
-                    continue;
-                }
-
-                // decorator 수집 (experimental decorators — 경로와 무관하게 한 번만)
-                if (self.options.experimental_decorators) {
-                    const deco_start = self.readU32(me, 3);
-                    const deco_len = self.readU32(me, 4);
-                    if (deco_len > 0) {
-                        const new_key = try self.visitNode(self.readNodeIdx(me, 0));
-                        try self.collectMemberDecorators(&member_decorators, deco_start, deco_len, new_key, is_static, 2);
-                    }
-                }
-
-                // useDefineForClassFields=false: non-static instance field를 constructor로 이동
-                if (!self.options.use_define_for_class_fields and !is_static and !is_abstract and !is_declare) {
-                    const key_idx = self.readNodeIdx(me, 0);
-                    const init_idx = self.readNodeIdx(me, 1);
-                    if (!init_idx.isNone()) {
-                        const new_key = try self.visitNode(key_idx);
-                        const new_init = try self.visitNode(init_idx);
-                        const key_node = self.old_ast.getNode(key_idx);
-                        const is_computed = (key_node.tag == .computed_property_key);
-                        try field_assignments.append(self.allocator, .{
-                            .key = new_key,
-                            .value = new_init,
-                            .is_computed = is_computed,
-                            .span = member.span,
-                        });
-                    }
-                    continue;
-                }
-
-                // static field 또는 use_define=true: 그대로 방문
-                const new_member = try self.visitNode(@enumFromInt(raw_idx));
-                if (!new_member.isNone()) {
-                    try class_members.append(self.allocator, new_member);
-                }
-                continue;
-            }
-
-            // method_definition: extra = [key, params_start, params_len, body, flags, deco_start, deco_len]
-            if (member.tag == .method_definition) {
-                const me = member.data.extra;
-                const flags = self.readU32(me, 4);
-                const is_static = (flags & 0x01) != 0;
-
-                // constructor 감지
-                if (!is_static) {
-                    const key_idx = self.readNodeIdx(me, 0);
-                    const key_node = self.old_ast.getNode(key_idx);
-                    const is_ctor = blk: {
-                        if (key_node.tag == .identifier_reference) {
-                            const name = self.old_ast.source[key_node.span.start..key_node.span.end];
-                            break :blk std.mem.eql(u8, name, "constructor");
-                        }
-                        break :blk false;
-                    };
-
-                    if (is_ctor) {
-                        const new_member = try self.visitMethodDefinition(member);
-                        if (!new_member.isNone()) {
-                            existing_constructor = new_member;
-                            existing_constructor_pos = class_members.items.len;
-                            try class_members.append(self.allocator, new_member);
-                        }
-                        continue;
-                    }
-                }
-
-                // 일반 메서드: experimentalDecorators의 member decorator 수집
-                if (self.options.experimental_decorators) {
-                    const deco_start = self.readU32(me, 5);
-                    const deco_len = self.readU32(me, 6);
-                    if (deco_len > 0) {
-                        const new_key = try self.visitNode(self.readNodeIdx(me, 0));
-                        try self.collectMemberDecorators(&member_decorators, deco_start, deco_len, new_key, is_static, 1);
-                    }
-                }
-
-                const new_member = try self.visitMethodDefinition(member);
-                if (!new_member.isNone()) {
-                    try class_members.append(self.allocator, new_member);
-                }
-                continue;
-            }
-
-            // 기타 멤버 (static_block, accessor_property 등): 그대로 방문
-            const new_member = try self.visitNode(@enumFromInt(raw_idx));
-            if (!new_member.isNone()) {
-                try class_members.append(self.allocator, new_member);
-            }
+            try self.classifyClassMember(
+                raw_idx,
+                &class_members,
+                &field_assignments,
+                &member_decorators,
+                &existing_constructor,
+                &existing_constructor_pos,
+            );
         }
 
-        // 2단계: useDefineForClassFields=false — instance field를 constructor에 삽입
+        // instance field를 constructor에 삽입 (useDefineForClassFields=false)
         if (field_assignments.items.len > 0) {
-            if (existing_constructor) |ctor_idx| {
-                // 기존 constructor의 body에 field assignments 삽입
-                const updated_ctor = try self.insertFieldAssignmentsIntoConstructor(ctor_idx, field_assignments.items, has_super);
-                // position으로 직접 교체 (선형 검색 불필요)
-                if (existing_constructor_pos) |pos| {
-                    class_members.items[pos] = updated_ctor;
-                }
-            } else {
-                // constructor가 없으면 새로 생성
-                const new_ctor = try self.buildConstructorWithFieldAssignments(field_assignments.items, has_super);
-                // class body 맨 앞에 삽입
-                try class_members.insert(self.allocator, 0, new_ctor);
-            }
+            try self.applyFieldAssignments(
+                &class_members,
+                field_assignments.items,
+                existing_constructor,
+                existing_constructor_pos,
+                has_super,
+            );
         }
 
-        // 3단계: class body 노드 생성
+        // class body 노드 생성
         const body_list = try self.new_ast.addNodeList(class_members.items);
         const new_body = try self.new_ast.addNode(.{
             .tag = .class_body,
@@ -1189,7 +1092,7 @@ pub const Transformer = struct {
             .data = .{ .list = body_list },
         });
 
-        // 4단계: experimentalDecorators — decorator를 class에서 제거하고 __decorateClass 호출 생성
+        // experimentalDecorators — decorator를 class에서 제거하고 __decorateClass 호출 생성
         if (self.options.experimental_decorators) {
             const old_deco_start = self.readU32(e, 6);
             const old_deco_len = self.readU32(e, 7);
@@ -1219,6 +1122,180 @@ pub const Transformer = struct {
             none,                   0,                       0,
             new_decos.start,        new_decos.len,
         });
+    }
+
+    /// 단일 클래스 멤버를 분류하여 적절한 목록에 추가한다.
+    /// - property_definition: assign semantics 대상이면 field_assignments에, 아니면 class_members에
+    /// - method_definition: constructor면 기록, 일반 메서드면 class_members에
+    /// - 기타: class_members에 그대로 추가
+    fn classifyClassMember(
+        self: *Transformer,
+        raw_idx: u32,
+        class_members: *std.ArrayList(NodeIndex),
+        field_assignments: *std.ArrayList(FieldAssignment),
+        member_decorators: *std.ArrayList(MemberDecoratorInfo),
+        existing_constructor: *?NodeIndex,
+        existing_constructor_pos: *?usize,
+    ) Error!void {
+        const member = self.old_ast.getNode(@enumFromInt(raw_idx));
+
+        // property_definition: extra = [key, init_val, flags, deco_start, deco_len]
+        if (member.tag == .property_definition) {
+            try self.classifyPropertyDefinition(raw_idx, member, class_members, field_assignments, member_decorators);
+            return;
+        }
+
+        // method_definition: extra = [key, params_start, params_len, body, flags, deco_start, deco_len]
+        if (member.tag == .method_definition) {
+            try self.classifyMethodDefinition(member, class_members, member_decorators, existing_constructor, existing_constructor_pos);
+            return;
+        }
+
+        // 기타 멤버 (static_block, accessor_property 등): 그대로 방문
+        const new_member = try self.visitNode(@enumFromInt(raw_idx));
+        if (!new_member.isNone()) {
+            try class_members.append(self.allocator, new_member);
+        }
+    }
+
+    /// property_definition 멤버를 분류한다.
+    /// - abstract/declare → 스트리핑 (스킵)
+    /// - experimental decorators → member_decorators에 수집
+    /// - assign semantics (non-static, non-abstract, non-declare, 초기화 있음) → field_assignments에
+    /// - 나머지 → class_members에 그대로 방문
+    fn classifyPropertyDefinition(
+        self: *Transformer,
+        raw_idx: u32,
+        member: Node,
+        class_members: *std.ArrayList(NodeIndex),
+        field_assignments: *std.ArrayList(FieldAssignment),
+        member_decorators: *std.ArrayList(MemberDecoratorInfo),
+    ) Error!void {
+        const me = member.data.extra;
+        const flags = self.readU32(me, 2);
+        const is_static = (flags & 0x01) != 0;
+        const is_abstract = (flags & 0x20) != 0;
+        const is_declare = (flags & 0x40) != 0;
+
+        // abstract/declare는 항상 스트리핑
+        if (self.options.strip_types and (flags & 0x60) != 0) {
+            return;
+        }
+
+        // decorator 수집 (experimental decorators — 경로와 무관하게 한 번만)
+        if (self.options.experimental_decorators) {
+            const deco_start = self.readU32(me, 3);
+            const deco_len = self.readU32(me, 4);
+            if (deco_len > 0) {
+                const new_key = try self.visitNode(self.readNodeIdx(me, 0));
+                try self.collectMemberDecorators(member_decorators, deco_start, deco_len, new_key, is_static, 2);
+            }
+        }
+
+        // useDefineForClassFields=false: non-static instance field를 constructor로 이동
+        if (!self.options.use_define_for_class_fields and !is_static and !is_abstract and !is_declare) {
+            const key_idx = self.readNodeIdx(me, 0);
+            const init_idx = self.readNodeIdx(me, 1);
+            if (!init_idx.isNone()) {
+                const new_key = try self.visitNode(key_idx);
+                const new_init = try self.visitNode(init_idx);
+                const key_node = self.old_ast.getNode(key_idx);
+                const is_computed = (key_node.tag == .computed_property_key);
+                try field_assignments.append(self.allocator, .{
+                    .key = new_key,
+                    .value = new_init,
+                    .is_computed = is_computed,
+                    .span = member.span,
+                });
+            }
+            return;
+        }
+
+        // static field 또는 use_define=true: 그대로 방문
+        const new_member = try self.visitNode(@enumFromInt(raw_idx));
+        if (!new_member.isNone()) {
+            try class_members.append(self.allocator, new_member);
+        }
+    }
+
+    /// method_definition 멤버를 분류한다.
+    /// - constructor → existing_constructor/existing_constructor_pos에 기록
+    /// - experimental decorators가 있는 일반 메서드 → member_decorators에 수집
+    /// - 나머지 → class_members에 추가
+    fn classifyMethodDefinition(
+        self: *Transformer,
+        member: Node,
+        class_members: *std.ArrayList(NodeIndex),
+        member_decorators: *std.ArrayList(MemberDecoratorInfo),
+        existing_constructor: *?NodeIndex,
+        existing_constructor_pos: *?usize,
+    ) Error!void {
+        const me = member.data.extra;
+        const flags = self.readU32(me, 4);
+        const is_static = (flags & 0x01) != 0;
+
+        // constructor 감지
+        if (!is_static) {
+            const key_idx = self.readNodeIdx(me, 0);
+            const key_node = self.old_ast.getNode(key_idx);
+            const is_ctor = blk: {
+                if (key_node.tag == .identifier_reference) {
+                    const name = self.old_ast.source[key_node.span.start..key_node.span.end];
+                    break :blk std.mem.eql(u8, name, "constructor");
+                }
+                break :blk false;
+            };
+
+            if (is_ctor) {
+                const new_member = try self.visitMethodDefinition(member);
+                if (!new_member.isNone()) {
+                    existing_constructor.* = new_member;
+                    existing_constructor_pos.* = class_members.items.len;
+                    try class_members.append(self.allocator, new_member);
+                }
+                return;
+            }
+        }
+
+        // 일반 메서드: experimentalDecorators의 member decorator 수집
+        if (self.options.experimental_decorators) {
+            const deco_start = self.readU32(me, 5);
+            const deco_len = self.readU32(me, 6);
+            if (deco_len > 0) {
+                const new_key = try self.visitNode(self.readNodeIdx(me, 0));
+                try self.collectMemberDecorators(member_decorators, deco_start, deco_len, new_key, is_static, 1);
+            }
+        }
+
+        const new_member = try self.visitMethodDefinition(member);
+        if (!new_member.isNone()) {
+            try class_members.append(self.allocator, new_member);
+        }
+    }
+
+    /// 수집된 field assignments를 constructor에 삽입한다.
+    /// 기존 constructor가 있으면 body에 삽입하고, 없으면 새로 생성한다.
+    fn applyFieldAssignments(
+        self: *Transformer,
+        class_members: *std.ArrayList(NodeIndex),
+        fields: []const FieldAssignment,
+        existing_constructor: ?NodeIndex,
+        existing_constructor_pos: ?usize,
+        has_super: bool,
+    ) Error!void {
+        if (existing_constructor) |ctor_idx| {
+            // 기존 constructor의 body에 field assignments 삽입
+            const updated_ctor = try self.insertFieldAssignmentsIntoConstructor(ctor_idx, fields, has_super);
+            // position으로 직접 교체 (선형 검색 불필요)
+            if (existing_constructor_pos) |pos| {
+                class_members.items[pos] = updated_ctor;
+            }
+        } else {
+            // constructor가 없으면 새로 생성
+            const new_ctor = try self.buildConstructorWithFieldAssignments(fields, has_super);
+            // class body 맨 앞에 삽입
+            try class_members.insert(self.allocator, 0, new_ctor);
+        }
     }
 
     /// useDefineForClassFields=false: instance field → constructor this.x = value 정보
