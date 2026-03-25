@@ -716,30 +716,39 @@ fn parseTypeOperatorOrHigher(self: *Parser) ParseError2!NodeIndex {
 fn parsePostfixType(self: *Parser) ParseError2!NodeIndex {
     var base = try parsePrimaryType(self);
 
-    while (self.current() == .l_bracket) {
-        // "any\n['z']" — 줄바꿈 뒤 `[`는 새 statement로 해석 (ASI).
-        // esbuild: "{ ['x']: string \n ['y']: string } must not become a single type"
-        if (self.scanner.token.has_newline_before) break;
-        const start = self.ast.getNode(base).span.start;
-        if (try self.peekNextKind() == .r_bracket) {
-            // 배열 타입: T[]
-            try self.advance(); // [
-            try self.advance(); // ]
-            base = try self.ast.addNode(.{
-                .tag = .ts_array_type,
-                .span = .{ .start = start, .end = self.currentSpan().start },
-                .data = .{ .unary = .{ .operand = base, .flags = 0 } },
-            });
+    while (true) {
+        if (self.current() == .l_bracket) {
+            // "any\n['z']" — 줄바꿈 뒤 `[`는 새 statement로 해석 (ASI).
+            // esbuild: "{ ['x']: string \n ['y']: string } must not become a single type"
+            if (self.scanner.token.has_newline_before) break;
+            const start = self.ast.getNode(base).span.start;
+            if (try self.peekNextKind() == .r_bracket) {
+                // 배열 타입: T[]
+                try self.advance(); // [
+                try self.advance(); // ]
+                base = try self.ast.addNode(.{
+                    .tag = .ts_array_type,
+                    .span = .{ .start = start, .end = self.currentSpan().start },
+                    .data = .{ .unary = .{ .operand = base, .flags = 0 } },
+                });
+            } else {
+                // 인덱스 접근 타입: T[K]
+                try self.advance(); // [
+                const index_type = try parseType(self);
+                try self.expect(.r_bracket);
+                base = try self.ast.addNode(.{
+                    .tag = .ts_indexed_access_type,
+                    .span = .{ .start = start, .end = self.currentSpan().start },
+                    .data = .{ .binary = .{ .left = base, .right = index_type, .flags = 0 } },
+                });
+            }
+        } else if (self.current() == .bang and !self.scanner.token.has_newline_before) {
+            // JSDoc-style postfix !: `number!`
+            // TypeScript에서는 유효하지 않지만, esbuild와 동일하게
+            // 파싱 후 무시한다 (soft error). 타입 스트리핑에서 제거됨.
+            try self.advance();
         } else {
-            // 인덱스 접근 타입: T[K]
-            try self.advance(); // [
-            const index_type = try parseType(self);
-            try self.expect(.r_bracket);
-            base = try self.ast.addNode(.{
-                .tag = .ts_indexed_access_type,
-                .span = .{ .start = start, .end = self.currentSpan().start },
-                .data = .{ .binary = .{ .left = base, .right = index_type, .flags = 0 } },
-            });
+            break;
         }
     }
 
@@ -990,11 +999,23 @@ fn parseFunctionOrConstructorType(self: *Parser, is_abstract: bool) ParseError2!
 /// oxc: is_start_of_function_type_or_constructor_type + parse_function_or_constructor_type
 fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
+
+    // esbuild 방식: 먼저 함수 타입 파라미터로 파싱 시도 (backtracking).
+    // `(params) => ReturnType` 패턴이면 함수 타입, 아니면 괄호 타입 `(Type)`.
+    // 이 방식은 `(y: any): (() => {}) => {}` 같은 모호한 경우를 올바르게 처리한다.
+    // - `(() => {})`: `(` 뒤에 `()` → 함수 파라미터가 아님 → 괄호 타입으로 폴백
+    // - `(y) => {}`: `(` 뒤에 `y)` → `y`는 유효한 파라미터 → 함수 타입
+    if (try tryParseFunctionTypeWithBacktracking(self, start)) |fn_type| {
+        return fn_type;
+    }
+
+    // 함수 타입 아님 — 괄호 타입 (Type)으로 파싱
     try self.advance(); // skip (
 
-    // 빈 괄호 + => → 함수 타입 () => R
+    // 빈 괄호
     if (self.current() == .r_paren) {
         try self.advance();
+        // 빈 괄호 + => → 함수 타입 () => R (tryParse에서 이미 처리되므로 여기 안 옴)
         if (self.current() == .arrow) {
             try self.advance();
             const return_type = try parseType(self);
@@ -1004,32 +1025,17 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
                 .data = .{ .unary = .{ .operand = return_type, .flags = 0 } },
             });
         }
-        // 빈 괄호 — 에러 또는 void
         return try self.ast.addNode(.{ .tag = .ts_void_keyword, .span = .{ .start = start, .end = self.currentSpan().start }, .data = .{ .none = 0 } });
     }
 
-    // ... (rest parameter) → 무조건 함수 타입
-    if (self.current() == .dot3) {
-        return parseFunctionTypeParams(self, start);
-    }
-
-    // 함수 타입 판별: identifier/this 다음에 : 또는 , 또는 ? 가 오면 함수 타입
-    if (isFunctionTypeParam(self)) {
-        return parseFunctionTypeParams(self, start);
-    }
-
-    // 그 외: 먼저 타입으로 파싱, 콤마가 오면 함수 타입, ) => 가 오면 함수 타입
     const inner = try parseType(self);
 
-    // 콤마가 오면 다중 파라미터 함수 타입
+    // 콤마가 오면 다중 파라미터 — 함수 타입 (이미 tryParse에서 처리되어야 하지만 폴백)
     if (self.current() == .comma) {
-        // inner를 첫 번째 파라미터로 취급하고 나머지 파싱
         const scratch_top = self.saveScratch();
-        // 첫 번째는 이미 타입으로 파싱됨 — 파라미터 노드로 래핑
         try self.scratch.append(self.allocator, inner);
         while (try self.eat(.comma)) {
             if (self.current() == .r_paren) break;
-            // 함수 타입 파라미터 패턴: rest (...) 또는 isFunctionTypeParam (identifier:/?, [...], {...})
             if (self.current() == .dot3 or isFunctionTypeParam(self)) {
                 const param = try parseTypeMemberParam(self);
                 try self.scratch.append(self.allocator, param);
@@ -1046,7 +1052,7 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
             try self.advance();
             const return_type = try parseType(self);
             const extra = try self.ast.addExtras(&.{
-                @intFromEnum(NodeIndex.none), // no type params
+                @intFromEnum(NodeIndex.none),
                 params.start,
                 params.len,
                 @intFromEnum(return_type),
@@ -1057,7 +1063,6 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
                 .data = .{ .extra = extra },
             });
         }
-        // no arrow — error recovery: treat as parenthesized
         return try self.ast.addNode(.{
             .tag = .ts_parenthesized_type,
             .span = .{ .start = start, .end = self.currentSpan().start },
@@ -1067,25 +1072,100 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
 
     if (self.current() == .r_paren) {
         try self.advance();
+    } else {
+        try self.expect(.r_paren);
+    }
+
+    // 괄호 타입: (Type)
+    // 참고: (Type) => R 은 tryParseFunctionTypeWithBacktracking에서 처리됨.
+    // 여기서는 => 를 소비하지 않는다.
+    return try self.ast.addNode(.{
+        .tag = .ts_parenthesized_type,
+        .span = .{ .start = start, .end = self.currentSpan().start },
+        .data = .{ .unary = .{ .operand = inner, .flags = 0 } },
+    });
+}
+
+/// 함수 타입 파라미터로 파싱을 시도한다 (backtracking).
+/// `(` 뒤의 내용이 함수 파라미터로 유효하고, `)` 뒤에 `=>`가 오면 함수 타입.
+/// 실패 시 null 반환, 상태 완전 복원.
+fn tryParseFunctionTypeWithBacktracking(self: *Parser, start: u32) ParseError2!?NodeIndex {
+    const saved = self.saveState();
+    const nodes_before = self.ast.nodes.items.len;
+    const extras_before = self.ast.extra_data.items.len;
+    const errors_before = self.errors.items.len;
+
+    try self.advance(); // skip (
+
+    // 빈 괄호: () => R
+    if (self.current() == .r_paren) {
+        try self.advance();
         if (self.current() == .arrow) {
             try self.advance();
             const return_type = try parseType(self);
             return try self.ast.addNode(.{
                 .tag = .ts_function_type,
                 .span = .{ .start = start, .end = self.currentSpan().start },
-                .data = .{ .binary = .{ .left = inner, .right = return_type, .flags = 0 } },
+                .data = .{ .unary = .{ .operand = return_type, .flags = 0 } },
             });
         }
-    } else {
-        try self.expect(.r_paren);
+        // () 뒤에 => 없음 — 복원
+        self.ast.nodes.items.len = nodes_before;
+        self.ast.extra_data.items.len = extras_before;
+        self.errors.shrinkRetainingCapacity(errors_before);
+        self.restoreState(saved);
+        return null;
     }
 
-    // 괄호 타입: (Type)
-    return try self.ast.addNode(.{
-        .tag = .ts_parenthesized_type,
-        .span = .{ .start = start, .end = self.currentSpan().start },
-        .data = .{ .unary = .{ .operand = inner, .flags = 0 } },
-    });
+    // rest parameter → 확정 함수 타입
+    if (self.current() == .dot3) {
+        const result = try parseFunctionTypeParams(self, start);
+        return result;
+    }
+
+    // 함수 타입 파라미터 패턴 (identifier:, identifier?, this:, [...], {...})
+    if (isFunctionTypeParam(self)) {
+        const result = try parseFunctionTypeParams(self, start);
+        return result;
+    }
+
+    // 단일 식별자 + ) + => 패턴: `(x) => R` — 파라미터 이름이 타입 참조처럼 보임
+    // esbuild: trySkipTypeScriptArrowArgsWithBacktracking에서
+    // skipTypeScriptFnArgs가 `x)` 를 파라미터로 파싱하고 => 를 기대
+    if (self.current() == .identifier or self.current().isKeyword()) {
+        const id_span = self.currentSpan();
+        try self.advance(); // skip identifier
+
+        // identifier 뒤에 바로 ) 가 오면 단일 무타입 파라미터
+        if (self.current() == .r_paren) {
+            try self.advance(); // skip )
+            if (self.current() == .arrow) {
+                // 함수 타입 확정: (x) => R
+                try self.advance(); // skip =>
+                const return_type = try parseType(self);
+                const param_node = try self.ast.addNode(.{
+                    .tag = .ts_type_reference,
+                    .span = id_span,
+                    .data = .{ .string_ref = id_span },
+                });
+                return try self.ast.addNode(.{
+                    .tag = .ts_function_type,
+                    .span = .{ .start = start, .end = self.currentSpan().start },
+                    .data = .{ .binary = .{ .left = param_node, .right = return_type, .flags = 0 } },
+                });
+            }
+        }
+
+        // identifier 뒤에 , 가 오면 다중 파라미터 함수 타입일 수 있음
+        // 이 경우는 기존 로직으로 폴백
+    }
+
+    // 파라미터로 파싱 실패 — 복원
+    self.ast.nodes.items.len = nodes_before;
+    self.ast.extra_data.items.len = extras_before;
+    self.errors.shrinkRetainingCapacity(errors_before);
+    self.restoreState(saved);
+    return null;
 }
 
 /// ( 이후 현재 토큰이 함수 타입 파라미터 시작인지 판별
