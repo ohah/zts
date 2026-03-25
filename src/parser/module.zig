@@ -157,7 +157,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
                 .data = .{ .binary = .{ .left = try self.ast.addNode(.{
                     .tag = .identifier_reference,
                     .span = name_span,
-                    .data = .{ .none = 0 },
+                    .data = .{ .string_ref = name_span },
                 }), .right = value, .flags = 0 } },
             });
         }

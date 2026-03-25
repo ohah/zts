@@ -1245,12 +1245,12 @@ pub const Codegen = struct {
         const deco_start = self.ast.extra_data.items[e + 6];
         const deco_len = self.ast.extra_data.items[e + 7];
 
-        // decorator 출력: @log\n@validate\nclass Foo {}
+        // decorator 출력: @log @validate class Foo {} (esbuild 호환: 공백 구분)
         if (deco_len > 0) {
             const deco_indices = self.ast.extra_data.items[deco_start .. deco_start + deco_len];
             for (deco_indices) |raw_idx| {
                 try self.emitNode(@enumFromInt(raw_idx));
-                try self.writeByte('\n');
+                try self.writeByte(' ');
             }
         }
 
