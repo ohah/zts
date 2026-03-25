@@ -362,7 +362,15 @@ pub const Transformer = struct {
             .static_member_expression,
             .computed_member_expression,
             .private_field_expression,
-            => self.visitMemberExpression(node),
+            => {
+                // ES 다운레벨링: ?. → ternary (target < es2020)
+                if (self.options.target.needsOptionalChaining() and
+                    self.isOptionalChainRoot(node))
+                {
+                    return self.lowerOptionalChain(node);
+                }
+                return self.visitMemberExpression(node);
+            },
 
             // === unary/update expression: extra = [operand, operator_and_flags] ===
             .unary_expression,
@@ -392,7 +400,15 @@ pub const Transformer = struct {
             .for_statement => self.visitForStatement(node),
             .switch_statement => self.visitSwitchStatement(node),
             .switch_case => self.visitSwitchCase(node),
-            .call_expression => self.visitCallExpression(node),
+            .call_expression => {
+                // ES 다운레벨링: ?.() → ternary (target < es2020)
+                if (self.options.target.needsOptionalChaining() and
+                    self.isOptionalChainRoot(node))
+                {
+                    return self.lowerOptionalChain(node);
+                }
+                return self.visitCallExpression(node);
+            },
             .new_expression => self.visitNewExpression(node),
             .tagged_template_expression => self.visitTaggedTemplate(node),
             .method_definition => self.visitMethodDefinition(node),
@@ -563,9 +579,271 @@ pub const Transformer = struct {
         return left_node.tag == .identifier_reference;
     }
 
+    // ================================================================
+    // ES 다운레벨링: optional chaining (?.) → ternary
+    // ================================================================
+
+    /// old_ast에서 member/call 노드가 optional chain flag를 가지고 있는지 확인.
+    fn hasOptionalFlag(self: *const Transformer, node: Node) bool {
+        const extras = self.old_ast.extra_data.items;
+        switch (node.tag) {
+            .static_member_expression, .computed_member_expression, .private_field_expression => {
+                const e = node.data.extra;
+                if (e + 2 >= extras.len) return false;
+                return (extras[e + 2] & ast_mod.MemberFlags.optional_chain) != 0;
+            },
+            .call_expression => {
+                const e = node.data.extra;
+                if (e + 3 >= extras.len) return false;
+                return (extras[e + 3] & ast_mod.CallFlags.optional_chain) != 0;
+            },
+            else => return false,
+        }
+    }
+
+    /// old_ast에서 member/call 노드의 object/callee를 가져온다.
+    fn getChainObject(self: *const Transformer, node: Node) NodeIndex {
+        const extras = self.old_ast.extra_data.items;
+        const e = node.data.extra;
+        return @enumFromInt(extras[e]);
+    }
+
+    /// 이 노드가 optional chain의 "루트"인지 판단.
+    /// 루트 = (자신 또는 하위 chain에 optional flag가 있음) AND (부모에서 호출되는 시점이므로 부모는 체크 불필요).
+    /// 하위 member/call 체인을 따라가며 optional flag가 하나라도 있으면 true.
+    fn isOptionalChainRoot(self: *const Transformer, node: Node) bool {
+        var current = node;
+        while (true) {
+            if (self.hasOptionalFlag(current)) return true;
+            // chain을 따라 내려가며 확인
+            switch (current.tag) {
+                .static_member_expression, .computed_member_expression, .private_field_expression, .call_expression => {
+                    const obj_idx = self.getChainObject(current);
+                    if (obj_idx.isNone()) return false;
+                    current = self.old_ast.getNode(obj_idx);
+                },
+                else => return false,
+            }
+        }
+    }
+
+    /// `void 0` 노드를 새 AST에 생성.
+    fn makeVoidZero(self: *Transformer, span: Span) Error!NodeIndex {
+        // 0 리터럴
+        const zero_span = try self.new_ast.addString("0");
+        const zero_node = try self.new_ast.addNode(.{
+            .tag = .numeric_literal,
+            .span = zero_span,
+            .data = .{ .none = 0 },
+        });
+        // void 0 — unary_expression (operator=kw_void, operand=0)
+        const void_extra = try self.new_ast.addExtras(&.{
+            @intFromEnum(zero_node),
+            @intFromEnum(token_mod.Kind.kw_void),
+        });
+        return self.new_ast.addNode(.{
+            .tag = .unary_expression,
+            .span = span,
+            .data = .{ .extra = void_extra },
+        });
+    }
+
+    /// `base == null` 노드를 새 AST에 생성.
+    fn makeEqNull(self: *Transformer, base: NodeIndex, span: Span) Error!NodeIndex {
+        const null_span = try self.new_ast.addString("null");
+        const null_node = try self.new_ast.addNode(.{
+            .tag = .null_literal,
+            .span = null_span,
+            .data = .{ .none = 0 },
+        });
+        return self.new_ast.addNode(.{
+            .tag = .binary_expression,
+            .span = span,
+            .data = .{ .binary = .{
+                .left = base,
+                .right = null_node,
+                .flags = @intFromEnum(token_mod.Kind.eq2),
+            } },
+        });
+    }
+
+    /// optional chaining 전체를 다운레벨링한다.
+    ///
+    /// 변환 패턴:
+    ///   `a?.b`       → `a == null ? void 0 : a.b`
+    ///   `a?.[0]`     → `a == null ? void 0 : a[0]`
+    ///   `a?.()`      → `a == null ? void 0 : a()`
+    ///   `a?.b.c`     → `a == null ? void 0 : a.b.c`
+    ///   `foo()?.bar` → `(_a = foo()) == null ? void 0 : _a.bar`
+    ///
+    /// 핵심 알고리즘:
+    ///   1. old_ast 체인을 바깥→안쪽으로 재귀 순회하여 `?.` 지점(optional flag)을 찾는다.
+    ///   2. optional 노드의 object가 "base" (null 체크 대상).
+    ///   3. base가 단순 식별자면 그대로 사용, 아니면 임시 변수(_a)로 캐싱.
+    ///   4. rebuildChainNode로 전체 체인을 새 AST에 빌드 (optional flag 제거 + base 교체).
+    ///   5. `base == null ? void 0 : rebuilt_chain` 삼항 조건식으로 감싼다.
+    fn lowerOptionalChain(self: *Transformer, node: Node) Error!NodeIndex {
+        // Step 1: 체인을 따라 내려가며 가장 바깥 optional flag를 가진 노드의 base를 찾는다.
+        // `a?.b.c`에서: root=`.c`, 안쪽=`?.b`(optional), base=`a`
+        // `a?.b?.c`에서: root=`?.c`(optional이므로 바로 여기서 멈춤), base=`a?.b`
+        //   → base `a?.b`는 visitNode로 방문 시 다시 lowerOptionalChain에 걸림 (재귀적 lowering)
+        const base_idx = self.findChainBase(node);
+
+        // Step 2: base 방문 + 단순 식별자 판단
+        const simple = self.isSimpleIdentifier(base_idx);
+        const visited_base = try self.visitNode(base_idx);
+
+        var null_check_base: NodeIndex = undefined;
+        var chain_base: NodeIndex = undefined;
+
+        if (simple) {
+            null_check_base = visited_base;
+            chain_base = try self.new_ast.addNode(self.new_ast.getNode(visited_base));
+        } else {
+            // 부작용이 있는 식: (_a = foo())를 null 체크, _a를 chain에서 사용
+            const temp_span = try self.makeTempVarSpan();
+            const temp_ref1 = try self.makeTempVarRef(temp_span, node.span);
+            const assign_node = try self.new_ast.addNode(.{
+                .tag = .assignment_expression,
+                .span = node.span,
+                .data = .{ .binary = .{
+                    .left = temp_ref1,
+                    .right = visited_base,
+                    .flags = @intFromEnum(token_mod.Kind.eq),
+                } },
+            });
+            null_check_base = try self.new_ast.addNode(.{
+                .tag = .parenthesized_expression,
+                .span = node.span,
+                .data = .{ .unary = .{ .operand = assign_node, .flags = 0 } },
+            });
+            chain_base = try self.makeTempVarRef(temp_span, node.span);
+        }
+
+        // Step 3: 체인 재빌드 + 삼항식 래핑
+        return self.rebuildOptionalChain(node, null_check_base, chain_base);
+    }
+
+    /// 체인을 따라 내려가서 가장 바깥 optional flag가 있는 노드의 object(base)를 반환.
+    fn findChainBase(self: *const Transformer, node: Node) NodeIndex {
+        var current = node;
+        while (true) {
+            if (self.hasOptionalFlag(current)) {
+                return self.getChainObject(current);
+            }
+            switch (current.tag) {
+                .static_member_expression, .computed_member_expression, .private_field_expression, .call_expression => {
+                    const obj_idx = self.getChainObject(current);
+                    if (obj_idx.isNone()) return obj_idx;
+                    current = self.old_ast.getNode(obj_idx);
+                },
+                else => return NodeIndex.none,
+            }
+        }
+    }
+
+    /// optional chain을 재귀적으로 재빌드한다.
+    /// old_ast의 노드를 방문하면서 새 AST에 복사하되:
+    ///   - optional flag가 있는 노드에서 object를 chain_base로 교체
+    ///   - optional flag를 제거
+    ///   - 그 외 노드는 정상 방문
+    /// 최종적으로 `null_check_base == null ? void 0 : rebuilt_chain` 삼항식을 반환.
+    fn rebuildOptionalChain(self: *Transformer, root: Node, null_check_base: NodeIndex, chain_base: NodeIndex) Error!NodeIndex {
+        // chain을 재빌드: root 노드부터 시작, optional 노드까지 재귀
+        const rebuilt_chain = try self.rebuildChainNode(root, chain_base);
+
+        // base == null
+        const eq_null = try self.makeEqNull(null_check_base, root.span);
+
+        // void 0
+        const void_zero = try self.makeVoidZero(root.span);
+
+        // base == null ? void 0 : rebuilt_chain
+        return self.new_ast.addNode(.{
+            .tag = .conditional_expression,
+            .span = root.span,
+            .data = .{ .ternary = .{
+                .a = eq_null,
+                .b = void_zero,
+                .c = rebuilt_chain,
+            } },
+        });
+    }
+
+    /// old_ast chain 노드를 새 AST에 재빌드한다.
+    /// optional flag가 있는 노드에서 object를 chain_base로 교체하고 flag를 제거.
+    /// 비-optional 노드는 object를 재귀적으로 rebuildChainNode로 처리.
+    fn rebuildChainNode(self: *Transformer, old_node: Node, chain_base: NodeIndex) Error!NodeIndex {
+        const extras = self.old_ast.extra_data.items;
+        switch (old_node.tag) {
+            .static_member_expression, .computed_member_expression, .private_field_expression => {
+                const e = old_node.data.extra;
+                if (e + 2 >= extras.len) return NodeIndex.none;
+                const old_obj: NodeIndex = @enumFromInt(extras[e]);
+                const old_prop: NodeIndex = @enumFromInt(extras[e + 1]);
+                const flags = extras[e + 2];
+                const is_optional = (flags & ast_mod.MemberFlags.optional_chain) != 0;
+
+                // object를 재빌드: optional이면 chain_base 사용, 아니면 재귀
+                const new_obj = if (is_optional)
+                    chain_base
+                else
+                    try self.rebuildChainNode(self.old_ast.getNode(old_obj), chain_base);
+
+                // property 방문 (computed는 임의 expression, static/private는 식별자 리프)
+                const new_prop = try self.visitNode(old_prop);
+
+                // optional flag를 제거
+                const new_flags = flags & ~ast_mod.MemberFlags.optional_chain;
+                const new_extra = try self.new_ast.addExtras(&.{
+                    @intFromEnum(new_obj), @intFromEnum(new_prop), new_flags,
+                });
+                return self.new_ast.addNode(.{
+                    .tag = old_node.tag,
+                    .span = old_node.span,
+                    .data = .{ .extra = new_extra },
+                });
+            },
+            .call_expression => {
+                const e = old_node.data.extra;
+                if (e + 3 >= extras.len) return NodeIndex.none;
+                const old_callee: NodeIndex = @enumFromInt(extras[e]);
+                const args_start = extras[e + 1];
+                const args_len = extras[e + 2];
+                const flags = extras[e + 3];
+                const is_optional = (flags & ast_mod.CallFlags.optional_chain) != 0;
+
+                // callee를 재빌드: optional이면 chain_base 사용, 아니면 재귀
+                const new_callee = if (is_optional)
+                    chain_base
+                else
+                    try self.rebuildChainNode(self.old_ast.getNode(old_callee), chain_base);
+
+                // args는 정상 방문
+                const new_args = try self.visitExtraList(args_start, args_len);
+
+                // optional flag를 제거
+                const new_flags = flags & ~ast_mod.CallFlags.optional_chain;
+                const new_extra = try self.new_ast.addExtras(&.{
+                    @intFromEnum(new_callee), new_args.start, new_args.len, new_flags,
+                });
+                return self.new_ast.addNode(.{
+                    .tag = .call_expression,
+                    .span = old_node.span,
+                    .data = .{ .extra = new_extra },
+                });
+            },
+            else => {
+                // chain이 아닌 노드 — 이론상 여기에 오면 안 됨
+                // (isOptionalChainRoot가 member/call chain만 허용하므로)
+                return NodeIndex.none;
+            },
+        }
+    }
+
     /// ES 다운레벨링: `a ?? b` → `a != null ? a : b`
     /// a가 단순 식별자면 임시 변수 불필요.
-    /// a가 부작용이 있으면 임시 변수 사용: `(_a = foo()) != null ? _a : b`
+    /// a가 부작용이 있으면 임시 변수 사용: `(_a = foo()) != null ? _a : bar`
     /// (esbuild 호환: `!= null`은 null과 undefined 모두 체크)
     fn lowerNullishCoalescing(self: *Transformer, node: Node) Error!NodeIndex {
         const old_left_idx = node.data.binary.left;
