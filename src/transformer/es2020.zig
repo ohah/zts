@@ -3,6 +3,16 @@
 //! --target < es2020 일 때 활성화.
 //! ?? → a != null ? a : b
 //! ?. → a == null ? void 0 : a.b
+//!
+//! 스펙:
+//! - ?? : https://tc39.es/ecma262/#sec-nullish-coalescing-operator (ES2020, TC39 Stage 4: 2020-01)
+//!         https://github.com/tc39/proposal-nullish-coalescing
+//! - ?. : https://tc39.es/ecma262/#sec-optional-chains (ES2020, TC39 Stage 4: 2020-01)
+//!         https://github.com/tc39/proposal-optional-chaining
+//!
+//! 참고:
+//! - esbuild: internal/js_parser/js_parser_lower.go (lowerNullishCoalescing, lowerOptionalChain)
+//! - oxc: crates/oxc_transformer/src/es2020/
 
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
