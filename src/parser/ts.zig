@@ -1178,7 +1178,36 @@ fn tryParseFunctionTypeWithBacktracking(self: *Parser, start: u32) ParseError2!?
     }
 
     // 함수 타입 파라미터 패턴 (identifier:, identifier?, this:, [...], {...})
-    if (isFunctionTypeParam(self)) {
+    // identifier:/identifier? 와 this:/this? 는 모호성 없이 함수 타입 파라미터 확정.
+    // [...] 과 {...} 는 괄호 타입 내부의 튜플/오브젝트 타입일 수도 있으므로
+    // backtracking으로 시도해야 한다.
+    // 예: ({y: z}) — 괄호로 감싼 오브젝트 타입 (함수 파라미터가 아님)
+    //     ({y}: T) => R — destructuring 함수 파라미터
+    if (self.current() == .l_bracket or self.current() == .l_curly) {
+        // 모호한 경우: backtracking으로 함수 타입 시도.
+        // parseFunctionTypeParams 내부의 expect(.arrow)가 에러를 추가하고 계속
+        // 진행하므로, 에러 카운트로 성공/실패를 판단한다.
+        const inner_saved = self.saveState();
+        const inner_nodes = self.ast.nodes.items.len;
+        const inner_extras = self.ast.extra_data.items.len;
+        const inner_errors = self.errors.items.len;
+        const result = try parseFunctionTypeParams(self, start);
+        if (self.errors.items.len > inner_errors) {
+            // 에러 발생 — 함수 타입이 아님, 복원하여 괄호 타입으로 폴백
+            self.ast.nodes.items.len = inner_nodes;
+            self.ast.extra_data.items.len = inner_extras;
+            self.errors.shrinkRetainingCapacity(inner_errors);
+            self.restoreState(inner_saved);
+            // 외부 saved로도 복원
+            self.ast.nodes.items.len = nodes_before;
+            self.ast.extra_data.items.len = extras_before;
+            self.errors.shrinkRetainingCapacity(errors_before);
+            self.restoreState(saved);
+            return null;
+        }
+        return result;
+    } else if (isFunctionTypeParam(self)) {
+        // identifier:/identifier? 또는 this:/this? — 모호성 없음, 함수 타입 확정
         const result = try parseFunctionTypeParams(self, start);
         return result;
     }

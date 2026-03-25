@@ -788,12 +788,19 @@ fn validateForInOfDeclaration(self: *Parser, init_expr: NodeIndex) ParseError2!v
     // BindingPattern (array/object destructuring)은 Annex B에서도 항상 금지
     const is_var = kind_flags == 0;
     const is_for_in = self.current() == .kw_in;
-    if (is_for_in and is_var and !self.is_strict_mode) {
-        // BindingIdentifier인지 확인 — destructuring이면 허용 불가
-        const binding_name: NodeIndex = @enumFromInt(extras[decl_node.data.extra]);
-        if (!binding_name.isNone()) {
-            const binding_node = self.ast.getNode(binding_name);
-            if (binding_node.tag == .binding_identifier) return; // Annex B.3.5 허용
+    if (is_for_in and is_var) {
+        // TS 모드에서는 for-in var initializer를 허용 (esbuild 호환).
+        // TS에서 `for (var x = Array<number> in y)` 같은 패턴에서 타입 인자가
+        // 스트리핑되어 initializer가 남을 수 있다. codegen에서 hoisting 처리.
+        if (self.is_ts) return;
+
+        if (!self.is_strict_mode) {
+            // BindingIdentifier인지 확인 — destructuring이면 허용 불가
+            const binding_name: NodeIndex = @enumFromInt(extras[decl_node.data.extra]);
+            if (!binding_name.isNone()) {
+                const binding_node = self.ast.getNode(binding_name);
+                if (binding_node.tag == .binding_identifier) return; // Annex B.3.5 허용
+            }
         }
     }
     try self.addError(decl_node.span, "For-in/for-of loop variable declaration may not have an initializer");
