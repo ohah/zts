@@ -971,6 +971,18 @@ fn parseTypeReference(self: *Parser) ParseError2!NodeIndex {
 }
 
 pub fn parseTypeArguments(self: *Parser) ParseError2!NodeIndex {
+    return parseTypeArgumentsImpl(self, false);
+}
+
+/// 식 컨텍스트에서의 타입 인자 파싱 (speculative).
+/// 최외곽 닫는 `>`가 정확히 `.r_angle`일 때만 성공한다.
+/// `>=`, `>>` 등 복합 토큰이면 실패(에러)로 처리되어 backtrack된다.
+/// esbuild의 isParseTypeArgumentsInExpression 플래그에 대응.
+pub fn parseTypeArgumentsInExpression(self: *Parser) ParseError2!NodeIndex {
+    return parseTypeArgumentsImpl(self, true);
+}
+
+fn parseTypeArgumentsImpl(self: *Parser, strict_close: bool) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     try self.expectOpeningAngleBracket();
 
@@ -983,7 +995,17 @@ pub fn parseTypeArguments(self: *Parser) ParseError2!NodeIndex {
 
         if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
-    try self.expectClosingAngleBracket();
+
+    // strict_close: 식 컨텍스트에서는 정확히 `>` 토큰만 허용.
+    // `>=`나 `>>`는 비교/시프트 연산자이므로 타입 인자가 아니다.
+    // 내부 중첩 타입 인자(예: Array<Array<number>>)는 내부 parseType에서
+    // 일반 expectClosingAngleBracket으로 `>>`를 분할 처리하므로, 여기서
+    // 최외곽만 strict로 검사하면 된다.
+    if (strict_close) {
+        try self.expect(.r_angle);
+    } else {
+        try self.expectClosingAngleBracket();
+    }
 
     const types = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);

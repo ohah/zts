@@ -134,6 +134,10 @@ pub const Parser = struct {
     in_class_field: bool = false,
     /// extends 있는 class인지 (super() 허용 판단)
     has_super_class: bool = false,
+    /// class가 위치한 외부 스코프의 async 컨텍스트.
+    /// 파라미터 데코레이터는 메서드가 아닌 클래스의 외부 스코프에서 평가되므로,
+    /// @dec(await x)에서 await이 유효한지 판단할 때 이 값을 사용한다.
+    class_scope_async: bool = false,
     /// super() 호출 허용 여부 (constructor + extends)
     allow_super_call: bool = false,
     /// super.x / super[x] 허용 여부
@@ -1862,6 +1866,12 @@ pub const Parser = struct {
 
     pub fn parseTypeArguments(self: *Parser) ParseError2!NodeIndex {
         return ts.parseTypeArguments(self);
+    }
+
+    /// 식 컨텍스트에서의 타입 인자 파싱 (speculative).
+    /// 최외곽 닫는 `>`가 정확히 `.r_angle`일 때만 성공한다.
+    pub fn parseTypeArgumentsInExpression(self: *Parser) ParseError2!NodeIndex {
+        return ts.parseTypeArgumentsInExpression(self);
     }
 
     // ================================================================

@@ -426,7 +426,10 @@ fn parseClassBody(self: *Parser) ParseError2!NodeIndex {
 
     // class body 안에서는 in_class=true (super 허용 등)
     const saved_in_class = self.in_class;
+    const saved_class_scope_async = self.class_scope_async;
     self.in_class = true;
+    // 클래스 외부 스코프의 async 컨텍스트를 저장 (파라미터 데코레이터에서 사용)
+    self.class_scope_async = self.ctx.in_async;
 
     const scratch_top = self.saveScratch();
     while (self.current() != .r_curly and self.current() != .eof) {
@@ -443,6 +446,7 @@ fn parseClassBody(self: *Parser) ParseError2!NodeIndex {
     }
 
     self.in_class = saved_in_class;
+    self.class_scope_async = saved_class_scope_async;
 
     const end = self.currentSpan().end;
     try self.expect(.r_curly);

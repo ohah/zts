@@ -741,6 +741,8 @@ pub const Transformer = struct {
         if (node.data.binary.flags == 1) return .none;
         const new_name = try self.visitNode(node.data.binary.left);
         const new_body = try self.visitNode(node.data.binary.right);
+        // 내부가 타입만 있어 전부 스트리핑된 namespace → 런타임 코드 불필요
+        if (new_body.isNone()) return .none;
         // 빈 namespace는 런타임 코드 불필요 → strip (esbuild 호환)
         if (!new_body.isNone()) {
             const body_node = self.new_ast.getNode(new_body);
