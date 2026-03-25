@@ -1975,11 +1975,7 @@ pub const Codegen = struct {
             try self.write("\";");
         }
 
-        try self.write("})(");
-        try self.write(name_text);
-        try self.write(" || (");
-        try self.write(name_text);
-        try self.write(" = {}));");
+        try self.emitIIFEClosing(name_text);
     }
 
     // ================================================================
@@ -2009,11 +2005,7 @@ pub const Codegen = struct {
             try self.write(") => {");
             // 내부 namespace를 재귀 출력
             try self.emitNamespaceIIFE(body_node);
-            try self.write("})(");
-            try self.write(name_text);
-            try self.write(" || (");
-            try self.write(name_text);
-            try self.write(" = {}));");
+            try self.emitIIFEClosing(name_text);
             return;
         }
 
@@ -2062,6 +2054,11 @@ pub const Codegen = struct {
             }
         }
 
+        try self.emitIIFEClosing(name_text);
+    }
+
+    /// enum/namespace IIFE 닫는 부분: })(name || (name = {}));
+    fn emitIIFEClosing(self: *Codegen, name_text: []const u8) !void {
         try self.write("})(");
         try self.write(name_text);
         try self.write(" || (");
