@@ -3505,3 +3505,35 @@ test "ES2021: ||= no transform on es2021" {
     defer r.deinit();
     try std.testing.expectEqualStrings("a||=b;", r.output);
 }
+
+// --- ** (exponentiation) ---
+
+test "ES2016: ** to Math.pow" {
+    var r = try e2eTarget(std.testing.allocator, "const x = a ** b;", .es2015);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const x=Math.pow(a,b);", r.output);
+}
+
+test "ES2016: **= to Math.pow assignment" {
+    var r = try e2eTarget(std.testing.allocator, "a **= b;", .es2015);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("a=Math.pow(a,b);", r.output);
+}
+
+test "ES2016: ** no transform on es2016" {
+    var r = try e2eTarget(std.testing.allocator, "const x = a ** b;", .es2016);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const x=a**b;", r.output);
+}
+
+test "ES2016: ** no transform on esnext" {
+    var r = try e2eTarget(std.testing.allocator, "const x = a ** b;", .esnext);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const x=a**b;", r.output);
+}
+
+test "ES2016: **= no transform on es2016" {
+    var r = try e2eTarget(std.testing.allocator, "a **= b;", .es2016);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("a**=b;", r.output);
+}
