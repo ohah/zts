@@ -575,6 +575,14 @@ pub const SemanticAnalyzer = struct {
         const existing_flags = existing.declFlags();
         const new_flags = new.declFlags();
 
+        // TS function overload: module scope에서 function + function 항상 허용
+        // (generator, async function 포함. TS에서 같은 이름의 함수를 여러 번 선언 = overload)
+        // excludes 체크보다 먼저 해야 block_scoped generator/async가 걸리지 않음
+        if (self.is_module and existing.isFunctionLike() and new.isFunctionLike() and !target_scope.isNone()) {
+            const scope = self.scopes.items[target_scope.toIndex()];
+            if (scope.kind == .module) return true;
+        }
+
         // 기본 규칙: 비트플래그 excludes로 충돌 판단
         // existing의 flags가 new의 excludes와 겹치면 재선언 불가
         if (existing_flags.intersects(new_flags.excludes())) {
@@ -607,8 +615,7 @@ pub const SemanticAnalyzer = struct {
         if (self.is_module and !target_scope.isNone()) {
             const scope = self.scopes.items[target_scope.toIndex()];
             if (scope.kind == .module) {
-                // module top-level: function은 lexical → 같은 이름 재선언 불가
-                if (existing.isFunctionLike() and new.isFunctionLike()) return false;
+                // function + function은 위에서 이미 허용 (TS overload)
                 if (existing.isFunctionLike() and new == .variable_var) return false;
                 if (existing == .variable_var and new.isFunctionLike()) return false;
             }
