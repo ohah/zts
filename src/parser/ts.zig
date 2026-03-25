@@ -291,12 +291,14 @@ pub fn parseTsDeclareStatement(self: *Parser) ParseError2!NodeIndex {
         _ = try parseNamespaceBlock(self);
         return NodeIndex.none;
     }
-    // declare 뒤의 선언은 ambient context — 런타임 코드 없음 (완전 제거)
-    // 파싱은 완료하되 (구문 검증) 결과는 버린다
+    // declare 뒤의 선언은 ambient context — 런타임 코드 없음
     const saved = self.ctx;
     self.ctx.in_ambient = true;
-    _ = try self.parseStatement();
+    const stmt = try self.parseStatement();
     self.ctx = saved;
+    // namespace 내부의 declare는 이름을 보존해야 함 (export declare const L1)
+    // → codegen이 ns.L1 참조 치환에 사용. 본체는 출력하지 않되 이름만 ns_export_map에 등록.
+    if (self.in_namespace) return stmt;
     return NodeIndex.none;
 }
 
