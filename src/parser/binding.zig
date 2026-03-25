@@ -16,6 +16,13 @@ const Parser = @import("parser.zig").Parser;
 const ParseError2 = @import("parser.zig").ParseError2;
 
 pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
+    // TS parameter decorator: @dec x, @dec(() => 0) x
+    // 데코레이터는 TS에서 스트리핑되므로 파싱 후 무시한다.
+    // esbuild: `declare class Foo { foo(@dec(() => 0) x) }` 지원
+    while (self.current() == .at) {
+        _ = try self.parseDecorator();
+    }
+
     // TS parameter property: public x, private x, protected x, readonly x, override x
     // flags 비트: 0x01=public, 0x02=private, 0x04=protected, 0x08=readonly, 0x10=override
     // readonly와 override는 contextual keyword (identifier로 토큰화됨)

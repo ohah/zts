@@ -200,7 +200,7 @@ Arena allocator ─────────┬──→ 번들러 (파일별 are
 ```
 
 #### 추천 구현 순서
-1. ✅ **Test262 마무리 + regexp validator** — 23,384건 100% 통과 (실패 0건)
+1. ✅ **Test262 마무리 + regexp validator** — 50,504건 100% 통과 (language+built-ins+annexB+staging+intl402 전체)
 2. ✅ **Arena allocator 설계 + 도입** — 1~3단계 완료
    - ✅ 1단계: transpileFile에서 파일당 Arena 1개 생성, 모든 모듈(Scanner/Parser/Semantic/Transformer/Codegen)에 전달
    - ✅ 2~3단계: Phase별 Arena 분리 불필요 — Scanner의 comments/line_offsets를 Codegen이 참조하므로 파일당 Arena 1개가 최적
@@ -689,6 +689,8 @@ zts --bundle <entry.ts> --splitting --outdir dist  # 코드 스플리팅
 --drop=debugger                  debugger 문 제거
 --define:KEY=VALUE               글로벌 치환 (예: --define:DEBUG=false)
 --external <pkg>                 패키지를 번들에서 제외 (반복 가능)
+--experimental-decorators        legacy decorator 변환 (tsconfig compilerOptions 지원)
+--use-define-for-class-fields=false  class field → constructor this.x = v 변환
 -w, --watch                      파일 변경 감시
 -p, --project <path>             tsconfig.json 경로
 ```
@@ -812,6 +814,10 @@ main ← feature/lexer-token-enum
 13. ✅ decorator 지원 (class에 연결 + 출력) — PR #47
 14. ✅ --drop console/debugger + define 글로벌 치환 — PR #48
 15. ✅ import.meta CJS 변환 (D021) — PR #49
+16. ✅ abstract 멤버 + declare 필드 스트리핑 — PR #358
+17. ✅ useDefineForClassFields=false (assign semantics) — PR #360
+18. ✅ experimentalDecorators (legacy decorator → __decorateClass) — PR #360
+19. ✅ 적합성 파싱 에러 수정 (import attributes, named construct, 제네릭 메서드, as assignment, override param, class index signature, arrow return type, parameter decorator, postfix !) — PR #347-#362
 
 ### 코드젠 + CLI 구현 순서 (PR 단위) — Phase 4 ✅ 완료
 1. ✅ Phase 4 의사결정 (D044-D046) — PR #50
