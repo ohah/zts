@@ -23,6 +23,7 @@ const NodeList = ast_mod.NodeList;
 const Ast = ast_mod.Ast;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
+const es2016 = @import("es2016.zig");
 const es2020 = @import("es2020.zig");
 const es2021 = @import("es2021.zig");
 const es_helpers = @import("es_helpers.zig");
@@ -70,6 +71,10 @@ pub const TransformOptions = struct {
         es2024,
         esnext,
 
+        /// 해당 타겟에서 exponentiation operator (**) 변환이 필요한지
+        pub fn needsExponentiation(self: Target) bool {
+            return @intFromEnum(self) < @intFromEnum(Target.es2016);
+        }
         /// 해당 타겟에서 nullish coalescing (??) 변환이 필요한지
         pub fn needsNullishCoalescing(self: Target) bool {
             return @intFromEnum(self) < @intFromEnum(Target.es2020);
@@ -328,6 +333,13 @@ pub const Transformer = struct {
             .binary_expression,
             .logical_expression,
             => {
+                // ES 다운레벨링: ** → Math.pow (target < es2016)
+                if (self.options.target.needsExponentiation() and node.tag == .binary_expression) {
+                    const op: token_mod.Kind = @enumFromInt(node.data.binary.flags);
+                    if (op == .star2) {
+                        return es2016.ES2016(Transformer).lowerExponentiation(self, node);
+                    }
+                }
                 // ES 다운레벨링: ?? → ternary
                 if (self.options.target.needsNullishCoalescing() and node.tag == .logical_expression) {
                     const op: token_mod.Kind = @enumFromInt(node.data.binary.flags);
@@ -338,6 +350,13 @@ pub const Transformer = struct {
                 return self.visitBinaryNode(node);
             },
             .assignment_expression => {
+                // ES 다운레벨링: **= → a = Math.pow(a, b) (es2016)
+                if (self.options.target.needsExponentiation()) {
+                    const op: token_mod.Kind = @enumFromInt(node.data.binary.flags);
+                    if (op == .star2_eq) {
+                        return es2016.ES2016(Transformer).lowerExponentiationAssignment(self, node);
+                    }
+                }
                 // ES 다운레벨링: ??=, ||=, &&= (es2021)
                 if (self.options.target.needsLogicalAssignment()) {
                     const op: token_mod.Kind = @enumFromInt(node.data.binary.flags);
