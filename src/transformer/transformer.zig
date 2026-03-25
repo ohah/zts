@@ -1224,7 +1224,12 @@ pub const Transformer = struct {
             return;
         }
 
-        // static field 또는 use_define=true: 그대로 방문
+        // useDefineForClassFields=false + static + 초기값 없음 → 제거 (타입 선언만)
+        if (!self.options.use_define_for_class_fields and is_static and self.readNodeIdx(me, 1).isNone()) {
+            return;
+        }
+
+        // 그 외: 그대로 방문
         const new_member = try self.visitNode(@enumFromInt(raw_idx));
         if (!new_member.isNone()) {
             try class_members.append(self.allocator, new_member);
