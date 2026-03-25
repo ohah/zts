@@ -313,38 +313,38 @@ Phase B1: 기반 (✅ 완료)          Phase B2: 핵심 (✅ 대부분 완료) P
 ✅ 모듈 해석 (Node/TS)            ✅ CJS interop (입력)        플러그인 시스템
   ├ node_modules 탐색              ├ require() 감지/래핑        ├ resolve/load/transform 훅
   ├ package.json exports           ├ __commonJS/__toESM         ├ renderChunk/generateBundle 훅
-  ├ tsconfig paths/baseUrl         └ ExportsKind 승격           ├ Rollup 플러그인 호환
-  └ 조건부 exports                                              └ Vite 플러그인 호환
-✅ package.json browser 필드      ✅ Top-level await           CLI 옵션 확장 (플러그인 기반)
-  └ disabled 파일 → 빈 모듈                                     ├ --alias (resolve 훅)
-✅ Node 빌트인 빈 모듈 대체                                      ├ --inject (load 훅)
-  └ --platform=browser 시                                        ├ --loader (load+transform 훅)
-    (disabled) CJS wrapper                                       ├ --banner/--footer (renderChunk)
-                                                                 ├ --target (transform 훅)
-                                                                 ├ --jsx, --jsx-factory (transform)
-                                                                 ├ --global-name (IIFE output)
-                                                                 ├ --metafile (generateBundle)
-                                                                 ├ --entry-names/--chunk-names
-                                                                 ├ --resolve-extensions
-                                                                 ├ --main-fields, --conditions
-                                                                 └ --log-level
-  └ 조건부 exports                ✅ Top-level await           React Native 지원
-✅ 모듈 그래프                     ├ semantic analyzer 감지     ├ Metro 호환 해석
-  ├ 정적 import/export              ├ 전이적 전파               ├ 플랫폼 확장자 (.ios/.android)
-  ├ 순환 참조 감지                  └ 비-ESM 경고               ├ polyfill 주입
-  └ 동적 import                   ✅ Code splitting             └ Hermes 타겟 최적화
-✅ 단일 파일 번들 생성              ├ BitSet 도달 가능성        CSS 번들링
-  └ 진입점 → 단일 출력               ├ 공통 청크 자동 추출       ├ 별도 파서
-✅ 스코프 호이스팅                  ├ 멀티 파일 emitter         └ CSS modules
-  ├ 변수 이름 충돌 해결              └ CLI --splitting
-  ├ ESM 실행 순서 보장             개발 서버 + HMR
-  └ CJS 호환 래핑                   ├ ✅ HTTP + WS + Live Reload
-✅ Tree-shaking (모듈 수준)         ├ ✅ 모듈 그래프 파일 감시
-  ├ export 사용 추적                 ├ ✅ 에러 오버레이 + 소스맵
-  ├ @__PURE__ / @__NO_SIDE_EFFECTS__├ ✅ import.meta.hot + Fast Refresh
-  ├ sideEffects 필드                 └ ✅ CSS 핫 리로드
-  ├ sideEffects 필드
-  └ cross-module 전파
+  ├ tsconfig paths/baseUrl         └ ExportsKind 승격           ├ Plugin Context API (emitFile 등)
+  └ 조건부 exports                                              ├ Rollup 플러그인 호환
+✅ package.json browser 필드      ✅ Top-level await            └ Vite 플러그인 호환 (후순위)
+  └ disabled 파일 → 빈 모듈       ✅ Code splitting            로더 시스템 (esbuild/Rolldown 호환)
+✅ Node 빌트인 빈 모듈 대체         ├ BitSet 도달 가능성        ├ JSON (named export 지원)
+  └ --platform=browser 시           ├ 공통 청크 자동 추출       ├ Text / Base64 / DataURL
+    (disabled) CJS wrapper          ├ 멀티 파일 emitter         ├ Binary (Uint8Array)
+✅ 모듈 그래프                       └ CLI --splitting          ├ File/Asset (해시 파일명)
+  ├ 정적 import/export             개발 서버 + HMR              ├ Copy / Empty
+  ├ 순환 참조 감지                  ├ ✅ HTTP + WS + Live Reload └ CLI: --loader:.ext=type
+  └ 동적 import                    ├ ✅ 모듈 그래프 파일 감시  특수 기능
+✅ 단일 파일 번들 생성              ├ ✅ 에러 오버레이 + 소스맵  ├ import.meta.glob (Vite 호환)
+  └ 진입점 → 단일 출력             ├ ✅ import.meta.hot + FR    ├ Dynamic import variables
+✅ 스코프 호이스팅                  └ ✅ CSS 핫 리로드           ├ Web Worker 번들링
+  ├ 변수 이름 충돌 해결                                          └ Virtual modules (\0 prefix)
+  ├ ESM 실행 순서 보장                                          CLI 옵션 확장
+  └ CJS 호환 래핑                                                ├ --banner/--footer
+✅ Tree-shaking (모듈 수준)                                      ├ --analyze (번들 사이즈)
+  ├ export 사용 추적                                             ├ --minify-{whitespace|ids|syntax}
+  ├ @__PURE__ / @__NO_SIDE_EFFECTS__                             ├ --pure:Name
+  ├ sideEffects 필드                                             ├ --log-level
+  └ cross-module 전파                                            ├ --legal-comments
+                                                                 ├ --inject:file
+                                                                 └ --target (엔진 버전)
+                                                                React Native 지원
+                                                                 ├ Metro 호환 해석
+                                                                 ├ 플랫폼 확장자 (.ios/.android)
+                                                                 ├ polyfill 주입
+                                                                 └ Hermes 타겟 최적화
+                                                                CSS 번들링
+                                                                 ├ 별도 파서
+                                                                 └ CSS modules
 ```
 
 ##### React Native 지원 (Rollipop/bungae 방식 — Metro 레거시 불필요)
@@ -523,6 +523,233 @@ const Module = struct {
 - 공통 모듈 추출: 여러 진입점이 공유하는 모듈 → 별도 청크
 - 순환 참조: 같은 청크로 묶기
 - 런타임 로더: 청크를 동적 로드하는 코드 생성 (ESM 기반)
+
+##### 플러그인 시스템 설계 (Rollup/Vite 호환)
+
+**설계 원칙:**
+- Rollup 플러그인 API 호환 (resolveId, load, transform, renderChunk, generateBundle)
+- Vite 플러그인 확장 지원 (config, configureServer, hotUpdate 등은 후순위)
+- N-API 바인딩을 통해 JS 플러그인 실행 (Phase 6)
+- Builtin 플러그인은 Zig로 구현하여 최고 성능
+
+**Build Hooks (빌드 단계):**
+```
+┌──────────────┬─────────────────────────────────────────┬──────────┐
+│ 훅           │ 용도                                     │ 우선순위  │
+├──────────────┼─────────────────────────────────────────┼──────────┤
+│ buildStart   │ 빌드 시작 시점 (캐시 초기화 등)           │ 필수      │
+│ resolveId    │ 모듈 경로 해석 커스텀 (alias, virtual)    │ 필수      │
+│ load         │ 모듈 내용 로딩 (virtual module, 로더)     │ 필수      │
+│ transform    │ 코드 변환 (Babel, PostCSS 등)            │ 필수      │
+│ moduleParsed │ 모듈 파싱 완료 알림 (moduleInfo)          │ 중간      │
+│ buildEnd     │ 빌드 종료 시점                           │ 필수      │
+│ watchChange  │ watch 모드에서 파일 변경 감지             │ 중간      │
+│ onLog        │ 로그/경고 필터링 및 조작                  │ 낮음      │
+└──────────────┴─────────────────────────────────────────┴──────────┘
+```
+
+**Output Hooks (출력 단계):**
+```
+┌──────────────────┬──────────────────────────────────────┬──────────┐
+│ 훅               │ 용도                                  │ 우선순위  │
+├──────────────────┼──────────────────────────────────────┼──────────┤
+│ renderStart      │ 출력 생성 시작                        │ 필수      │
+│ renderChunk      │ 청크 코드 후처리 (banner/footer 등)    │ 필수      │
+│ generateBundle   │ 번들 생성 완료 (에셋 추가/수정)        │ 필수      │
+│ writeBundle      │ 디스크 쓰기 완료 후 콜백               │ 중간      │
+│ augmentChunkHash │ 청크 해시에 추가 정보                  │ 낮음      │
+│ closeBundle      │ 번들 완전 종료                        │ 낮음      │
+└──────────────────┴──────────────────────────────────────┴──────────┘
+```
+
+**Plugin Context API (플러그인 내부에서 사용 가능한 API):**
+```
+this.emitFile({ type, name, source })  — 에셋/청크 동적 생성
+this.getFileName(referenceId)          — emitFile로 만든 파일 이름 조회
+this.resolve(source, importer)         — 다른 플러그인의 resolveId 호출
+this.parse(code)                       — AST 파싱
+this.warn(message) / this.error(msg)   — 진단 메시지
+this.addWatchFile(path)                — watch 대상 추가
+this.getModuleInfo(id)                 — 모듈 메타데이터 조회
+```
+
+**파이프라인 훅 삽입 지점 (코드베이스 분석 완료):**
+
+현재 번들러 파이프라인과 각 훅이 삽입될 구체적 위치:
+```
+파일 읽기
+  ↓
+resolver.resolve()          ← [resolveId 훅] resolver.zig:69, resolve() 시작
+  ↓
+graph.parseModule()         ← [load 훅] graph.zig:238, readFileAlloc() 직전
+  ↓
+Transformer.transform()     AST-to-AST 변환 (TS 스트리핑, define 치환)
+  ↓
+Codegen.generate()          AST → JS 문자열
+  ↓                         ← [transform 훅] emitter.zig:1148, codegen 직후
+CJS 래핑 등
+  ↓                         ← [renderChunk 훅] emitter.zig:700, 청크 완성 후
+최종 출력                    ← [generateBundle 훅] bundler.zig:273, 번들 완료 시점
+```
+
+**수정 대상 파일:**
+```
+┌──────────────────────┬───────────────────────────────────────┬──────────┐
+│ 파일                  │ 변경 내용                              │ 난이도    │
+├──────────────────────┼───────────────────────────────────────┼──────────┤
+│ bundler.zig          │ BundleOptions에 plugins 배열 추가 + 전파│ 쉬움     │
+│ resolver.zig:69      │ resolve() 시작에 resolveId 훅 호출     │ 쉬움     │
+│ graph.zig:238        │ parseModule()에 load 훅 호출           │ 중간     │
+│ emitter.zig:1148     │ codegen 후 transform 훅 호출           │ 쉬움     │
+│ emitter.zig:700      │ 청크 완성 후 renderChunk 훅 호출       │ 중간     │
+└──────────────────────┴───────────────────────────────────────┴──────────┘
+```
+
+**구현 전략 — 2단계 접근:**
+
+1단계: Zig Builtin 플러그인 (N-API 불필요, 즉시 가능)
+- 플러그인 인터페이스를 Zig 함수 포인터로 정의
+- JSON/Text/Asset 로더를 Zig builtin 플러그인으로 구현 (최고 성능)
+- resolveId 훅으로 alias, virtual module 지원
+- 파이프라인 단방향 구조(resolver → graph → emitter)라 훅 삽입 용이
+
+2단계: JS 플러그인 위임 (N-API 필요)
+- N-API C ABI로 Zig ↔ Node.js 바인딩
+- "문자열 in, 문자열 out" — Zig와 JS가 AST를 공유하지 않음, 소스 코드 문자열만 주고받음
+- Zig → N-API → JS(Babel/PostCSS) → N-API → Zig 왕복
+- 성능 트레이드오프: 가능하면 Zig builtin 우선, 안 되는 것만 JS 플러그인으로 위임
+
+**플러그인 인터페이스 예시:**
+```zig
+pub const Plugin = struct {
+    name: []const u8,
+    resolveId: ?*const fn (specifier: []const u8, importer: ?[]const u8, allocator: Allocator) !?ResolveResult = null,
+    load: ?*const fn (path: []const u8, allocator: Allocator) !?[]const u8 = null,
+    transform: ?*const fn (code: []const u8, id: []const u8, allocator: Allocator) !?[]const u8 = null,
+    renderChunk: ?*const fn (code: []const u8, chunk_name: []const u8, allocator: Allocator) !?[]const u8 = null,
+    generateBundle: ?*const fn (output_files: []const OutputFile) void = null,
+};
+```
+
+**훅 실행 순서 (다중 플러그인):**
+- resolveId/load: 첫 번째 non-null 반환 플러그인이 승리 (Rollup first 모드)
+- transform/renderChunk: 순차 체이닝 — 이전 플러그인 출력이 다음 플러그인 입력
+- generateBundle: 모두 실행 (Rollup parallel 모드)
+
+**Builtin 플러그인 (Zig 구현):**
+```
+┌────────────────────────┬───────────────────────────────────────┐
+│ 플러그인               │ 기능                                   │
+├────────────────────────┼───────────────────────────────────────┤
+│ json                   │ JSON → export default + named exports  │
+│ asset                  │ 이미지/폰트 → 해시 파일명 + URL export │
+│ text                   │ 텍스트 파일 → 문자열 export            │
+│ glob-import            │ import.meta.glob(...) 처리             │
+│ dynamic-import-vars    │ import(`./pages/${name}.ts`) 처리     │
+│ wasm                   │ WASM 파일 로딩                         │
+└────────────────────────┴───────────────────────────────────────┘
+```
+
+**Vite 호환 확장 (후순위):**
+- config / configResolved — 설정 변환
+- configureServer — 서버 커스텀
+- transformIndexHtml — HTML 변환
+- hotUpdate — HMR 업데이트 커스터마이징
+
+**구현 순서:**
+1. 플러그인 인터페이스 정의 (Zig struct)
+2. 파이프라인에 훅 호출 삽입 (resolver, graph, emitter)
+3. Builtin 플러그인 (json, text, asset)
+4. N-API 바인딩 (JS 플러그인 실행)
+5. Vite 호환 확장
+
+**참고:**
+- Rollup/Rolldown: `references/rolldown/packages/rolldown/src/plugin/index.ts`
+- Vite: `references/vite/packages/vite/src/node/plugin.ts`
+- esbuild: `references/esbuild/pkg/api/api.go` (OnResolve, OnLoad)
+
+##### 로더 시스템 (esbuild/Rolldown 호환)
+
+현재 ZTS는 .ts/.tsx/.js/.jsx만 처리. 플러그인의 load 훅으로 구현:
+- **JSON**: `import pkg from './package.json'` → `export default {...}` + named exports
+- **Text**: 파일 내용을 문자열로 `export default "..."`
+- **Base64**: 파일을 base64 인코딩 `export default "data:...;base64,..."`
+- **DataURL**: 파일을 data URL로 export
+- **Binary**: 파일을 Uint8Array로 export
+- **File/Asset**: 파일을 출력 디렉토리에 복사, 해시 파일명 URL 반환
+- **Copy**: 파일을 그대로 복사
+- **Empty**: 빈 모듈로 처리 (tree-shaking 대상)
+
+CLI: `--loader:.json=json --loader:.txt=text --loader:.png=file`
+
+##### 특수 기능 (Vite/Rolldown 호환)
+
+**import.meta.glob (Vite 킬러 기능):**
+```typescript
+// 기본 — lazy import
+const modules = import.meta.glob('./modules/*.ts')
+// → { './modules/a.ts': () => import('./modules/a.ts'), ... }
+
+// eager — 빌드타임 인라인
+const modules = import.meta.glob('./modules/*.ts', { eager: true })
+
+// named import만
+const defaults = import.meta.glob('./modules/*.ts', { import: 'default' })
+
+// 부정 패턴
+const modules = import.meta.glob(['./src/**/*.ts', '!**/*.test.ts'])
+```
+구현: 렉서에서 `import.meta.glob` 감지 → 파서에서 인자 분석 → 트랜스포머에서 glob 매칭 + 코드 생성
+
+**Dynamic Import Variables:**
+```typescript
+import(`./pages/${name}.ts`)
+// → glob 패턴으로 확대하여 가능한 모듈 전부 번들에 포함
+```
+
+**Web Workers:**
+```typescript
+new Worker(new URL('./worker.ts', import.meta.url))
+// → 워커 파일을 별도 엔트리로 번들링
+```
+
+**Virtual Modules:**
+- resolveId 훅에서 `\0` 프리픽스로 가상 모듈 마킹
+- load 훅에서 가상 모듈 내용 반환
+- 파일시스템에 존재하지 않는 모듈 생성 가능
+
+##### CLI 옵션 추가 계획 (esbuild/Rolldown 호환)
+
+**Tier 1 (높은 우선순위 — 자주 사용됨):**
+- `--banner:js=...` / `--footer:js=...` — 출력 앞뒤 텍스트 추가
+- `--analyze` — 번들 사이즈 리포트
+- `--minify-whitespace` / `--minify-identifiers` / `--minify-syntax` — 세분화 minify
+- `--pure:Name` — 함수 단위 pure 마킹 (tree-shaking)
+- `--log-level` (verbose|debug|info|warning|error|silent)
+- `--legal-comments` (none|inline|eof|linked|external)
+- `--servedir` — 추가 정적 디렉토리
+
+**Tier 2 (중간 우선순위):**
+- `--target` 엔진 버전 (chrome58, node10 등) — 현재 ES 타겟만
+- `--keep-names` — minify 시 함수/클래스 이름 보존
+- `--out-extension:.js=.mjs` — 출력 확장자 변경
+- `--outbase` — 엔트리 출력 경로 기준
+- `--charset=utf8` — UTF-8 코드포인트 이스케이프 안 함
+- `--sources-content=false` — 소스맵에서 소스 내용 제외
+- `--source-root` — 소스맵 sourceRoot 필드
+- `--public-path` — 에셋 기본 URL (CDN 배포용)
+- `--inject:file` — 모든 입력에 파일 자동 import
+- HTTPS dev server (--certfile, --keyfile)
+- CORS 설정
+
+**Tier 3 (낮은 우선순위):**
+- `--mangle-props` + `--mangle-cache` — 프로퍼티 맹글링
+- `--reserve-props` — 맹글링 예외
+- `--ignore-annotations` — tree-shaking 어노테이션 무시
+- `--preserve-symlinks` — 심링크 해석 비활성화
+- `--tsconfig-raw` — tsconfig JSON 문자열 오버라이드
+- `--watch-delay` — 리빌드 디바운스
+- `--log-limit` / `--log-override` — 세분화 로깅
 
 ##### 멀티스레드 모델
 - **파일 파싱**: 파일별 독립 Arena → lock-free 병렬 파싱
