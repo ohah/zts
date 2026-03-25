@@ -37,6 +37,24 @@ const TOESM_RUNTIME =
     \\
 ;
 const TOESM_RUNTIME_MIN = "var __getProtoOf=Object.getPrototypeOf;var __defProp=Object.defineProperty;var __hasOwn=Object.prototype.hasOwnProperty;var __copyProps=(to,from)=>{for(let key in from)if(__hasOwn.call(from,key)&&!__hasOwn.call(to,key))__defProp(to,key,{get:()=>from[key],enumerable:true});return to};var __toESM=(mod,isNodeMode,target)=>(target=mod!=null?Object.create(__getProtoOf(mod)):{},__copyProps(isNodeMode||!mod||!mod.__esModule?__defProp(target,\"default\",{value:mod,enumerable:true}):target,mod));";
+/// __decorateClass 런타임 헬퍼: experimental decorators 변환 시 주입 (esbuild 호환).
+/// __defProp은 __toESM 런타임에도 있지만, decorator 단독 사용 시를 위해 별도 선언.
+const DECORATOR_RUNTIME =
+    \\var __defProp2 = Object.defineProperty;
+    \\var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+    \\var __decorateClass = (decorators, target, key, kind) => {
+    \\  var result = kind > 1 ? void 0 : kind ? __getOwnPropDesc(target, key) : target;
+    \\  for (var i = decorators.length - 1, decorator; i >= 0; i--)
+    \\    if (decorator = decorators[i])
+    \\      result = (kind ? decorator(target, key, result) : decorator(result)) || result;
+    \\  if (kind && result) __defProp2(target, key, result);
+    \\  return result;
+    \\};
+    \\var __decorateParam = (index, decorator) => (target, key) => decorator(target, key, index);
+    \\
+;
+const DECORATOR_RUNTIME_MIN = "var __defProp2=Object.defineProperty;var __getOwnPropDesc=Object.getOwnPropertyDescriptor;var __decorateClass=(decorators,target,key,kind)=>{var result=kind>1?void 0:kind?__getOwnPropDesc(target,key):target;for(var i=decorators.length-1,decorator;i>=0;i--)if(decorator=decorators[i])result=(kind?decorator(target,key,result):decorator(result))||result;if(kind&&result)__defProp2(target,key,result);return result};var __decorateParam=(index,decorator)=>(target,key)=>decorator(target,key,index);";
+
 /// HMR 런타임: 모듈 레지스트리 + __zts_require + import.meta.hot API.
 /// dev mode 번들 상단에 주입된다.
 ///
@@ -140,6 +158,10 @@ pub const EmitOptions = struct {
     react_refresh: bool = false,
     /// define 글로벌 치환 (--define:KEY=VALUE)
     define: []const @import("../transformer/transformer.zig").DefineEntry = &.{},
+    /// legacy decorator 변환
+    experimental_decorators: bool = false,
+    /// useDefineForClassFields=false
+    use_define_for_class_fields: bool = true,
     /// 타겟 플랫폼. import.meta polyfill 방식을 결정한다.
     platform: @import("../codegen/codegen.zig").Platform = .browser,
 
@@ -222,6 +244,15 @@ pub fn emitWithTreeShaking(
         } else {
             try output.appendSlice(allocator, CJS_RUNTIME);
             try output.appendSlice(allocator, TOESM_RUNTIME);
+        }
+    }
+
+    // Decorator 런타임 주입: experimental decorators 사용 시
+    if (options.experimental_decorators) {
+        if (options.minify) {
+            try output.appendSlice(allocator, DECORATOR_RUNTIME_MIN);
+        } else {
+            try output.appendSlice(allocator, DECORATOR_RUNTIME);
         }
     }
 
@@ -513,6 +544,8 @@ pub fn emitDevModule(
     var transformer = Transformer.init(arena_alloc, ast, .{
         .react_refresh = options.react_refresh,
         .define = options.define,
+        .experimental_decorators = options.experimental_decorators,
+        .use_define_for_class_fields = options.use_define_for_class_fields,
     });
     if (module.semantic) |sem| {
         transformer.old_symbol_ids = sem.symbol_ids;
@@ -1044,9 +1077,11 @@ pub fn emitModule(
     defer emit_arena.deinit();
     const arena_alloc = emit_arena.allocator();
 
-    // Transformer: TS 타입 스트리핑 등 + define 치환
+    // Transformer: TS 타입 스트리핑, define 치환, decorator 변환 등
     var transformer = Transformer.init(arena_alloc, ast, .{
         .define = options.define,
+        .experimental_decorators = options.experimental_decorators,
+        .use_define_for_class_fields = options.use_define_for_class_fields,
     });
     // symbol_ids 전파: semantic analyzer가 생성한 원본 AST의 symbol_ids를
     // transformer가 new_ast 기준으로 재매핑
