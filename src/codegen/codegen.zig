@@ -3393,3 +3393,115 @@ test "import.meta: unknown property CJS browser" {
     defer r.deinit();
     try std.testing.expectEqualStrings("const e={}.env;", r.output);
 }
+
+// ============================================================
+// ES Downlevel Tests (--target)
+// ============================================================
+
+fn e2eTarget(allocator: std.mem.Allocator, source: []const u8, target: TransformOptions.Target) !TestResult {
+    return e2eFull(allocator, source, .{ .target = target }, .{ .minify = true }, ".ts");
+}
+
+// --- ?? (nullish coalescing) ---
+
+test "ES2020: ?? simple identifier" {
+    var r = try e2eTarget(std.testing.allocator, "const x = a ?? b;", .es2019);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const x=a!=null?a:b;", r.output);
+}
+
+test "ES2020: ?? side effect (temp var)" {
+    var r = try e2eTarget(std.testing.allocator, "const x = foo() ?? b;", .es2019);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const x=(_a=foo())!=null?_a:b;", r.output);
+}
+
+test "ES2020: ?? no transform on esnext" {
+    var r = try e2eTarget(std.testing.allocator, "const x = a ?? b;", .esnext);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const x=a??b;", r.output);
+}
+
+test "ES2020: ?? no transform on es2020" {
+    var r = try e2eTarget(std.testing.allocator, "const x = a ?? b;", .es2020);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const x=a??b;", r.output);
+}
+
+// --- ?. (optional chaining) ---
+
+test "ES2020: ?. member" {
+    var r = try e2eTarget(std.testing.allocator, "a?.b;", .es2019);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("a==null?void 0:a.b;", r.output);
+}
+
+test "ES2020: ?. computed" {
+    var r = try e2eTarget(std.testing.allocator, "a?.[0];", .es2019);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("a==null?void 0:a[0];", r.output);
+}
+
+test "ES2020: ?. call" {
+    var r = try e2eTarget(std.testing.allocator, "a?.();", .es2019);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("a==null?void 0:a();", r.output);
+}
+
+test "ES2020: ?. side effect (temp var)" {
+    var r = try e2eTarget(std.testing.allocator, "foo()?.bar;", .es2019);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("(_a=foo())==null?void 0:_a.bar;", r.output);
+}
+
+test "ES2020: ?. chain continuation" {
+    var r = try e2eTarget(std.testing.allocator, "a?.b.c;", .es2019);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("a==null?void 0:a.b.c;", r.output);
+}
+
+test "ES2020: ?. no transform on esnext" {
+    var r = try e2eTarget(std.testing.allocator, "a?.b;", .esnext);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("a?.b;", r.output);
+}
+
+// --- ??= (nullish assignment) ---
+
+test "ES2021: ??= to es2020" {
+    var r = try e2eTarget(std.testing.allocator, "a ??= b;", .es2020);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("a??(a=b);", r.output);
+}
+
+test "ES2021: ??= to es2019 (double lowering)" {
+    var r = try e2eTarget(std.testing.allocator, "a ??= b;", .es2019);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("a!=null?a:(a=b);", r.output);
+}
+
+test "ES2021: ??= no transform on esnext" {
+    var r = try e2eTarget(std.testing.allocator, "a ??= b;", .esnext);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("a??=b;", r.output);
+}
+
+// --- ||= &&= (logical assignment) ---
+
+test "ES2021: ||=" {
+    var r = try e2eTarget(std.testing.allocator, "a ||= b;", .es2020);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("a||(a=b);", r.output);
+}
+
+test "ES2021: &&=" {
+    var r = try e2eTarget(std.testing.allocator, "a &&= b;", .es2020);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("a&&(a=b);", r.output);
+}
+
+test "ES2021: ||= no transform on es2021" {
+    var r = try e2eTarget(std.testing.allocator, "a ||= b;", .es2021);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("a||=b;", r.output);
+}
