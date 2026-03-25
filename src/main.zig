@@ -574,6 +574,8 @@ pub fn main() !void {
             .minify = minify,
             .code_splitting = splitting,
             .define = define_list.items,
+            .experimental_decorators = experimental_decorators orelse false,
+            .use_define_for_class_fields = use_define_for_class_fields orelse true,
         });
         defer bundler.deinit();
 

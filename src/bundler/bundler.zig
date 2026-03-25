@@ -46,6 +46,10 @@ pub const BundleOptions = struct {
     react_refresh: bool = false,
     /// define 글로벌 치환 (--define:KEY=VALUE)
     define: []const @import("../transformer/transformer.zig").DefineEntry = &.{},
+    /// legacy decorator 변환 (--experimental-decorators / tsconfig)
+    experimental_decorators: bool = false,
+    /// useDefineForClassFields=false (tsconfig)
+    use_define_for_class_fields: bool = true,
 };
 
 pub const BundleResult = struct {
@@ -207,6 +211,8 @@ pub const Bundler = struct {
                     .react_refresh = self.options.react_refresh,
                     .define = self.options.define,
                     .platform = self.options.platform,
+                    .experimental_decorators = self.options.experimental_decorators,
+                    .use_define_for_class_fields = self.options.use_define_for_class_fields,
                 },
                 if (linker) |*l| l else null,
             );
@@ -229,7 +235,14 @@ pub const Bundler = struct {
                 self.allocator,
                 graph.modules.items,
                 &chunk_graph,
-                .{ .format = self.options.format, .minify = self.options.minify, .define = self.options.define, .platform = self.options.platform },
+                .{
+                    .format = self.options.format,
+                    .minify = self.options.minify,
+                    .define = self.options.define,
+                    .platform = self.options.platform,
+                    .experimental_decorators = self.options.experimental_decorators,
+                    .use_define_for_class_fields = self.options.use_define_for_class_fields,
+                },
                 if (linker) |*l| l else null,
             );
             errdefer if (outputs) |outs| {
@@ -247,7 +260,14 @@ pub const Bundler = struct {
             output = try emitter.emitWithTreeShaking(
                 self.allocator,
                 &graph,
-                .{ .format = self.options.format, .minify = self.options.minify, .define = self.options.define, .platform = self.options.platform },
+                .{
+                    .format = self.options.format,
+                    .minify = self.options.minify,
+                    .define = self.options.define,
+                    .platform = self.options.platform,
+                    .experimental_decorators = self.options.experimental_decorators,
+                    .use_define_for_class_fields = self.options.use_define_for_class_fields,
+                },
                 if (linker) |*l| l else null,
                 if (shaker) |*s| s else null,
             );
