@@ -89,7 +89,9 @@ pub const Module = struct {
         reserved,
         /// 파싱 중
         parsing,
-        /// 파싱 완료, import 추출 완료
+        /// 파싱 완료, AST/semantic 저장됨 (import 추출 전)
+        parsed,
+        /// import 추출 완료, 사용 가능
         ready,
     };
 
