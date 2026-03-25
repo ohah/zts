@@ -24,6 +24,10 @@ const TranspileOptions = struct {
     quote_style: lib.codegen.QuoteStyle = .double,
     define: []const DefineEntry = &.{},
     platform: lib.codegen.codegen.Platform = .browser,
+    /// useDefineForClassFields=false: instance field → constructor this.x = value
+    use_define_for_class_fields: bool = true,
+    /// experimentalDecorators: legacy decorator → __decorateClass 호출
+    experimental_decorators: bool = false,
 };
 
 /// 단일 파일을 트랜스파일한다.
@@ -115,6 +119,8 @@ fn transpileFile(
         .drop_console = options.drop_console,
         .drop_debugger = options.drop_debugger,
         .define = options.define,
+        .use_define_for_class_fields = options.use_define_for_class_fields,
+        .experimental_decorators = options.experimental_decorators,
     });
     // unused import 제거를 위해 semantic 데이터를 transformer에 전달
     transformer.old_symbol_ids = analyzer.symbol_ids.items;
@@ -327,6 +333,8 @@ pub fn main() !void {
     var bundle_format_explicit = false; // 사용자가 --format을 명시했는지 추적
     var test262_dir: ?[]const u8 = null;
     var project_path: ?[]const u8 = null;
+    var use_define_for_class_fields: ?bool = null; // null = CLI에서 미지정 → tsconfig 따름
+    var experimental_decorators: ?bool = null; // null = CLI에서 미지정 → tsconfig 따름
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -426,6 +434,12 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, arg, "--format=iife")) {
             bundle_format = .iife;
             bundle_format_explicit = true;
+        } else if (std.mem.eql(u8, arg, "--experimental-decorators")) {
+            experimental_decorators = true;
+        } else if (std.mem.eql(u8, arg, "--use-define-for-class-fields=false")) {
+            use_define_for_class_fields = false;
+        } else if (std.mem.eql(u8, arg, "--use-define-for-class-fields=true")) {
+            use_define_for_class_fields = true;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try printUsage(stdout);
             return;
@@ -648,6 +662,15 @@ pub fn main() !void {
             output_dir = od;
         }
     }
+    // experimentalDecorators: CLI 미지정이면 tsconfig에서 가져옴
+    if (experimental_decorators == null and tsconfig.experimental_decorators) {
+        experimental_decorators = true;
+    }
+    // useDefineForClassFields: CLI 미지정이면 tsconfig에서 가져옴 (tsconfig 파싱 필요 — 아래 참고)
+    // 주의: tsconfig에 useDefineForClassFields가 없고 experimentalDecorators=true이면
+    // TypeScript 4.x 호환을 위해 useDefineForClassFields=false가 기본값.
+    // (TS 5.0+에서는 experimentalDecorators 여부와 무관하게 true가 기본)
+    // 여기서는 사용자가 명시하지 않은 경우 TS 5.0+ 기본값(true)을 따른다.
 
     // 트랜스파일 옵션 구성
     const options = TranspileOptions{
@@ -660,6 +683,8 @@ pub fn main() !void {
         .quote_style = quote_style,
         .define = define_list.items,
         .platform = platform,
+        .use_define_for_class_fields = use_define_for_class_fields orelse true,
+        .experimental_decorators = experimental_decorators orelse false,
     };
 
     const is_stdin = std.mem.eql(u8, input_path_str, "-");
@@ -1010,6 +1035,10 @@ fn printUsage(writer: anytype) !void {
         \\  --splitting                      Enable code splitting (requires --outdir)
         \\  --external <pkg>                 Exclude package (repeatable)
         \\  --platform=browser|node|neutral  Target platform (default: browser)
+        \\
+        \\TypeScript options:
+        \\  --experimental-decorators         Legacy decorator (__decorateClass)
+        \\  --use-define-for-class-fields=false  Move fields to constructor (assign semantics)
         \\
     , .{});
 }

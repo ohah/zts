@@ -42,6 +42,14 @@ pub const TransformOptions = struct {
     define: []const DefineEntry = &.{},
     /// React Fast Refresh 활성화. 컴포넌트에 $RefreshReg$/$RefreshSig$ 주입.
     react_refresh: bool = false,
+    /// useDefineForClassFields=false: instance field를 constructor의 this.x = value 할당으로 변환.
+    /// true(기본값)이면 class field를 그대로 유지 (TC39 [[Define]] semantics).
+    /// false이면 TS 4.x 이전 동작 — field를 constructor body로 이동 ([[Set]] semantics).
+    use_define_for_class_fields: bool = true,
+    /// experimentalDecorators: legacy decorator를 __decorateClass 호출로 변환.
+    /// false(기본값)이면 decorator를 TC39 Stage 3 형태로 그대로 출력.
+    /// true이면 class/method/property decorator를 esbuild 호환 __decorateClass 호출로 변환.
+    experimental_decorators: bool = false,
 };
 
 /// AST-to-AST 변환기.
@@ -997,16 +1005,747 @@ pub const Transformer = struct {
     /// class: extra = [name, super, body, type_params, impl_start, impl_len, deco_start, deco_len]
     fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
+        const has_super = !self.readNodeIdx(e, 1).isNone();
+
+        // useDefineForClassFields=false가 아니고 experimentalDecorators도 아니면 기존 동작
+        if (self.options.use_define_for_class_fields and !self.options.experimental_decorators) {
+            const new_name = try self.visitNode(self.readNodeIdx(e, 0));
+            const new_super = try self.visitNode(self.readNodeIdx(e, 1));
+            const new_body = try self.visitNode(self.readNodeIdx(e, 2));
+            const new_decos = try self.visitExtraList(self.readU32(e, 6), self.readU32(e, 7));
+            const none = @intFromEnum(NodeIndex.none);
+            return self.addExtraNode(node.tag, node.span, &.{
+                @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
+                none,                   0,                       0,
+                new_decos.start,        new_decos.len,
+            });
+        }
+
+        // === useDefineForClassFields=false / experimentalDecorators 처리 ===
+        // 클래스 바디의 멤버들을 개별로 분석해야 하므로, class_body를 직접 순회한다.
+
         const new_name = try self.visitNode(self.readNodeIdx(e, 0));
         const new_super = try self.visitNode(self.readNodeIdx(e, 1));
-        const new_body = try self.visitNode(self.readNodeIdx(e, 2));
-        // decorator 리스트 복사
-        const new_decos = try self.visitExtraList(self.readU32(e, 6), self.readU32(e, 7));
+
+        // 원본 class_body를 직접 순회
+        const body_idx = self.readNodeIdx(e, 2);
+        const body_node = self.old_ast.getNode(body_idx);
+        const body_members = self.old_ast.extra_data.items[body_node.data.list.start .. body_node.data.list.start + body_node.data.list.len];
+
+        // 1단계: 멤버들을 분류하면서 방문
+        // instance fields (non-static, assign semantics용)를 수집하고,
+        // member decorators (experimental decorators용)를 수집한다.
+        const scratch_top = self.scratch.items.len;
+        defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+        // class body 멤버 (새 AST)
+        var class_members: std.ArrayList(NodeIndex) = .empty;
+        defer class_members.deinit(self.allocator);
+
+        // useDefineForClassFields=false: instance field → constructor 이동용 수집
+        var field_assignments: std.ArrayList(FieldAssignment) = .empty;
+        defer field_assignments.deinit(self.allocator);
+
+        // experimentalDecorators: member decorator 수집
+        var member_decorators: std.ArrayList(MemberDecoratorInfo) = .empty;
+        defer {
+            for (member_decorators.items) |md| {
+                self.allocator.free(md.decorators);
+            }
+            member_decorators.deinit(self.allocator);
+        }
+
+        var existing_constructor: ?NodeIndex = null; // 기존 constructor의 new AST index
+
+        for (body_members) |raw_idx| {
+            const member = self.old_ast.getNode(@enumFromInt(raw_idx));
+
+            // property_definition: extra = [key, init_val, flags, deco_start, deco_len]
+            if (member.tag == .property_definition) {
+                const me = member.data.extra;
+                const flags = self.readU32(me, 2);
+                const is_static = (flags & 0x01) != 0;
+                const is_abstract = (flags & 0x20) != 0;
+                const is_declare = (flags & 0x40) != 0;
+
+                // abstract/declare는 항상 스트리핑
+                if (self.options.strip_types and (flags & 0x60) != 0) {
+                    // experimentalDecorators인 경우에도 abstract/declare는 제거
+                    continue;
+                }
+
+                // useDefineForClassFields=false: non-static instance field를 constructor로 이동
+                if (!self.options.use_define_for_class_fields and !is_static and !is_abstract and !is_declare) {
+                    const key_idx = self.readNodeIdx(me, 0);
+                    const init_idx = self.readNodeIdx(me, 1);
+                    // 초기값이 없고 타입만 있는 field는 무시 (TS type-only)
+                    if (!init_idx.isNone()) {
+                        const new_key = try self.visitNode(key_idx);
+                        const new_init = try self.visitNode(init_idx);
+                        const key_node = self.old_ast.getNode(key_idx);
+                        const is_computed = (key_node.tag == .computed_property_key);
+                        try field_assignments.append(self.allocator, .{
+                            .key = new_key,
+                            .value = new_init,
+                            .is_computed = is_computed,
+                            .span = member.span,
+                        });
+                    }
+                    // member decorator 수집 (experimental decorators인 경우)
+                    if (self.options.experimental_decorators) {
+                        const deco_start = self.readU32(me, 3);
+                        const deco_len = self.readU32(me, 4);
+                        if (deco_len > 0) {
+                            const new_key = try self.visitNode(self.readNodeIdx(me, 0));
+                            try self.collectMemberDecorators(&member_decorators, deco_start, deco_len, new_key, is_static, 2);
+                        }
+                    }
+                    // field를 class body에 추가하지 않음 (constructor로 이동)
+                    continue;
+                }
+
+                // static field 또는 use_define=true인 경우: 그대로 방문
+                const new_member = try self.visitNode(@enumFromInt(raw_idx));
+                if (!new_member.isNone()) {
+                    // experimentalDecorators: member decorator 수집
+                    if (self.options.experimental_decorators) {
+                        const deco_start = self.readU32(me, 3);
+                        const deco_len = self.readU32(me, 4);
+                        if (deco_len > 0) {
+                            const new_key = try self.visitNode(self.readNodeIdx(me, 0));
+                            try self.collectMemberDecorators(&member_decorators, deco_start, deco_len, new_key, is_static, 2);
+                        }
+                    }
+                    try class_members.append(self.allocator, new_member);
+                }
+                continue;
+            }
+
+            // method_definition: extra = [key, params_start, params_len, body, flags, deco_start, deco_len]
+            if (member.tag == .method_definition) {
+                const me = member.data.extra;
+                const flags = self.readU32(me, 4);
+                const is_static = (flags & 0x01) != 0;
+
+                // constructor 감지
+                if (!is_static) {
+                    const key_idx = self.readNodeIdx(me, 0);
+                    const key_node = self.old_ast.getNode(key_idx);
+                    const is_ctor = blk: {
+                        if (key_node.tag == .identifier_reference) {
+                            const name = self.old_ast.source[key_node.span.start..key_node.span.end];
+                            break :blk std.mem.eql(u8, name, "constructor");
+                        }
+                        break :blk false;
+                    };
+
+                    if (is_ctor) {
+                        const new_member = try self.visitMethodDefinition(member);
+                        if (!new_member.isNone()) {
+                            existing_constructor = new_member;
+                            try class_members.append(self.allocator, new_member);
+                        }
+                        continue;
+                    }
+                }
+
+                // 일반 메서드: experimentalDecorators의 member decorator 수집
+                if (self.options.experimental_decorators) {
+                    const deco_start = self.readU32(me, 5);
+                    const deco_len = self.readU32(me, 6);
+                    if (deco_len > 0) {
+                        const new_key = try self.visitNode(self.readNodeIdx(me, 0));
+                        try self.collectMemberDecorators(&member_decorators, deco_start, deco_len, new_key, is_static, 1);
+                    }
+                }
+
+                const new_member = try self.visitMethodDefinition(member);
+                if (!new_member.isNone()) {
+                    try class_members.append(self.allocator, new_member);
+                }
+                continue;
+            }
+
+            // 기타 멤버 (static_block, accessor_property 등): 그대로 방문
+            const new_member = try self.visitNode(@enumFromInt(raw_idx));
+            if (!new_member.isNone()) {
+                try class_members.append(self.allocator, new_member);
+            }
+        }
+
+        // 2단계: useDefineForClassFields=false — instance field를 constructor에 삽입
+        if (field_assignments.items.len > 0) {
+            if (existing_constructor) |ctor_idx| {
+                // 기존 constructor의 body에 field assignments 삽입
+                const updated_ctor = try self.insertFieldAssignmentsIntoConstructor(ctor_idx, field_assignments.items, has_super);
+                // class_members에서 기존 constructor를 교체
+                for (class_members.items) |*m| {
+                    if (@intFromEnum(m.*) == @intFromEnum(ctor_idx)) {
+                        m.* = updated_ctor;
+                        break;
+                    }
+                }
+            } else {
+                // constructor가 없으면 새로 생성
+                const new_ctor = try self.buildConstructorWithFieldAssignments(field_assignments.items, has_super);
+                // class body 맨 앞에 삽입
+                try class_members.insert(self.allocator, 0, new_ctor);
+            }
+        }
+
+        // 3단계: class body 노드 생성
+        const body_list = try self.new_ast.addNodeList(class_members.items);
+        const new_body = try self.new_ast.addNode(.{
+            .tag = .class_body,
+            .span = body_node.span,
+            .data = .{ .list = body_list },
+        });
+
+        // 4단계: experimentalDecorators — decorator를 class에서 제거하고 __decorateClass 호출 생성
+        if (self.options.experimental_decorators) {
+            const old_deco_start = self.readU32(e, 6);
+            const old_deco_len = self.readU32(e, 7);
+
+            if (old_deco_len > 0 or member_decorators.items.len > 0) {
+                return try self.transformExperimentalDecorators(
+                    node,
+                    new_name,
+                    new_super,
+                    new_body,
+                    old_deco_start,
+                    old_deco_len,
+                    member_decorators.items,
+                );
+            }
+        }
+
+        // decorator 리스트 복사 (experimental이 아닌 경우)
+        const new_decos = if (!self.options.experimental_decorators)
+            try self.visitExtraList(self.readU32(e, 6), self.readU32(e, 7))
+        else
+            NodeList{ .start = 0, .len = 0 };
+
         const none = @intFromEnum(NodeIndex.none);
         return self.addExtraNode(node.tag, node.span, &.{
             @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
-            none,            0,             0, // type_params, implements 제거
-            new_decos.start, new_decos.len,
+            none,                   0,                       0,
+            new_decos.start,        new_decos.len,
+        });
+    }
+
+    /// useDefineForClassFields=false: instance field → constructor this.x = value 정보
+    const FieldAssignment = struct {
+        key: NodeIndex,
+        value: NodeIndex,
+        is_computed: bool,
+        span: Span,
+    };
+
+    /// experimentalDecorators: member decorator 정보
+    const MemberDecoratorInfo = struct {
+        /// decorator expression들 (new AST)
+        decorators: []NodeIndex,
+        /// member key (new AST)
+        key: NodeIndex,
+        /// static 여부
+        is_static: bool,
+        /// descriptor 종류: 1=method, 2=property
+        kind: u32,
+    };
+
+    /// experimentalDecorators: member decorator 수집 헬퍼
+    fn collectMemberDecorators(
+        self: *Transformer,
+        list: *std.ArrayList(MemberDecoratorInfo),
+        deco_start: u32,
+        deco_len: u32,
+        key: NodeIndex,
+        is_static: bool,
+        kind: u32,
+    ) Error!void {
+        const old_deco_indices = self.old_ast.extra_data.items[deco_start .. deco_start + deco_len];
+        var deco_nodes = try self.allocator.alloc(NodeIndex, old_deco_indices.len);
+        for (old_deco_indices, 0..) |raw_idx, j| {
+            // decorator 노드의 operand (expression 부분)를 방문
+            const deco_node = self.old_ast.getNode(@enumFromInt(raw_idx));
+            if (deco_node.tag == .decorator) {
+                deco_nodes[j] = try self.visitNode(deco_node.data.unary.operand);
+            } else {
+                deco_nodes[j] = try self.visitNode(@enumFromInt(raw_idx));
+            }
+        }
+        try list.append(self.allocator, .{
+            .decorators = deco_nodes,
+            .key = key,
+            .is_static = is_static,
+            .kind = kind,
+        });
+    }
+
+    /// useDefineForClassFields=false: 기존 constructor body에 field assignments 삽입.
+    /// super()가 있으면 그 뒤에, 없으면 body 맨 앞에 삽입.
+    fn insertFieldAssignmentsIntoConstructor(
+        self: *Transformer,
+        ctor_idx: NodeIndex,
+        fields: []const FieldAssignment,
+        has_super: bool,
+    ) Error!NodeIndex {
+        // method_definition: extra = [key, params_start, params_len, body, flags, deco_start, deco_len]
+        const ctor_node = self.new_ast.getNode(ctor_idx);
+        const ce = ctor_node.data.extra;
+        const ctor_extras = self.new_ast.extra_data.items[ce .. ce + 7];
+        const body_idx: NodeIndex = @enumFromInt(ctor_extras[3]);
+
+        if (body_idx.isNone()) return ctor_idx;
+
+        const body = self.new_ast.getNode(body_idx);
+        if (body.tag != .block_statement) return ctor_idx;
+
+        const old_list = body.data.list;
+        const old_stmts = self.new_ast.extra_data.items[old_list.start .. old_list.start + old_list.len];
+
+        const scratch_top = self.scratch.items.len;
+        defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+        // super() 호출을 찾아서 그 뒤에 삽입
+        var insert_pos: usize = 0;
+        if (has_super) {
+            for (old_stmts, 0..) |raw_idx, idx| {
+                if (self.isSuperCallStatement(@enumFromInt(raw_idx))) {
+                    insert_pos = idx + 1;
+                    break;
+                }
+            }
+        }
+
+        // insert_pos 전의 문장들
+        for (old_stmts[0..insert_pos]) |raw_idx| {
+            try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+        }
+
+        // field assignments 삽입
+        for (fields) |field| {
+            const assign_stmt = try self.buildThisAssignment(field);
+            try self.scratch.append(self.allocator, assign_stmt);
+        }
+
+        // insert_pos 후의 문장들
+        for (old_stmts[insert_pos..]) |raw_idx| {
+            try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+        }
+
+        const new_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+        const new_body = try self.new_ast.addNode(.{
+            .tag = .block_statement,
+            .span = body.span,
+            .data = .{ .list = new_list },
+        });
+
+        // constructor method_definition을 새 body로 재생성
+        return self.addExtraNode(.method_definition, ctor_node.span, &.{
+            ctor_extras[0],         ctor_extras[1], ctor_extras[2],
+            @intFromEnum(new_body), ctor_extras[4], ctor_extras[5],
+            ctor_extras[6],
+        });
+    }
+
+    /// super() 호출 expression_statement인지 판별
+    fn isSuperCallStatement(self: *const Transformer, idx: NodeIndex) bool {
+        if (idx.isNone()) return false;
+        const stmt = self.new_ast.getNode(idx);
+        if (stmt.tag != .expression_statement) return false;
+        const expr_idx = stmt.data.unary.operand;
+        if (expr_idx.isNone()) return false;
+        const expr = self.new_ast.getNode(expr_idx);
+        if (expr.tag != .call_expression) return false;
+        // call_expression: extra = [callee, args_start, args_len, flags]
+        const ce = expr.data.extra;
+        if (ce >= self.new_ast.extra_data.items.len) return false;
+        const callee_idx: NodeIndex = @enumFromInt(self.new_ast.extra_data.items[ce]);
+        if (callee_idx.isNone()) return false;
+        const callee = self.new_ast.getNode(callee_idx);
+        return callee.tag == .super_expression;
+    }
+
+    /// useDefineForClassFields=false: constructor가 없을 때 새로 생성.
+    /// extends가 있으면 super(...args) 호출 포함.
+    fn buildConstructorWithFieldAssignments(
+        self: *Transformer,
+        fields: []const FieldAssignment,
+        has_super: bool,
+    ) Error!NodeIndex {
+        const zero_span = Span{ .start = 0, .end = 0 };
+
+        const scratch_top = self.scratch.items.len;
+        defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+        var params_list = NodeList{ .start = 0, .len = 0 };
+
+        // extends가 있으면: constructor(...args) { super(...args); this.x = v; }
+        if (has_super) {
+            // ...args 파라미터
+            const args_span = try self.new_ast.addString("args");
+            const args_id = try self.new_ast.addNode(.{
+                .tag = .binding_identifier,
+                .span = args_span,
+                .data = .{ .string_ref = args_span },
+            });
+            const rest = try self.new_ast.addNode(.{
+                .tag = .rest_element,
+                .span = zero_span,
+                .data = .{ .unary = .{ .operand = args_id, .flags = 0 } },
+            });
+            params_list = try self.new_ast.addNodeList(&.{rest});
+
+            // super(...args) 호출
+            const super_expr = try self.new_ast.addNode(.{
+                .tag = .super_expression,
+                .span = zero_span,
+                .data = .{ .none = 0 },
+            });
+            const args_ref = try self.new_ast.addNode(.{
+                .tag = .identifier_reference,
+                .span = args_span,
+                .data = .{ .string_ref = args_span },
+            });
+            const spread_args = try self.new_ast.addNode(.{
+                .tag = .spread_element,
+                .span = zero_span,
+                .data = .{ .unary = .{ .operand = args_ref, .flags = 0 } },
+            });
+            const call_args = try self.new_ast.addNodeList(&.{spread_args});
+            const super_call = try self.addExtraNode(.call_expression, zero_span, &.{
+                @intFromEnum(super_expr), call_args.start, call_args.len, 0,
+            });
+            const super_stmt = try self.new_ast.addNode(.{
+                .tag = .expression_statement,
+                .span = zero_span,
+                .data = .{ .unary = .{ .operand = super_call, .flags = 0 } },
+            });
+            try self.scratch.append(self.allocator, super_stmt);
+        }
+
+        // this.x = value 할당들
+        for (fields) |field| {
+            const stmt = try self.buildThisAssignment(field);
+            try self.scratch.append(self.allocator, stmt);
+        }
+
+        const body_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+        const body = try self.new_ast.addNode(.{
+            .tag = .block_statement,
+            .span = zero_span,
+            .data = .{ .list = body_list },
+        });
+
+        // constructor key
+        const ctor_span = try self.new_ast.addString("constructor");
+        const ctor_key = try self.new_ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = ctor_span,
+            .data = .{ .string_ref = ctor_span },
+        });
+
+        // method_definition: extra = [key, params_start, params_len, body, flags, deco_start, deco_len]
+        const empty_decos = try self.new_ast.addNodeList(&.{});
+        return self.addExtraNode(.method_definition, zero_span, &.{
+            @intFromEnum(ctor_key), params_list.start, params_list.len,
+            @intFromEnum(body), 0, // flags=0 (non-static, normal method)
+            empty_decos.start,  empty_decos.len,
+        });
+    }
+
+    /// this.key = value; expression statement 생성
+    fn buildThisAssignment(self: *Transformer, field: FieldAssignment) Error!NodeIndex {
+        const this_node = try self.new_ast.addNode(.{
+            .tag = .this_expression,
+            .span = field.span,
+            .data = .{ .none = 0 },
+        });
+
+        // computed key: this[key] = value, 일반: this.key = value
+        const member = if (field.is_computed) blk: {
+            // computed_property_key의 내부 expression을 꺼냄
+            const inner_key = self.new_ast.getNode(field.key);
+            const actual_key = if (inner_key.tag == .computed_property_key) inner_key.data.unary.operand else field.key;
+            const member_extra = try self.new_ast.addExtras(&.{ @intFromEnum(this_node), @intFromEnum(actual_key), 0 });
+            break :blk try self.new_ast.addNode(.{
+                .tag = .computed_member_expression,
+                .span = field.span,
+                .data = .{ .extra = member_extra },
+            });
+        } else blk: {
+            const member_extra = try self.new_ast.addExtras(&.{ @intFromEnum(this_node), @intFromEnum(field.key), 0 });
+            break :blk try self.new_ast.addNode(.{
+                .tag = .static_member_expression,
+                .span = field.span,
+                .data = .{ .extra = member_extra },
+            });
+        };
+
+        const assign = try self.new_ast.addNode(.{
+            .tag = .assignment_expression,
+            .span = field.span,
+            .data = .{ .binary = .{ .left = member, .right = field.value, .flags = 0 } },
+        });
+        return self.new_ast.addNode(.{
+            .tag = .expression_statement,
+            .span = field.span,
+            .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
+        });
+    }
+
+    /// experimentalDecorators: class/member decorator를 __decorateClass 호출로 변환.
+    ///
+    /// 입력: @sealed class Foo { @log method() {} }
+    /// 출력:
+    ///   let Foo = class Foo {};
+    ///   __decorateClass([log], Foo.prototype, "method", 1);
+    ///   Foo = __decorateClass([sealed], Foo);
+    fn transformExperimentalDecorators(
+        self: *Transformer,
+        node: Node,
+        new_name: NodeIndex,
+        new_super: NodeIndex,
+        new_body: NodeIndex,
+        old_deco_start: u32,
+        old_deco_len: u32,
+        member_decos: []const MemberDecoratorInfo,
+    ) Error!NodeIndex {
+        const none = @intFromEnum(NodeIndex.none);
+        const decorate_span = try self.new_ast.addString("__decorateClass");
+
+        // class 이름 텍스트를 가져옴 (let Foo = class Foo {} 에 필요)
+        const class_name_text = if (!new_name.isNone()) blk: {
+            const name_node = self.new_ast.getNode(new_name);
+            break :blk self.new_ast.getText(name_node.data.string_ref);
+        } else null;
+
+        // class node 생성 (decorator 없이)
+        const empty_list = try self.new_ast.addNodeList(&.{});
+        const class_node = try self.addExtraNode(.class_expression, node.span, &.{
+            @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
+            none,                   0,                       0,
+            empty_list.start, empty_list.len, // decorator 제거
+        });
+
+        // class decorator가 있으면 → let Foo = class Foo {}; 로 변환
+        if (old_deco_len > 0 and class_name_text != null) {
+            // let Foo = class Foo {};
+            const name_span = self.new_ast.getNode(new_name).data.string_ref;
+            const var_name = try self.new_ast.addNode(.{
+                .tag = .binding_identifier,
+                .span = name_span,
+                .data = .{ .string_ref = name_span },
+            });
+            // variable_declarator: extra = [name, type_ann, init_val]
+            const declarator = try self.addExtraNode(.variable_declarator, node.span, &.{
+                @intFromEnum(var_name),
+                @intFromEnum(NodeIndex.none), // type_ann
+                @intFromEnum(class_node), // init_val
+            });
+            const decl_list = try self.new_ast.addNodeList(&.{declarator});
+            const var_decl = try self.addExtraNode(.variable_declaration, node.span, &.{
+                1, decl_list.start, decl_list.len, // 1 = let
+            });
+
+            // pending_nodes에 let 선언 추가 (visitExtraList가 class 노드 앞에 삽입)
+            try self.pending_nodes.append(self.allocator, var_decl);
+
+            // member decorator 호출: __decorateClass([dec], Foo.prototype, "name", kind)
+            for (member_decos) |md| {
+                const call_stmt = try self.buildDecorateClassMemberCall(decorate_span, name_span, md);
+                try self.pending_nodes.append(self.allocator, call_stmt);
+            }
+
+            // class decorator 호출: Foo = __decorateClass([dec], Foo)
+            const class_deco_stmt = try self.buildDecorateClassCall(decorate_span, name_span, old_deco_start, old_deco_len);
+            try self.pending_nodes.append(self.allocator, class_deco_stmt);
+
+            // visitClass의 반환값은 .none (let 선언 + decorator 호출이 pending_nodes에 있음)
+            return .none;
+        }
+
+        // class decorator가 없고 member decorator만 있는 경우
+        // pending_nodes는 child 앞에 삽입되므로, class 노드도 pending에 넣고
+        // decorator 호출을 그 뒤에 추가한 후 .none을 반환한다.
+        if (member_decos.len > 0 and class_name_text != null) {
+            const name_span = self.new_ast.getNode(new_name).data.string_ref;
+
+            // class 노드를 pending에 추가
+            const class_result = try self.addExtraNode(node.tag, node.span, &.{
+                @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
+                none,                   0,                       0,
+                empty_list.start, empty_list.len, // decorator 제거
+            });
+            try self.pending_nodes.append(self.allocator, class_result);
+
+            // member decorator 호출을 pending에 추가 (class 뒤)
+            for (member_decos) |md| {
+                const call_stmt = try self.buildDecorateClassMemberCall(decorate_span, name_span, md);
+                try self.pending_nodes.append(self.allocator, call_stmt);
+            }
+
+            return .none;
+        }
+
+        // decorator가 없는 경우
+        return self.addExtraNode(node.tag, node.span, &.{
+            @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
+            none,                   0,                       0,
+            empty_list.start,       empty_list.len,
+        });
+    }
+
+    /// __decorateClass([dec1, dec2], Foo.prototype, "methodName", kind) 호출문 생성
+    fn buildDecorateClassMemberCall(
+        self: *Transformer,
+        decorate_span: Span,
+        class_name_span: Span,
+        md: MemberDecoratorInfo,
+    ) Error!NodeIndex {
+        const zero_span = Span{ .start = 0, .end = 0 };
+
+        // callee: __decorateClass
+        const callee = try self.new_ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = decorate_span,
+            .data = .{ .string_ref = decorate_span },
+        });
+
+        // arg1: [dec1, dec2, ...]
+        const deco_array_list = try self.new_ast.addNodeList(md.decorators);
+        const deco_array = try self.new_ast.addNode(.{
+            .tag = .array_expression,
+            .span = zero_span,
+            .data = .{ .list = deco_array_list },
+        });
+
+        // arg2: Foo.prototype (instance) or Foo (static)
+        const class_ref = try self.new_ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = class_name_span,
+            .data = .{ .string_ref = class_name_span },
+        });
+        const target = if (!md.is_static) blk: {
+            const proto_span = try self.new_ast.addString("prototype");
+            const proto_id = try self.new_ast.addNode(.{
+                .tag = .identifier_reference,
+                .span = proto_span,
+                .data = .{ .string_ref = proto_span },
+            });
+            const me = try self.new_ast.addExtras(&.{ @intFromEnum(class_ref), @intFromEnum(proto_id), 0 });
+            break :blk try self.new_ast.addNode(.{
+                .tag = .static_member_expression,
+                .span = zero_span,
+                .data = .{ .extra = me },
+            });
+        } else class_ref;
+
+        // arg3: "methodName" — key 노드의 텍스트를 따옴표로 감싸 문자열 리터럴로
+        const key_node = self.new_ast.getNode(md.key);
+        const key_text = self.new_ast.getText(key_node.data.string_ref);
+        // 문자열 리터럴은 따옴표를 포함해야 codegen이 올바르게 출력
+        var quoted_buf: [256]u8 = undefined;
+        quoted_buf[0] = '"';
+        const copy_len = @min(key_text.len, quoted_buf.len - 2);
+        @memcpy(quoted_buf[1 .. 1 + copy_len], key_text[0..copy_len]);
+        quoted_buf[1 + copy_len] = '"';
+        const quoted_span = try self.new_ast.addString(quoted_buf[0 .. 2 + copy_len]);
+        const key_string = try self.new_ast.addNode(.{
+            .tag = .string_literal,
+            .span = quoted_span,
+            .data = .{ .string_ref = quoted_span },
+        });
+
+        // arg4: kind (1=method, 2=property) — string_table에 숫자 텍스트 저장
+        const kind_text = if (md.kind == 1) "1" else "2";
+        const kind_span = try self.new_ast.addString(kind_text);
+        const kind_node = try self.new_ast.addNode(.{
+            .tag = .numeric_literal,
+            .span = kind_span,
+            .data = .{ .number_bytes = @bitCast(@as(f64, @floatFromInt(md.kind))) },
+        });
+
+        const args = try self.new_ast.addNodeList(&.{ deco_array, target, key_string, kind_node });
+        const call = try self.addExtraNode(.call_expression, zero_span, &.{
+            @intFromEnum(callee), args.start, args.len, 0,
+        });
+        return self.new_ast.addNode(.{
+            .tag = .expression_statement,
+            .span = zero_span,
+            .data = .{ .unary = .{ .operand = call, .flags = 0 } },
+        });
+    }
+
+    /// Foo = __decorateClass([dec1, dec2], Foo) 호출문 생성 (class decorator)
+    fn buildDecorateClassCall(
+        self: *Transformer,
+        decorate_span: Span,
+        class_name_span: Span,
+        old_deco_start: u32,
+        old_deco_len: u32,
+    ) Error!NodeIndex {
+        const zero_span = Span{ .start = 0, .end = 0 };
+
+        // callee: __decorateClass
+        const callee = try self.new_ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = decorate_span,
+            .data = .{ .string_ref = decorate_span },
+        });
+
+        // arg1: [dec1, dec2, ...]
+        const old_deco_indices = self.old_ast.extra_data.items[old_deco_start .. old_deco_start + old_deco_len];
+
+        const scratch_top = self.scratch.items.len;
+        defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+        for (old_deco_indices) |raw_idx| {
+            const deco_node = self.old_ast.getNode(@enumFromInt(raw_idx));
+            if (deco_node.tag == .decorator) {
+                const visited = try self.visitNode(deco_node.data.unary.operand);
+                try self.scratch.append(self.allocator, visited);
+            } else {
+                const visited = try self.visitNode(@enumFromInt(raw_idx));
+                try self.scratch.append(self.allocator, visited);
+            }
+        }
+
+        const deco_array_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+        const deco_array = try self.new_ast.addNode(.{
+            .tag = .array_expression,
+            .span = zero_span,
+            .data = .{ .list = deco_array_list },
+        });
+
+        // arg2: Foo
+        const class_ref = try self.new_ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = class_name_span,
+            .data = .{ .string_ref = class_name_span },
+        });
+
+        const args = try self.new_ast.addNodeList(&.{ deco_array, class_ref });
+        const call = try self.addExtraNode(.call_expression, zero_span, &.{
+            @intFromEnum(callee), args.start, args.len, 0,
+        });
+
+        // Foo = __decorateClass([dec], Foo)
+        const lhs = try self.new_ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = class_name_span,
+            .data = .{ .string_ref = class_name_span },
+        });
+        const assign = try self.new_ast.addNode(.{
+            .tag = .assignment_expression,
+            .span = zero_span,
+            .data = .{ .binary = .{ .left = lhs, .right = call, .flags = 0 } },
+        });
+        return self.new_ast.addNode(.{
+            .tag = .expression_statement,
+            .span = zero_span,
+            .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
         });
     }
 
@@ -1105,7 +1844,12 @@ pub const Transformer = struct {
             new_body = try self.insertParameterPropertyAssignments(new_body, pp.prop_names[0..pp.prop_count]);
         }
 
-        const new_decos = try self.visitExtraList(self.readU32(e, 5), self.readU32(e, 6));
+        // experimentalDecorators 모드에서는 decorator를 class 수준에서 처리하므로
+        // method_definition에서는 제거한다.
+        const new_decos = if (self.options.experimental_decorators)
+            NodeList{ .start = 0, .len = 0 }
+        else
+            try self.visitExtraList(self.readU32(e, 5), self.readU32(e, 6));
         return self.addExtraNode(.method_definition, node.span, &.{
             @intFromEnum(new_key), pp.new_params.start, pp.new_params.len, @intFromEnum(new_body),
             self.readU32(e, 4),    new_decos.start,     new_decos.len,
@@ -1123,7 +1867,12 @@ pub const Transformer = struct {
         if (self.options.strip_types and (flags & 0x60) != 0) return NodeIndex.none;
         const new_key = try self.visitNode(self.readNodeIdx(e, 0));
         const new_value = try self.visitNode(self.readNodeIdx(e, 1));
-        const new_decos = try self.visitExtraList(self.readU32(e, 3), self.readU32(e, 4));
+        // experimentalDecorators 모드에서는 decorator를 class 수준에서 처리하므로
+        // property_definition에서는 제거한다.
+        const new_decos = if (self.options.experimental_decorators)
+            NodeList{ .start = 0, .len = 0 }
+        else
+            try self.visitExtraList(self.readU32(e, 3), self.readU32(e, 4));
         return self.addExtraNode(.property_definition, node.span, &.{
             @intFromEnum(new_key), @intFromEnum(new_value), self.readU32(e, 2),
             new_decos.start,       new_decos.len,
@@ -2124,4 +2873,136 @@ test "Transformer: isTypeOnlyNode covers all TS type tags" {
     try std_lib.testing.expect(Transformer.isTypeOnlyNode(.ts_interface_declaration));
     // enum은 런타임 코드를 생성하므로 isTypeOnlyNode이 아님
     try std_lib.testing.expect(!Transformer.isTypeOnlyNode(.ts_enum_declaration));
+}
+
+/// 테스트 헬퍼: TransformOptions를 지정하여 파싱 → transformer 실행.
+fn parseAndTransformWithOptions(allocator: std.mem.Allocator, source: []const u8, options: TransformOptions) !TestResult {
+    const scanner_ptr = try allocator.create(Scanner);
+    scanner_ptr.* = try Scanner.init(allocator, source);
+
+    const parser_ptr = try allocator.create(Parser);
+    parser_ptr.* = Parser.init(allocator, scanner_ptr);
+
+    _ = try parser_ptr.parse();
+
+    var t = Transformer.init(allocator, &parser_ptr.ast, options);
+    const root = try t.transform();
+    t.scratch.deinit(allocator);
+    t.pending_nodes.deinit(allocator);
+
+    return .{ .ast = t.new_ast, .root = root, .scanner = scanner_ptr, .parser = parser_ptr, .allocator = allocator };
+}
+
+// ============================================================
+// useDefineForClassFields=false 테스트
+// ============================================================
+
+test "useDefineForClassFields=false: instance field moved to constructor" {
+    // class Foo { foo = 0 } → class Foo { constructor() { this.foo = 0; } }
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class Foo { foo = 0 }",
+        .{ .use_define_for_class_fields = false },
+    );
+    defer r.deinit();
+    // program에 class_declaration 1개
+    try std.testing.expectEqual(@as(u32, 1), r.statementCount());
+}
+
+test "useDefineForClassFields=false: static field preserved" {
+    // class Foo { static bar = 1; foo = 2 } → static bar는 유지, foo는 constructor로
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class Foo { static bar = 1; foo = 2 }",
+        .{ .use_define_for_class_fields = false },
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(u32, 1), r.statementCount());
+}
+
+test "useDefineForClassFields=false: with existing constructor" {
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class Foo { x = 1; constructor() { console.log('hi'); } }",
+        .{ .use_define_for_class_fields = false },
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(u32, 1), r.statementCount());
+}
+
+test "useDefineForClassFields=false: with super class" {
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class Foo extends Bar { x = 1 }",
+        .{ .use_define_for_class_fields = false },
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(u32, 1), r.statementCount());
+}
+
+test "useDefineForClassFields=true: default behavior preserves fields" {
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class Foo { foo = 0 }",
+        .{ .use_define_for_class_fields = true },
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(u32, 1), r.statementCount());
+}
+
+// ============================================================
+// experimentalDecorators 테스트
+// ============================================================
+
+test "experimentalDecorators: class decorator" {
+    // @sealed class Foo {} → let Foo = class Foo {}; Foo = __decorateClass([sealed], Foo);
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "@sealed class Foo {}",
+        .{ .experimental_decorators = true },
+    );
+    defer r.deinit();
+    // let Foo = class Foo {}; + Foo = __decorateClass([sealed], Foo);
+    // → 2 statements (let decl + assignment)
+    try std.testing.expectEqual(@as(u32, 2), r.statementCount());
+}
+
+test "experimentalDecorators: method decorator" {
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class Foo { @log greet() {} }",
+        .{ .experimental_decorators = true },
+    );
+    defer r.deinit();
+    // class Foo { greet() {} } + __decorateClass([log], Foo.prototype, "greet", 1);
+    // 하지만 method decorator만 있으면 class는 그대로, pending에 decorator call 추가
+    // → class_declaration + decorator call = 2 statements
+    try std.testing.expectEqual(@as(u32, 2), r.statementCount());
+}
+
+test "experimentalDecorators: preserves class without decorators" {
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class Foo { greet() {} }",
+        .{ .experimental_decorators = true },
+    );
+    defer r.deinit();
+    // decorator 없으면 그대로 1개
+    try std.testing.expectEqual(@as(u32, 1), r.statementCount());
+}
+
+// ============================================================
+// 두 옵션 동시 활성화 테스트
+// ============================================================
+
+test "both options: useDefineForClassFields=false + experimentalDecorators" {
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class Foo { x = 1; @log greet() {} }",
+        .{ .use_define_for_class_fields = false, .experimental_decorators = true },
+    );
+    defer r.deinit();
+    // class with constructor (x moved) + __decorateClass call for greet
+    // → class_declaration + decorator call = 2 statements
+    try std.testing.expectEqual(@as(u32, 2), r.statementCount());
 }
