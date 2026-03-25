@@ -2117,12 +2117,7 @@ pub const Codegen = struct {
         }
         self.declared_names.put(self.allocator, name_text, {}) catch {};
 
-        // ((Foo) => { ... })(Foo || (Foo = {}));
-        try self.write("((");
-        try self.write(name_text);
-        try self.write(") => {");
-
-        // 1단계: export된 이름 수집 (identifier 참조 치환용)
+        // 1단계: export된 이름 수집 (IIFE 열기 전에 — 파라미터 충돌 감지용)
         var ns_export_map: std.StringHashMapUnmanaged(void) = .{};
         defer ns_export_map.deinit(self.allocator);
         if (body_node.tag == .block_statement) {
@@ -2140,11 +2135,26 @@ pub const Codegen = struct {
             }
         }
 
+        // 파라미터 이름: export 변수와 충돌하면 _ 접두사 (esbuild 호환)
+        // namespace a { export var a = 123 } → ((_a) => { _a.a = 123 })(a || (a = {}))
+        var param_buf: [256]u8 = undefined;
+        const param_name = if (ns_export_map.contains(name_text)) blk: {
+            const len = @min(name_text.len + 1, param_buf.len);
+            param_buf[0] = '_';
+            @memcpy(param_buf[1..len], name_text[0 .. len - 1]);
+            break :blk param_buf[0..len];
+        } else name_text;
+
+        // ((Foo) => { ... })(Foo || (Foo = {}));
+        try self.write("((");
+        try self.write(param_name);
+        try self.write(") => {");
+
         // 2단계: ns_prefix 설정 (identifier 출력 시 치환 활성화)
         const saved_prefix = self.ns_prefix;
         const saved_exports = self.ns_exports;
         if (ns_export_map.count() > 0) {
-            self.ns_prefix = name_text;
+            self.ns_prefix = param_name;
             self.ns_exports = ns_export_map;
         }
         defer {
@@ -2167,22 +2177,21 @@ pub const Codegen = struct {
                             const decl_node = self.ast.getNode(decl_idx);
                             // export namespace bar {} → 중첩 namespace (부모 이름 전달)
                             if (decl_node.tag == .ts_module_declaration) {
-                                try self.emitNamespaceIIFEInner(decl_node, name_text);
+                                try self.emitNamespaceIIFEInner(decl_node, param_name);
                             } else {
                                 try self.emitNode(decl_idx);
-                                try self.emitNamespaceExport(name_text, decl_idx);
+                                try self.emitNamespaceExport(param_name, decl_idx);
                             }
                         }
                     },
                     .export_default_declaration => {
-                        try self.write(name_text);
+                        try self.write(param_name);
                         try self.write(".default=");
                         try self.emitNode(stmt_node.data.unary.operand);
                         try self.writeByte(';');
                     },
                     .ts_module_declaration => {
-                        // namespace 내부의 비-export namespace → 부모 경로 전달
-                        try self.emitNamespaceIIFEInner(stmt_node, name_text);
+                        try self.emitNamespaceIIFEInner(stmt_node, param_name);
                     },
                     else => try self.emitNode(@enumFromInt(raw_idx)),
                 }
