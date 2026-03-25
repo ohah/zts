@@ -28,6 +28,8 @@ const TranspileOptions = struct {
     use_define_for_class_fields: bool = true,
     /// experimentalDecorators: legacy decorator → __decorateClass 호출
     experimental_decorators: bool = false,
+    /// ES 타겟 레벨
+    target: lib.transformer.TransformOptions.Target = .esnext,
 };
 
 /// 단일 파일을 트랜스파일한다.
@@ -122,6 +124,7 @@ fn transpileFile(
         .define = options.define,
         .use_define_for_class_fields = options.use_define_for_class_fields,
         .experimental_decorators = options.experimental_decorators,
+        .target = options.target,
     });
     // unused import 제거를 위해 semantic 데이터를 transformer에 전달
     transformer.old_symbol_ids = analyzer.symbol_ids.items;
@@ -336,6 +339,8 @@ pub fn main() !void {
     var project_path: ?[]const u8 = null;
     var use_define_for_class_fields: ?bool = null; // null = CLI에서 미지정 → tsconfig 따름
     var experimental_decorators: ?bool = null; // null = CLI에서 미지정 → tsconfig 따름
+    const Target = lib.transformer.TransformOptions.Target;
+    var target: Target = .esnext;
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -441,6 +446,12 @@ pub fn main() !void {
             use_define_for_class_fields = false;
         } else if (std.mem.eql(u8, arg, "--use-define-for-class-fields=true")) {
             use_define_for_class_fields = true;
+        } else if (std.mem.startsWith(u8, arg, "--target=")) {
+            const val = arg["--target=".len..];
+            target = std.meta.stringToEnum(Target, val) orelse {
+                try stderr.print("zts: unknown target '{s}'\n", .{val});
+                return;
+            };
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try printUsage(stdout);
             return;
@@ -688,6 +699,7 @@ pub fn main() !void {
         .platform = platform,
         .use_define_for_class_fields = use_define_for_class_fields orelse true,
         .experimental_decorators = experimental_decorators orelse false,
+        .target = target,
     };
 
     const is_stdin = std.mem.eql(u8, input_path_str, "-");
