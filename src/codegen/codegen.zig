@@ -2074,20 +2074,71 @@ pub const Codegen = struct {
         var member_values: std.StringHashMapUnmanaged(EnumMemberValue) = .{};
         defer member_values.deinit(self.allocator);
 
-        // IIFE 파라미터 이름: 멤버 중 enum 이름과 같은 것이 있으면 _EnumName 사용
+        // 1차 패스에서 needs_rename도 같이 판별 (별도 순회 불필요)
         var needs_rename = false;
-        for (member_indices) |raw_idx| {
-            const member = self.ast.getNode(@enumFromInt(raw_idx));
-            const member_name = self.ast.getNode(member.data.binary.left);
-            const raw_text = self.ast.getText(member_name.span);
-            const mt = stripStringQuotes(raw_text);
-            if (std.mem.eql(u8, mt, name_text)) {
-                needs_rename = true;
-                break;
+
+        // TS 식별자는 실전에서 256자를 넘지 않음
+        var param_buf: [256]u8 = undefined;
+
+        // 1차 패스: 멤버 값 수집 + needs_rename 판별 (출력 전에 실행)
+        {
+            var auto_value: i64 = 0;
+            var auto_valid = true;
+            for (member_indices) |raw_idx| {
+                const member = self.ast.getNode(@enumFromInt(raw_idx));
+                const member_name = self.ast.getNode(member.data.binary.left);
+                const raw_text = self.ast.getText(member_name.span);
+                const mt = stripStringQuotes(raw_text);
+                const member_init_idx = member.data.binary.right;
+
+                if (!needs_rename and std.mem.eql(u8, mt, name_text)) {
+                    needs_rename = true;
+                }
+
+                if (!member_init_idx.isNone()) {
+                    const init_node = self.ast.getNode(member_init_idx);
+                    if (init_node.tag == .numeric_literal) {
+                        const num_text = self.ast.getText(init_node.span);
+                        if (std.fmt.parseInt(i64, num_text, 10)) |v| {
+                            try member_values.put(self.allocator, mt, .{ .int = v });
+                            auto_value = v + 1;
+                            auto_valid = true;
+                        } else |_| {
+                            try member_values.put(self.allocator, mt, .{ .raw = num_text });
+                            auto_valid = false;
+                        }
+                    } else if (init_node.tag == .identifier_reference) {
+                        const ref_text = self.ast.getText(init_node.span);
+                        if (member_values.get(ref_text)) |resolved| {
+                            try member_values.put(self.allocator, mt, resolved);
+                            switch (resolved) {
+                                .int => |v| {
+                                    auto_value = v + 1;
+                                    auto_valid = true;
+                                },
+                                .raw, .str => {
+                                    auto_valid = false;
+                                },
+                            }
+                        } else {
+                            auto_valid = false;
+                        }
+                    } else if (init_node.tag == .string_literal) {
+                        const str_text = self.ast.getText(init_node.span);
+                        try member_values.put(self.allocator, mt, .{ .str = str_text });
+                        auto_valid = false;
+                    } else {
+                        auto_valid = false;
+                    }
+                } else {
+                    if (auto_valid) {
+                        try member_values.put(self.allocator, mt, .{ .int = auto_value });
+                        auto_value += 1;
+                    }
+                }
             }
         }
 
-        var param_buf: [256]u8 = undefined;
         const param_name = if (needs_rename) blk: {
             const len = @min(name_text.len + 1, param_buf.len);
             param_buf[0] = '_';
@@ -2104,64 +2155,6 @@ pub const Codegen = struct {
         try self.write("((");
         try self.write(param_name);
         try self.write(") => {");
-
-        // 1차 패스: 멤버 값 수집 (상수 폴딩 + 자기참조 인라이닝용)
-        {
-            var auto_value: i64 = 0;
-            var auto_valid = true; // auto_value가 유효한지 (비숫자 초기화 이후 false)
-            for (member_indices) |raw_idx| {
-                const member = self.ast.getNode(@enumFromInt(raw_idx));
-                const member_name = self.ast.getNode(member.data.binary.left);
-                const raw_text = self.ast.getText(member_name.span);
-                const mt = stripStringQuotes(raw_text);
-                const member_init_idx = member.data.binary.right;
-
-                if (!member_init_idx.isNone()) {
-                    const init_node = self.ast.getNode(member_init_idx);
-                    if (init_node.tag == .numeric_literal) {
-                        const num_text = self.ast.getText(init_node.span);
-                        if (std.fmt.parseInt(i64, num_text, 10)) |v| {
-                            member_values.put(self.allocator, mt, .{ .int = v }) catch {};
-                            auto_value = v + 1;
-                            auto_valid = true;
-                        } else |_| {
-                            // float 등 — 원본 텍스트로 저장
-                            member_values.put(self.allocator, mt, .{ .raw = num_text }) catch {};
-                            auto_valid = false;
-                        }
-                    } else if (init_node.tag == .identifier_reference) {
-                        // 다른 enum 멤버를 참조하는 경우 → resolve
-                        const ref_text = self.ast.getText(init_node.span);
-                        if (member_values.get(ref_text)) |resolved| {
-                            member_values.put(self.allocator, mt, resolved) catch {};
-                            switch (resolved) {
-                                .int => |v| {
-                                    auto_value = v + 1;
-                                    auto_valid = true;
-                                },
-                                .raw, .str => {
-                                    auto_valid = false;
-                                },
-                            }
-                        } else {
-                            auto_valid = false;
-                        }
-                    } else if (init_node.tag == .string_literal) {
-                        const str_text = self.ast.getText(init_node.span);
-                        member_values.put(self.allocator, mt, .{ .str = str_text }) catch {};
-                        auto_valid = false;
-                    } else {
-                        auto_valid = false;
-                    }
-                } else {
-                    // 자동 증가 값
-                    if (auto_valid) {
-                        member_values.put(self.allocator, mt, .{ .int = auto_value }) catch {};
-                        auto_value += 1;
-                    }
-                }
-            }
-        }
 
         // 2차 패스: 각 멤버 출력
         var auto_value: i64 = 0;
@@ -2206,11 +2199,14 @@ pub const Codegen = struct {
                     // 이니셜라이저가 있으면 그대로 출력
                     try self.emitNode(member_init_idx);
                 }
-                // 이니셜라이저가 숫자 리터럴이면 auto_value 업데이트
-                if (init_node.tag == .numeric_literal) {
-                    const num_text = self.ast.getText(init_node.span);
-                    auto_value = std.fmt.parseInt(i64, num_text, 10) catch auto_value;
-                    auto_value += 1;
+                // auto_value 갱신: 1차 패스의 resolved 값을 사용 (identifier_reference 인라인 포함)
+                if (member_values.get(member_text)) |resolved| {
+                    switch (resolved) {
+                        .int => |v| {
+                            auto_value = v + 1;
+                        },
+                        .raw, .str => {},
+                    }
                 }
             } else {
                 // 자동 증가 값 출력
