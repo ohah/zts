@@ -1,6 +1,10 @@
 //! ES 다운레벨링 공통 헬퍼
 //!
 //! 임시 변수 생성, void 0, null 비교 등 여러 ES 버전 변환에서 공유하는 유틸리티.
+//!
+//! 참고:
+//! - esbuild: internal/js_parser/js_parser_lower_class.go (privateTempRef 패턴)
+//! - `== null` vs `=== null`: JS에서 `x == null`은 null과 undefined 모두 체크 (loose equality)
 
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");

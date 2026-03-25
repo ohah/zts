@@ -4,6 +4,14 @@
 //! ??= → a ?? (a = b) (또는 target < es2020이면 a != null ? a : (a = b))
 //! ||= → a || (a = b)
 //! &&= → a && (a = b)
+//!
+//! 스펙:
+//! - ??= / ||= / &&= : https://tc39.es/ecma262/#sec-assignment-operators (ES2021, TC39 Stage 4: 2020-07)
+//!                      https://github.com/tc39/proposal-logical-assignment
+//!
+//! 참고:
+//! - esbuild: internal/js_parser/js_parser_lower.go (lowerAssign)
+//! - oxc: crates/oxc_transformer/src/es2021/
 
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
