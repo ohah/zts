@@ -1947,6 +1947,9 @@ pub const Transformer = struct {
     // accessor_property: extra = [key, init_val, flags, deco_start, deco_len]
     fn visitAccessorProperty(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
+        const flags = self.readU32(e, 2);
+        // abstract(0x20) 또는 declare(0x40) accessor는 타입 전용 → 완전 제거
+        if (self.options.strip_types and (flags & 0x60) != 0) return NodeIndex.none;
         const new_key = try self.visitNode(self.readNodeIdx(e, 0));
         const new_value = try self.visitNode(self.readNodeIdx(e, 1));
         const new_decos = try self.visitExtraList(self.readU32(e, 3), self.readU32(e, 4));
