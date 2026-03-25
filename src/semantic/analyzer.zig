@@ -61,6 +61,10 @@ pub const SemanticAnalyzer = struct {
     /// module 모드 여부 (파서에서 전달받음)
     is_module: bool = false,
 
+    /// TypeScript 모드 여부 (.ts/.tsx/.mts 파일)
+    /// TS에서는 function overload, duplicate export 등이 합법
+    is_ts: bool = false,
+
     /// Top-Level Await 감지 결과. 모듈의 top-level에서 await가 사용되면 true.
     /// 함수/arrow 내부의 await는 포함하지 않음.
     has_top_level_await: bool = false,
@@ -2128,15 +2132,20 @@ pub const SemanticAnalyzer = struct {
         }
     }
 
-    /// 내보낸 이름을 등록한다. 중복이면 에러.
+    /// 내보낸 이름을 등록한다. JS에서 중복이면 에러, TS에서는 허용 (oxc 동일).
+    /// TS에서는 function overload, namespace merge 등으로 같은 이름의 export가 합법.
     fn registerExportedName(self: *SemanticAnalyzer, name: []const u8, span: Span) AllocError!void {
         if (!self.is_module) return;
         if (self.exported_names.get(name)) |_| {
-            try self.addErrorMsg(span, try std.fmt.allocPrint(
-                self.allocator,
-                "Duplicate export name '{s}'",
-                .{name},
-            ));
+            // TS 모드: duplicate export 체크 스킵 (oxc: !is_typescript() 조건)
+            // JS 모드에서만 에러
+            if (!self.is_ts) {
+                try self.addErrorMsg(span, try std.fmt.allocPrint(
+                    self.allocator,
+                    "Duplicate export name '{s}'",
+                    .{name},
+                ));
+            }
         } else {
             try self.exported_names.put(name, span);
         }
