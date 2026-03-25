@@ -21,6 +21,7 @@ pub const TransformOptions = transformer.TransformOptions;
 pub const es2016 = @import("es2016.zig");
 pub const es2020 = @import("es2020.zig");
 pub const es2021 = @import("es2021.zig");
+pub const es2022 = @import("es2022.zig");
 pub const es_helpers = @import("es_helpers.zig");
 
 test {
@@ -28,5 +29,6 @@ test {
     _ = es2016;
     _ = es2020;
     _ = es2021;
+    _ = es2022;
     _ = es_helpers;
 }

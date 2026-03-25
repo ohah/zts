@@ -3537,3 +3537,36 @@ test "ES2016: **= no transform on es2016" {
     defer r.deinit();
     try std.testing.expectEqualStrings("a**=b;", r.output);
 }
+
+// --- ES2022: class static block ---
+
+test "ES2022: static block to IIFE" {
+    var r = try e2eTarget(std.testing.allocator, "class Foo { static { console.log(\"init\"); } }", .es2021);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("class Foo{}(()=>{console.log(\"init\");})();", r.output);
+}
+
+test "ES2022: static block no transform on es2022" {
+    // static_block은 writeNodeSpan으로 소스를 그대로 복사하므로 공백이 유지됨
+    var r = try e2eTarget(std.testing.allocator, "class Foo{static{console.log(\"init\")}}", .es2022);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("class Foo{static{console.log(\"init\")}}", r.output);
+}
+
+test "ES2022: static block no transform on esnext" {
+    var r = try e2eTarget(std.testing.allocator, "class Foo{static{console.log(\"init\")}}", .esnext);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("class Foo{static{console.log(\"init\")}}", r.output);
+}
+
+test "ES2022: multiple static blocks" {
+    var r = try e2eTarget(std.testing.allocator, "class Foo { static { a(); } method() {} static { b(); } }", .es2021);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("class Foo{method(){}}(()=>{a();})();(()=>{b();})();", r.output);
+}
+
+test "ES2022: static block with methods preserved" {
+    var r = try e2eTarget(std.testing.allocator, "class Foo { method() { return 1; } static { init(); } }", .es2021);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("class Foo{method(){return 1;}}(()=>{init();})();", r.output);
+}

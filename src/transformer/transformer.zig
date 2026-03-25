@@ -26,6 +26,7 @@ const Span = token_mod.Span;
 const es2016 = @import("es2016.zig");
 const es2020 = @import("es2020.zig");
 const es2021 = @import("es2021.zig");
+const es2022 = @import("es2022.zig");
 const es_helpers = @import("es_helpers.zig");
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 
@@ -86,6 +87,10 @@ pub const TransformOptions = struct {
         /// 해당 타겟에서 logical assignment (??=, ||=, &&=) 변환이 필요한지
         pub fn needsLogicalAssignment(self: Target) bool {
             return @intFromEnum(self) < @intFromEnum(Target.es2021);
+        }
+        /// 해당 타겟에서 class static block 변환이 필요한지
+        pub fn needsClassStaticBlock(self: Target) bool {
+            return @intFromEnum(self) < @intFromEnum(Target.es2022);
         }
     };
 };
@@ -1122,6 +1127,38 @@ pub const Transformer = struct {
         if (self.options.use_define_for_class_fields and !self.options.experimental_decorators) {
             const new_name = try self.visitNode(self.readNodeIdx(e, 0));
             const new_super = try self.visitNode(self.readNodeIdx(e, 1));
+
+            // ES2022 다운레벨링: static block → IIFE (target < es2022)
+            if (self.options.target.needsClassStaticBlock()) {
+                var new_body: NodeIndex = .none;
+                var static_block_iifes: std.ArrayList(NodeIndex) = .empty;
+                defer static_block_iifes.deinit(self.allocator);
+
+                const had_static_blocks = try es2022.ES2022(Transformer).lowerStaticBlocks(
+                    self,
+                    self.readNodeIdx(e, 2),
+                    &new_body,
+                    &static_block_iifes,
+                );
+
+                if (had_static_blocks) {
+                    const new_decos = try self.visitExtraList(self.readU32(e, 6), self.readU32(e, 7));
+                    const none = @intFromEnum(NodeIndex.none);
+                    const class_result = try self.addExtraNode(node.tag, node.span, &.{
+                        @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
+                        none,                   0,                       0,
+                        new_decos.start,        new_decos.len,
+                    });
+
+                    // class 노드를 pending_nodes에 넣고, static block IIFE를 그 뒤에 추가
+                    try self.pending_nodes.append(self.allocator, class_result);
+                    for (static_block_iifes.items) |iife| {
+                        try self.pending_nodes.append(self.allocator, iife);
+                    }
+                    return .none;
+                }
+            }
+
             const new_body = try self.visitNode(self.readNodeIdx(e, 2));
             const new_decos = try self.visitExtraList(self.readU32(e, 6), self.readU32(e, 7));
             const none = @intFromEnum(NodeIndex.none);
@@ -1173,12 +1210,17 @@ pub const Transformer = struct {
         var existing_constructor: ?NodeIndex = null;
         var existing_constructor_pos: ?usize = null;
 
+        // ES2022 다운레벨링: static block → IIFE (target < es2022)
+        var static_block_iifes: std.ArrayList(NodeIndex) = .empty;
+        defer static_block_iifes.deinit(self.allocator);
+
         var ctx = ClassMemberContext{
             .class_members = &class_members,
             .field_assignments = &field_assignments,
             .member_decorators = &member_decorators,
             .existing_constructor = &existing_constructor,
             .existing_constructor_pos = &existing_constructor_pos,
+            .static_block_iifes = if (self.options.target.needsClassStaticBlock()) &static_block_iifes else null,
         };
         for (body_members) |raw_idx| {
             try self.classifyClassMember(raw_idx, &ctx);
@@ -1288,6 +1330,7 @@ pub const Transformer = struct {
                     old_deco_start,
                     old_deco_len,
                     member_decorators.items,
+                    static_block_iifes.items,
                 );
             }
         }
@@ -1299,6 +1342,21 @@ pub const Transformer = struct {
             NodeList{ .start = 0, .len = 0 };
 
         const none = @intFromEnum(NodeIndex.none);
+
+        // ES2022: static block이 있으면 class를 pending에 넣고 IIFE를 뒤에 추가
+        if (static_block_iifes.items.len > 0) {
+            const class_result = try self.addExtraNode(node.tag, node.span, &.{
+                @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
+                none,                   0,                       0,
+                new_decos.start,        new_decos.len,
+            });
+            try self.pending_nodes.append(self.allocator, class_result);
+            for (static_block_iifes.items) |iife| {
+                try self.pending_nodes.append(self.allocator, iife);
+            }
+            return .none;
+        }
+
         return self.addExtraNode(node.tag, node.span, &.{
             @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
             none,                   0,                       0,
@@ -1318,6 +1376,8 @@ pub const Transformer = struct {
         member_decorators: *std.ArrayList(MemberDecoratorInfo),
         existing_constructor: *?NodeIndex,
         existing_constructor_pos: *?usize,
+        /// ES2022 다운레벨링: static block → IIFE (target < es2022 일 때 사용)
+        static_block_iifes: ?*std.ArrayList(NodeIndex) = null,
     };
 
     fn classifyClassMember(
@@ -1336,6 +1396,13 @@ pub const Transformer = struct {
         // method_definition: extra = [key, params_start, params_len, body, flags, deco_start, deco_len]
         if (member.tag == .method_definition) {
             try self.classifyMethodDefinition(member, ctx.class_members, ctx.member_decorators, ctx.existing_constructor, ctx.existing_constructor_pos);
+            return;
+        }
+
+        // ES2022 다운레벨링: static block → IIFE (target < es2022)
+        if (member.tag == .static_block and ctx.static_block_iifes != null) {
+            const iife = try es2022.ES2022(Transformer).buildStaticBlockIIFE(self, member);
+            try ctx.static_block_iifes.?.append(self.allocator, iife);
             return;
         }
 
@@ -1772,6 +1839,7 @@ pub const Transformer = struct {
         old_deco_start: u32,
         old_deco_len: u32,
         member_decos: []const MemberDecoratorInfo,
+        static_block_iifes: []const NodeIndex,
     ) Error!NodeIndex {
         const none = @intFromEnum(NodeIndex.none);
         const decorate_span = try self.new_ast.addString("__decorateClass");
@@ -1823,6 +1891,11 @@ pub const Transformer = struct {
             const class_deco_stmt = try self.buildDecorateClassCall(decorate_span, name_span, old_deco_start, old_deco_len);
             try self.pending_nodes.append(self.allocator, class_deco_stmt);
 
+            // ES2022: static block IIFE를 decorator 호출 뒤에 추가
+            for (static_block_iifes) |iife| {
+                try self.pending_nodes.append(self.allocator, iife);
+            }
+
             // visitClass의 반환값은 .none (let 선언 + decorator 호출이 pending_nodes에 있음)
             return .none;
         }
@@ -1847,10 +1920,29 @@ pub const Transformer = struct {
                 try self.pending_nodes.append(self.allocator, call_stmt);
             }
 
+            // ES2022: static block IIFE를 decorator 호출 뒤에 추가
+            for (static_block_iifes) |iife| {
+                try self.pending_nodes.append(self.allocator, iife);
+            }
+
             return .none;
         }
 
         // decorator가 없는 경우
+        // ES2022: static block이 있으면 class를 pending에 넣고 IIFE를 뒤에 추가
+        if (static_block_iifes.len > 0) {
+            const class_result = try self.addExtraNode(node.tag, node.span, &.{
+                @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
+                none,                   0,                       0,
+                empty_list.start,       empty_list.len,
+            });
+            try self.pending_nodes.append(self.allocator, class_result);
+            for (static_block_iifes) |iife| {
+                try self.pending_nodes.append(self.allocator, iife);
+            }
+            return .none;
+        }
+
         return self.addExtraNode(node.tag, node.span, &.{
             @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
             none,                   0,                       0,
