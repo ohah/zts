@@ -2553,16 +2553,15 @@ pub const Codegen = struct {
             const d_extras = self.ast.extra_data.items[de .. de + 3];
             const name_idx: NodeIndex = @enumFromInt(d_extras[0]);
             const init_idx: NodeIndex = @enumFromInt(d_extras[2]);
+            // init이 없으면 할당할 값이 없으므로 스킵 (esbuild 호환)
+            if (init_idx.isNone()) continue;
             const var_name_node = self.ast.getNode(name_idx);
             const var_name = self.ast.getText(var_name_node.span);
-            // ns.prop = init; (init 없으면 ns.prop = void 0; — undefined 초기화)
             try self.write(ns_name);
             try self.writeByte('.');
             try self.write(var_name);
-            if (!init_idx.isNone()) {
-                try self.writeByte('=');
-                try self.emitNode(init_idx);
-            }
+            try self.writeByte('=');
+            try self.emitNode(init_idx);
             try self.writeByte(';');
         }
     }
