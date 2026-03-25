@@ -450,7 +450,8 @@ pub const Transformer = struct {
             .import_declaration => self.visitImportDeclaration(node),
             .export_named_declaration => self.visitExportNamedDeclaration(node),
             .export_default_declaration => self.visitUnaryNode(node),
-            .export_all_declaration, .catch_clause => {
+            .export_all_declaration => self.visitBinaryNode(node),
+            .catch_clause => {
                 if (self.options.target.needsOptionalCatchBinding()) {
                     return es2019.ES2019(Transformer).lowerOptionalCatchBinding(self, node);
                 }
