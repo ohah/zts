@@ -167,7 +167,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     }
 
     // import-equals가 아니면 ESM import → module syntax 확정
-    if (!self.in_namespace) {
+    if (self.is_unambiguous and !self.in_namespace) {
         self.has_module_syntax = true;
     }
 
@@ -350,13 +350,10 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
     // export function f() {} 형태에서 주석은 export 토큰에 붙지만,
     // function 파서에서 확인해야 하므로 여기서 미리 저장한다.
     const had_no_side_effects = self.scanner.token.has_no_side_effects_comment;
-    // Unambiguous 모드: top-level ESM export 발견 → module 확정
-    // namespace 내부의 export는 module syntax가 아님
-    // TS CJS 호환 구문 (export =, export as namespace)은 module syntax가 아님
-    if (!self.in_namespace) {
+    // Unambiguous 모드: top-level ESM export → module 확정
+    // export = (TS CJS) 제외, namespace 내부 제외
+    if (self.is_unambiguous and !self.in_namespace) {
         const next_kind = try self.peekNextKind();
-        // export = expr → TS CJS (module syntax 아님)
-        // 나머지 (export default, export {}, export *, export var 등) → ESM module syntax
         if (next_kind != .eq) {
             self.has_module_syntax = true;
         }
