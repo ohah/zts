@@ -259,6 +259,25 @@ pub const Scanner = struct {
     /// 공백 문자를 스킵한다.
     /// 줄바꿈을 만나면 has_newline_before를 true로 설정.
     fn skipWhitespace(self: *Scanner) !void {
+        // SIMD fast path: 16바이트씩 ASCII 공백/탭 스킵
+        while (self.current + 16 <= self.source.len) {
+            const chunk: @Vector(16, u8) = self.source[self.current..][0..16].*;
+            // 공백(' '=0x20) 또는 탭('\t'=0x09) 이외의 문자가 있으면 중단
+            const spaces = chunk == @as(@Vector(16, u8), @splat(@as(u8, ' ')));
+            const tabs = chunk == @as(@Vector(16, u8), @splat(@as(u8, '\t')));
+            const ws_mask = @as(u16, @bitCast(spaces | tabs));
+            if (ws_mask == 0xFFFF) {
+                // 16바이트 모두 공백/탭
+                self.current += 16;
+            } else {
+                // 첫 번째 비공백 위치로 이동
+                const skip = @ctz(~ws_mask);
+                self.current += skip;
+                break;
+            }
+        }
+
+        // 스칼라 루프: 나머지 + 줄바꿈/유니코드 공백 처리
         while (!self.isAtEnd()) {
             const c = self.peek();
             switch (c) {
@@ -1755,6 +1774,30 @@ pub const Scanner = struct {
 
     /// 식별자의 나머지 부분을 스캔한다. 유니코드 문자와 \u 이스케이프를 처리.
     fn scanIdentifierTail(self: *Scanner) void {
+        // SIMD fast path: 16바이트씩 ASCII identifier continue 스캔
+        // [a-zA-Z0-9_$] 범위를 벡터 비교로 판별
+        while (self.current + 16 <= self.source.len) {
+            const chunk: @Vector(16, u8) = self.source[self.current..][0..16].*;
+            // ASCII identifier continue: [a-z] | [A-Z] | [0-9] | _ | $
+            const ge_a = chunk >= @as(@Vector(16, u8), @splat(@as(u8, 'a')));
+            const le_z = chunk <= @as(@Vector(16, u8), @splat(@as(u8, 'z')));
+            const ge_A = chunk >= @as(@Vector(16, u8), @splat(@as(u8, 'A')));
+            const le_Z = chunk <= @as(@Vector(16, u8), @splat(@as(u8, 'Z')));
+            const ge_0 = chunk >= @as(@Vector(16, u8), @splat(@as(u8, '0')));
+            const le_9 = chunk <= @as(@Vector(16, u8), @splat(@as(u8, '9')));
+            const is_under = chunk == @as(@Vector(16, u8), @splat(@as(u8, '_')));
+            const is_dollar = chunk == @as(@Vector(16, u8), @splat(@as(u8, '$')));
+            const id_mask = @as(u16, @bitCast(
+                (ge_a & le_z) | (ge_A & le_Z) | (ge_0 & le_9) | is_under | is_dollar,
+            ));
+            if (id_mask == 0xFFFF) {
+                self.current += 16;
+            } else {
+                self.current += @ctz(~id_mask);
+                break;
+            }
+        }
+
         while (!self.isAtEnd()) {
             const c = self.peek();
             // ASCII fast path
