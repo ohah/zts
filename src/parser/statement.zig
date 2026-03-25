@@ -223,7 +223,16 @@ pub fn parseStatement(self: *Parser) ParseError2!NodeIndex {
             // 위 조건에 매치되지 않으면 expression 또는 labeled statement로 파싱
             break :blk parseExpressionOrLabeledStatement(self);
         },
-        .kw_interface => self.parseTsInterfaceDeclaration(),
+        .kw_interface => blk_iface: {
+            // interface\nFoo {} → 'interface' expression statement + 'Foo' + '{}' (ASI)
+            // interface Foo {} → TS interface declaration
+            // esbuild: !p.lexer.HasNewlineBefore
+            const next_iface = try self.peekNext();
+            if (next_iface.has_newline_before) {
+                break :blk_iface parseExpressionOrLabeledStatement(self);
+            }
+            break :blk_iface self.parseTsInterfaceDeclaration();
+        },
         .kw_enum => self.parseTsEnumDeclaration(),
         .kw_with => parseWithStatement(self),
         else => parseExpressionOrLabeledStatement(self),
