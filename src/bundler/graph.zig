@@ -234,6 +234,7 @@ pub const ModuleGraph = struct {
         var analyzer = SemanticAnalyzer.init(arena_alloc, &parser.ast);
         analyzer.is_strict_mode = parser.is_strict_mode;
         analyzer.is_module = parser.is_module;
+        analyzer.is_ts = parser.is_ts;
         const analyze_ok = if (analyzer.analyze()) |_| true else |_| false;
 
         // OOM 시 semantic = null로 유지 (부분 데이터로 linker가 오동작하는 것 방지)

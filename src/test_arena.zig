@@ -22,6 +22,7 @@ fn runPipeline(allocator: std.mem.Allocator, source: []const u8) ![]const u8 {
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
     analyzer.is_strict_mode = parser.is_strict_mode;
     analyzer.is_module = parser.is_module;
+    analyzer.is_ts = parser.is_ts;
     try analyzer.analyze();
     if (analyzer.errors.items.len > 0) return error.SemanticError;
 
