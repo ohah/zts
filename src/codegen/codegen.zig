@@ -103,6 +103,10 @@ pub const Codegen = struct {
     next_comment_idx: usize = 0,
     /// for문 init 위치에서 variable_declaration 출력 시 세미콜론 생략
     in_for_init: bool = false,
+    /// namespace IIFE 내부에서 export된 변수의 참조를 ns.name으로 치환하기 위한 상태.
+    /// emitNamespaceIIFE에서 설정되고, emitNode의 identifier 출력에서 참조.
+    ns_prefix: ?[]const u8 = null,
+    ns_exports: ?std.StringHashMapUnmanaged(void) = null,
 
     pub fn init(allocator: std.mem.Allocator, ast: *const Ast) Codegen {
         return initWithOptions(allocator, ast, .{});
@@ -475,6 +479,21 @@ pub const Codegen = struct {
                             }
                             if (meta.renames.get(sym_id)) |new_name| {
                                 try self.write(new_name);
+                                return;
+                            }
+                        }
+                    }
+                }
+                // namespace IIFE 내부: export된 변수의 "참조"를 ns.name으로 치환.
+                // binding_identifier(선언 위치)는 치환하지 않음 — let x = 1에서 x는 원래 이름 유지.
+                if (self.ns_prefix) |prefix| {
+                    if (node.tag == .identifier_reference) {
+                        const name = self.ast.getText(node.data.string_ref);
+                        if (self.ns_exports) |exports| {
+                            if (exports.contains(name)) {
+                                try self.write(prefix);
+                                try self.writeByte('.');
+                                try self.write(name);
                                 return;
                             }
                         }
@@ -1987,25 +2006,49 @@ pub const Codegen = struct {
     ///
     /// 현재 단순 구현: 내부 문을 그대로 출력하고, export 문은 Foo.name = name으로 변환.
     fn emitNamespaceIIFE(self: *Codegen, node: Node) !void {
+        return self.emitNamespaceIIFEInner(node, null);
+    }
+
+    /// parent_ns: 부모 namespace 이름 (중첩 시 foo.bar 경로 생성용)
+    fn emitNamespaceIIFEInner(self: *Codegen, node: Node, parent_ns: ?[]const u8) !void {
         const name_idx = node.data.binary.left;
         const body_idx = node.data.binary.right;
 
         // 중첩 namespace (A.B.C)인 경우: right가 ts_module_declaration
         const body_node = self.ast.getNode(body_idx);
         if (body_node.tag == .ts_module_declaration) {
-            // 외부 namespace IIFE를 열고, 내부를 재귀 처리
             const name_node = self.ast.getNode(name_idx);
             const name_text = self.ast.getText(name_node.span);
 
-            try self.write("var ");
+            // 부모가 있으면 let, 없으면 var
+            if (parent_ns != null) {
+                try self.write("let ");
+            } else {
+                try self.write("var ");
+            }
             try self.write(name_text);
             try self.writeByte(';');
             try self.write("((");
             try self.write(name_text);
             try self.write(") => {");
-            // 내부 namespace를 재귀 출력
-            try self.emitNamespaceIIFE(body_node);
-            try self.emitIIFEClosing(name_text);
+            // 내부 namespace를 재귀 출력 (부모 이름 전달)
+            try self.emitNamespaceIIFEInner(body_node, name_text);
+            // 중첩 closing: (bar = foo.bar || (foo.bar = {}))
+            if (parent_ns) |pns| {
+                try self.write("})(");
+                try self.write(name_text);
+                try self.write(" = ");
+                try self.write(pns);
+                try self.writeByte('.');
+                try self.write(name_text);
+                try self.write(" || (");
+                try self.write(pns);
+                try self.writeByte('.');
+                try self.write(name_text);
+                try self.write(" = {}));");
+            } else {
+                try self.emitIIFEClosing(name_text);
+            }
             return;
         }
 
@@ -2013,8 +2056,12 @@ pub const Codegen = struct {
         const name_node = self.ast.getNode(name_idx);
         const name_text = self.ast.getText(name_node.span);
 
-        // var Foo;
-        try self.write("var ");
+        // 부모가 있으면 let, 없으면 var (esbuild 호환)
+        if (parent_ns != null) {
+            try self.write("let ");
+        } else {
+            try self.write("var ");
+        }
         try self.write(name_text);
         try self.writeByte(';');
 
@@ -2023,8 +2070,37 @@ pub const Codegen = struct {
         try self.write(name_text);
         try self.write(") => {");
 
-        // body의 각 statement 출력
-        // export 문은 Foo.name = expr 형태로 변환
+        // 1단계: export된 이름 수집 (identifier 참조 치환용)
+        var ns_export_map: std.StringHashMapUnmanaged(void) = .{};
+        defer ns_export_map.deinit(self.allocator);
+        if (body_node.tag == .block_statement) {
+            const list = body_node.data.list;
+            const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+            for (indices) |raw_idx| {
+                const stmt_node = self.ast.getNode(@enumFromInt(raw_idx));
+                if (stmt_node.tag == .export_named_declaration) {
+                    const e = stmt_node.data.extra;
+                    const decl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+                    if (!decl_idx.isNone()) {
+                        self.collectExportNames(&ns_export_map, decl_idx) catch {};
+                    }
+                }
+            }
+        }
+
+        // 2단계: ns_prefix 설정 (identifier 출력 시 치환 활성화)
+        const saved_prefix = self.ns_prefix;
+        const saved_exports = self.ns_exports;
+        if (ns_export_map.count() > 0) {
+            self.ns_prefix = name_text;
+            self.ns_exports = ns_export_map;
+        }
+        defer {
+            self.ns_prefix = saved_prefix;
+            self.ns_exports = saved_exports;
+        }
+
+        // 3단계: body 출력 (export 문은 Foo.name = expr 형태로 변환)
         if (body_node.tag == .block_statement) {
             const list = body_node.data.list;
             const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
@@ -2032,29 +2108,51 @@ pub const Codegen = struct {
                 const stmt_node = self.ast.getNode(@enumFromInt(raw_idx));
                 switch (stmt_node.tag) {
                     .export_named_declaration => {
-                        // export const x = 1; → const x = 1; Foo.x = x;
                         const e = stmt_node.data.extra;
                         const extras = self.ast.extra_data.items[e .. e + 4];
                         const decl_idx: NodeIndex = @enumFromInt(extras[0]);
                         if (!decl_idx.isNone()) {
-                            try self.emitNode(decl_idx);
-                            // 선언에서 이름을 추출하여 Foo.name = name 추가
-                            try self.emitNamespaceExport(name_text, decl_idx);
+                            const decl_node = self.ast.getNode(decl_idx);
+                            // export namespace bar {} → 중첩 namespace (부모 이름 전달)
+                            if (decl_node.tag == .ts_module_declaration) {
+                                try self.emitNamespaceIIFEInner(decl_node, name_text);
+                            } else {
+                                try self.emitNode(decl_idx);
+                                try self.emitNamespaceExport(name_text, decl_idx);
+                            }
                         }
                     },
                     .export_default_declaration => {
-                        // export default expr → Foo.default = expr;
                         try self.write(name_text);
                         try self.write(".default=");
                         try self.emitNode(stmt_node.data.unary.operand);
                         try self.writeByte(';');
+                    },
+                    .ts_module_declaration => {
+                        // namespace 내부의 비-export namespace → 부모 경로 전달
+                        try self.emitNamespaceIIFEInner(stmt_node, name_text);
                     },
                     else => try self.emitNode(@enumFromInt(raw_idx)),
                 }
             }
         }
 
-        try self.emitIIFEClosing(name_text);
+        // 부모가 있으면 중첩 closing: (name = parent.name || (parent.name = {}))
+        if (parent_ns) |pns| {
+            try self.write("})(");
+            try self.write(name_text);
+            try self.write(" = ");
+            try self.write(pns);
+            try self.writeByte('.');
+            try self.write(name_text);
+            try self.write(" || (");
+            try self.write(pns);
+            try self.writeByte('.');
+            try self.write(name_text);
+            try self.write(" = {}));");
+        } else {
+            try self.emitIIFEClosing(name_text);
+        }
     }
 
     /// enum/namespace IIFE 닫는 부분: })(name || (name = {}));
@@ -2106,6 +2204,36 @@ pub const Codegen = struct {
                     try self.writeByte('=');
                     try self.write(fn_name);
                     try self.writeByte(';');
+                }
+            },
+            else => {},
+        }
+    }
+
+    /// export 선언에서 이름을 추출하여 ns_export_map에 등록.
+    fn collectExportNames(self: *Codegen, map: *std.StringHashMapUnmanaged(void), decl_idx: NodeIndex) !void {
+        const decl = self.ast.getNode(decl_idx);
+        switch (decl.tag) {
+            .variable_declaration => {
+                const e = decl.data.extra;
+                const list_start = self.ast.extra_data.items[e + 1];
+                const list_len = self.ast.extra_data.items[e + 2];
+                const declarators = self.ast.extra_data.items[list_start .. list_start + list_len];
+                for (declarators) |raw_idx| {
+                    const declarator = self.ast.getNode(@enumFromInt(raw_idx));
+                    const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[declarator.data.extra]);
+                    const name_node = self.ast.getNode(name_idx);
+                    const name = self.ast.getText(name_node.span);
+                    try map.put(self.allocator, name, {});
+                }
+            },
+            .function_declaration, .class_declaration => {
+                const e = decl.data.extra;
+                const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+                if (!name_idx.isNone()) {
+                    const name_node = self.ast.getNode(name_idx);
+                    const name = self.ast.getText(name_node.span);
+                    try map.put(self.allocator, name, {});
                 }
             },
             else => {},
@@ -2631,6 +2759,27 @@ test "Codegen: namespace with export function" {
         "var Foo;((Foo) => {function bar(){}Foo.bar=bar;})(Foo || (Foo = {}));",
         r.output,
     );
+}
+
+test "Codegen: namespace export reference substitution" {
+    var r = try e2e(std.testing.allocator, "namespace ns { export let L1 = 1; console.log(L1); }");
+    defer r.deinit();
+    // export된 변수의 참조가 ns.L1으로 치환되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "console.log(ns.L1)") != null);
+    // 선언부는 치환되면 안 됨 (let L1 = 1, not let ns.L1 = 1)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let ns.L1") == null);
+}
+
+test "Codegen: namespace export reference — multiple exports" {
+    var r = try e2e(std.testing.allocator, "namespace ns { export let a = 1, b = 2; console.log(a + b); }");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "console.log(ns.a + ns.b)") != null);
+}
+
+test "Codegen: namespace export reference — function" {
+    var r = try e2e(std.testing.allocator, "namespace ns { export function foo() {} console.log(foo); }");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "console.log(ns.foo)") != null);
 }
 
 // ============================================================
