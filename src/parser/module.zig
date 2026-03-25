@@ -280,8 +280,7 @@ fn parseImportSpecifier(self: *Parser) ParseError2!NodeIndex {
     // \u0074ype 같은 unicode escape도 type modifier로 인식 (esbuild 호환)
     var is_type_only: u16 = 0;
     if (self.isContextual("type") or
-        (self.current() == .identifier and self.scanner.token.has_escape and
-        std.mem.eql(u8, self.scanner.decodeIdentifierEscapes(self.tokenText()) orelse "", "type")))
+        (self.current() == .identifier and self.scanner.token.has_escape and self.isEscapedKeyword("type")))
     {
         const next = try self.peekNextKind();
         // 다음이 바인딩 이름으로 사용 가능한 토큰이면 type modifier
@@ -306,20 +305,8 @@ fn parseImportSpecifier(self: *Parser) ParseError2!NodeIndex {
                     // 다음 토큰 텍스트를 확인: "type as as foo" vs "type as alias"
                     const saved2 = self.saveState();
                     try self.advance(); // skip 'as'
-                    if (self.isContextual("as")) {
-                        // "type as as" 뒤를 확인: 4번째 토큰 종류로 판별
-                        const after_second_as = try self.peekNextKind();
-                        if (after_second_as == .r_curly or after_second_as == .comma) {
-                            // "type as as }" — 'type'은 값 이름, 'as'는 로컬 바인딩 (modifier 아님)
-                            self.restoreState(saved);
-                        } else {
-                            // "type as as foo" — type modifier, 'as' imported, 'as' keyword, 'foo' local
-                            self.restoreState(saved2);
-                            is_type_only = 1;
-                        }
-                    } else {
-                        // "type as alias" — 'type'은 값 이름, modifier 아님
-                        self.restoreState(saved);
+                    if (try resolveTypeAsAs(self, saved, saved2)) {
+                        is_type_only = 1;
                     }
                 } else {
                     self.restoreState(saved);
@@ -581,8 +568,7 @@ fn parseExportSpecifier(self: *Parser) ParseError2!NodeIndex {
     // \u0074ype 같은 unicode escape도 type modifier로 인식 (esbuild 호환)
     var is_type_only: u16 = 0;
     if (self.isContextual("type") or
-        (self.current() == .identifier and self.scanner.token.has_escape and
-        std.mem.eql(u8, self.scanner.decodeIdentifierEscapes(self.tokenText()) orelse "", "type")))
+        (self.current() == .identifier and self.scanner.token.has_escape and self.isEscapedKeyword("type")))
     {
         const next = try self.peekNextKind();
         // 다음이 이름으로 사용 가능한 토큰이면 type modifier
@@ -601,20 +587,8 @@ fn parseExportSpecifier(self: *Parser) ParseError2!NodeIndex {
                 } else if (after_as == .identifier or after_as == .string_literal or after_as.isKeyword()) {
                     const saved2 = self.saveState();
                     try self.advance(); // skip 'as'
-                    if (self.isContextual("as")) {
-                        // "type as as" 뒤를 확인: 4번째 토큰 종류로 판별
-                        const after_second_as = try self.peekNextKind();
-                        if (after_second_as == .r_curly or after_second_as == .comma) {
-                            // "type as as }" — 'type'은 값 이름, 'as'는 exported name (modifier 아님)
-                            self.restoreState(saved);
-                        } else {
-                            // "type as as foo" — type modifier, 'as' local, 'as' keyword, 'foo' exported
-                            self.restoreState(saved2);
-                            is_type_only = 1;
-                        }
-                    } else {
-                        // "type as alias" — 'type'은 값 이름, modifier 아님
-                        self.restoreState(saved);
+                    if (try resolveTypeAsAs(self, saved, saved2)) {
+                        is_type_only = 1;
                     }
                 } else {
                     self.restoreState(saved);
@@ -638,6 +612,29 @@ fn parseExportSpecifier(self: *Parser) ParseError2!NodeIndex {
         .span = .{ .start = start, .end = self.currentSpan().start },
         .data = .{ .binary = .{ .left = local, .right = exported, .flags = is_type_only } },
     });
+}
+
+/// "type as as ..." 패턴을 판별한다.
+/// import/export 양쪽에서 동일한 로직: 4번째 토큰이 } 또는 ,이면
+/// 'type'은 값 이름 (modifier 아님), 그 외면 type modifier 확정.
+/// 반환: true = type modifier 확정 (saved2로 복원), false = modifier 아님 (saved로 복원)
+fn resolveTypeAsAs(self: *Parser, saved: Parser.ScannerState, saved2: Parser.ScannerState) ParseError2!bool {
+    if (self.isContextual("as")) {
+        const after_second_as = try self.peekNextKind();
+        if (after_second_as == .r_curly or after_second_as == .comma) {
+            // "type as as }" — 'type'은 값 이름 (modifier 아님)
+            self.restoreState(saved);
+            return false;
+        } else {
+            // "type as as foo" — type modifier 확정
+            self.restoreState(saved2);
+            return true;
+        }
+    } else {
+        // "type as alias" — 'type'은 값 이름, modifier 아님
+        self.restoreState(saved);
+        return false;
+    }
 }
 
 fn parseModuleSource(self: *Parser) ParseError2!NodeIndex {
