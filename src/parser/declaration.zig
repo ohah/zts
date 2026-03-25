@@ -581,25 +581,21 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
     // 예: class C { get; } — "get"이라는 이름의 필드
     // 예: class C { get = 1; } — "get"이라는 이름의 필드 (초기화)
     // 예: class C { get foo() {} } — getter 선언
-    if (self.current() == .kw_get) {
+    // get/set: 다음 토큰이 줄바꿈 없이 프로퍼티 이름이면 accessor, 아니면 필드 이름
+    // 예: class A { get\n*x() {} } → get은 필드 (ASI), *x는 generator
+    const accessor_flag: ?u16 = if (self.current() == .kw_get)
+        0x02
+    else if (self.current() == .kw_set)
+        0x04
+    else
+        null;
+    if (accessor_flag) |flag| {
         const next_tok = try self.peekNext();
-        // get 뒤 줄바꿈이 있으면 ASI → get은 프로퍼티 이름 (getter 아님)
-        // 예: class A { get\n*x() {} } → get은 필드, *x는 generator 메서드
         if (!next_tok.has_newline_before and
             next_tok.kind != .l_paren and next_tok.kind != .semicolon and
             next_tok.kind != .eq and next_tok.kind != .r_curly and next_tok.kind != .eof)
         {
-            flags |= 0x02; // getter
-            try self.advance();
-        }
-    } else if (self.current() == .kw_set) {
-        const next_tok = try self.peekNext();
-        // set 뒤 줄바꿈이 있으면 ASI → set은 프로퍼티 이름 (setter 아님)
-        if (!next_tok.has_newline_before and
-            next_tok.kind != .l_paren and next_tok.kind != .semicolon and
-            next_tok.kind != .eq and next_tok.kind != .r_curly and next_tok.kind != .eof)
-        {
-            flags |= 0x04; // setter
+            flags |= flag;
             try self.advance();
         }
     }
