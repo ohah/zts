@@ -156,6 +156,10 @@ pub const Parser = struct {
     /// if/with/labeled body에서 labelled function statement 금지 체크 중인지.
     /// IsLabelledFunction(Statement) is true → SyntaxError
     in_labelled_fn_check: bool = false,
+    /// ternary의 consequent 파싱 중인지.
+    /// true이면 `(identifier) :` 패턴을 typed arrow로 해석하지 않는다 — `:` 가
+    /// ternary separator일 수 있기 때문. `(identifier: Type)` 등 확실한 패턴은 여전히 허용.
+    in_ternary_consequent: bool = false,
 
     // ================================================================
     // Context packed struct 정의
@@ -216,6 +220,7 @@ pub const Parser = struct {
         allow_super_call: bool,
         allow_super_property: bool,
         in_formal_parameters: bool,
+        in_ternary_consequent: bool,
     };
 
     pub fn init(allocator: std.mem.Allocator, scanner: *Scanner) Parser {
@@ -1213,6 +1218,7 @@ pub const Parser = struct {
             .allow_super_call = self.allow_super_call,
             .allow_super_property = self.allow_super_property,
             .in_formal_parameters = self.in_formal_parameters,
+            .in_ternary_consequent = self.in_ternary_consequent,
         };
         self.ctx = self.ctx.enterFunction(is_async, is_generator);
         // Parser 필드 리셋 — 함수 경계에서 초기 상태로
@@ -1226,6 +1232,7 @@ pub const Parser = struct {
         self.in_static_initializer = false;
         self.allow_new_target = true; // 일반 함수에서는 new.target 허용
         self.in_formal_parameters = false;
+        self.in_ternary_consequent = false; // 함수 본문은 새로운 expression 컨텍스트
         return saved;
     }
 
@@ -1243,6 +1250,7 @@ pub const Parser = struct {
         self.allow_super_call = saved.allow_super_call;
         self.allow_super_property = saved.allow_super_property;
         self.in_formal_parameters = saved.in_formal_parameters;
+        self.in_ternary_consequent = saved.in_ternary_consequent;
     }
 
     /// Context(u8)를 복원한다 (enterAllowInContext 등과 쌍).
@@ -1891,7 +1899,9 @@ pub const Parser = struct {
         if (self.current() == .r_paren) {
             try self.advance();
             // ): 이면 typed arrow (리턴 타입 어노테이션)
-            return self.current() == .colon;
+            // ternary consequent 안에서는 `:` 가 ternary separator일 수 있으므로 여기서 판단하지 않는다.
+            // parseConditionalExpression의 speculative reinterpret에서 처리한다.
+            return self.current() == .colon and !self.in_ternary_consequent;
         }
 
         // (...rest: Type) => ... — rest parameter with type
@@ -1903,9 +1913,10 @@ pub const Parser = struct {
             try self.advance(); // skip identifier
             if (self.current() == .colon) return true;
             // (a): Type => ... — 단일 파라미터 + 리턴 타입
+            // ternary consequent 안에서는 `:` 가 ternary separator일 수 있으므로 여기서 판단하지 않는다.
             if (self.current() == .r_paren) {
                 try self.advance();
-                return self.current() == .colon;
+                return self.current() == .colon and !self.in_ternary_consequent;
             }
             // (a?: Type) — optional parameter
             if (self.current() == .question) return true;

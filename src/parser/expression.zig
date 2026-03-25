@@ -401,7 +401,20 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
         });
     }
 
-    const left = try parseConditionalExpression(self);
+    var left = try parseConditionalExpression(self);
+
+    // TS typed arrow with return type after ternary alternate:
+    // `a ? b : (e = f) : T => g` — the alternate `(e = f)` followed by `: T =>` is a typed arrow.
+    // Only try this when NOT inside a ternary consequent (to avoid consuming
+    // the outer ternary's `:` separator in nested ternaries).
+    if (self.current() == .colon and !self.in_ternary_consequent and !left.isNone()) {
+        const left_node = self.ast.getNode(left);
+        if (left_node.tag == .parenthesized_expression) {
+            if (try tryReinterpretAsTypedArrow(self, left)) |arrow| {
+                return arrow;
+            }
+        }
+    }
 
     // => 를 만나면 arrow function (괄호 형태)
     // left가 parenthesized_expression이면 파라미터 리스트로 취급
@@ -453,8 +466,30 @@ fn parseConditionalExpression(self: *Parser) ParseError2!NodeIndex {
         //   ... ? AssignmentExpression[+In] : AssignmentExpression[?In]
         // consequent는 항상 `in` 허용, alternate는 외부 context 유지
         const cond_saved = self.enterAllowInContext(true);
-        const consequent = try parseAssignmentExpression(self);
+        // ternary consequent에서 `(x): T =>` 패턴의 typed arrow 감지를 억제한다.
+        // `:` 가 return type annotation인지 ternary separator인지 모호하기 때문.
+        // 대신 아래 tryReinterpretAsTypedArrow에서 speculative하게 시도한다.
+        const saved_in_ternary = self.in_ternary_consequent;
+        self.in_ternary_consequent = true;
+        var consequent = try parseAssignmentExpression(self);
+        self.in_ternary_consequent = saved_in_ternary;
         self.restoreContext(cond_saved); // alternate는 원래 context로 복원
+
+        // TS typed arrow in ternary consequent:
+        // `a ? (b = c) : T => d : (e = f)` → `a ? ((b = c): T => d) : (e = f)`
+        // The first `:` is a return type annotation for the typed arrow, not the ternary separator.
+        // After parsing the consequent as a parenthesized expression and seeing `:`,
+        // speculatively try `: Type => body` to see if it forms a typed arrow.
+        // If successful, the arrow becomes the consequent; the next `:` is the ternary separator.
+        if (self.current() == .colon and !consequent.isNone()) {
+            const cons_node = self.ast.getNode(consequent);
+            if (cons_node.tag == .parenthesized_expression) {
+                if (try tryReinterpretAsTypedArrow(self, consequent)) |arrow| {
+                    consequent = arrow;
+                }
+            }
+        }
+
         try self.expect(.colon);
         const alternate = try parseAssignmentExpression(self);
         return try self.ast.addNode(.{
@@ -465,6 +500,59 @@ fn parseConditionalExpression(self: *Parser) ParseError2!NodeIndex {
     }
 
     return expr;
+}
+
+/// Speculatively try to reinterpret a parenthesized expression followed by `: Type =>`
+/// as a typed arrow function. Used in ternary consequent position where `:` is ambiguous
+/// between return type annotation and ternary separator.
+/// Returns the arrow node on success, null on failure (state fully restored).
+fn tryReinterpretAsTypedArrow(self: *Parser, paren_expr: NodeIndex) ParseError2!?NodeIndex {
+    const saved = self.saveState();
+    const errors_before = self.errors.items.len;
+
+    // Consume `:` (speculatively — might be return type or ternary separator)
+    try self.advance(); // skip :
+
+    // Parse the return type. Use disallow_conditional_types to prevent the type
+    // parser from consuming `?` that belongs to an outer ternary.
+    const ctx_saved = self.ctx;
+    self.ctx.disallow_conditional_types = true;
+    const type_node = try self.parseType();
+    _ = type_node;
+    self.ctx = ctx_saved;
+
+    // Check for `=>` — if present, this is a typed arrow function
+    if (self.current() != .arrow or self.scanner.token.has_newline_before) {
+        // Not a typed arrow — restore and let the caller treat `:` as ternary separator
+        self.errors.shrinkRetainingCapacity(errors_before);
+        self.restoreState(saved);
+        return null;
+    }
+
+    // Confirmed typed arrow! Determine params from the parenthesized expression.
+    const paren_node = self.ast.getNode(paren_expr);
+    const arrow_start = paren_node.span.start;
+
+    // Empty parens `()` are stored with data.none = 0 (no inner expression).
+    // Non-empty parens `(expr)` store data.unary.operand = inner expression node index.
+    // data.none reads the same bytes as unary.operand via extern union — 0 means empty
+    // because node index 0 is always the program root, never a valid sub-expression.
+    const is_empty_paren = (paren_node.data.none == 0);
+    const params: NodeIndex = if (is_empty_paren) .none else paren_expr;
+
+    if (!is_empty_paren) {
+        try self.coverExpressionToArrowParams(paren_expr);
+    }
+
+    try self.advance(); // skip =>
+    const body = try parseArrowBody(self, false, params);
+
+    const ae = try self.ast.addExtras(&.{ @intFromEnum(params), @intFromEnum(body), 0 });
+    return try self.ast.addNode(.{
+        .tag = .arrow_function_expression,
+        .span = .{ .start = arrow_start, .end = self.currentSpan().start },
+        .data = .{ .extra = ae },
+    });
 }
 
 /// 이항 연산자를 precedence climbing으로 파싱.

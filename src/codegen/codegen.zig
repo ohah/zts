@@ -103,6 +103,8 @@ pub const Codegen = struct {
     next_comment_idx: usize = 0,
     /// for문 init 위치에서 variable_declaration 출력 시 세미콜론 생략
     in_for_init: bool = false,
+    /// for-in var initializer hoisting: emitVariableDeclarator에서 init 스킵
+    skip_var_init: bool = false,
     /// namespace IIFE 내부에서 export된 변수의 참조를 ns.name으로 치환하기 위한 상태.
     /// emitNamespaceIIFE에서 설정되고, emitNode의 identifier 출력에서 참조.
     ns_prefix: ?[]const u8 = null,
@@ -776,16 +778,82 @@ pub const Codegen = struct {
 
     fn emitForInOf(self: *Codegen, node: Node, keyword: []const u8) !void {
         const t = node.data.ternary;
+
+        // for-in var initializer hoisting (esbuild 호환):
+        // `for (var x = expr in y)` → `x = expr;\nfor (var x in y)`
+        // TS에서 `for (var x = Array<number> in y)` 같은 패턴에서 타입 인자가
+        // 스트리핑되어 initializer가 남을 수 있다. 이를 별도 문장으로 hoisting.
+        if (try self.tryHoistForInVarInit(t.a)) {
+            try self.writeNewline();
+            try self.writeIndent();
+        }
+
         if (self.options.minify) try self.write("for(") else try self.write("for (");
         self.in_for_init = true;
-        defer self.in_for_init = false;
+        self.skip_var_init = try self.shouldSkipVarInit(t.a);
         try self.emitNode(t.a);
+        self.in_for_init = false;
+        self.skip_var_init = false;
         try self.writeByte(' ');
         try self.write(keyword);
         try self.writeByte(' ');
         try self.emitNode(t.b);
         try self.writeByte(')');
         try self.emitNode(t.c);
+    }
+
+    /// for-in var initializer가 있으면 `name = init;`를 hoisting 출력.
+    /// 출력했으면 true, 아니면 false.
+    fn tryHoistForInVarInit(self: *Codegen, left: NodeIndex) !bool {
+        if (left.isNone()) return false;
+        const left_node = self.ast.getNode(left);
+        if (left_node.tag != .variable_declaration) return false;
+
+        const extras = self.ast.extra_data.items;
+        const e = left_node.data.extra;
+        const list_start = extras[e + 1];
+        const list_len = extras[e + 2];
+        if (list_len == 0) return false;
+
+        const first_decl: NodeIndex = @enumFromInt(extras[list_start]);
+        if (first_decl.isNone()) return false;
+        const decl_node = self.ast.getNode(first_decl);
+        if (decl_node.tag != .variable_declarator) return false;
+
+        const name: NodeIndex = @enumFromInt(extras[decl_node.data.extra]);
+        const init_val: NodeIndex = @enumFromInt(extras[decl_node.data.extra + 2]);
+        if (init_val.isNone()) return false;
+
+        // name = init;
+        try self.emitNode(name);
+        try self.writeSpace();
+        try self.writeByte('=');
+        try self.writeSpace();
+        try self.emitNode(init_val);
+        try self.writeByte(';');
+        return true;
+    }
+
+    /// for-in left가 initializer를 가진 var declaration인지 확인.
+    /// hoisting된 경우 emitVariableDeclarator에서 init를 스킵하기 위함.
+    fn shouldSkipVarInit(self: *Codegen, left: NodeIndex) !bool {
+        if (left.isNone()) return false;
+        const left_node = self.ast.getNode(left);
+        if (left_node.tag != .variable_declaration) return false;
+
+        const extras = self.ast.extra_data.items;
+        const e = left_node.data.extra;
+        const list_start = extras[e + 1];
+        const list_len = extras[e + 2];
+        if (list_len == 0) return false;
+
+        const first_decl: NodeIndex = @enumFromInt(extras[list_start]);
+        if (first_decl.isNone()) return false;
+        const decl_node = self.ast.getNode(first_decl);
+        if (decl_node.tag != .variable_declarator) return false;
+
+        const init_val: NodeIndex = @enumFromInt(extras[decl_node.data.extra + 2]);
+        return !init_val.isNone();
     }
 
     fn emitSwitch(self: *Codegen, node: Node) !void {
@@ -1510,7 +1578,8 @@ pub const Codegen = struct {
         const init_val: NodeIndex = @enumFromInt(extras[2]);
 
         try self.emitNode(name);
-        if (!init_val.isNone()) {
+        // skip_var_init: for-in hoisting으로 init가 별도 문장에 출력된 경우 스킵
+        if (!init_val.isNone() and !self.skip_var_init) {
             try self.writeSpace();
             try self.writeByte('=');
             try self.writeSpace();
