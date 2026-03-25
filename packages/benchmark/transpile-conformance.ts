@@ -324,6 +324,34 @@ if (failures.length > 0) {
   }
 }
 
+// 실패 분류 (출력 차이 패턴)
+const allFailures = results.filter((r) => r.status === "fail");
+const failCategories = new Map<string, { count: number; ids: string[] }>();
+for (const f of allFailures) {
+  const exp = f.reason?.split("\nGot:\n")[0]?.replace("Expected:\n", "") ?? "";
+  const got = f.reason?.split("\nGot:\n")[1] ?? "";
+  let cat = "unknown";
+  if (got.trim() === "") cat = "empty output";
+  else if (exp.replace(/"/g, "'") === got.replace(/"/g, "'")) cat = "quote style only";
+  else if (exp.replace(/;\n/g, "\n").trim() === got.replace(/;\n/g, "\n").trim())
+    cat = "semicolon diff";
+  else if (exp.includes("__decorateClass") || exp.includes("__decorateParam"))
+    cat = "decorator transform";
+  else if (exp.includes("((") && exp.includes(") => {")) cat = "enum/namespace IIFE";
+  else if (got.includes("import ") && !exp.includes("import ")) cat = "import elision";
+  else if (got.trim().length > 0 && exp.trim().length > 0) cat = "codegen diff";
+  const entry = failCategories.get(cat) ?? { count: 0, ids: [] };
+  entry.count++;
+  if (entry.ids.length < 3) entry.ids.push(f.id);
+  failCategories.set(cat, entry);
+}
+console.log(`\n### Failure Categories (${allFailures.length} total)\n`);
+for (const [cat, { count, ids }] of [...failCategories.entries()].sort(
+  (a, b) => b[1].count - a[1].count,
+)) {
+  console.log(`- ${count}x: ${cat} (e.g. ${ids.join(", ")})`);
+}
+
 // 에러 분류 (전체)
 const allErrors = results.filter((r) => r.status === "error");
 const errorCategories = new Map<string, { count: number; ids: string[] }>();
