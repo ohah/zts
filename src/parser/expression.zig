@@ -59,21 +59,13 @@ fn canFollowTypeArgumentsInExpression(self: *const Parser) bool {
 /// TypeScript 컴파일러의 isBinaryOperator 대응.
 /// 현재 토큰이 이항 연산자인지 판별한다.
 fn tsIsBinaryOperator(self: *const Parser, kind: Kind) bool {
-    return switch (kind) {
-        .kw_in => self.ctx.allow_in,
-        .question2, .pipe2, .amp2 => true,
-        .pipe, .caret, .amp => true,
-        .eq2, .neq, .eq3, .neq2 => true,
-        .l_angle, .r_angle, .lt_eq, .gt_eq, .kw_instanceof => true,
-        .shift_left, .shift_right, .shift_right3 => true,
-        .plus, .minus => true,
-        .star, .slash, .percent, .star2 => true,
-        .identifier => blk: {
-            const text = self.tokenText();
-            break :blk std.mem.eql(u8, text, "as") or std.mem.eql(u8, text, "satisfies");
-        },
-        else => false,
-    };
+    if (kind == .kw_in) return self.ctx.allow_in;
+    if (getBinaryPrecedence(kind) > 0) return true;
+    if (kind == .identifier) {
+        const text = self.tokenText();
+        return std.mem.eql(u8, text, "as") or std.mem.eql(u8, text, "satisfies");
+    }
+    return false;
 }
 
 /// TypeScript 컴파일러의 isStartOfExpression 대응.
@@ -87,11 +79,7 @@ fn tsIsStartOfExpression(self: *const Parser, kind: Kind) bool {
         .l_angle => true,
         .private_identifier => true,
         .at => true,
-        .identifier => blk: {
-            const text = self.tokenText();
-            break :blk std.mem.eql(u8, text, "await") or std.mem.eql(u8, text, "yield") or
-                tsIsBinaryOperator(self, kind);
-        },
+        .kw_await, .kw_yield => true,
         else => tsIsBinaryOperator(self, kind),
     };
 }

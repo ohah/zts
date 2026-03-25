@@ -741,14 +741,11 @@ pub const Transformer = struct {
         if (node.data.binary.flags == 1) return .none;
         const new_name = try self.visitNode(node.data.binary.left);
         const new_body = try self.visitNode(node.data.binary.right);
-        // 내부가 타입만 있어 전부 스트리핑된 namespace → 런타임 코드 불필요
+        // 타입만 있어 전부 스트리핑됐거나, 빈 블록인 namespace → strip
         if (new_body.isNone()) return .none;
-        // 빈 namespace는 런타임 코드 불필요 → strip (esbuild 호환)
-        if (!new_body.isNone()) {
-            const body_node = self.new_ast.getNode(new_body);
-            if ((body_node.tag == .block_statement or body_node.tag == .ts_module_block) and body_node.data.list.len == 0) {
-                return .none;
-            }
+        const body_node = self.new_ast.getNode(new_body);
+        if ((body_node.tag == .block_statement or body_node.tag == .ts_module_block) and body_node.data.list.len == 0) {
+            return .none;
         }
         return self.new_ast.addNode(.{
             .tag = .ts_module_declaration,
