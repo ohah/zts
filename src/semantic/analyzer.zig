@@ -579,10 +579,10 @@ pub const SemanticAnalyzer = struct {
         const existing_flags = existing.declFlags();
         const new_flags = new.declFlags();
 
-        // TS function overload: module scope에서 function + function 항상 허용
-        // (generator, async function 포함. TS에서 같은 이름의 함수를 여러 번 선언 = overload)
+        // TS function overload: module scope에서 function + function 허용 (TS 전용)
+        // JS에서는 module scope function이 lexical이므로 재선언 불가 (ECMAScript 스펙)
         // excludes 체크보다 먼저 해야 block_scoped generator/async가 걸리지 않음
-        if (self.is_module and existing.isFunctionLike() and new.isFunctionLike() and !target_scope.isNone()) {
+        if (self.is_ts and self.is_module and existing.isFunctionLike() and new.isFunctionLike() and !target_scope.isNone()) {
             const scope = self.scopes.items[target_scope.toIndex()];
             if (scope.kind == .module) return true;
         }
