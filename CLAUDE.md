@@ -159,7 +159,7 @@ Per-File Arena (단일 할당자, 파일 처리 후 한 번에 해제)
 ### TypeScript/Flow Handling (D002, D005, D024)
 - 타입 체크 안 함 (스트리핑만)
 - TS 5.8까지 전체 지원
-- Flow: 미지원 (현재 우선순위 낮음, RN 지원 시 결정. 상세: DECISIONS.md)
+- Flow: 미지원 (현재 우선순위 낮음, RN 지원 시 결정. 상세: [FLOW.md](./FLOW.md))
 - ✅ Legacy decorator 구현 완료 (experimentalDecorators)
 - Stage 3 decorator: 후순위 (스펙 안정화 후)
 
