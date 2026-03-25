@@ -849,6 +849,13 @@ pub const Transformer = struct {
     ///   constructor(x) { this.x = x; }
     fn visitFunction(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
+
+        // TS function overload signature: body가 없으면 제거
+        // function foo(): void;  ← overload signature (body 없음)
+        // function foo(x: number): void;  ← overload signature
+        // function foo(x?: number) {}  ← 구현체 (body 있음)
+        if (self.readNodeIdx(e, 3).isNone()) return NodeIndex.none;
+
         const new_name = try self.visitNode(self.readNodeIdx(e, 0));
 
         // 파라미터 방문 + parameter property 수집
@@ -1903,6 +1910,8 @@ pub const Transformer = struct {
         const flags = self.readU32(e, 4);
         // abstract 메서드는 타입 전용이므로 완전히 스트리핑
         if (self.options.strip_types and (flags & 0x20) != 0) return NodeIndex.none;
+        // TS method overload signature: body가 없으면 제거
+        if (self.readNodeIdx(e, 3).isNone()) return NodeIndex.none;
         const new_key = try self.visitNode(self.readNodeIdx(e, 0));
 
         // 파라미터 방문 — parameter property 감지
@@ -1956,6 +1965,9 @@ pub const Transformer = struct {
     // accessor_property: extra = [key, init_val, flags, deco_start, deco_len]
     fn visitAccessorProperty(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
+        const flags = self.readU32(e, 2);
+        // declare accessor는 타입 전용이므로 완전히 스트리핑
+        if (self.options.strip_types and (flags & 0x40) != 0) return NodeIndex.none;
         const new_key = try self.visitNode(self.readNodeIdx(e, 0));
         const new_value = try self.visitNode(self.readNodeIdx(e, 1));
         const new_decos = try self.visitExtraList(self.readU32(e, 3), self.readU32(e, 4));
@@ -2069,6 +2081,11 @@ pub const Transformer = struct {
         const new_decl = try self.visitNode(self.readNodeIdx(e, 0));
         const new_specs = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
         const new_source = try self.visitNode(self.readNodeIdx(e, 3));
+        // export interface/type alias 등 타입 선언만 있으면 빈 export {} 제거
+        // export { type Foo } from './a' 같은 re-export는 source가 있으므로 유지
+        if (new_decl.isNone() and new_specs.len == 0 and new_source.isNone()) {
+            return NodeIndex.none;
+        }
         return self.addExtraNode(.export_named_declaration, node.span, &.{
             @intFromEnum(new_decl), new_specs.start, new_specs.len, @intFromEnum(new_source),
         });
