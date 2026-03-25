@@ -107,6 +107,9 @@ pub const Codegen = struct {
     /// emitNamespaceIIFE에서 설정되고, emitNode의 identifier 출력에서 참조.
     ns_prefix: ?[]const u8 = null,
     ns_exports: ?std.StringHashMapUnmanaged(void) = null,
+    /// top-level에서 선언된 이름 추적 (namespace var 중복 제거용).
+    /// function/class/var/let/const/enum 선언 시 등록, namespace 출력 시 이미 있으면 var 생략.
+    declared_names: std.StringHashMapUnmanaged(void) = .{},
 
     pub fn init(allocator: std.mem.Allocator, ast: *const Ast) Codegen {
         return initWithOptions(allocator, ast, .{});
@@ -134,8 +137,54 @@ pub const Codegen = struct {
     pub fn generate(self: *Codegen, root: NodeIndex) ![]const u8 {
         // 출력 크기는 보통 소스 크기와 비슷 → 사전 할당
         try self.buf.ensureTotalCapacity(self.allocator, self.ast.source.len);
+        // namespace var 중복 제거: top-level 선언 이름 사전 수집
+        self.collectTopLevelDeclNames(root);
         try self.emitNode(root);
         return self.buf.items;
+    }
+
+    /// top-level function/class/var/let/const 이름을 declared_names에 수집.
+    /// namespace/enum IIFE 출력 시 같은 이름이면 var 선언을 생략하기 위함.
+    fn collectTopLevelDeclNames(self: *Codegen, root: NodeIndex) void {
+        if (root.isNone()) return;
+        const root_node = self.ast.getNode(root);
+        if (root_node.tag != .program) return;
+        const list = root_node.data.list;
+        const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+        for (indices) |raw_idx| {
+            const stmt = self.ast.getNode(@enumFromInt(raw_idx));
+            switch (stmt.tag) {
+                .function_declaration => {
+                    const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[stmt.data.extra]);
+                    if (!name_idx.isNone()) {
+                        const n = self.ast.getText(self.ast.getNode(name_idx).span);
+                        self.declared_names.put(self.allocator, n, {}) catch {};
+                    }
+                },
+                .class_declaration => {
+                    const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[stmt.data.extra]);
+                    if (!name_idx.isNone()) {
+                        const n = self.ast.getText(self.ast.getNode(name_idx).span);
+                        self.declared_names.put(self.allocator, n, {}) catch {};
+                    }
+                },
+                .variable_declaration => {
+                    const e = stmt.data.extra;
+                    const vlist_start = self.ast.extra_data.items[e + 1];
+                    const vlist_len = self.ast.extra_data.items[e + 2];
+                    const decls = self.ast.extra_data.items[vlist_start .. vlist_start + vlist_len];
+                    for (decls) |d_idx| {
+                        const decl = self.ast.getNode(@enumFromInt(d_idx));
+                        const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[decl.data.extra]);
+                        if (!name_idx.isNone()) {
+                            const n = self.ast.getText(self.ast.getNode(name_idx).span);
+                            self.declared_names.put(self.allocator, n, {}) catch {};
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
     }
 
     /// byte offset → 소스 줄/열 변환 (이진 탐색).
@@ -1206,7 +1255,6 @@ pub const Codegen = struct {
         const body: NodeIndex = @enumFromInt(extras[3]);
         const flags = extras[4];
 
-        // flags: 0x01=async, 0x02=generator (파서 기준)
         if (flags & 0x01 != 0) try self.write("async ");
         try self.write("function");
         if (flags & 0x02 != 0) try self.writeByte('*');
@@ -2057,13 +2105,17 @@ pub const Codegen = struct {
         const name_text = self.ast.getText(name_node.span);
 
         // 부모가 있으면 let, 없으면 var (esbuild 호환)
-        if (parent_ns != null) {
-            try self.write("let ");
-        } else {
-            try self.write("var ");
+        // 같은 이름이 이미 선언되었으면 var/let 생략 (function + namespace 병합 등)
+        if (!self.declared_names.contains(name_text)) {
+            if (parent_ns != null) {
+                try self.write("let ");
+            } else {
+                try self.write("var ");
+            }
+            try self.write(name_text);
+            try self.writeByte(';');
         }
-        try self.write(name_text);
-        try self.writeByte(';');
+        self.declared_names.put(self.allocator, name_text, {}) catch {};
 
         // ((Foo) => { ... })(Foo || (Foo = {}));
         try self.write("((");
