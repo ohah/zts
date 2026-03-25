@@ -1056,6 +1056,7 @@ pub const Transformer = struct {
         }
 
         var existing_constructor: ?NodeIndex = null; // 기존 constructor의 new AST index
+        var existing_constructor_pos: ?usize = null; // class_members 내 위치
 
         for (body_members) |raw_idx| {
             const member = self.old_ast.getNode(@enumFromInt(raw_idx));
@@ -1070,15 +1071,23 @@ pub const Transformer = struct {
 
                 // abstract/declare는 항상 스트리핑
                 if (self.options.strip_types and (flags & 0x60) != 0) {
-                    // experimentalDecorators인 경우에도 abstract/declare는 제거
                     continue;
+                }
+
+                // decorator 수집 (experimental decorators — 경로와 무관하게 한 번만)
+                if (self.options.experimental_decorators) {
+                    const deco_start = self.readU32(me, 3);
+                    const deco_len = self.readU32(me, 4);
+                    if (deco_len > 0) {
+                        const new_key = try self.visitNode(self.readNodeIdx(me, 0));
+                        try self.collectMemberDecorators(&member_decorators, deco_start, deco_len, new_key, is_static, 2);
+                    }
                 }
 
                 // useDefineForClassFields=false: non-static instance field를 constructor로 이동
                 if (!self.options.use_define_for_class_fields and !is_static and !is_abstract and !is_declare) {
                     const key_idx = self.readNodeIdx(me, 0);
                     const init_idx = self.readNodeIdx(me, 1);
-                    // 초기값이 없고 타입만 있는 field는 무시 (TS type-only)
                     if (!init_idx.isNone()) {
                         const new_key = try self.visitNode(key_idx);
                         const new_init = try self.visitNode(init_idx);
@@ -1091,31 +1100,12 @@ pub const Transformer = struct {
                             .span = member.span,
                         });
                     }
-                    // member decorator 수집 (experimental decorators인 경우)
-                    if (self.options.experimental_decorators) {
-                        const deco_start = self.readU32(me, 3);
-                        const deco_len = self.readU32(me, 4);
-                        if (deco_len > 0) {
-                            const new_key = try self.visitNode(self.readNodeIdx(me, 0));
-                            try self.collectMemberDecorators(&member_decorators, deco_start, deco_len, new_key, is_static, 2);
-                        }
-                    }
-                    // field를 class body에 추가하지 않음 (constructor로 이동)
                     continue;
                 }
 
-                // static field 또는 use_define=true인 경우: 그대로 방문
+                // static field 또는 use_define=true: 그대로 방문
                 const new_member = try self.visitNode(@enumFromInt(raw_idx));
                 if (!new_member.isNone()) {
-                    // experimentalDecorators: member decorator 수집
-                    if (self.options.experimental_decorators) {
-                        const deco_start = self.readU32(me, 3);
-                        const deco_len = self.readU32(me, 4);
-                        if (deco_len > 0) {
-                            const new_key = try self.visitNode(self.readNodeIdx(me, 0));
-                            try self.collectMemberDecorators(&member_decorators, deco_start, deco_len, new_key, is_static, 2);
-                        }
-                    }
                     try class_members.append(self.allocator, new_member);
                 }
                 continue;
@@ -1143,6 +1133,7 @@ pub const Transformer = struct {
                         const new_member = try self.visitMethodDefinition(member);
                         if (!new_member.isNone()) {
                             existing_constructor = new_member;
+                            existing_constructor_pos = class_members.items.len;
                             try class_members.append(self.allocator, new_member);
                         }
                         continue;
@@ -1178,12 +1169,9 @@ pub const Transformer = struct {
             if (existing_constructor) |ctor_idx| {
                 // 기존 constructor의 body에 field assignments 삽입
                 const updated_ctor = try self.insertFieldAssignmentsIntoConstructor(ctor_idx, field_assignments.items, has_super);
-                // class_members에서 기존 constructor를 교체
-                for (class_members.items) |*m| {
-                    if (@intFromEnum(m.*) == @intFromEnum(ctor_idx)) {
-                        m.* = updated_ctor;
-                        break;
-                    }
+                // position으로 직접 교체 (선형 검색 불필요)
+                if (existing_constructor_pos) |pos| {
+                    class_members.items[pos] = updated_ctor;
                 }
             } else {
                 // constructor가 없으면 새로 생성
