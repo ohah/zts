@@ -1911,7 +1911,7 @@ pub const Codegen = struct {
     // ================================================================
 
     /// enum Color { Red, Green = 5, Blue } →
-    /// var Color;(function(Color){Color[Color["Red"]=0]="Red";Color[Color["Green"]=5]="Green";Color[Color["Blue"]=6]="Blue";})(Color||(Color={}));
+    /// var Color;((Color) => {Color[Color["Red"]=0]="Red";Color[Color["Green"]=5]="Green";Color[Color["Blue"]=6]="Blue";})(Color || (Color = {}));
     fn emitEnumIIFE(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
         const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
@@ -1928,10 +1928,10 @@ pub const Codegen = struct {
         try self.write(name_text);
         try self.writeByte(';');
 
-        // (function(Color){ ... })(Color||(Color={}));
-        try self.write("(function(");
+        // ((Color) => { ... })(Color || (Color = {}));
+        try self.write("((");
         try self.write(name_text);
-        try self.write("){");
+        try self.write(") => {");
 
         // 각 멤버 출력
         const member_indices = self.ast.extra_data.items[members_start .. members_start + members_len];
@@ -1977,9 +1977,9 @@ pub const Codegen = struct {
 
         try self.write("})(");
         try self.write(name_text);
-        try self.write("||(");
+        try self.write(" || (");
         try self.write(name_text);
-        try self.write("={}));");
+        try self.write(" = {}));");
     }
 
     // ================================================================
@@ -1987,7 +1987,7 @@ pub const Codegen = struct {
     // ================================================================
 
     /// namespace Foo { export const x = 1; } →
-    /// var Foo;(function(Foo){const x=1;Foo.x=x;})(Foo||(Foo={}));
+    /// var Foo;((Foo) => {const x=1;Foo.x=x;})(Foo || (Foo = {}));
     ///
     /// 현재 단순 구현: 내부 문을 그대로 출력하고, export 문은 Foo.name = name으로 변환.
     fn emitNamespaceIIFE(self: *Codegen, node: Node) !void {
@@ -2004,16 +2004,16 @@ pub const Codegen = struct {
             try self.write("var ");
             try self.write(name_text);
             try self.writeByte(';');
-            try self.write("(function(");
+            try self.write("((");
             try self.write(name_text);
-            try self.write("){");
+            try self.write(") => {");
             // 내부 namespace를 재귀 출력
             try self.emitNamespaceIIFE(body_node);
             try self.write("})(");
             try self.write(name_text);
-            try self.write("||(");
+            try self.write(" || (");
             try self.write(name_text);
-            try self.write("={}));");
+            try self.write(" = {}));");
             return;
         }
 
@@ -2026,10 +2026,10 @@ pub const Codegen = struct {
         try self.write(name_text);
         try self.writeByte(';');
 
-        // (function(Foo){ ... })(Foo||(Foo={}));
-        try self.write("(function(");
+        // ((Foo) => { ... })(Foo || (Foo = {}));
+        try self.write("((");
         try self.write(name_text);
-        try self.write("){");
+        try self.write(") => {");
 
         // body의 각 statement 출력
         // export 문은 Foo.name = expr 형태로 변환
@@ -2064,9 +2064,9 @@ pub const Codegen = struct {
 
         try self.write("})(");
         try self.write(name_text);
-        try self.write("||(");
+        try self.write(" || (");
         try self.write(name_text);
-        try self.write("={}));");
+        try self.write(" = {}));");
     }
 
     /// namespace 내부의 export 선언에서 이름을 추출하여 Foo.name = name; 형태로 출력.
@@ -2233,7 +2233,7 @@ test "Codegen: enum IIFE" {
     var r = try e2e(std.testing.allocator, "enum Color { Red, Green, Blue }");
     defer r.deinit();
     try std.testing.expectEqualStrings(
-        "var Color;(function(Color){Color[Color[\"Red\"]=0]=\"Red\";Color[Color[\"Green\"]=1]=\"Green\";Color[Color[\"Blue\"]=2]=\"Blue\";})(Color||(Color={}));",
+        "var Color;((Color) => {Color[Color[\"Red\"]=0]=\"Red\";Color[Color[\"Green\"]=1]=\"Green\";Color[Color[\"Blue\"]=2]=\"Blue\";})(Color || (Color = {}));",
         r.output,
     );
 }
@@ -2243,7 +2243,7 @@ test "Codegen: namespace IIFE" {
     defer r.deinit();
     // 내부 const는 export 아니므로 Foo.x = x 없음
     try std.testing.expectEqualStrings(
-        "var Foo;(function(Foo){const x=1;})(Foo||(Foo={}));",
+        "var Foo;((Foo) => {const x=1;})(Foo || (Foo = {}));",
         r.output,
     );
 }
@@ -2288,7 +2288,7 @@ test "Codegen: enum with initializer" {
     var r = try e2e(std.testing.allocator, "enum Status { Active = 1, Inactive = 0 }");
     defer r.deinit();
     try std.testing.expectEqualStrings(
-        "var Status;(function(Status){Status[Status[\"Active\"]=1]=\"Active\";Status[Status[\"Inactive\"]=0]=\"Inactive\";})(Status||(Status={}));",
+        "var Status;((Status) => {Status[Status[\"Active\"]=1]=\"Active\";Status[Status[\"Inactive\"]=0]=\"Inactive\";})(Status || (Status = {}));",
         r.output,
     );
 }
@@ -2622,7 +2622,7 @@ test "Codegen: namespace with export const" {
     var r = try e2e(std.testing.allocator, "namespace Foo { export const x = 1; }");
     defer r.deinit();
     try std.testing.expectEqualStrings(
-        "var Foo;(function(Foo){const x=1;Foo.x=x;})(Foo||(Foo={}));",
+        "var Foo;((Foo) => {const x=1;Foo.x=x;})(Foo || (Foo = {}));",
         r.output,
     );
 }
@@ -2631,7 +2631,7 @@ test "Codegen: namespace with export function" {
     var r = try e2e(std.testing.allocator, "namespace Foo { export function bar() {} }");
     defer r.deinit();
     try std.testing.expectEqualStrings(
-        "var Foo;(function(Foo){function bar(){}Foo.bar=bar;})(Foo||(Foo={}));",
+        "var Foo;((Foo) => {function bar(){}Foo.bar=bar;})(Foo || (Foo = {}));",
         r.output,
     );
 }
