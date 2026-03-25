@@ -217,6 +217,9 @@ pub const ModuleGraph = struct {
 
         var parser = Parser.init(arena_alloc, &scanner);
         parser.configureFromExtension(std.fs.path.extension(module.path));
+        // 번들러에서는 모든 모듈을 확정적 Module로 파싱 (import로 연결되므로)
+        // Unambiguous 모드 비활성화 — await는 항상 키워드, strict 항상 적용
+        parser.is_unambiguous = false;
         _ = parser.parse() catch {
             self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Parse failed", null);
             module.state = .ready;

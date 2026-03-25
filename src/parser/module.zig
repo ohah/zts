@@ -45,6 +45,8 @@ pub fn parseImportCallArgs(self: *Parser, start: u32) ParseError2!NodeIndex {
 
 pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
+    // Unambiguous 모드: has_module_syntax 설정은 ESM import 확정 후 (아래 참조)
+    // TS import-equals (import x = require('y'))는 module syntax가 아님
     // ECMAScript 15.2: import 선언은 module의 top-level에서만 허용
     // namespace body 안에서도 import 허용 (in_namespace)
     if (!self.is_module and !self.in_namespace) {
@@ -145,6 +147,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     {
         const next = try self.peekNextKind();
         if (next == .eq) {
+            // import-equals는 TS CJS 호환 구문 → module syntax로 취급하지 않음
             const name_span = self.currentSpan();
             try self.advance(); // skip name
             try self.advance(); // skip =
@@ -161,6 +164,11 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
                 }), .right = value, .flags = 0 } },
             });
         }
+    }
+
+    // import-equals가 아니면 ESM import → module syntax 확정
+    if (!self.in_namespace) {
+        self.has_module_syntax = true;
     }
 
     // default import: import foo from "module"
@@ -342,6 +350,17 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
     // export function f() {} 형태에서 주석은 export 토큰에 붙지만,
     // function 파서에서 확인해야 하므로 여기서 미리 저장한다.
     const had_no_side_effects = self.scanner.token.has_no_side_effects_comment;
+    // Unambiguous 모드: top-level ESM export 발견 → module 확정
+    // namespace 내부의 export는 module syntax가 아님
+    // TS CJS 호환 구문 (export =, export as namespace)은 module syntax가 아님
+    if (!self.in_namespace) {
+        const next_kind = try self.peekNextKind();
+        // export = expr → TS CJS (module syntax 아님)
+        // 나머지 (export default, export {}, export *, export var 등) → ESM module syntax
+        if (next_kind != .eq) {
+            self.has_module_syntax = true;
+        }
+    }
     // ECMAScript 15.2: export 선언은 module의 top-level에서만 허용
     // namespace body 안에서도 export 허용 (in_namespace)
     if (!self.is_module and !self.in_namespace) {

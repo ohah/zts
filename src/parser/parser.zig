@@ -48,6 +48,11 @@ pub const Parser = struct {
     /// 수집된 에러 목록 (D039: 다중 에러)
     errors: std.ArrayList(Diagnostic),
 
+    /// Unambiguous 모드에서 모듈 전용 에러를 지연 수집하는 버퍼.
+    /// 파싱 완료 후 모듈로 확정되면 errors에 병합, 스크립트면 폐기.
+    /// oxc의 deferred_module_errors와 동일한 역할.
+    deferred_module_errors: std.ArrayList(Diagnostic),
+
     /// 재사용 가능한 임시 버퍼 (리스트 수집용). 매 사용 시 clearRetainingCapacity.
     scratch: std.ArrayList(NodeIndex),
 
@@ -75,7 +80,16 @@ pub const Parser = struct {
 
     /// module 모드인지 (import/export 허용, 항상 strict).
     /// 파싱 시작 시 한 번 결정되는 불변 설정이므로 Context에 포함하지 않음.
+    /// Unambiguous 모드에서는 낙관적으로 true로 시작하고, 파싱 후 확정.
     is_module: bool = false,
+
+    /// Unambiguous 모드인지 (.ts/.tsx — 내용 기반 모듈 판별, oxc 방식).
+    /// true이면 is_module=true로 낙관적 파싱하되, 모듈 전용 에러를 지연 수집.
+    /// 파싱 완료 후 import/export 유무로 확정: 없으면 is_module=false + 에러 폐기.
+    is_unambiguous: bool = false,
+
+    /// import/export/import.meta가 발견되었는지. Unambiguous 모드에서 모듈 확정 기준.
+    has_module_syntax: bool = false,
 
     /// namespace body 안인지. export/import를 허용하되 await를 키워드로 취급하지 않음.
     /// is_module과 분리: namespace는 export/import를 허용하지만 module code가 아님.
@@ -197,6 +211,7 @@ pub const Parser = struct {
             .scanner = scanner,
             .ast = Ast.init(allocator, scanner.source),
             .errors = .empty,
+            .deferred_module_errors = .empty,
             .scratch = .empty,
             .param_name_spans = .empty,
             .bracket_stack = blk: {
@@ -210,13 +225,21 @@ pub const Parser = struct {
 
     /// 파일 확장자에 따라 is_module, is_jsx를 설정한다.
     /// main.zig와 bundler graph.zig에서 중복 없이 사용.
+    ///
+    /// oxc 방식 Unambiguous 모드:
+    /// - .mts/.mjs → 확정적 Module (is_module=true)
+    /// - .ts/.tsx → Unambiguous (is_module=true 낙관적 파싱 + 에러 지연)
+    /// - .js/.jsx/.cts/.cjs → Script (is_module=false)
     pub fn configureFromExtension(self: *Parser, ext: []const u8) void {
-        if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx") or
-            std.mem.eql(u8, ext, ".mts") or std.mem.eql(u8, ext, ".mjs"))
-        {
+        if (std.mem.eql(u8, ext, ".mts") or std.mem.eql(u8, ext, ".mjs")) {
+            // 확정적 Module — import/export 없어도 module
             self.is_module = true;
-            // Annex B HTML-like 주석은 module에서 금지 (scanner에도 전달)
             self.scanner.is_module = true;
+        } else if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx")) {
+            // Unambiguous — 낙관적으로 module로 파싱, 파싱 후 확정
+            self.is_module = true;
+            self.scanner.is_module = true;
+            self.is_unambiguous = true;
         }
         if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx") or
             std.mem.eql(u8, ext, ".mts") or std.mem.eql(u8, ext, ".cts"))
@@ -231,6 +254,7 @@ pub const Parser = struct {
     pub fn deinit(self: *Parser) void {
         self.ast.deinit();
         self.errors.deinit(self.allocator);
+        self.deferred_module_errors.deinit(self.allocator);
         self.scratch.deinit(self.allocator);
         self.param_name_spans.deinit(self.allocator);
         self.bracket_stack.deinit(self.allocator);
@@ -392,6 +416,44 @@ pub const Parser = struct {
             .span = span,
             .message = expected,
         });
+    }
+
+    /// Unambiguous 모드에서 모듈/strict 전용 에러를 지연 수집한다.
+    /// 확정적 module이면 즉시 에러 추가, unambiguous면 deferred에 수집.
+    /// 파싱 후 resolveModuleKind()에서 모듈 확정 시 병합, 스크립트 확정 시 폐기.
+    pub fn addModuleError(self: *Parser, span: Span, message: []const u8) !void {
+        if (self.is_unambiguous) {
+            try self.deferred_module_errors.append(self.allocator, .{
+                .span = span,
+                .message = message,
+            });
+        } else {
+            try self.addError(span, message);
+        }
+    }
+
+    /// Unambiguous 모드 해결: 파싱 완료 후 import/export 유무로 module/script 확정.
+    /// module syntax가 있으면 → Module (지연 에러 병합)
+    /// module syntax가 없으면 → Script (지연 에러 폐기, is_module=false)
+    pub fn resolveModuleKind(self: *Parser) !void {
+        if (!self.is_unambiguous) return;
+
+        if (self.has_module_syntax) {
+            // Module 확정 — 지연 에러를 본 에러 리스트에 병합
+            try self.errors.appendSlice(self.allocator, self.deferred_module_errors.items);
+        } else {
+            // Script 확정 — 지연 에러 폐기, 모듈 모드 해제
+            self.is_module = false;
+            self.scanner.is_module = false;
+            // strict mode가 "use strict" directive에 의한 것이 아니라
+            // module 모드에서 자동 설정된 것이면 해제
+            // (directive에 의한 strict는 유지해야 함)
+            // 주의: is_strict_mode는 이미 파싱 중에 사용되었으므로
+            // 이 시점에서의 해제는 semantic analyzer용
+        }
+
+        self.is_unambiguous = false;
+        self.deferred_module_errors.clearRetainingCapacity();
     }
 
     /// 닫는 괄호에 매칭되는 여는 괄호를 bracket_stack에서 찾는다.
@@ -1028,14 +1090,16 @@ pub const Parser = struct {
         } else if (self.current().isReservedKeyword() or self.current().isLiteralKeyword()) {
             try self.addError(self.currentSpan(), "Reserved word cannot be used as identifier");
         } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
-            try self.addError(self.currentSpan(), "Reserved word in strict mode cannot be used as identifier");
+            // Unambiguous 모드: strict가 module 자동이면 지연
+            try self.addModuleError(self.currentSpan(), "Reserved word in strict mode cannot be used as identifier");
         } else if (self.current() == .escaped_keyword) {
             // escaped reserved keyword는 식별자로 사용 불가 (예: \u0061wait in script)
             // 단, escaped await는 script mode의 non-async에서는 허용
             const is_escaped_await = self.isEscapedKeyword("await");
             if (is_escaped_await) {
                 if ((self.is_module and !self.in_namespace) or self.ctx.in_async) {
-                    try self.addError(self.currentSpan(), "'await' cannot be used as identifier in this context");
+                    // Unambiguous: module에서만 에러이므로 지연
+                    try self.addModuleError(self.currentSpan(), "'await' cannot be used as identifier in this context");
                 }
             } else {
                 try self.addError(self.currentSpan(), "Keywords cannot contain escape characters");
@@ -1061,7 +1125,8 @@ pub const Parser = struct {
         if (self.current() == .kw_yield or self.current() == .kw_await) {
             _ = try self.checkYieldAwaitUse(span, "identifier");
         } else if (self.is_strict_mode and self.current().isStrictModeReserved()) {
-            try self.addError(span, "Reserved word in strict mode cannot be used as identifier");
+            // Unambiguous 모드: strict가 module 자동이면 지연
+            try self.addModuleError(span, "Reserved word in strict mode cannot be used as identifier");
         }
     }
 
@@ -1077,7 +1142,9 @@ pub const Parser = struct {
                 try self.addError(span, "'yield' cannot be used as " ++ context_noun ++ " in generator");
                 return true;
             } else if (self.is_strict_mode) {
-                try self.addError(span, "'yield' cannot be used as " ++ context_noun ++ " in strict mode");
+                // Unambiguous 모드에서 strict가 module 자동 설정이면 지연
+                // (script 확정 시 yield는 식별자로 허용)
+                try self.addModuleError(span, "'yield' cannot be used as " ++ context_noun ++ " in strict mode");
                 return true;
             }
         } else if (is_await) {
@@ -1087,7 +1154,8 @@ pub const Parser = struct {
             } else if (self.is_module and !self.in_namespace) {
                 // namespace body 안에서는 await를 식별자로 허용
                 // (namespace는 IIFE로 변환되므로 top-level module code가 아님)
-                try self.addError(span, "'await' cannot be used as " ++ context_noun ++ " in module code");
+                // Unambiguous 모드에서는 지연 (script 확정 시 await는 식별자)
+                try self.addModuleError(span, "'await' cannot be used as " ++ context_noun ++ " in module code");
                 return true;
             }
         }
