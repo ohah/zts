@@ -217,6 +217,15 @@ pub const ModuleGraph = struct {
 
         var parser = Parser.init(arena_alloc, &scanner);
         parser.configureFromExtension(std.fs.path.extension(module.path));
+        // package.json "type": "module"이면 .js 파일도 ESM으로 파싱해야 한다.
+        // configureFromExtension은 .js를 is_module=false로 두므로,
+        // 파싱 전에 package.json type 필드를 확인하여 오버라이드한다.
+        // (이전에는 파싱 후 determineExportsKind에서만 확인했으나,
+        //  파서가 import/export를 module 모드에서만 허용하므로 파싱 전에 필요)
+        if (!parser.is_module and self.isPackageTypeModule(module.path)) {
+            parser.is_module = true;
+            scanner.is_module = true;
+        }
         // 번들러에서는 모든 모듈을 확정적 Module로 파싱 (import로 연결되므로)
         // Unambiguous 모드 비활성화 — await는 항상 키워드, strict 항상 적용
         parser.is_unambiguous = false;

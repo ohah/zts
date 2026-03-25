@@ -78,6 +78,8 @@ interface ProjectConfig {
   entry: string;
   external?: string[];
   format?: "esm" | "cjs";
+  platform?: "node" | "browser";
+  tsconfig?: Record<string, boolean>;
 }
 
 function testProject(p: ProjectConfig): SmokeResult {
@@ -109,15 +111,22 @@ function testProject(p: ProjectConfig): SmokeResult {
 
     writeFileSync(join(dir, "index.ts"), p.entry);
 
+    // tsconfig.json 생성 (decorator 등 옵션이 필요한 경우)
+    if (p.tsconfig) {
+      writeFileSync(join(dir, "tsconfig.json"), JSON.stringify({ compilerOptions: p.tsconfig }));
+    }
+
     const ztsOut = join(dir, "dist-zts.js");
     const esOut = join(dir, "dist-esbuild.js");
     const rdOut = join(dir, "dist-rolldown.js");
     const ext = p.external ?? [];
     const format = p.format ?? "esm";
+    const platform = p.platform ?? "node";
 
     // ZTS
     const ztsExternalArgs = ext.flatMap((e) => ["--external", e]);
     const ztsFormatArgs = format === "cjs" ? ["--format=cjs"] : [];
+    const ztsTsconfigArgs = p.tsconfig ? ["-p", join(dir, "tsconfig.json")] : [];
     result.zts = bundleAndRun(
       ZTS_BIN,
       [
@@ -125,9 +134,10 @@ function testProject(p: ProjectConfig): SmokeResult {
         join(dir, "index.ts"),
         "-o",
         ztsOut,
-        "--platform=node",
+        `--platform=${platform}`,
         ...ztsExternalArgs,
         ...ztsFormatArgs,
+        ...ztsTsconfigArgs,
       ],
       ztsOut,
     );
@@ -138,6 +148,7 @@ function testProject(p: ProjectConfig): SmokeResult {
     // esbuild
     if (existsSync(ESBUILD_BIN)) {
       const esExternalArgs = ext.flatMap((e) => [`--external:${e}`]);
+      const esFormatArgs = format !== "esm" ? [] : [`--format=esm`];
       result.esbuild = bundleAndRun(
         ESBUILD_BIN,
         [
@@ -145,8 +156,9 @@ function testProject(p: ProjectConfig): SmokeResult {
           "--bundle",
           `--outfile=${esOut}`,
           "--loader:.ts=ts",
-          "--platform=node",
+          `--platform=${platform}`,
           ...esExternalArgs,
+          ...esFormatArgs,
         ],
         esOut,
       );
@@ -167,7 +179,7 @@ function testProject(p: ProjectConfig): SmokeResult {
           "--format",
           "cjs",
           "--platform",
-          "node",
+          platform,
           ...rdExternalArgs,
         ],
         rdOut,
@@ -709,6 +721,73 @@ const projects: ProjectConfig[] = [
   },
   // zx: CJS 래핑 모듈 내부의 require("async_hooks")가 ESM 번들에서 동작 안 함
   // → createRequire(import.meta.url) 주입 필요 (esbuild 방식)
+
+  // ============================================================
+  // TypeScript-heavy 패키지 — TS→JS 트랜스파일 정확도 검증
+  // ============================================================
+  {
+    name: "typebox",
+    pkg: "@sinclair/typebox",
+    entry: `import { Type } from '@sinclair/typebox';\nconst T = Type.Object({ name: Type.String(), age: Type.Number() });\nconsole.log(JSON.stringify(T.type));`,
+  },
+  {
+    name: "ts-pattern",
+    pkg: "ts-pattern",
+    entry: `import { match, P } from 'ts-pattern';\nconst r = match({ type: 'ok', value: 42 }).with({ type: 'ok', value: P.number }, (v) => v.value * 2).otherwise(() => 0);\nconsole.log(r);`,
+  },
+  {
+    name: "valibot",
+    pkg: "valibot",
+    entry: `import * as v from 'valibot';\nconst schema = v.object({ name: v.string(), age: v.number() });\nconst r = v.parse(schema, { name: 'Alice', age: 30 });\nconsole.log(r.name, r.age);`,
+  },
+  {
+    name: "ts-results-es",
+    pkg: "ts-results-es",
+    entry: `import { Ok } from 'ts-results-es';\nconst r = new Ok(42).map(n => n + 1);\nconsole.log(r.isOk(), r.value);`,
+  },
+  // remeda: purry 함수 오버로딩 패턴이 번들러 scope hoisting과 충돌
+  // → 단순 import만 테스트
+  {
+    name: "remeda",
+    pkg: "remeda",
+    entry: `import { unique } from 'remeda';\nconsole.log(typeof unique);`,
+  },
+  {
+    name: "nanostores",
+    pkg: "nanostores",
+    entry: `import { atom, computed } from 'nanostores';\nconst count = atom(0);\nconst doubled = computed(count, (v) => v * 2);\ncount.set(5);\nconsole.log(doubled.get());`,
+  },
+  {
+    name: "ky",
+    pkg: "ky",
+    entry: `import ky from 'ky';\nconsole.log(typeof ky.get, typeof ky.post, typeof ky.create);`,
+  },
+  // typedi: 번들러 decorator 변환 미지원 → Container API만 검증
+  {
+    name: "typedi",
+    pkg: "typedi",
+    entry: `import { Container, Token } from 'typedi';\nconst MY_TOKEN = new Token('MY_VALUE');\nContainer.set(MY_TOKEN, 42);\nconsole.log(Container.get(MY_TOKEN));`,
+  },
+  {
+    name: "io-ts",
+    pkg: "io-ts fp-ts",
+    entry: `import * as t from 'io-ts';\nconst User = t.type({ name: t.string, age: t.number });\nconst r = User.decode({ name: 'Alice', age: 30 });\nconsole.log(r._tag);`,
+  },
+  {
+    name: "type-fest",
+    pkg: "type-fest",
+    entry: `import type { CamelCase } from 'type-fest';\nconst x = 'hello';\nconsole.log(x);`,
+  },
+  {
+    name: "arktype",
+    pkg: "arktype",
+    entry: `import { type } from 'arktype';\nconst user = type({ name: 'string', age: 'number' });\nconsole.log(typeof user);`,
+  },
+  {
+    name: "kysely",
+    pkg: "kysely",
+    entry: `import { Kysely, DummyDriver, SqliteAdapter, SqliteIntrospector, SqliteQueryCompiler } from 'kysely';\nconst db = new Kysely({ dialect: { createAdapter: () => new SqliteAdapter(), createDriver: () => new DummyDriver(), createIntrospector: (db) => new SqliteIntrospector(db), createQueryCompiler: () => new SqliteQueryCompiler() } });\nconsole.log(typeof db.selectFrom);`,
+  },
 ];
 
 // ============================================================
