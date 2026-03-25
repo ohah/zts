@@ -202,7 +202,12 @@ pub fn parseStatement(self: *Parser) ParseError2!NodeIndex {
                     break :blk self.parseTsModuleDeclaration();
                 }
             } else if (std.mem.eql(u8, text, "declare")) {
-                break :blk self.parseTsDeclareStatement();
+                // declare\nfoo → 'declare' expression statement + foo (ASI)
+                // declare var foo → TS ambient declaration
+                const next_decl = try self.peekNext();
+                if (!next_decl.has_newline_before) {
+                    break :blk self.parseTsDeclareStatement();
+                }
             } else if (std.mem.eql(u8, text, "abstract")) {
                 // abstract class Foo {} → TS abstract class declaration
                 // abstract\nclass Foo {} → 'abstract' expression statement + class declaration (ASI)
