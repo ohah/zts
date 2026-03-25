@@ -205,9 +205,35 @@ pub fn parseStatement(self: *Parser) ParseError2!NodeIndex {
                 }
             } else if (std.mem.eql(u8, text, "declare")) {
                 // declare\nfoo → 'declare' expression statement + foo (ASI)
+                // declare; / declare() / declare[x] → 'declare' 식별자 (ambient 아님)
                 // declare var foo → TS ambient declaration
                 const next_decl = try self.peekNext();
-                if (!next_decl.has_newline_before) {
+                // declare 뒤에 줄바꿈 없고, expression operator가 아니면 ambient declaration
+                if (!next_decl.has_newline_before and switch (next_decl.kind) {
+                    // 이 토큰들이 오면 declare는 식별자 (expression의 일부)
+                    .semicolon,
+                    .l_paren,
+                    .l_bracket,
+                    .eq,
+                    .dot,
+                    .question_dot,
+                    .plus,
+                    .minus,
+                    .star,
+                    .slash,
+                    .pipe,
+                    .amp,
+                    .comma,
+                    .plus_eq,
+                    .minus_eq,
+                    .star_eq,
+                    .slash_eq,
+                    .eof,
+                    .r_curly,
+                    => false,
+                    // 그 외 (var, const, function, class, identifier 등) → ambient
+                    else => true,
+                }) {
                     break :blk self.parseTsDeclareStatement();
                 }
             } else if (std.mem.eql(u8, text, "abstract")) {
