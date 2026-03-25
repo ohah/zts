@@ -174,11 +174,18 @@ function extractSwcCases(): TestCase[] {
 // ============================================================
 
 function normalize(s: string): string {
-  return s
-    .replace(/\r\n/g, "\n")
-    .replace(/\t/g, "  ") // tab → 2 spaces (esbuild 호환)
-    .replace(/\s+$/gm, "") // trailing whitespace 제거
-    .trim();
+  return (
+    s
+      .replace(/\r\n/g, "\n")
+      .replace(/\t/g, "  ") // tab → 2 spaces
+      // 포맷팅 차이 정규화 (ZTS: 한 줄 compact, esbuild: pretty-print)
+      .replace(/\{\n\s*/g, "{") // {\n  → {
+      .replace(/;\n\s*/g, ";") // ;\n  → ;
+      .replace(/\n\s*\}/g, "}") //  \n} → }
+      .replace(/,\n\s*/g, ",") // ,\n  → ,
+      .replace(/\s+$/gm, "") // trailing whitespace
+      .trim()
+  );
 }
 
 function runZts(

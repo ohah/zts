@@ -188,10 +188,12 @@ pub fn parseStatement(self: *Parser) ParseError2!NodeIndex {
                     break :blk self.parseTsTypeAliasDeclaration();
                 }
             } else if (std.mem.eql(u8, text, "namespace")) {
-                // namespace Name { } → TS module declaration
-                // namespace = 2 → expression statement (변수로 사용)
-                const next = try self.peekNextKind();
-                if (next == .identifier or next == .l_curly or next == .string_literal) {
+                // namespace\nfoo → 'namespace' expression statement + foo (ASI)
+                // namespace Foo { } → TS module declaration
+                const next_ns = try self.peekNext();
+                if (!next_ns.has_newline_before and
+                    (next_ns.kind == .identifier or next_ns.kind == .l_curly or next_ns.kind == .string_literal))
+                {
                     break :blk self.parseTsModuleDeclaration();
                 }
             } else if (std.mem.eql(u8, text, "module")) {
