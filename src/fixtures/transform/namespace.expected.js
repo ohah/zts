@@ -1,1 +1,1 @@
-var Foo;(function(Foo){const x=1;Foo.x=x;})(Foo||(Foo={}));
+var Foo;((Foo) => {const x=1;Foo.x=x;})(Foo || (Foo = {}));
