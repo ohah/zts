@@ -1,0 +1,67 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`TSC: es6/classExpressions classExpressionES61 1`] = `
+"var v = class C {
+};
+"
+`;
+
+exports[`TSC: es6/classExpressions classExpressionES62 1`] = `
+"class D {
+}
+var v = class C extends D {
+};
+"
+`;
+
+exports[`TSC: es6/classExpressions classExpressionES63 1`] = `
+"let C = class extends class extends class {
+	a = 1;
+} {
+	b = 2;
+} {
+	c = 3;
+};
+let c = new C();
+c.a;
+c.b;
+c.c;
+"
+`;
+
+exports[`TSC: es6/classExpressions typeArgumentInferenceWithClassExpression1 1`] = `
+"function foo(x=class {
+	static prop;
+}) {
+	return undefined;
+}
+foo(class {
+	static prop = "hello";
+}).length;
+"
+`;
+
+exports[`TSC: es6/classExpressions typeArgumentInferenceWithClassExpression2 1`] = `
+"function foo(x=class {
+	prop;
+}) {
+	return undefined;
+}
+// Should not infer string because it is a static property
+foo(class {
+	static prop = "hello";
+}).length;
+"
+`;
+
+exports[`TSC: es6/classExpressions typeArgumentInferenceWithClassExpression3 1`] = `
+"function foo(x=class {
+	prop;
+}) {
+	return undefined;
+}
+foo(class {
+	prop = "hello";
+}).length;
+"
+`;

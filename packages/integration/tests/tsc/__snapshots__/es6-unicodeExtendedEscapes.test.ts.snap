@@ -1,0 +1,327 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInRegularExpressions01 1`] = `
+"// @target: es5,es6
+var x = /\\u{0}/gu;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInRegularExpressions02 1`] = `
+"// @target: es5,es6
+var x = /\\u{00}/gu;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInRegularExpressions03 1`] = `
+"// @target: es5,es6
+var x = /\\u{0000}/gu;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInRegularExpressions04 1`] = `
+"// @target: es5,es6
+var x = /\\u{00000000}/gu;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInRegularExpressions05 1`] = `
+"// @target: es5,es6
+var x = /\\u{48}\\u{65}\\u{6c}\\u{6c}\\u{6f}\\u{20}\\u{77}\\u{6f}\\u{72}\\u{6c}\\u{64}/gu;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInRegularExpressions06 1`] = `
+"// @target: es5,es6
+// ES6 Spec - 10.1.1 Static Semantics: UTF16Encoding (cp)
+//  1. Assert: 0 ≤ cp ≤ 0x10FFFF.
+var x = /\\u{10FFFF}/gu;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInRegularExpressions08 1`] = `
+"// @target: es5,es6
+// ES6 Spec - 10.1.1 Static Semantics: UTF16Encoding (cp)
+//  2. If cp ≤ 65535, return cp.
+// (FFFF == 65535)
+var x = /\\u{FFFF}/gu;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInRegularExpressions09 1`] = `
+"// @target: es5,es6
+// ES6 Spec - 10.1.1 Static Semantics: UTF16Encoding (cp)
+//  2. If cp ≤ 65535, return cp.
+// (10000 == 65536)
+var x = /\\u{10000}/gu;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInRegularExpressions10 1`] = `
+"// @target: es5,es6
+// ES6 Spec - 10.1.1 Static Semantics: UTF16Encoding (cp)
+//  2. Let cu1 be floor((cp – 65536) / 1024) + 0xD800.
+// Although we should just get back a single code point value of 0xD800,
+// this is a useful edge-case test.
+var x = /\\u{D800}/gu;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInRegularExpressions11 1`] = `
+"// @target: es5,es6
+// ES6 Spec - 10.1.1 Static Semantics: UTF16Encoding (cp)
+//  2. Let cu2 be ((cp – 65536) modulo 1024) + 0xDC00.
+// Although we should just get back a single code point value of 0xDC00,
+// this is a useful edge-case test.
+var x = /\\u{DC00}/gu;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInRegularExpressions13 1`] = `
+"// @target: es5,es6
+var x = /\\u{DDDDD}/gu;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInRegularExpressions15 1`] = `
+"// @target: es5,es6
+var x = /\\u{abcd}\\u{ef12}\\u{3456}\\u{7890}/gu;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInRegularExpressions16 1`] = `
+"// @target: es5,es6
+var x = /\\u{ABCD}\\u{EF12}\\u{3456}\\u{7890}/gu;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInRegularExpressions18 1`] = `
+"// @target: es5,es6
+var x = /\\u{65}\\u{65}/gu;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInStrings01 1`] = `
+"// @target: es5,es6
+var x = "\\u{0}";
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInStrings02 1`] = `
+"// @target: es5,es6
+var x = "\\u{00}";
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInStrings03 1`] = `
+"// @target: es5,es6
+var x = "\\u{0000}";
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInStrings04 1`] = `
+"// @target: es5,es6
+var x = "\\u{00000000}";
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInStrings05 1`] = `
+"// @target: es5,es6
+var x = "\\u{48}\\u{65}\\u{6c}\\u{6c}\\u{6f}\\u{20}\\u{77}\\u{6f}\\u{72}\\u{6c}\\u{64}";
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInStrings06 1`] = `
+"// @target: es5,es6
+// ES6 Spec - 10.1.1 Static Semantics: UTF16Encoding (cp)
+//  1. Assert: 0 ≤ cp ≤ 0x10FFFF.
+var x = "\\u{10FFFF}";
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInStrings07 1`] = `
+"// @target: es5,es6
+// ES6 Spec - 10.1.1 Static Semantics: UTF16Encoding (cp)
+//  1. Assert: 0 ≤ cp ≤ 0x10FFFF.
+var x = "\\u{110000}";
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInStrings08 1`] = `
+"// @target: es5,es6
+// ES6 Spec - 10.1.1 Static Semantics: UTF16Encoding (cp)
+//  2. If cp ≤ 65535, return cp.
+// (FFFF == 65535)
+var x = "\\u{FFFF}";
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInStrings09 1`] = `
+"// @target: es5,es6
+// ES6 Spec - 10.1.1 Static Semantics: UTF16Encoding (cp)
+//  2. If cp ≤ 65535, return cp.
+// (10000 == 65536)
+var x = "\\u{10000}";
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInStrings10 1`] = `
+"// @target: es5,es6
+// ES6 Spec - 10.1.1 Static Semantics: UTF16Encoding (cp)
+//  2. Let cu1 be floor((cp – 65536) / 1024) + 0xD800.
+// Although we should just get back a single code point value of 0xD800,
+// this is a useful edge-case test.
+var x = "\\u{D800}";
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInStrings11 1`] = `
+"// @target: es5,es6
+// ES6 Spec - 10.1.1 Static Semantics: UTF16Encoding (cp)
+//  2. Let cu2 be ((cp – 65536) modulo 1024) + 0xDC00.
+// Although we should just get back a single code point value of 0xDC00,
+// this is a useful edge-case test.
+var x = "\\u{DC00}";
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInStrings12 1`] = `
+"// @target: es5,es6
+var x = "\\u{FFFFFFFF}";
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInStrings13 1`] = `
+"// @target: es5,es6
+var x = "\\u{DDDDD}";
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInStrings15 1`] = `
+"// @target: es5,es6
+var x = "\\u{abcd}\\u{ef12}\\u{3456}\\u{7890}";
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInStrings16 1`] = `
+"// @target: es5,es6
+var x = "\\u{ABCD}\\u{EF12}\\u{3456}\\u{7890}";
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInStrings18 1`] = `
+"// @target: es5,es6
+var x = "\\u{65}\\u{65}";
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInStrings23 1`] = `
+"// @target: es5,es6
+var x = "\\u{00000000000067}";
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInTemplates01 1`] = `
+"// @target: es5,es6
+var x = \`\\u{0}\`;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInTemplates02 1`] = `
+"// @target: es5,es6
+var x = \`\\u{00}\`;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInTemplates03 1`] = `
+"// @target: es5,es6
+var x = \`\\u{0000}\`;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInTemplates04 1`] = `
+"// @target: es5,es6
+var x = \`\\u{00000000}\`;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInTemplates05 1`] = `
+"// @target: es5,es6
+var x = \`\\u{48}\\u{65}\\u{6c}\\u{6c}\\u{6f}\\u{20}\\u{77}\\u{6f}\\u{72}\\u{6c}\\u{64}\`;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInTemplates06 1`] = `
+"// @target: es5,es6
+// ES6 Spec - 10.1.1 Static Semantics: UTF16Encoding (cp)
+//  1. Assert: 0 ≤ cp ≤ 0x10FFFF.
+var x = \`\\u{10FFFF}\`;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInTemplates08 1`] = `
+"// @target: es5,es6
+// ES6 Spec - 10.1.1 Static Semantics: UTF16Encoding (cp)
+//  2. If cp ≤ 65535, return cp.
+// (FFFF == 65535)
+var x = \`\\u{FFFF}\`;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInTemplates09 1`] = `
+"// @target: es5,es6
+// ES6 Spec - 10.1.1 Static Semantics: UTF16Encoding (cp)
+//  2. If cp ≤ 65535, return cp.
+// (10000 == 65536)
+var x = \`\\u{10000}\`;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInTemplates10 1`] = `
+"// @target: es5,es6
+// ES6 Spec - 10.1.1 Static Semantics: UTF16Encoding (cp)
+//  2. Let cu1 be floor((cp – 65536) / 1024) + 0xD800.
+// Although we should just get back a single code point value of 0xD800,
+// this is a useful edge-case test.
+var x = \`\\u{D800}\`;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInTemplates11 1`] = `
+"// @target: es5,es6
+// ES6 Spec - 10.1.1 Static Semantics: UTF16Encoding (cp)
+//  2. Let cu2 be ((cp – 65536) modulo 1024) + 0xDC00.
+// Although we should just get back a single code point value of 0xDC00,
+// this is a useful edge-case test.
+var x = \`\\u{DC00}\`;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInTemplates13 1`] = `
+"// @target: es5,es6
+var x = \`\\u{DDDDD}\`;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInTemplates15 1`] = `
+"// @target: es5,es6
+var x = \`\\u{abcd}\\u{ef12}\\u{3456}\\u{7890}\`;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInTemplates16 1`] = `
+"// @target: es5,es6
+var x = \`\\u{ABCD}\\u{EF12}\\u{3456}\\u{7890}\`;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInTemplates18 1`] = `
+"// @target: es5,es6
+var x = \`\\u{65}\\u{65}\`;
+"
+`;
+
+exports[`TSC: es6/unicodeExtendedEscapes unicodeExtendedEscapesInTemplates20 1`] = `
+"// @target: es5,es6
+var x = \`\\u{48}\\u{65}\\u{6c}\\u{6c}\\u{6f}\${\`\\u{20}\\u{020}\\u{0020}\\u{000020}\`}\\u{77}\\u{6f}\\u{72}\\u{6c}\\u{64}\`;
+"
+`;

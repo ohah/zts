@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { createFixture, runZts } from "./helpers";
+import { createFixture, runZts } from "../helpers";
 
 async function expectPass(code: string, flags: string[] = []) {
   const fixture = await createFixture({ "input.ts": code });

@@ -1,0 +1,133 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`TSC: es6/restParameters emitRestParametersFunction 1`] = `
+"// @strict: false
+function bar(...rest) {
+}
+function foo(x,y,...rest) {
+}
+"
+`;
+
+exports[`TSC: es6/restParameters emitRestParametersFunctionES6 1`] = `
+"// @strict: false
+function bar(...rest) {
+}
+function foo(x,y,...rest) {
+}
+"
+`;
+
+exports[`TSC: es6/restParameters emitRestParametersFunctionExpression 1`] = `
+"// @strict: false
+var funcExp = (...rest) => {
+};
+var funcExp1 = (X, ...rest) => {
+};
+var funcExp2 = function(...rest) {
+};
+var funcExp3 = (function(...rest) {
+})();
+"
+`;
+
+exports[`TSC: es6/restParameters emitRestParametersFunctionExpressionES6 1`] = `
+"// @strict: false
+var funcExp = (...rest) => {
+};
+var funcExp1 = (X, ...rest) => {
+};
+var funcExp2 = function(...rest) {
+};
+var funcExp3 = (function(...rest) {
+})();
+"
+`;
+
+exports[`TSC: es6/restParameters emitRestParametersFunctionProperty 1`] = `
+"// @strict: false
+var obj;
+var obj2 = { func(...rest) {
+} };
+"
+`;
+
+exports[`TSC: es6/restParameters emitRestParametersFunctionPropertyES6 1`] = `
+"// @strict: false
+var obj;
+var obj2 = { func(...rest) {
+} };
+"
+`;
+
+exports[`TSC: es6/restParameters emitRestParametersMethod 1`] = `
+"// @strict: false
+class C {
+	constructor(name,...rest) {
+	}
+	bar(...rest) {
+	}
+	foo(x,...rest) {
+	}
+}
+class D {
+	constructor(...rest) {
+	}
+	bar(...rest) {
+	}
+	foo(x,...rest) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/restParameters emitRestParametersMethodES6 1`] = `
+"// @strict: false
+class C {
+	constructor(name,...rest) {
+	}
+	bar(...rest) {
+	}
+	foo(x,...rest) {
+	}
+}
+class D {
+	constructor(...rest) {
+	}
+	bar(...rest) {
+	}
+	foo(x,...rest) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/restParameters readonlyRestParameters 1`] = `
+"function f0(a,b) {
+	f0(a, b);
+	f1(a, b);
+	f2(a, b);
+}
+function f1(...args) {
+	f0(...args);
+	// Error
+f1("abc", "def");
+	f1("abc", ...args);
+	f1(...args);
+}
+function f2(...args) {
+	f0(...args);
+	f1("abc", "def");
+	f1("abc", ...args);
+	f1(...args);
+	f2("abc", "def");
+	f2("abc", ...args);
+	// Error
+f2(...args);
+}
+function f4(...args) {
+	args[0] = "abc";
+}
+// Error
+"
+`;

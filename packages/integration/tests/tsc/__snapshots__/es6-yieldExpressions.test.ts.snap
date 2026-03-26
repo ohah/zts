@@ -1,0 +1,815 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`TSC: es6/yieldExpressions generatorInAmbientContext1 1`] = `""`;
+
+exports[`TSC: es6/yieldExpressions generatorInAmbientContext2 1`] = `""`;
+
+exports[`TSC: es6/yieldExpressions generatorInAmbientContext3.d 1`] = `""`;
+
+exports[`TSC: es6/yieldExpressions generatorInAmbientContext4.d 1`] = `""`;
+
+exports[`TSC: es6/yieldExpressions generatorInAmbientContext5 1`] = `
+"class C {
+	*generator() {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorInAmbientContext6 1`] = `
+"var M;((M) => {function* generator() {
+}M.generator=generator;})(M || (M = {}));
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorNoImplicitReturns 1`] = `
+"function* testGenerator() {
+	if (Math.random() > 0.5) {
+		return;
+	}
+	yield "hello";
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorOverloads1 1`] = `
+"var M;((M) => {function* f(s) {
+}})(M || (M = {}));
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorOverloads2 1`] = `""`;
+
+exports[`TSC: es6/yieldExpressions generatorOverloads3 1`] = `
+"class C {
+	*f(s) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorOverloads4 1`] = `
+"class C {
+	*f(s) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorOverloads5 1`] = `
+"var M;((M) => {function* f(s) {
+}})(M || (M = {}));
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck1 1`] = `
+"function* g1() {
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck10 1`] = `
+"function* g() {
+	return;
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck11 1`] = `
+"function* g() {
+	return 0;
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck12 1`] = `
+"function* g() {
+	return "";
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck13 1`] = `
+"function* g() {
+	yield 0;
+	return "";
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck14 1`] = `
+"function* g() {
+	yield 0;
+	return "";
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck15 1`] = `
+"function* g() {
+	return "";
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck16 1`] = `
+"function* g() {
+	return;
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck17 1`] = `
+"class Foo {
+	x;
+}
+class Bar extends Foo {
+	y;
+}
+function* g() {
+	yield;
+	yield new Bar();
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck18 1`] = `
+"class Foo {
+	x;
+}
+class Baz {
+	z;
+}
+function* g() {
+	yield;
+	yield new Baz();
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck19 1`] = `
+"class Foo {
+	x;
+}
+class Bar extends Foo {
+	y;
+}
+function* g() {
+	yield;
+	yield* [new Bar()];
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck2 1`] = `
+"function* g1() {
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck20 1`] = `
+"class Foo {
+	x;
+}
+class Baz {
+	z;
+}
+function* g() {
+	yield;
+	yield* [new Baz()];
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck21 1`] = `
+"class Foo {
+	x;
+}
+class Bar extends Foo {
+	y;
+}
+function* g() {
+	yield;
+	yield* new Bar();
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck22 1`] = `
+"class Foo {
+	x;
+}
+class Bar extends Foo {
+	y;
+}
+class Baz {
+	z;
+}
+function* g3() {
+	yield;
+	yield new Bar();
+	yield new Baz();
+	yield* [new Bar()];
+	yield* [new Baz()];
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck23 1`] = `
+"class Foo {
+	x;
+}
+class Bar extends Foo {
+	y;
+}
+class Baz {
+	z;
+}
+function* g3() {
+	yield;
+	yield new Foo();
+	yield new Bar();
+	yield new Baz();
+	yield* [new Bar()];
+	yield* [new Baz()];
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck24 1`] = `
+"class Foo {
+	x;
+}
+class Bar extends Foo {
+	y;
+}
+class Baz {
+	z;
+}
+function* g3() {
+	yield;
+	yield* [new Foo()];
+	yield new Bar();
+	yield new Baz();
+	yield* [new Bar()];
+	yield* [new Baz()];
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck25 1`] = `
+"class Foo {
+	x;
+}
+class Bar extends Foo {
+	y;
+}
+class Baz {
+	z;
+}
+var g3 = function*() {
+	yield;
+	yield new Bar();
+	yield new Baz();
+	yield* [new Bar()];
+	yield* [new Baz()];
+};
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck26 1`] = `
+"function* g() {
+	yield (x) => x.length;
+	yield* [(x) => x.length];
+	return (x) => x.length;
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck27 1`] = `
+"function* g() {
+	yield* function*() {
+		yield (x) => x.length;
+	}();
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck28 1`] = `
+"function* g() {
+	yield* { *[Symbol.iterator]() {
+		yield (x) => x.length;
+	} };
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck29 1`] = `
+"function* g2() {
+	yield function*() {
+		yield (x) => x.length;
+	}();
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck3 1`] = `
+"function* g1() {
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck30 1`] = `
+"function* g2() {
+	yield function*() {
+		yield (x) => x.length;
+	}();
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck31 1`] = `
+"function* g2() {
+	yield function*() {
+		yield (x) => x.length;
+	}();
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck33 1`] = `
+"function* g() {
+	yield 0;
+	function* g2() {
+		yield "";
+	}
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck34 1`] = `
+"function* g() {
+	yield 0;
+	function* g2() {
+		return "";
+	}
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck35 1`] = `
+"function* g() {
+	yield 0;
+	function g2() {
+		return "";
+	}
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck36 1`] = `
+"function* g() {
+	yield yield 0;
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck37 1`] = `
+"function* g() {
+	return yield yield 0;
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck38 1`] = `
+"var yield;
+function* g() {
+	yield 0;
+	var v;
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck4 1`] = `
+"function* g1() {
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck40 1`] = `
+"function* g() {
+	class C extends (yield 0) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck41 1`] = `
+"function* g() {
+	let x = { [yield 0]: 0 };
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck42 1`] = `
+"function* g() {
+	let x = { [yield 0]() {
+	} };
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck43 1`] = `
+"function* g() {
+	let x = { *[yield 0]() {
+	} };
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck44 1`] = `
+"function* g() {
+	let x = { get [yield 0]() {
+		return 0;
+	} };
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck45 1`] = `
+"foo("", function*() {
+	yield (x) => x.length;
+}, (p) => undefined);
+// T is fixed, should be string
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck46 1`] = `
+"foo("", function*() {
+	yield* { *[Symbol.iterator]() {
+		yield (x) => x.length;
+	} };
+}, (p) => undefined);
+// T is fixed, should be string
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck47 1`] = `
+"function* g() {
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck48 1`] = `
+"function* g() {
+	yield;
+}
+function* h() {
+	yield undefined;
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck49 1`] = `
+"function* g() {
+	yield 0;
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck5 1`] = `
+"function* g1() {
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck50 1`] = `
+"function* g() {
+	yield yield;
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck51 1`] = `
+"function* g() {
+	function* h() {
+		yield 0;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck52 1`] = `
+"class Foo {
+	x;
+}
+class Baz {
+	z;
+}
+function* g() {
+	yield new Foo();
+	yield new Baz();
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck53 1`] = `
+"class Foo {
+	x;
+}
+class Baz {
+	z;
+}
+function* g() {
+	yield new Foo();
+	yield* [new Baz()];
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck54 1`] = `
+"class Foo {
+	x;
+}
+class Baz {
+	z;
+}
+function* g() {
+	yield* [new Foo()];
+	yield* [new Baz()];
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck55 1`] = `
+"function* g() {
+	var x = class C extends (yield) {
+	};
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck56 1`] = `
+"function* g() {
+	var x = class C {
+		*[yield 0]() {
+			yield 0;
+		}
+	};
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck59 1`] = `
+"function* g() {
+	class C {
+		@(yield "")
+		m() {
+		}
+	}
+	;
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck6 1`] = `
+"function* g1() {
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck60 1`] = `
+"function* g() {
+	class C extends (yield) {
+	}
+	;
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck61 1`] = `
+"function* g() {
+	@(yield 0) class C {
+	}
+	;
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck62 1`] = `
+"// @module: commonjs
+export function strategy(stratName,gen) {
+	return function*(state) {
+		for (const next of gen(state)) {
+			if (next) {
+				next.lastStrategyApplied = stratName;
+			}
+			yield next;
+		}
+	};
+}
+export const Nothing1 = strategy("Nothing", function*(state) {
+	return state;
+});
+// \`return\`/\`TReturn\` isn't supported by \`strategy\`, so this should error.
+export const Nothing2 = strategy("Nothing", function*(state) {
+	yield state;
+});
+export const Nothing3 = strategy("Nothing", function*(state) {
+	yield;
+	return state;
+});
+// \`return\`/\`TReturn\` isn't supported by \`strategy\`, so this should error.
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck63 1`] = `
+"// @module: commonjs
+export function strategy(stratName,gen) {
+	return function*(state) {
+		for (const next of gen(state)) {
+			if (next) {
+				next.lastStrategyApplied = stratName;
+			}
+			yield next;
+		}
+	};
+}
+export const Nothing = strategy("Nothing", function*(state) {
+	yield 1;
+	// number isn't a \`State\`, so this should error.
+return state;
+});
+// \`return\`/\`TReturn\` isn't supported by \`strategy\`, so this should error.
+export const Nothing1 = strategy("Nothing", function*(state) {
+});
+export const Nothing2 = strategy("Nothing", function*(state) {
+	return 1;
+});
+// \`return\`/\`TReturn\` isn't supported by \`strategy\`, so this should error.
+export const Nothing3 = strategy("Nothing", function*(state) {
+	yield state;
+	return 1;
+});
+// \`return\`/\`TReturn\` isn't supported by \`strategy\`, so this should error.
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck64 1`] = `
+"function* g3() {
+	yield function*() {
+		yield (x) => x.length;
+	}();
+}
+function* g4() {
+	yield (function*() {
+		yield (x) => x.length;
+	})();
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck7 1`] = `
+"function* g1() {
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck8 1`] = `
+"function* g3() {
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions generatorTypeCheck9 1`] = `
+"function* g3() {
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions YieldExpression1_es6 1`] = `
+"yield;
+"
+`;
+
+exports[`TSC: es6/yieldExpressions YieldExpression10_es6 1`] = `
+"var v = { *foo() {
+	yield (foo);
+} };
+"
+`;
+
+exports[`TSC: es6/yieldExpressions YieldExpression11_es6 1`] = `
+"class C {
+	*foo() {
+		yield (foo);
+	}
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions YieldExpression13_es6 1`] = `
+"function* foo() {
+	yield;
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions YieldExpression19_es6 1`] = `
+"function* foo() {
+	function bar() {
+		function* quux() {
+			yield (foo);
+		}
+	}
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions YieldExpression3_es6 1`] = `
+"function* foo() {
+	yield;
+	yield;
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions YieldExpression4_es6 1`] = `
+"function* foo() {
+	yield;
+	yield;
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions YieldExpression5_es6 1`] = `
+"function* foo() {
+	yield*;
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions YieldExpression6_es6 1`] = `
+"function* foo() {
+	yield* foo;
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions YieldExpression7_es6 1`] = `
+"function* foo() {
+	yield foo;
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions YieldExpression8_es6 1`] = `
+"yield(foo);
+function* foo() {
+	yield (foo);
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions YieldExpression9_es6 1`] = `
+"var v = function*() {
+	yield (foo);
+};
+"
+`;
+
+exports[`TSC: es6/yieldExpressions yieldExpressionInControlFlow 1`] = `
+"function* f() {
+	var o;
+	while (true) {
+		o = yield o;
+	}
+}
+// fails in Typescript too
+function* g() {
+	var o = [];
+	while (true) {
+		o = yield* o;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions YieldStarExpression1_es6 1`] = `
+"yield * [];
+"
+`;
+
+exports[`TSC: es6/yieldExpressions YieldStarExpression3_es6 1`] = `
+"function* g() {
+	yield*;
+}
+"
+`;
+
+exports[`TSC: es6/yieldExpressions YieldStarExpression4_es6 1`] = `
+"function* g() {
+	yield* [];
+}
+"
+`;

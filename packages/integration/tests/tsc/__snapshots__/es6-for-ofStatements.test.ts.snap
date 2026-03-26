@@ -1,0 +1,596 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`TSC: es6/for-ofStatements for-of1 1`] = `
+"//@target: ES6
+var v;
+for (v of []) {
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of10 1`] = `
+"//@target: ES6
+var v;
+for (v of [0]) {
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of11 1`] = `
+"//@target: ES6
+var v;
+for (v of [0, ""]) {
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of12 1`] = `
+"//@target: ES6
+var v;
+for (v of [0, ""].values()) {
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of13 1`] = `
+"//@target: ES6
+var v;
+for (v of [""].values()) {
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of14 1`] = `
+"//@target: ES6
+class MyStringIterator {
+	next() {
+		return "";
+	}
+}
+var v;
+for (v of new MyStringIterator()) {
+}
+// Should fail because the iterator is not iterable
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of15 1`] = `
+"//@target: ES6
+class MyStringIterator {
+	next() {
+		return "";
+	}
+	[Symbol.iterator]() {
+		return this;
+	}
+}
+var v;
+for (v of new MyStringIterator()) {
+}
+// Should fail
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of16 1`] = `
+"//@target: ES6
+class MyStringIterator {
+	[Symbol.iterator]() {
+		return this;
+	}
+}
+var v;
+for (v of new MyStringIterator()) {
+}
+// Should fail
+for (v of new MyStringIterator()) {
+}
+// Should still fail (related errors should still be shown even though type is cached).
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of17 1`] = `
+"//@target: ES6
+class NumberIterator {
+	next() {
+		return { value: 0, done: false };
+	}
+	[Symbol.iterator]() {
+		return this;
+	}
+}
+var v;
+for (v of new NumberIterator()) {
+}
+// Should succeed
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of18 1`] = `
+"//@target: ES6
+class MyStringIterator {
+	next() {
+		return { value: "", done: false };
+	}
+	[Symbol.iterator]() {
+		return this;
+	}
+}
+var v;
+for (v of new MyStringIterator()) {
+}
+// Should succeed
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of19 1`] = `
+"//@target: ES6
+class Foo {
+}
+class FooIterator {
+	next() {
+		return { value: new Foo(), done: false };
+	}
+	[Symbol.iterator]() {
+		return this;
+	}
+}
+for (var v of new FooIterator()) {
+	v;
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of20 1`] = `
+"//@target: ES6
+class Foo {
+}
+class FooIterator {
+	next() {
+		return { value: new Foo(), done: false };
+	}
+	[Symbol.iterator]() {
+		return this;
+	}
+}
+for (let v of new FooIterator()) {
+	v;
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of21 1`] = `
+"//@target: ES6
+class Foo {
+}
+class FooIterator {
+	next() {
+		return { value: new Foo(), done: false };
+	}
+	[Symbol.iterator]() {
+		return this;
+	}
+}
+for (const v of new FooIterator()) {
+	v;
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of22 1`] = `
+"//@target: ES6
+class Foo {
+}
+class FooIterator {
+	next() {
+		return { value: new Foo(), done: false };
+	}
+	[Symbol.iterator]() {
+		return this;
+	}
+}
+v;
+for (var v of new FooIterator()) {
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of23 1`] = `
+"//@target: ES6
+class Foo {
+}
+class FooIterator {
+	next() {
+		return { value: new Foo(), done: false };
+	}
+	[Symbol.iterator]() {
+		return this;
+	}
+}
+for (const v of new FooIterator()) {
+	const v = 0;
+}
+// new scope
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of24 1`] = `
+"//@target: ES6
+var x;
+for (var v of x) {
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of25 1`] = `
+"//@target: ES6
+class MyStringIterator {
+	[Symbol.iterator]() {
+		return x;
+	}
+}
+var x;
+for (var v of new MyStringIterator()) {
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of26 1`] = `
+"//@target: ES6
+class MyStringIterator {
+	next() {
+		return x;
+	}
+	[Symbol.iterator]() {
+		return this;
+	}
+}
+var x;
+for (var v of new MyStringIterator()) {
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of27 1`] = `
+"//@target: ES6
+class MyStringIterator {
+	[Symbol.iterator];
+}
+for (var v of new MyStringIterator()) {
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of28 1`] = `
+"//@target: ES6
+class MyStringIterator {
+	next;
+	[Symbol.iterator]() {
+		return this;
+	}
+}
+for (var v of new MyStringIterator()) {
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of30 1`] = `
+"//@target: ES6
+class MyStringIterator {
+	next() {
+		return { done: false, value: "" };
+	}
+	return = 0;
+	[Symbol.iterator]() {
+		return this;
+	}
+}
+for (var v of new MyStringIterator()) {
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of31 1`] = `
+"//@target: ES6
+class MyStringIterator {
+	next() {
+		return { // no done property
+value: "" };
+	}
+	[Symbol.iterator]() {
+		return this;
+	}
+}
+for (var v of new MyStringIterator()) {
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of32 1`] = `
+"//@target: ES6
+for (var v of v) {
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of33 1`] = `
+"//@target: ES6
+class MyStringIterator {
+	[Symbol.iterator]() {
+		return v;
+	}
+}
+for (var v of new MyStringIterator()) {
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of34 1`] = `
+"//@target: ES6
+class MyStringIterator {
+	next() {
+		return v;
+	}
+	[Symbol.iterator]() {
+		return this;
+	}
+}
+for (var v of new MyStringIterator()) {
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of35 1`] = `
+"//@target: ES6
+class MyStringIterator {
+	next() {
+		return { done: true, value: v };
+	}
+	[Symbol.iterator]() {
+		return this;
+	}
+}
+for (var v of new MyStringIterator()) {
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of36 1`] = `
+"//@target: ES6
+var tuple = ["", true];
+for (var v of tuple) {
+	v;
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of37 1`] = `
+"//@target: ES6
+var map = new Map([["", true]]);
+for (var v of map) {
+	v;
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of38 1`] = `
+"//@target: ES6
+var map = new Map([["", true]]);
+for (var [k, v] of map) {
+	k;
+	v;
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of39 1`] = `
+"// @lib: es2015
+var map = new Map([["", true], ["", 0]]);
+for (var [k, v] of map) {
+	k;
+	v;
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of4 1`] = `
+"//@target: ES6
+for (var v of [0]) {
+	v;
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of40 1`] = `
+"//@target: ES6
+var map = new Map([["", true]]);
+for (var [k="", v=false] of map) {
+	k;
+	v;
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of41 1`] = `
+"//@target: ES6
+var array = [{ x: [0], y: { p: "" } }];
+for (var { x:[a], y:{ p:p } } of array) {
+	a;
+	p;
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of42 1`] = `
+"//@target: ES6
+var array = [{ x: "", y: 0 }];
+for (var { x:a, y:b } of array) {
+	a;
+	b;
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of43 1`] = `
+"//@target: ES6
+var array = [{ x: "", y: 0 }];
+for (var { x:a="", y:b=true } of array) {
+	a;
+	b;
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of44 1`] = `
+"//@target: ES6
+var array = [[0, ""], [0, true], [1, Symbol()]];
+for (var [num, strBoolSym] of array) {
+	num;
+	strBoolSym;
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of45 1`] = `
+"//@target: ES6
+var k,v;
+var map = new Map([["", true]]);
+for ([k="", v=false] of map) {
+	k;
+	v;
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of46 1`] = `
+"//@target: ES6
+var k,v;
+var map = new Map([["", true]]);
+for ([k=false, v=""] of map) {
+	k;
+	v;
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of47 1`] = `
+"//@target: ES6
+var x,y;
+var array = [{ x: "", y: true }];
+var E = /* @__PURE__ */ ((E) => {E[E["x"]=0]="x";return E;})(E || {});
+for ({ x, y:y=E.x } of array) {
+	x;
+	y;
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of48 1`] = `
+"//@target: ES6
+var x,y;
+var array = [{ x: "", y: true }];
+var E = /* @__PURE__ */ ((E) => {E[E["x"]=0]="x";return E;})(E || {});
+for ({ x, y:y=E.x } of array) {
+	x;
+	y;
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of49 1`] = `
+"//@target: ES6
+var k,v;
+var map = new Map([["", true]]);
+for ([k, ...[v]] of map) {
+	k;
+	v;
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of5 1`] = `
+"//@target: ES6
+for (let v of [0]) {
+	v;
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of50 1`] = `
+"//@target: ES6
+var map = new Map([["", true]]);
+for (const [k, v] of map) {
+	k;
+	v;
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of52 1`] = `""`;
+
+exports[`TSC: es6/for-ofStatements for-of53 1`] = `""`;
+
+exports[`TSC: es6/for-ofStatements for-of54 1`] = `""`;
+
+exports[`TSC: es6/for-ofStatements for-of55 1`] = `
+"//@target: ES6
+let v = [1];
+for (let v of v) {
+	v;
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of56 1`] = `
+"for (var let of []) {
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of57 1`] = `
+"var iter;
+for (let num of iter) {
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of58 1`] = `
+"for (const item of arr) {
+	item.x;
+	item.y;
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of6 1`] = `
+"//@target: ES6
+for (v of [0]) {
+	let v;
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of7 1`] = `
+"//@target: ES6
+v;
+for (let v of [0]) {
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of8 1`] = `
+"//@target: ES6
+v;
+for (var v of [0]) {
+}
+"
+`;
+
+exports[`TSC: es6/for-ofStatements for-of9 1`] = `
+"//@target: ES6
+var v;
+for (v of ["hello"]) {
+}
+for (v of "hello") {
+}
+"
+`;

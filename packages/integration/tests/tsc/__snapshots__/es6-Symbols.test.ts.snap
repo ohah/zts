@@ -1,0 +1,710 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`TSC: es6/Symbols symbolDeclarationEmit1 1`] = `
+"class C {
+	[Symbol.toPrimitive];
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolDeclarationEmit10 1`] = `
+"var obj = { get [Symbol.isConcatSpreadable]() {
+	return "";
+}, set [Symbol.isConcatSpreadable](x) {
+} };
+"
+`;
+
+exports[`TSC: es6/Symbols symbolDeclarationEmit11 1`] = `
+"class C {
+	static [Symbol.iterator] = 0;
+	static [Symbol.isConcatSpreadable]() {
+	}
+	static get [Symbol.toPrimitive]() {
+		return "";
+	}
+	static set [Symbol.toPrimitive](x) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolDeclarationEmit12 1`] = `
+"var M;((M) => {class C {
+	[Symbol.iterator];
+	[Symbol.toPrimitive](x) {
+	}
+	[Symbol.isConcatSpreadable]() {
+		return undefined;
+	}
+	get [Symbol.toPrimitive]() {
+		return undefined;
+	}
+	set [Symbol.toPrimitive](x) {
+	}
+}M.C=C;})(M || (M = {}));
+"
+`;
+
+exports[`TSC: es6/Symbols symbolDeclarationEmit13 1`] = `
+"class C {
+	get [Symbol.toPrimitive]() {
+		return "";
+	}
+	set [Symbol.toStringTag](x) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolDeclarationEmit14 1`] = `
+"class C {
+	get [Symbol.toPrimitive]() {
+		return "";
+	}
+	get [Symbol.toStringTag]() {
+		return "";
+	}
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolDeclarationEmit2 1`] = `
+"class C {
+	[Symbol.toPrimitive] = "";
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolDeclarationEmit3 1`] = `
+"class C {
+	[Symbol.toPrimitive](x) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolDeclarationEmit4 1`] = `
+"class C {
+	get [Symbol.toPrimitive]() {
+		return "";
+	}
+	set [Symbol.toPrimitive](x) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolDeclarationEmit8 1`] = `
+"var obj = { [Symbol.isConcatSpreadable]: 0 };
+"
+`;
+
+exports[`TSC: es6/Symbols symbolDeclarationEmit9 1`] = `
+"var obj = { [Symbol.isConcatSpreadable]() {
+} };
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty1 1`] = `
+"var s;
+var x = { [s]: 0, [s]() {
+}, get [s]() {
+	return 0;
+} };
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty18 1`] = `
+"var i = { [Symbol.iterator]: 0, [Symbol.toStringTag]() {
+	return "";
+}, set [Symbol.toPrimitive](p) {
+} };
+var it = i[Symbol.iterator];
+var str = i[Symbol.toStringTag]();
+i[Symbol.toPrimitive] = false;
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty19 1`] = `
+"var i = { [Symbol.iterator]: { p: null }, [Symbol.toStringTag]() {
+	return { p: undefined };
+} };
+var it = i[Symbol.iterator];
+var str = i[Symbol.toStringTag]();
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty2 1`] = `
+"var s = Symbol();
+var x = { [s]: 0, [s]() {
+}, get [s]() {
+	return 0;
+} };
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty26 1`] = `
+"class C1 {
+	[Symbol.toStringTag]() {
+		return "";
+	}
+}
+class C2 extends C1 {
+	[Symbol.toStringTag]() {
+		return "";
+	}
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty27 1`] = `
+"class C1 {
+	[Symbol.toStringTag]() {
+		return {};
+	}
+}
+class C2 extends C1 {
+	[Symbol.toStringTag]() {
+		return "";
+	}
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty28 1`] = `
+"class C1 {
+	[Symbol.toStringTag]() {
+		return { x: "" };
+	}
+}
+class C2 extends C1 {
+}
+var c;
+var obj = c[Symbol.toStringTag]().x;
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty29 1`] = `
+"class C1 {
+	[Symbol.toStringTag]() {
+		return { x: "" };
+	}
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty3 1`] = `
+"var s = Symbol;
+var x = { [s]: 0, [s]() {
+}, get [s]() {
+	return 0;
+} };
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty30 1`] = `
+"class C1 {
+	[Symbol.toStringTag]() {
+		return { x: "" };
+	}
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty31 1`] = `
+"class C1 {
+	[Symbol.toStringTag]() {
+		return { x: "" };
+	}
+}
+class C2 extends C1 {
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty32 1`] = `
+"class C1 {
+	[Symbol.toStringTag]() {
+		return { x: "" };
+	}
+}
+class C2 extends C1 {
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty33 1`] = `
+"class C1 extends C2 {
+	[Symbol.toStringTag]() {
+		return { x: "" };
+	}
+}
+class C2 {
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty34 1`] = `
+"class C1 extends C2 {
+	[Symbol.toStringTag]() {
+		return { x: "" };
+	}
+}
+class C2 {
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty36 1`] = `
+"var x = { [Symbol.isConcatSpreadable]: 0, [Symbol.isConcatSpreadable]: 1 };
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty39 1`] = `
+"class C {
+	[Symbol.iterator](x) {
+		return undefined;
+	}
+	[Symbol.iterator](x) {
+		return undefined;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty4 1`] = `
+"var x = { [Symbol()]: 0, [Symbol()]() {
+}, get [Symbol()]() {
+	return 0;
+} };
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty40 1`] = `
+"class C {
+	[Symbol.iterator](x) {
+		return undefined;
+	}
+}
+var c = new C();
+c[Symbol.iterator]("");
+c[Symbol.iterator](0);
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty41 1`] = `
+"class C {
+	[Symbol.iterator](x) {
+		return undefined;
+	}
+}
+var c = new C();
+c[Symbol.iterator]("");
+c[Symbol.iterator]("hello");
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty42 1`] = `
+"class C {
+	[Symbol.iterator](x) {
+		return undefined;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty43 1`] = `
+"class C {
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty44 1`] = `
+"class C {
+	get [Symbol.hasInstance]() {
+		return "";
+	}
+	get [Symbol.hasInstance]() {
+		return "";
+	}
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty45 1`] = `
+"class C {
+	get [Symbol.hasInstance]() {
+		return "";
+	}
+	get [Symbol.toPrimitive]() {
+		return "";
+	}
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty46 1`] = `
+"class C {
+	get [Symbol.hasInstance]() {
+		return "";
+	}
+	// Should take a string
+set [Symbol.hasInstance](x) {
+	}
+}
+(new C())[Symbol.hasInstance] = 0;
+(new C())[Symbol.hasInstance] = "";
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty47 1`] = `
+"class C {
+	get [Symbol.hasInstance]() {
+		return "";
+	}
+	// Should take a string
+set [Symbol.hasInstance](x) {
+	}
+}
+(new C())[Symbol.hasInstance] = 0;
+(new C())[Symbol.hasInstance] = "";
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty48 1`] = `
+"var M;((M) => {var Symbol;class C {
+	[Symbol.iterator]() {
+	}
+}})(M || (M = {}));
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty49 1`] = `
+"var M;((M) => {class C {
+	[M.Symbol.iterator]() {
+	}
+}})(M || (M = {}));
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty5 1`] = `
+"var x = { [Symbol.iterator]: 0, [Symbol.toPrimitive]() {
+}, get [Symbol.toStringTag]() {
+	return 0;
+} };
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty50 1`] = `
+"var M;((M) => {class C {
+	[Symbol.iterator]() {
+	}
+}})(M || (M = {}));
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty51 1`] = `
+"var M;((M) => {class C {
+	[Symbol.iterator]() {
+	}
+}})(M || (M = {}));
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty52 1`] = `
+"var obj = { [Symbol.nonsense]: 0 };
+obj = {};
+obj[Symbol.nonsense];
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty53 1`] = `
+"var obj = { [Symbol.for]: 0 };
+obj[Symbol.for];
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty54 1`] = `
+"var obj = { [Symbol.prototype]: 0 };
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty55 1`] = `
+"var obj = { [Symbol.iterator]: 0 };
+var M;((M) => {var Symbol;// The following should be of type 'any'. This is because even though obj has a property keyed by Symbol.iterator,
+// the key passed in here is the *wrong* Symbol.iterator. It is not the iterator property of the global Symbol.
+obj[Symbol.iterator];})(M || (M = {}));
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty56 1`] = `
+"var obj = { [Symbol.iterator]: 0 };
+var M;((M) => {var Symbol;// The following should be of type 'any'. This is because even though obj has a property keyed by Symbol.iterator,
+// the key passed in here is the *wrong* Symbol.iterator. It is not the iterator property of the global Symbol.
+obj[Symbol["iterator"]];})(M || (M = {}));
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty57 1`] = `
+"var obj = { [Symbol.iterator]: 0 };
+// Should give type 'any'.
+obj[Symbol["nonsense"]];
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty58 1`] = `
+"var obj = { [Symbol.foo]: 0 };
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty6 1`] = `
+"class C {
+	[Symbol.iterator] = 0;
+	[Symbol.unscopables];
+	[Symbol.toPrimitive]() {
+	}
+	get [Symbol.toStringTag]() {
+		return 0;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty7 1`] = `
+"class C {
+	[Symbol()] = 0;
+	[Symbol()];
+	[Symbol()]() {
+	}
+	get [Symbol()]() {
+		return 0;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolType1 1`] = `
+"Symbol() instanceof Symbol;
+Symbol instanceof Symbol();
+(Symbol() || {}) instanceof Object;
+// This one should be okay, it's a valid way of distinguishing types
+Symbol instanceof (Symbol() || {});
+"
+`;
+
+exports[`TSC: es6/Symbols symbolType10 1`] = `
+"var s = Symbol.for("bitwise");
+s & s;
+s | s;
+s ^ s;
+s & 0;
+0 | s;
+"
+`;
+
+exports[`TSC: es6/Symbols symbolType11 1`] = `
+"var s = Symbol.for("logical");
+s && s;
+s && [];
+0 && s;
+s || s;
+s || 1;
+({}) || s;
+"
+`;
+
+exports[`TSC: es6/Symbols symbolType12 1`] = `
+"var s = Symbol.for("assign");
+var str = "";
+s *= s;
+s *= 0;
+s /= s;
+s /= 0;
+s %= s;
+s %= 0;
+s += s;
+s += 0;
+s += "";
+str += s;
+s -= s;
+s -= 0;
+s <<= s;
+s <<= 0;
+s >>= s;
+s >>= 0;
+s >>>= s;
+s >>>= 0;
+s &= s;
+s &= 0;
+s ^= s;
+s ^= 0;
+s |= s;
+s |= 0;
+str += (s || str);
+"
+`;
+
+exports[`TSC: es6/Symbols symbolType13 1`] = `
+"var s = Symbol();
+var x;
+for (s in {}) {
+}
+for (x in s) {
+}
+for (var y in s) {
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolType14 1`] = `
+"new Symbol();
+"
+`;
+
+exports[`TSC: es6/Symbols symbolType15 1`] = `
+"var symObj;
+symObj = sym;
+sym = symObj;
+"
+`;
+
+exports[`TSC: es6/Symbols symbolType16 1`] = `
+"var sym;
+sym.newSymbolProp;
+"
+`;
+
+exports[`TSC: es6/Symbols symbolType17 1`] = `
+"var x;
+x;
+if (typeof x === "symbol") {
+	x;
+} else {
+	x;
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolType18 1`] = `
+"var x;
+x;
+if (typeof x === "object") {
+	x;
+} else {
+	x;
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolType19 1`] = `
+"var E = /* @__PURE__ */ ((E) => {return E;})(E || {});
+var x;
+x;
+if (typeof x === "number") {
+	x;
+} else {
+	x;
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolType2 1`] = `
+"Symbol.isConcatSpreadable in {};
+"" in Symbol.toPrimitive;
+"
+`;
+
+exports[`TSC: es6/Symbols symbolType20 1`] = `
+"//@target: ES6
+"
+`;
+
+exports[`TSC: es6/Symbols symbolType3 1`] = `
+"var s = Symbol();
+delete Symbol.iterator;
+void Symbol.toPrimitive;
+typeof Symbol.toStringTag;
+++s;
+--s;
++Symbol();
+-Symbol();
+~Symbol();
+!Symbol();
++(Symbol() || 0);
+"
+`;
+
+exports[`TSC: es6/Symbols symbolType4 1`] = `
+"var s = Symbol.for("postfix");
+s++;
+s--;
+"
+`;
+
+exports[`TSC: es6/Symbols symbolType5 1`] = `
+"var s = Symbol.for("multiply");
+s * s;
+s / s;
+s % s;
+s * 0;
+0 / s;
+"
+`;
+
+exports[`TSC: es6/Symbols symbolType6 1`] = `
+"var s = Symbol.for("add");
+var a;
+s + s;
+s - s;
+s + "";
+s + a;
+s + 0;
+"" + s;
+a + s;
+0 + s;
+s - 0;
+0 - s;
+(s || "") + "";
+"" + (s || "");
+"
+`;
+
+exports[`TSC: es6/Symbols symbolType7 1`] = `
+"var s = Symbol.for("shift");
+s << s;
+s << 0;
+s >> s;
+s >> 0;
+s >>> s;
+s >>> 0;
+"
+`;
+
+exports[`TSC: es6/Symbols symbolType8 1`] = `
+"var s = Symbol.for("compare");
+s < s;
+s < 0;
+s > s;
+s > 0;
+s <= s;
+s <= 0;
+s >= s;
+s >= 0;
+0 >= (s || 0);
+(s || 0) >= s;
+"
+`;
+
+exports[`TSC: es6/Symbols symbolType9 1`] = `
+"var s = Symbol.for("equal");
+s == s;
+s == true;
+s != s;
+0 != s;
+s === s;
+s === 1;
+s !== s;
+false !== s;
+"
+`;

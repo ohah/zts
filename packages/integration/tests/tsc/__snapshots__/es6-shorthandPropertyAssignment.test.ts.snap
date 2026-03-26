@@ -1,0 +1,150 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`TSC: es6/shorthandPropertyAssignment objectLiteralShorthandProperties 1`] = `
+"var a,b,c;
+var x1 = { a };
+var x2 = { a };
+var x3 = { a: 0, b, c, d() {
+}, x3, parent: x3 };
+"
+`;
+
+exports[`TSC: es6/shorthandPropertyAssignment objectLiteralShorthandPropertiesAssignment 1`] = `
+"// @target: es2015
+var id = 10000;
+var name = "my name";
+var person = { name, id };
+function foo(obj) {
+}
+;
+function bar(name,id) {
+	return { name, id };
+}
+function bar1(name,id) {
+	return { name };
+}
+function baz(name,id) {
+	return { name, id };
+}
+foo(person);
+var person1 = bar("Hello", 5);
+var person2 = bar("Hello", 5);
+var person3 = bar("Hello", 5);
+"
+`;
+
+exports[`TSC: es6/shorthandPropertyAssignment objectLiteralShorthandPropertiesAssignmentError 1`] = `
+"// @target: es2015
+var id = 10000;
+var name = "my name";
+var person = { name, id };
+// error
+var person1;
+// ok
+function foo(name,id) {
+	return { name, id };
+}
+// error
+function bar(obj) {
+}
+bar({ name, id });
+// error
+"
+`;
+
+exports[`TSC: es6/shorthandPropertyAssignment objectLiteralShorthandPropertiesAssignmentErrorFromMissingIdentifier 1`] = `
+"// @target: es2015
+var id = 10000;
+var name = "my name";
+var person = { name, id };
+// error
+function bar(name,id) {
+	return { name, id };
+}
+// error
+function foo(name,id) {
+	return { name, id };
+}
+// error
+var person1;
+// ok
+var person2 = bar("hello", 5);
+"
+`;
+
+exports[`TSC: es6/shorthandPropertyAssignment objectLiteralShorthandPropertiesAssignmentES6 1`] = `
+"// @lib: es5
+var id = 10000;
+var name = "my name";
+var person = { name, id };
+function foo(obj) {
+}
+;
+function bar(name,id) {
+	return { name, id };
+}
+function bar1(name,id) {
+	return { name };
+}
+function baz(name,id) {
+	return { name, id };
+}
+foo(person);
+var person1 = bar("Hello", 5);
+var person2 = bar("Hello", 5);
+var person3 = bar("Hello", 5);
+"
+`;
+
+exports[`TSC: es6/shorthandPropertyAssignment objectLiteralShorthandPropertiesErrorFromNoneExistingIdentifier 1`] = `
+"var x = { x, // OK
+undefinedVariable };
+// Error
+"
+`;
+
+exports[`TSC: es6/shorthandPropertyAssignment objectLiteralShorthandPropertiesES6 1`] = `
+"var a,b,c;
+var x1 = { a };
+var x2 = { a };
+var x3 = { a: 0, b, c, d() {
+}, x3, parent: x3 };
+"
+`;
+
+exports[`TSC: es6/shorthandPropertyAssignment objectLiteralShorthandPropertiesFunctionArgument 1`] = `
+"// @target: es2015
+var id = 10000;
+var name = "my name";
+var person = { name, id };
+function foo(p) {
+}
+foo(person);
+var obj = { name: name, id: id };
+"
+`;
+
+exports[`TSC: es6/shorthandPropertyAssignment objectLiteralShorthandPropertiesFunctionArgument2 1`] = `
+"// @target: es2015
+var id = 10000;
+var name = "my name";
+var person = { name, id };
+function foo(p) {
+}
+foo(person);
+// error
+"
+`;
+
+exports[`TSC: es6/shorthandPropertyAssignment objectLiteralShorthandPropertiesWithModule 1`] = `
+"// module export
+var m;((m) => {})(m || (m = {}));
+((m) => {var z = x;var y = { a: x, x };})(m || (m = {}));
+"
+`;
+
+exports[`TSC: es6/shorthandPropertyAssignment objectLiteralShorthandPropertiesWithModuleES6 1`] = `
+"var m;((m) => {})(m || (m = {}));
+((m) => {var z = x;var y = { a: x, x };})(m || (m = {}));
+"
+`;

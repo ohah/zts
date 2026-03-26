@@ -1,0 +1,40 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`TSC: es6/memberFunctionDeclarations MemberFunctionDeclaration1_es6 1`] = `
+"class C {
+	*foo() {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/memberFunctionDeclarations MemberFunctionDeclaration2_es6 1`] = `
+"class C {
+	*foo() {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/memberFunctionDeclarations MemberFunctionDeclaration3_es6 1`] = `
+"class C {
+	*[foo]() {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/memberFunctionDeclarations MemberFunctionDeclaration6_es6 1`] = `
+"class C {
+	foo;
+}
+"
+`;
+
+exports[`TSC: es6/memberFunctionDeclarations MemberFunctionDeclaration7_es6 1`] = `
+"class C {
+	*foo() {
+	}
+}
+"
+`;
