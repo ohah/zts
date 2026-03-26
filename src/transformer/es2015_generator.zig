@@ -272,6 +272,42 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .try_statement => {
                     try collectTryOperations(self, stmt_idx, stmt, ops, next_label);
                 },
+                .labeled_statement => {
+                    try collectLabeledOperations(self, stmt, ops, next_label);
+                },
+                .break_statement, .continue_statement => {
+                    const label_idx = stmt.data.unary.operand;
+                    if (!label_idx.isNone() and self.generator_label_stack.items.len > 0) {
+                        const label_node = self.old_ast.getNode(label_idx);
+                        const label_text = self.old_ast.source[label_node.span.start..label_node.span.end];
+                        const stack = self.generator_label_stack.items;
+                        var found = false;
+                        var i = stack.len;
+                        while (i > 0) {
+                            i -= 1;
+                            if (std.mem.eql(u8, stack[i].name, label_text)) {
+                                const target = if (stmt.tag == .continue_statement)
+                                    stack[i].continue_label orelse stack[i].break_label
+                                else
+                                    stack[i].break_label;
+                                try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = target } });
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) {
+                            const new_stmt = try self.visitNode(stmt_idx);
+                            if (!new_stmt.isNone()) {
+                                try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
+                            }
+                        }
+                    } else {
+                        const new_stmt = try self.visitNode(stmt_idx);
+                        if (!new_stmt.isNone()) {
+                            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
+                        }
+                    }
+                },
                 else => {
                     const new_stmt = try self.visitNode(stmt_idx);
                     if (!new_stmt.isNone()) {
@@ -298,16 +334,21 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             }
 
             const new_cond = try self.visitNode(condition);
-            const else_label = next_label.*;
-            next_label.* += 1;
+            const has_else = !else_body.isNone();
+            // else 없으면 else_label 할당하지 않음 (nop 수와 label 수 일치)
+            const else_label = if (has_else) blk: {
+                const l = next_label.*;
+                next_label.* += 1;
+                break :blk l;
+            } else @as(u32, 0);
             const end_label = next_label.*;
             next_label.* += 1;
 
-            // if (!cond) goto else_label
+            // if (!cond) goto else_label or end_label
             try ops.append(self.allocator, .{
                 .code = .break_when_false,
                 .arg = .{ .label_and_node = .{
-                    .label = if (!else_body.isNone()) else_label else end_label,
+                    .label = if (has_else) else_label else end_label,
                     .node = new_cond,
                 } },
             });
@@ -469,6 +510,57 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = cond_label } });
 
             // mark end_label
+            try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+        }
+
+        const LABEL_SENTINEL = std.math.maxInt(u32);
+
+        /// labeled statement의 연산 수집.
+        /// break_label은 body 처리 후에 결정 (sentinel+fixup).
+        fn collectLabeledOperations(self: *Transformer, stmt: Node, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
+            const label_idx = stmt.data.binary.left;
+            const body_idx = stmt.data.binary.right;
+
+            const label_name = if (!label_idx.isNone()) blk: {
+                const label_node = self.old_ast.getNode(label_idx);
+                break :blk self.old_ast.source[label_node.span.start..label_node.span.end];
+            } else "";
+
+            const body_node = self.old_ast.getNode(body_idx);
+            const is_loop = body_node.tag == .for_statement or
+                body_node.tag == .while_statement or
+                body_node.tag == .do_while_statement or
+                body_node.tag == .for_in_statement or
+                body_node.tag == .for_of_statement;
+
+            // continue_label: loop body의 첫 번째 nop이 cond_label
+            const continue_label: ?u32 = if (is_loop) next_label.* else null;
+
+            // break_label은 body 처리 후 결정. sentinel 사용.
+            const ops_start = ops.items.len;
+            try self.generator_label_stack.append(self.allocator, .{
+                .name = label_name,
+                .break_label = LABEL_SENTINEL,
+                .continue_label = continue_label,
+            });
+
+            try collectOperations(self, body_idx, ops, next_label);
+
+            _ = self.generator_label_stack.pop();
+
+            // end_label: body의 모든 nop 이후에 할당
+            const end_label = next_label.*;
+            next_label.* += 1;
+
+            // fixup: ops_start 이후의 break_op(SENTINEL) → break_op(end_label)
+            for (ops.items[ops_start..]) |*op| {
+                if (op.code == .break_op) {
+                    if (op.arg == .label and op.arg.label == LABEL_SENTINEL) {
+                        op.arg = .{ .label = end_label };
+                    }
+                }
+            }
+
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
         }
 
@@ -822,11 +914,21 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             }
         }
 
-        /// AST 서브트리에 yield_expression이 있는지 빠른 체크.
+        /// AST 서브트리에 yield_expression 또는 generator labeled jump가 있는지 체크.
         fn containsYield(self: *const Transformer, idx: NodeIndex) bool {
             if (idx.isNone()) return false;
             const node = self.old_ast.getNode(idx);
             if (node.tag == .yield_expression) return true;
+            // labeled break/continue: generator label stack에 등록된 label 참조 시 처리 필요
+            if ((node.tag == .break_statement or node.tag == .continue_statement) and
+                !node.data.unary.operand.isNone() and self.generator_label_stack.items.len > 0)
+            {
+                const label_node = self.old_ast.getNode(node.data.unary.operand);
+                const label_text = self.old_ast.source[label_node.span.start..label_node.span.end];
+                for (self.generator_label_stack.items) |entry| {
+                    if (std.mem.eql(u8, entry.name, label_text)) return true;
+                }
+            }
             // function/arrow 경계에서는 중단 (nested generator/arrow의 yield는 다른 스코프)
             if (node.tag == .function_declaration or node.tag == .function_expression or
                 node.tag == .arrow_function_expression) return false;
@@ -906,13 +1008,11 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             for (ops) |op| {
                 switch (op.code) {
                     .nop => {
-                        // 이전 case 마무리 (문이 있으면)
-                        if (current_case_stmts.items.len > 0) {
-                            const case_node = try buildSwitchCase(self, case_num, current_case_stmts.items, span);
-                            try self.scratch.append(self.allocator, case_node);
-                            current_case_stmts.clearRetainingCapacity();
-                            case_num += 1;
-                        }
+                        // 이전 case 마무리. 빈 case도 생성하여 label 번호와 case 번호 일치 보장.
+                        const case_node = try buildSwitchCase(self, case_num, current_case_stmts.items, span);
+                        try self.scratch.append(self.allocator, case_node);
+                        current_case_stmts.clearRetainingCapacity();
+                        case_num += 1;
                     },
                     .statement => {
                         if (op.arg == .node and !op.arg.node.isNone()) {
@@ -1087,7 +1187,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         }
 
         /// return [instruction, value] 문 생성.
-        fn buildInstructionReturn(self: *Transformer, instruction: u32, value: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+        pub fn buildInstructionReturn(self: *Transformer, instruction: u32, value: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             var buf: [16]u8 = undefined;
             const inst_str = std.fmt.bufPrint(&buf, "{d}", .{instruction}) catch "0";
             const inst_span = try self.new_ast.addString(inst_str);

@@ -203,6 +203,27 @@ pub const Transformer = struct {
     /// arrow function은 this를 상속하므로 depth를 올리지 않는다.
     this_depth: u32 = 0,
 
+    /// ES2015 arrow function this/arguments 캡처.
+    /// arrow_this_depth > 0이면 현재 다운레벨링 중인 arrow function body 안에 있으므로
+    /// this → _this, arguments → _arguments로 치환한다.
+    /// 일반 함수 진입 시 0으로 리셋 (자체 this/arguments 바인딩).
+    arrow_this_depth: u32 = 0,
+
+    /// ES2015 class extends: 현재 클래스의 super class 이름 Span.
+    /// class body 방문 중 설정되어, super() → Parent.call(this),
+    /// super.method() → Parent.prototype.method.call(this) 변환에 사용.
+    current_super_class: ?Span = null,
+
+    /// ES2015 generator: labeled break/continue를 위한 label 스택.
+    /// labeled_statement 진입 시 push, 퇴장 시 pop.
+    generator_label_stack: std.ArrayList(GeneratorLabelEntry) = .empty,
+
+    /// 현재 함수 스코프에서 arrow body가 this를 사용하여 var _this = this 삽입이 필요한지.
+    needs_this_var: bool = false,
+
+    /// 현재 함수 스코프에서 arrow body가 arguments를 사용하여 var _arguments = arguments 삽입이 필요한지.
+    needs_arguments_var: bool = false,
+
     /// 런타임 헬퍼 사용 추적.
     /// 각 변환이 헬퍼를 사용하면 해당 비트를 설정한다.
     /// 번들러 emitter가 이 비트맵을 읽어 필요한 헬퍼만 출력에 주입한다.
@@ -215,6 +236,12 @@ pub const Transformer = struct {
     /// React Fast Refresh: Hook 시그니처 등록 목록.
     /// 프로그램 끝에 var _s = $RefreshSig$(); + _s(Component, "sig") 호출로 주입.
     refresh_signatures: std.ArrayList(RefreshSignature) = .empty,
+
+    pub const GeneratorLabelEntry = struct {
+        name: []const u8, // label 이름 (소스에서 추출)
+        break_label: u32, // break시 이동할 state label
+        continue_label: ?u32, // continue시 이동할 state label (loop만)
+    };
 
     const RefreshRegistration = struct {
         /// _c / _c2 핸들 변수의 string_table Span (재사용)
@@ -251,6 +278,7 @@ pub const Transformer = struct {
         self.refresh_registrations.deinit(self.allocator);
         for (self.refresh_signatures.items) |s| self.allocator.free(s.signature);
         self.refresh_signatures.deinit(self.allocator);
+        self.generator_label_stack.deinit(self.allocator);
     }
 
     // ================================================================
@@ -497,7 +525,21 @@ pub const Transformer = struct {
             => self.visitBinaryNode(node),
 
             // === member expression: extra = [object, property, flags] ===
-            .static_member_expression,
+            .static_member_expression => {
+                // ES 다운레벨링: ?. → ternary (target < es2020)
+                if (self.options.target.needsOptionalChaining()) {
+                    if (es2020.ES2020(Transformer).findOptionalChainBase(self, node)) |base_idx| {
+                        return es2020.ES2020(Transformer).lowerOptionalChain(self, node, base_idx);
+                    }
+                }
+                // ES2015: super.method → Parent.prototype.method
+                if (self.options.target.needsES2015() and self.current_super_class != null) {
+                    if (es2015_class.ES2015Class(Transformer).isSuperMember(self, node)) {
+                        return es2015_class.ES2015Class(Transformer).lowerSuperMember(self, node);
+                    }
+                }
+                return self.visitMemberExpression(node);
+            },
             .computed_member_expression,
             .private_field_expression,
             => {
@@ -573,8 +615,12 @@ pub const Transformer = struct {
                 }
                 return self.visitClass(node);
             },
-            .class_expression,
-            => self.visitClass(node),
+            .class_expression => {
+                if (self.options.target.needsES2015()) {
+                    return es2015_class.ES2015Class(Transformer).lowerClassExpression(self, node);
+                }
+                return self.visitClass(node);
+            },
             .for_statement => self.visitForStatement(node),
             .switch_statement => self.visitSwitchStatement(node),
             .switch_case => self.visitSwitchCase(node),
@@ -583,6 +629,16 @@ pub const Transformer = struct {
                 if (self.options.target.needsOptionalChaining()) {
                     if (es2020.ES2020(Transformer).findOptionalChainBase(self, node)) |base_idx| {
                         return es2020.ES2020(Transformer).lowerOptionalChain(self, node, base_idx);
+                    }
+                }
+                // ES2015: super(args) → Parent.call(this, args)
+                // ES2015: super.method(args) → Parent.prototype.method.call(this, args)
+                if (self.options.target.needsES2015() and self.current_super_class != null) {
+                    if (es2015_class.ES2015Class(Transformer).isSuperCall(self, node)) {
+                        return es2015_class.ES2015Class(Transformer).lowerSuperCall(self, node);
+                    }
+                    if (es2015_class.ES2015Class(Transformer).isSuperMethodCall(self, node)) {
+                        return es2015_class.ES2015Class(Transformer).lowerSuperMethodCall(self, node);
                     }
                 }
                 // ES2015: spread in call → .apply()
@@ -634,6 +690,16 @@ pub const Transformer = struct {
                         });
                     }
                 }
+                // ES2015 arrow this 캡처: arrow body 안의 this → _this
+                if (self.options.target.needsES2015() and self.arrow_this_depth > 0) {
+                    self.needs_this_var = true;
+                    const this_span = try self.new_ast.addString("_this");
+                    return self.new_ast.addNode(.{
+                        .tag = .identifier_reference,
+                        .span = this_span,
+                        .data = .{ .string_ref = this_span },
+                    });
+                }
                 return self.copyNodeDirect(node);
             },
 
@@ -643,7 +709,22 @@ pub const Transformer = struct {
             .string_literal,
             .bigint_literal,
             .regexp_literal,
-            .identifier_reference,
+            .identifier_reference => {
+                // ES2015 arrow arguments 캡처: arrow body 안의 arguments → _arguments
+                if (self.options.target.needsES2015() and self.arrow_this_depth > 0) {
+                    const text = self.old_ast.getText(node.data.string_ref);
+                    if (std.mem.eql(u8, text, "arguments")) {
+                        self.needs_arguments_var = true;
+                        const args_span = try self.new_ast.addString("_arguments");
+                        return self.new_ast.addNode(.{
+                            .tag = .identifier_reference,
+                            .span = args_span,
+                            .data = .{ .string_ref = args_span },
+                        });
+                    }
+                }
+                return self.copyNodeDirect(node);
+            },
             .private_identifier,
             .binding_identifier,
             .empty_statement,
@@ -798,7 +879,7 @@ pub const Transformer = struct {
     }
 
     /// member expression: extra = [object, property, flags]
-    fn visitMemberExpression(self: *Transformer, node: Node) Error!NodeIndex {
+    pub fn visitMemberExpression(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
         const extras = self.old_ast.extra_data.items;
         if (e + 2 >= extras.len) return NodeIndex.none;
@@ -1079,6 +1160,18 @@ pub const Transformer = struct {
         return self.new_ast.addNode(.{ .tag = tag, .span = span, .data = .{ .extra = new_extra } });
     }
 
+    /// 숫자 리터럴 노드 생성 (u32 → numeric_literal).
+    pub fn makeNumericLiteral(self: *Transformer, value: u32, _: Span) Error!NodeIndex {
+        var buf: [16]u8 = undefined;
+        const str = std.fmt.bufPrint(&buf, "{d}", .{value}) catch "0";
+        const num_span = try self.new_ast.addString(str);
+        return self.new_ast.addNode(.{
+            .tag = .numeric_literal,
+            .span = num_span,
+            .data = .{ .none = 0 },
+        });
+    }
+
     // ================================================================
     // JSX 노드 변환
     // ================================================================
@@ -1173,6 +1266,15 @@ pub const Transformer = struct {
             self.this_depth -= 1;
         };
 
+        // ES2015 arrow this/arguments 캡처: 일반 함수는 자체 this/arguments 바인딩을 가짐.
+        // 외부 arrow 캡처 상태를 저장하고 리셋한다.
+        const saved_arrow_depth = self.arrow_this_depth;
+        const saved_needs_this = self.needs_this_var;
+        const saved_needs_args = self.needs_arguments_var;
+        self.arrow_this_depth = 0;
+        self.needs_this_var = false;
+        self.needs_arguments_var = false;
+
         const new_name = try self.visitNode(self.readNodeIdx(e, 0));
 
         // 파라미터 방문 + parameter property 수집
@@ -1219,6 +1321,31 @@ pub const Transformer = struct {
                 new_body = try self.prependStatementsToBody(new_body, stmts.items);
             }
         }
+
+        // ES2015 arrow this/arguments 캡처: 이 함수 안의 arrow가 this/arguments를 사용했으면
+        // var _this = this; / var _arguments = arguments; 를 바디 앞에 삽입.
+        if (self.options.target.needsES2015() and !new_body.isNone() and
+            (self.needs_this_var or self.needs_arguments_var))
+        {
+            var capture_stmts: [2]NodeIndex = undefined;
+            var capture_count: usize = 0;
+
+            if (self.needs_this_var) {
+                capture_stmts[capture_count] = try self.buildCaptureVar("_this", .this_expression, node.span);
+                capture_count += 1;
+            }
+            if (self.needs_arguments_var) {
+                capture_stmts[capture_count] = try self.buildCaptureVar("_arguments", .identifier_reference, node.span);
+                capture_count += 1;
+            }
+
+            new_body = try self.prependStatementsToBody(new_body, capture_stmts[0..capture_count]);
+        }
+
+        // arrow 캡처 상태 복원
+        self.arrow_this_depth = saved_arrow_depth;
+        self.needs_this_var = saved_needs_this;
+        self.needs_arguments_var = saved_needs_args;
 
         // React Fast Refresh: Hook 시그니처 감지 + _s() 호출 삽입
         // 함수 이름을 old_ast에서 추출 (new_name은 아직 extra에 추가 전이므로)
@@ -1363,6 +1490,48 @@ pub const Transformer = struct {
             .tag = .block_statement,
             .span = body.span,
             .data = .{ .list = new_list },
+        });
+    }
+
+    /// var _this = this; 또는 var _arguments = arguments; 문 생성.
+    /// init_tag가 .this_expression이면 this, .identifier_reference이면 arguments.
+    fn buildCaptureVar(self: *Transformer, name: []const u8, init_tag: Tag, span: Span) Error!NodeIndex {
+        const name_span = try self.new_ast.addString(name);
+        const binding = try self.new_ast.addNode(.{
+            .tag = .binding_identifier,
+            .span = name_span,
+            .data = .{ .string_ref = name_span },
+        });
+
+        // init_value: this 또는 arguments
+        const init_value = if (init_tag == .this_expression)
+            try self.new_ast.addNode(.{
+                .tag = .this_expression,
+                .span = span,
+                .data = .{ .none = 0 },
+            })
+        else blk: {
+            const args_span = try self.new_ast.addString("arguments");
+            break :blk try self.new_ast.addNode(.{
+                .tag = .identifier_reference,
+                .span = args_span,
+                .data = .{ .string_ref = args_span },
+            });
+        };
+
+        // variable_declarator: extra = [name, type_ann, init]
+        const none = @intFromEnum(NodeIndex.none);
+        const declarator = try self.addExtraNode(.variable_declarator, span, &.{
+            @intFromEnum(binding), none, @intFromEnum(init_value),
+        });
+
+        // variable_declaration: extra = [kind_flags, list_start, list_len]
+        // kind 0 = var
+        const decl_list = try self.new_ast.addNodeList(&.{declarator});
+        return self.addExtraNode(.variable_declaration, span, &.{
+            0, // var
+            decl_list.start,
+            decl_list.len,
         });
     }
 
@@ -2407,7 +2576,7 @@ pub const Transformer = struct {
     }
 
     /// call_expression: extra = [callee, args_start, args_len, flags]
-    fn visitCallExpression(self: *Transformer, node: Node) Error!NodeIndex {
+    pub fn visitCallExpression(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
         const extras = self.old_ast.extra_data.items;
         if (e + 3 >= extras.len) return NodeIndex.none;
@@ -3646,4 +3815,63 @@ test "both options: useDefineForClassFields=false + experimentalDecorators" {
     // class with constructor (x moved) + __decorateClass call for greet
     // → class_declaration + decorator call = 2 statements
     try std.testing.expectEqual(@as(u32, 2), r.statementCount());
+}
+
+// ============================================================
+// ES2015 arrow this/arguments 캡처 테스트
+// ============================================================
+
+test "ES2015 arrow: this capture inserts var _this = this" {
+    // function outer() { const fn = () => this.x; }
+    // → function body에 var _this = this; 가 삽입되어야 함
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "function outer() { const fn = () => this.x; }",
+        .{ .target = .es5 },
+    );
+    defer r.deinit();
+    // program → 1 statement (function declaration)
+    try std.testing.expectEqual(@as(u32, 1), r.statementCount());
+}
+
+test "ES2015 arrow: arguments capture inserts var _arguments = arguments" {
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "function outer() { const fn = () => arguments[0]; }",
+        .{ .target = .es5 },
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(u32, 1), r.statementCount());
+}
+
+test "ES2015 arrow: no this → no capture variable" {
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "function outer() { const fn = () => 42; }",
+        .{ .target = .es5 },
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(u32, 1), r.statementCount());
+}
+
+test "ES2015 arrow: nested arrow shares same _this" {
+    // arrow 안의 arrow도 같은 _this를 공유해야 함
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "function outer() { const a = () => { const b = () => this.x; }; }",
+        .{ .target = .es5 },
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(u32, 1), r.statementCount());
+}
+
+test "ES2015 arrow: inner function resets this scope" {
+    // 내부 일반 함수는 자체 this 바인딩 → 별도 _this 스코프
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "function outer() { const a = () => { function inner() { const c = () => this.w; } }; }",
+        .{ .target = .es5 },
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(u32, 1), r.statementCount());
 }
