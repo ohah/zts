@@ -313,7 +313,13 @@ pub const Transformer = struct {
 
         // 파서는 parse() 끝에 program 노드를 추가하므로 마지막 노드가 루트
         const root_idx: NodeIndex = @enumFromInt(@as(u32, @intCast(self.old_ast.nodes.items.len - 1)));
-        const root = try self.visitNode(root_idx);
+        const saved_temp_counter: u32 = 0;
+        var root = try self.visitNode(root_idx);
+
+        // top-level 임시 변수 호이스팅: var _a, _b, ... 선언을 program 앞에 삽입
+        if (self.temp_var_counter > saved_temp_counter and !root.isNone()) {
+            root = try self.hoistTempVars(root, saved_temp_counter, self.old_ast.getNode(root_idx).span);
+        }
 
         // React Fast Refresh: 컴포넌트 등록 + Hook 시그니처 코드를 프로그램 끝에 추가
         if (self.options.react_refresh and
@@ -1294,13 +1300,15 @@ pub const Transformer = struct {
         };
 
         // ES2015 arrow this/arguments 캡처: 일반 함수는 자체 this/arguments 바인딩을 가짐.
-        // 외부 arrow 캡처 상태를 저장하고 리셋한다.
         const saved_arrow_depth = self.arrow_this_depth;
         const saved_needs_this = self.needs_this_var;
         const saved_needs_args = self.needs_arguments_var;
         self.arrow_this_depth = 0;
         self.needs_this_var = false;
         self.needs_arguments_var = false;
+
+        // 임시 변수 카운터 저장 (함수 스코프 내 사용된 임시 변수 호이스팅용)
+        const saved_temp_counter = self.temp_var_counter;
 
         const new_name = try self.visitNode(self.readNodeIdx(e, 0));
 
@@ -1378,6 +1386,11 @@ pub const Transformer = struct {
             }
 
             new_body = try self.prependStatementsToBody(new_body, capture_stmts[0..capture_count]);
+        }
+
+        // 임시 변수 호이스팅: 이 함수 안에서 사용된 _a, _b, ... 선언을 body 앞에 삽입
+        if (self.temp_var_counter > saved_temp_counter and !new_body.isNone()) {
+            new_body = try self.hoistTempVars(new_body, saved_temp_counter, node.span);
         }
 
         // arrow 캡처 상태 복원
@@ -1503,21 +1516,19 @@ pub const Transformer = struct {
         });
     }
 
-    /// block_statement 바디 앞에 문들을 삽입한다 (범용 버전).
+    /// block_statement / program / function_body 앞에 문들을 삽입한다.
     pub fn prependStatementsToBody(self: *Transformer, body_idx: NodeIndex, stmts: []const NodeIndex) Error!NodeIndex {
         const body = self.new_ast.getNode(body_idx);
-        if (body.tag != .block_statement) return body_idx;
+        if (body.tag != .block_statement and body.tag != .program and body.tag != .function_body) return body_idx;
 
         const old_list = body.data.list;
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-        // prepend 문들
         for (stmts) |stmt| {
             try self.scratch.append(self.allocator, stmt);
         }
 
-        // 기존 바디 문들
         const old_stmts = self.new_ast.extra_data.items[old_list.start .. old_list.start + old_list.len];
         for (old_stmts) |raw_idx| {
             try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
@@ -1525,7 +1536,7 @@ pub const Transformer = struct {
 
         const new_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
         return self.new_ast.addNode(.{
-            .tag = .block_statement,
+            .tag = body.tag,
             .span = body.span,
             .data = .{ .list = new_list },
         });
@@ -1551,6 +1562,47 @@ pub const Transformer = struct {
             decl_list.start,
             decl_list.len,
         });
+    }
+
+    /// 임시 변수 호이스팅: saved_counter..current counter 범위의 var _a, _b, ... 선언을 body 앞에 삽입.
+    fn hoistTempVars(self: *Transformer, body_idx: NodeIndex, saved_counter: u32, span: Span) Error!NodeIndex {
+        const count = self.temp_var_counter - saved_counter;
+        if (count == 0) return body_idx;
+
+        // var _a, _b, ... (초기값 없이 선언만)
+        const scratch_top = self.scratch.items.len;
+        defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+        var i: u32 = saved_counter;
+        while (i < self.temp_var_counter) : (i += 1) {
+            const letter: u8 = 'a' + @as(u8, @intCast(i % 26));
+            const cycle = i / 26;
+            var buf: [16]u8 = undefined;
+            const name = if (cycle == 0)
+                std.fmt.bufPrint(&buf, "_{c}", .{letter}) catch "0"
+            else
+                std.fmt.bufPrint(&buf, "_{c}{d}", .{ letter, cycle + 1 }) catch "0";
+            const name_span = try self.new_ast.addString(name);
+            const binding = try self.new_ast.addNode(.{
+                .tag = .binding_identifier,
+                .span = name_span,
+                .data = .{ .string_ref = name_span },
+            });
+            const none = @intFromEnum(NodeIndex.none);
+            const declarator = try self.addExtraNode(.variable_declarator, span, &.{
+                @intFromEnum(binding), none, none,
+            });
+            try self.scratch.append(self.allocator, declarator);
+        }
+
+        const decl_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+        const var_decl = try self.addExtraNode(.variable_declaration, span, &.{
+            0, // var
+            decl_list.start,
+            decl_list.len,
+        });
+
+        return self.prependStatementsToBody(body_idx, &.{var_decl});
     }
 
     /// arrow_function_expression: extra = [params, body, flags]
