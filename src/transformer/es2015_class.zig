@@ -806,21 +806,25 @@ pub fn ES2015Class(comptime Transformer: type) type {
         /// function_declaration의 body 앞에 문들을 삽입
         fn prependToFunctionBody(self: *Transformer, func_idx: NodeIndex, stmts: []const NodeIndex) Transformer.Error!NodeIndex {
             const func = self.new_ast.getNode(func_idx);
-            const func_extras = self.new_ast.extra_data.items;
             const fe = func.data.extra;
 
-            // function: extra = [name, params_start, params_len, body, flags, return_type]
-            const body_idx: NodeIndex = @enumFromInt(func_extras[fe + 3]);
+            // extra_data 슬라이스는 prependStatementsToBody 호출 시 재할당될 수 있으므로
+            // 필요한 값을 미리 로컬에 복사
+            const saved_name = self.new_ast.extra_data.items[fe];
+            const saved_params_start = self.new_ast.extra_data.items[fe + 1];
+            const saved_params_len = self.new_ast.extra_data.items[fe + 2];
+            const saved_flags = self.new_ast.extra_data.items[fe + 4];
+            const body_idx: NodeIndex = @enumFromInt(self.new_ast.extra_data.items[fe + 3]);
+
             const new_body = try self.prependStatementsToBody(body_idx, stmts);
 
-            // function 노드를 새 body로 재생성
             const none = @intFromEnum(NodeIndex.none);
             const new_extra = try self.new_ast.addExtras(&.{
-                func_extras[fe], // name
-                func_extras[fe + 1], // params_start
-                func_extras[fe + 2], // params_len
+                saved_name,
+                saved_params_start,
+                saved_params_len,
                 @intFromEnum(new_body),
-                func_extras[fe + 4], // flags
+                saved_flags,
                 none,
             });
             return self.new_ast.addNode(.{

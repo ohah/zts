@@ -469,8 +469,22 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("1 20");
     });
 
-    // TODO: 복수 private field 클래스에서 codegen 패닉 (collectTopLevelDeclNames index OOB)
-    // test("multiple class with private fields", ...)
+    test("multiple class with private fields", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class A { #v = 1; get() { return this.#v; } }
+            class B { #v = 2; get() { return this.#v; } }
+            console.log(new A().get(), new B().get());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1 2");
+    });
   });
 
   // ===== ES2016 (target=es2015) =====
