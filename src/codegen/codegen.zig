@@ -4063,3 +4063,46 @@ test "ES2015: class no transform on esnext" {
     defer r.deinit();
     try std.testing.expectEqualStrings("class Foo{}", r.output);
 }
+
+// --- ES2015: generator ---
+
+test "ES2015: basic generator" {
+    var r = try e2eTarget(std.testing.allocator, "function* gen(){yield 1;yield 2;}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [4,1]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [4,2]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function*") == null);
+}
+
+test "ES2015: generator with return" {
+    var r = try e2eTarget(std.testing.allocator, "function* gen(){yield 1;return 42;}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [4,1]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [2,42]") != null);
+}
+
+test "ES2015: generator with for loop yield" {
+    var r = try e2eTarget(std.testing.allocator, "function* gen(){for(var i=0;i<3;i++){yield i;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [4,i]") != null);
+    // 조건 부정: !(i<3)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "!(i<3)") != null or
+        std.mem.indexOf(u8, r.output, "!(i < 3)") != null);
+}
+
+test "ES2015: generator with if yield" {
+    var r = try e2eTarget(std.testing.allocator, "function* gen(x){if(x){yield 1;}yield 2;}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [4,1]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [4,2]") != null);
+}
+
+test "ES2015: generator no transform on esnext" {
+    var r = try e2eTarget(std.testing.allocator, "function* gen(){yield 1;}", .esnext);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function*") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") == null);
+}
