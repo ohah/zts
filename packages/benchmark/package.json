@@ -7,6 +7,9 @@
     "bench:transpile": "bun run bench.ts --transpile",
     "bench:bundle": "bun run bench.ts --bundle"
   },
+  "dependencies": {
+    "valibot": "^1.3.1"
+  },
   "devDependencies": {
     "@rspack/cli": "^1.3.0",
     "@swc/cli": "^0.6.0",
