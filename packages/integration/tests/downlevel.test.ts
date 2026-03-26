@@ -340,6 +340,137 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe("42");
     });
+
+    test("spread in function call", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts":
+            "function add(a: number, b: number, c: number) { return a + b + c; } const args: [number, number, number] = [1, 2, 3]; console.log(add(...args));",
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("6");
+    });
+
+    test("computed property", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": "const k = 'x'; const o = {[k]: 42}; console.log(o.x);" },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42");
+    });
+
+    test("for-of array", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts":
+            "const arr = [10, 20, 30]; let sum = 0; for (const x of arr) { sum += x; } console.log(sum);",
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("60");
+    });
+
+    test("arrow arguments capture", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function outer() { const fn = () => arguments[0]; return fn(); }
+            console.log(outer(42));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42");
+    });
+
+    test("class static method", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class MathUtil { static add(a: number, b: number) { return a + b; } }
+            console.log(MathUtil.add(3, 4));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("7");
+    });
+
+    test("class field + constructor coexist", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Foo { x = 10; y: number; constructor(y: number) { this.y = y; } sum() { return this.x + this.y; } }
+            console.log(new Foo(20).sum());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("30");
+    });
+
+    test("generator yield value receive", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": withHelpers(`
+            function* gen() { const x = yield 1; return x; }
+            const g = gen(); g.next(); const r = g.next(42);
+            console.log(JSON.stringify(r));
+          `),
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('{"value":42,"done":true}');
+    });
+
+    test("nested destructuring", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": "const { a, b: { c } } = { a: 1, b: { c: 2 } }; console.log(a, c);",
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1 2");
+    });
+
+    test("destructuring default value", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": "const { a = 10, b = 20 } = { a: 1 }; console.log(a, b);" },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1 20");
+    });
+
+    // TODO: 복수 private field 클래스에서 codegen 패닉 (collectTopLevelDeclNames index OOB)
+    // test("multiple class with private fields", ...)
   });
 
   // ===== ES2016 (target=es2015) =====
@@ -442,6 +573,20 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       cleanup = result.cleanup;
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe("42 undefined");
+    });
+
+    test("multiple ?? chaining", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts":
+            "const a = null; const b = undefined; const c = 0; console.log(a ?? b ?? c ?? 99);",
+        },
+        "index.ts",
+        ["--target=es2019"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("0");
     });
 
     test("optional chaining call ?.()", async () => {

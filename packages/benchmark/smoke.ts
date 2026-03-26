@@ -850,13 +850,33 @@ const projects: ProjectConfig[] = [
 
   // --- target=es2017 (ES2018 다운레벨링: object spread) ---
   {
+    name: "flat@es2017",
+    pkg: "flat",
+    entry: `import { flatten } from 'flat';\nconsole.log(JSON.stringify(flatten({a:{b:1}})));`,
+    target: "es2017",
+  },
+  {
     name: "defu@es2017",
     pkg: "defu",
     entry: `import { defu } from 'defu';\nconsole.log(JSON.stringify(defu({a:1},{a:2,b:3})));`,
     target: "es2017",
   },
 
+  // --- target=es2018 (ES2019 다운레벨링: optional catch) ---
+  {
+    name: "picomatch@es2018",
+    pkg: "picomatch",
+    entry: `import pm from 'picomatch';\nconsole.log(pm.isMatch('foo.js', '*.js'));`,
+    target: "es2018",
+  },
+
   // --- target=es2019 (ES2020 다운레벨링: ??, ?.) ---
+  {
+    name: "semver@es2019",
+    pkg: "semver",
+    entry: `import semver from 'semver';\nconsole.log(semver.gt('2.0.0','1.0.0'));`,
+    target: "es2019",
+  },
   {
     name: "clsx@es2019",
     pkg: "clsx",
