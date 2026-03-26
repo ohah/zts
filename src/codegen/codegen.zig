@@ -3678,3 +3678,47 @@ test "ES2018: no spread - no transform" {
     defer r.deinit();
     try std.testing.expectEqualStrings("const x={a:1,b:2};", r.output);
 }
+
+// --- ES2022: class static block ---
+
+test "ES2022: static block this → class name" {
+    // class Foo { static { this.x = 1; } }
+    // → class Foo {} (() => { Foo.x = 1; })();
+    var r = try e2eTarget(std.testing.allocator, "class Foo { static { this.x = 1; } }", .es2021);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("class Foo{}(()=>{Foo.x=1;})();", r.output);
+}
+
+test "ES2022: static block this in nested function not replaced" {
+    // 일반 함수 안의 this는 치환하면 안 됨 (자체 this 바인딩)
+    var r = try e2eTarget(std.testing.allocator, "class Bar { static { function f() { return this; } } }", .es2021);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("class Bar{}(()=>{function f(){return this;}})();", r.output);
+}
+
+test "ES2022: static block this in arrow replaced" {
+    // arrow function은 this 상속 → 치환 대상
+    var r = try e2eTarget(std.testing.allocator, "class Baz { static { const f = () => this.x; } }", .es2021);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("class Baz{}(()=>{const f=()=>Baz.x;})();", r.output);
+}
+
+test "ES2022: static block anonymous class - this not replaced" {
+    // 익명 클래스: 클래스 이름이 없으므로 this 그대로
+    var r = try e2eTarget(std.testing.allocator, "var x = class { static { this.y = 1; } };", .es2021);
+    defer r.deinit();
+    // 익명 클래스는 this 치환 안 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "this.y") != null);
+}
+
+test "ES2022: static block this - no transform on esnext" {
+    var r = try e2eTarget(std.testing.allocator, "class Foo{static{this.x=1;}}", .esnext);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("class Foo{static{this.x=1;}}", r.output);
+}
+
+test "ES2022: multiple static blocks with this" {
+    var r = try e2eTarget(std.testing.allocator, "class A { static { this.x = 1; } static { this.y = 2; } }", .es2021);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("class A{}(()=>{A.x=1;})();(()=>{A.y=2;})();", r.output);
+}

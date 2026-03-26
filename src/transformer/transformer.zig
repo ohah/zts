@@ -156,6 +156,16 @@ pub const Transformer = struct {
     /// `foo() ?? bar` → `(_a = foo()) != null ? _a : bar`에서 _a, _b, _c, ... 생성에 사용.
     temp_var_counter: u32 = 0,
 
+    /// ES2022 static block: `this` → 클래스 이름 치환을 위한 컨텍스트.
+    /// static block body를 visit하는 동안만 설정된다.
+    /// null이면 치환 비활성, 값이 있으면 해당 Span의 이름으로 this를 치환.
+    static_block_class_name: ?Span = null,
+
+    /// static block 안에서 일반 함수(non-arrow) 깊이 추적.
+    /// 0이면 static block 최상위 (this 치환 대상), >0이면 중첩 함수 안 (치환 안 함).
+    /// arrow function은 this를 상속하므로 depth를 올리지 않는다.
+    this_depth: u32 = 0,
+
     /// React Fast Refresh: 감지된 컴포넌트 등록 목록.
     /// transform 완료 후 프로그램 끝에 $RefreshReg$ 호출로 주입.
     refresh_registrations: std.ArrayList(RefreshRegistration) = .empty,
@@ -507,13 +517,27 @@ pub const Transformer = struct {
             .accessor_property => self.visitAccessorProperty(node),
 
             // === 리프 노드: 그대로 복사 (자식 없음) ===
+            // this_expression: static block 안에서 클래스 이름으로 치환 가능
+            .this_expression => {
+                // ES2022 static block 다운레벨링 중이고, 일반 함수 안이 아니면 치환
+                if (self.static_block_class_name) |class_span| {
+                    if (self.this_depth == 0) {
+                        return self.new_ast.addNode(.{
+                            .tag = .identifier_reference,
+                            .span = class_span,
+                            .data = .{ .string_ref = class_span },
+                        });
+                    }
+                }
+                return self.copyNodeDirect(node);
+            },
+
             .boolean_literal,
             .null_literal,
             .numeric_literal,
             .string_literal,
             .bigint_literal,
             .regexp_literal,
-            .this_expression,
             .identifier_reference,
             .private_identifier,
             .binding_identifier,
@@ -1019,6 +1043,13 @@ pub const Transformer = struct {
         // function foo(x?: number) {}  ← 구현체 (body 있음)
         if (self.readNodeIdx(e, 3).isNone()) return NodeIndex.none;
 
+        // 일반 함수는 자체 this 바인딩을 가지므로 depth 증가.
+        // static block 안에서 function() { this.x } 의 this는 치환하면 안 됨.
+        if (self.static_block_class_name != null) self.this_depth += 1;
+        defer if (self.static_block_class_name != null) {
+            self.this_depth -= 1;
+        };
+
         const new_name = try self.visitNode(self.readNodeIdx(e, 0));
 
         // 파라미터 방문 + parameter property 수집
@@ -1188,11 +1219,18 @@ pub const Transformer = struct {
                 var static_block_iifes: std.ArrayList(NodeIndex) = .empty;
                 defer static_block_iifes.deinit(self.allocator);
 
+                // 클래스 이름 추출 → static block 안의 this 치환에 사용.
+                const class_name_span: ?Span = if (!new_name.isNone()) blk: {
+                    const name_node = self.new_ast.getNode(new_name);
+                    break :blk name_node.data.string_ref;
+                } else null;
+
                 const had_static_blocks = try es2022.ES2022(Transformer).lowerStaticBlocks(
                     self,
                     self.readNodeIdx(e, 2),
                     &new_body,
                     &static_block_iifes,
+                    class_name_span,
                 );
 
                 if (had_static_blocks) {
@@ -1276,6 +1314,13 @@ pub const Transformer = struct {
             .existing_constructor_pos = &existing_constructor_pos,
             .static_block_iifes = if (self.options.target.needsClassStaticBlock()) &static_block_iifes else null,
         };
+
+        // ES2022 static block this 치환을 위한 클래스 이름 추출
+        if (self.options.target.needsClassStaticBlock() and !new_name.isNone()) {
+            const name_node = self.new_ast.getNode(new_name);
+            ctx.class_name_span = name_node.data.string_ref;
+        }
+
         for (body_members) |raw_idx| {
             try self.classifyClassMember(raw_idx, &ctx);
         }
@@ -1432,6 +1477,8 @@ pub const Transformer = struct {
         existing_constructor_pos: *?usize,
         /// ES2022 다운레벨링: static block → IIFE (target < es2022 일 때 사용)
         static_block_iifes: ?*std.ArrayList(NodeIndex) = null,
+        /// ES2022 static block 안의 this → 클래스 이름 치환에 사용
+        class_name_span: ?Span = null,
     };
 
     fn classifyClassMember(
@@ -1455,7 +1502,7 @@ pub const Transformer = struct {
 
         // ES2022 다운레벨링: static block → IIFE (target < es2022)
         if (member.tag == .static_block and ctx.static_block_iifes != null) {
-            const iife = try es2022.ES2022(Transformer).buildStaticBlockIIFE(self, member);
+            const iife = try es2022.ES2022(Transformer).buildStaticBlockIIFE(self, member, ctx.class_name_span);
             try ctx.static_block_iifes.?.append(self.allocator, iife);
             return;
         }
