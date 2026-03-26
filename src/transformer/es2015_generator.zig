@@ -335,8 +335,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const else_body = stmt.data.ternary.c;
 
             // yield가 if 안에 있는지 빠른 체크
-            if (!containsYield(self, then_body) and !containsYield(self, else_body)) {
-                // yield 없으면 그대로 visit
+            const has_yield = containsYield(self, then_body) or containsYield(self, else_body);
+            // yield 없어도 return/break/continue가 있으면 ops로 처리해야 함
+            // (generator 컨텍스트에서 return → return [2]로 변환 필요)
+            if (!has_yield and !containsReturn(self, then_body) and !containsReturn(self, else_body)) {
                 const new_stmt = try self.visitNode(stmt_idx);
                 if (!new_stmt.isNone()) {
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
@@ -398,14 +400,15 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 return;
             }
 
-            // init: variable_declaration은 그대로, expression은 expression_statement로 감싸기
+            // init: var는 호이스팅 후 assignment로 변환, expression은 그대로
             if (!init_idx.isNone()) {
                 const init_node = self.old_ast.getNode(init_idx);
-                const new_init = try self.visitNode(init_idx);
-                if (!new_init.isNone()) {
-                    if (init_node.tag == .variable_declaration) {
-                        try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_init } });
-                    } else {
+                if (init_node.tag == .variable_declaration) {
+                    // var i = 0 → i = 0 (var는 이미 호이스팅됨)
+                    try collectVarDeclWithYield(self, init_node, ops, next_label);
+                } else {
+                    const new_init = try self.visitNode(init_idx);
+                    if (!new_init.isNone()) {
                         const init_stmt = try self.new_ast.addNode(.{
                             .tag = .expression_statement,
                             .span = stmt.span,
@@ -1101,6 +1104,37 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     const e = node.data.extra;
                     if (e + 2 >= extras.len) return false;
                     return containsYield(self, @enumFromInt(extras[e + 2])); // init
+                },
+                else => false,
+            };
+        }
+
+        /// AST 서브트리에 return_statement가 있는지 체크.
+        /// generator 내 if body에서 return이 있으면 collectOperations로 처리해야
+        /// return [2]로 변환됨.
+        fn containsReturn(self: *const Transformer, idx: NodeIndex) bool {
+            if (idx.isNone()) return false;
+            const node = self.old_ast.getNode(idx);
+            if (node.tag == .return_statement) return true;
+            // function/arrow 경계 중단
+            if (node.tag == .function_declaration or node.tag == .function_expression or
+                node.tag == .arrow_function_expression) return false;
+
+            return switch (node.tag) {
+                .block_statement, .function_body => {
+                    const members = self.old_ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+                    for (members) |raw_idx| {
+                        if (containsReturn(self, @enumFromInt(raw_idx))) return true;
+                    }
+                    return false;
+                },
+                .if_statement => containsReturn(self, node.data.ternary.b) or containsReturn(self, node.data.ternary.c),
+                .while_statement, .do_while_statement, .labeled_statement => containsReturn(self, node.data.binary.right),
+                .for_statement => {
+                    const extras = self.old_ast.extra_data.items;
+                    const e = node.data.extra;
+                    if (e + 3 >= extras.len) return false;
+                    return containsReturn(self, @enumFromInt(extras[e + 3]));
                 },
                 else => false,
             };
