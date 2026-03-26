@@ -987,6 +987,34 @@ const total = results.length;
 console.log(`\n${passed}/${total} projects built successfully.`);
 console.log(`${matched}/${comparable} outputs match baseline.`);
 
+// Size comparison dashboard
+const sizeComparisons = results
+  .filter((r) => r.zts.build && r.esbuild.build && r.zts.size > 0 && r.esbuild.size > 0)
+  .map((r) => ({
+    name: r.project,
+    zts: r.zts.size,
+    esbuild: r.esbuild.size,
+    ratio: r.zts.size / r.esbuild.size,
+  }))
+  .sort((a, b) => b.ratio - a.ratio);
+
+if (sizeComparisons.length > 0) {
+  console.log("\n### Size Comparison (ZTS vs esbuild)\n");
+  console.log("| Project | ZTS | esbuild | Ratio | Status |");
+  console.log("|---------|-----|---------|-------|--------|");
+  for (const c of sizeComparisons) {
+    const status = c.ratio <= 1.1 ? "✅" : c.ratio <= 1.5 ? "⚠️" : "❌";
+    console.log(
+      `| ${c.name} | ${fmtSize(c.zts)} | ${fmtSize(c.esbuild)} | ${c.ratio.toFixed(2)}x | ${status} |`,
+    );
+  }
+  const avgRatio = sizeComparisons.reduce((s, c) => s + c.ratio, 0) / sizeComparisons.length;
+  const smaller = sizeComparisons.filter((c) => c.ratio < 1).length;
+  const similar = sizeComparisons.filter((c) => c.ratio >= 1 && c.ratio <= 1.1).length;
+  const larger = sizeComparisons.filter((c) => c.ratio > 1.1).length;
+  console.log(`\nAverage ratio: ${avgRatio.toFixed(2)}x | Smaller: ${smaller} | Similar(±10%): ${similar} | Larger: ${larger}`);
+}
+
 if (passed < total) {
   process.exit(1);
 }
