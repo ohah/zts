@@ -3986,3 +3986,31 @@ test "ES2015: let/const no transform on esnext" {
     defer r.deinit();
     try std.testing.expectEqualStrings("let x=1;const y=2;", r.output);
 }
+
+// --- ES2015: class ---
+
+test "ES2015: class with constructor and methods" {
+    var r = try e2eTarget(std.testing.allocator, "class Foo{constructor(x){this.x=x;}method(){return this.x;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function Foo(x)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Foo.prototype.method=function()") != null);
+}
+
+test "ES2015: class with static method" {
+    var r = try e2eTarget(std.testing.allocator, "class Foo{static create(){return 1;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function Foo()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Foo.create=function()") != null);
+}
+
+test "ES2015: empty class" {
+    var r = try e2eTarget(std.testing.allocator, "class Empty{}", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function Empty(){}", r.output);
+}
+
+test "ES2015: class no transform on esnext" {
+    var r = try e2eTarget(std.testing.allocator, "class Foo{}", .esnext);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("class Foo{}", r.output);
+}
