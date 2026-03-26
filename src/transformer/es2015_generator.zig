@@ -405,27 +405,30 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 }
             }
 
-            // loop condition label
+            // cond_label만 미리 할당. end_label은 body 처리 후 결정 (sentinel+fixup).
             const cond_label = next_label.*;
-            next_label.* += 1;
-            const end_label = next_label.*;
             next_label.* += 1;
 
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } }); // mark cond_label
 
-            // test
+            // test (end_label은 sentinel — fixup 예정)
+            const for_ops_start = ops.items.len;
             if (!test_idx.isNone()) {
                 const new_test = try self.visitNode(test_idx);
                 try ops.append(self.allocator, .{
                     .code = .break_when_false,
-                    .arg = .{ .label_and_node = .{ .label = end_label, .node = new_test } },
+                    .arg = .{ .label_and_node = .{ .label = LABEL_SENTINEL, .node = new_test } },
                 });
             }
 
             // body
             try collectBodyOperations(self, body_idx, ops, next_label);
 
-            // update
+            // update (별도 label — labeled continue의 대상)
+            const update_label = next_label.*;
+            next_label.* += 1;
+            self.generator_for_update_label = update_label;
+            try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } }); // mark update_label
             if (!update_idx.isNone()) {
                 const new_update = try self.visitNode(update_idx);
                 if (!new_update.isNone()) {
@@ -440,6 +443,23 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             // goto cond_label
             try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = cond_label } });
+
+            // end_label: body 처리 완료 후 할당
+            const end_label = next_label.*;
+            next_label.* += 1;
+
+            // fixup: for_ops_start 이후의 SENTINEL → end_label
+            for (ops.items[for_ops_start..]) |*op| {
+                if (op.code == .break_when_false or op.code == .break_when_true) {
+                    if (op.arg == .label_and_node and op.arg.label_and_node.label == LABEL_SENTINEL) {
+                        op.arg = .{ .label_and_node = .{ .label = end_label, .node = op.arg.label_and_node.node } };
+                    }
+                } else if (op.code == .break_op) {
+                    if (op.arg == .label and op.arg.label == LABEL_SENTINEL) {
+                        op.arg = .{ .label = end_label };
+                    }
+                }
+            }
 
             // mark end_label
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
@@ -501,11 +521,21 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 body_node.tag == .for_in_statement or
                 body_node.tag == .for_of_statement;
 
-            // continue_label: loop body의 첫 번째 nop이 cond_label
-            const continue_label: ?u32 = if (is_loop) next_label.* else null;
+            // continue_label: while/do-while은 cond_label (미리 알 수 있음)
+            // for loop은 update_label (body 처리 후 결정 → LABEL_SENTINEL-1 + fixup)
+            const is_for = body_node.tag == .for_statement;
+            const continue_label: ?u32 = if (!is_loop)
+                null
+            else if (is_for)
+                LABEL_SENTINEL - 1 // for loop: body 처리 후 fixup
+            else
+                next_label.*; // while/do-while: cond_label
 
-            // break_label은 body 처리 후 결정. sentinel 사용.
+            // break_label은 sentinel, body 처리 후 fixup
             const ops_start = ops.items.len;
+            const saved_update_label = self.generator_for_update_label;
+            self.generator_for_update_label = null;
+
             try self.generator_label_stack.append(self.allocator, .{
                 .name = label_name,
                 .break_label = LABEL_SENTINEL,
@@ -516,15 +546,21 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             _ = self.generator_label_stack.pop();
 
-            // end_label: body의 모든 nop 이후에 할당
+            // for loop의 update_label은 collectForOperations에서 설정됨
+            const actual_continue = if (is_for) self.generator_for_update_label orelse @as(u32, 0) else @as(u32, 0);
+            self.generator_for_update_label = saved_update_label;
+
+            // end_label
             const end_label = next_label.*;
             next_label.* += 1;
 
-            // fixup: ops_start 이후의 break_op(SENTINEL) → break_op(end_label)
+            // fixup: break sentinel → end_label, continue sentinel → actual_continue
             for (ops.items[ops_start..]) |*op| {
                 if (op.code == .break_op) {
                     if (op.arg == .label and op.arg.label == LABEL_SENTINEL) {
                         op.arg = .{ .label = end_label };
+                    } else if (is_for and op.arg == .label and op.arg.label == LABEL_SENTINEL - 1) {
+                        op.arg = .{ .label = actual_continue };
                     }
                 }
             }
