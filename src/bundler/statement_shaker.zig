@@ -239,6 +239,7 @@ fn extractVarDeclNames(
 fn hasSideEffects(ast: *const Ast, node: Node) bool {
     switch (node.tag) {
         .function_declaration => return false,
+        .class_declaration => return classHasSideEffects(ast, node),
         .variable_declaration => return varDeclHasSideEffects(ast, node),
         .export_named_declaration => {
             const e = node.data.extra;
@@ -292,16 +293,15 @@ fn varDeclHasSideEffects(ast: *const Ast, node: Node) bool {
         const init_ni = @intFromEnum(init_idx);
         if (init_ni >= ast.nodes.items.len) return true;
         const init_node = ast.nodes.items[init_ni];
-        if (!isExprSideEffectFree(init_node.tag)) return true;
+        if (!isExprSideEffectFree(ast, init_node)) return true;
     }
     return false;
 }
 
-/// 표현식이 side-effect-free인지 판정 (리터럴, 함수/화살표 표현식 등).
 /// 초기값 표현식이 side-effect-free인지 판정.
-/// 리터럴과 함수 표현식만 safe. array/object/template은 내부에 호출이 있을 수 있으므로 제외.
-fn isExprSideEffectFree(tag: @import("../parser/ast.zig").Node.Tag) bool {
-    return switch (tag) {
+/// 리터럴, 함수 표현식, @__PURE__ 호출이 safe.
+fn isExprSideEffectFree(ast: *const Ast, node: Node) bool {
+    return switch (node.tag) {
         .numeric_literal,
         .string_literal,
         .boolean_literal,
@@ -310,9 +310,30 @@ fn isExprSideEffectFree(tag: @import("../parser/ast.zig").Node.Tag) bool {
         .regexp_literal,
         .function_expression,
         .arrow_function_expression,
+        .identifier_reference,
         => true,
+        // @__PURE__ 어노테이션이 있는 호출은 side-effect-free
+        .call_expression, .new_expression => {
+            const e = node.data.extra;
+            if (ast.hasExtra(e, 3)) {
+                const flags = ast.readExtra(e, 3);
+                return (flags & 0x01) != 0; // CallFlags.is_pure
+            }
+            return false;
+        },
         else => false,
     };
+}
+
+/// class declaration의 side effects 판정.
+/// extends 절이 없으면 side-effect-free (순수 프로토타입 정의).
+fn classHasSideEffects(ast: *const Ast, node: Node) bool {
+    // extra = [name, super_class, body, ...]
+    const e = node.data.extra;
+    if (e + 1 >= ast.extra_data.items.len) return true;
+    const super_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e + 1]);
+    // extends 절이 있으면 side-effectful (super 표현식 평가)
+    return !super_idx.isNone();
 }
 
 /// 모든 AST 노드를 순회하면서 identifier_reference를 찾고,
@@ -602,11 +623,9 @@ test "statement shaker: export specifier-only is side-effect-free" {
     try std.testing.expect(skipped >= 1); // unused + export 문
 }
 
-test "statement shaker: class with side effects always included" {
-    // class extends/decorators/computed properties → side-effectful
+test "statement shaker: class extends is side-effectful" {
     const alloc = std.testing.allocator;
     var r = try parseAndGetRoot(alloc,
-        \\class Base {}
         \\class Derived extends Base {}
         \\function unused() { return 1; }
     );
@@ -617,12 +636,32 @@ test "statement shaker: class with side effects always included" {
 
     try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
 
-    // class 선언 → side-effectful → 항상 보존
-    // unused만 제거
+    // class extends → side-effectful → 보존, unused만 제거
     var skipped: u32 = 0;
     var it = skip.iterator(.{});
     while (it.next()) |_| skipped += 1;
     try std.testing.expectEqual(@as(u32, 1), skipped);
+}
+
+test "statement shaker: class without extends is removable" {
+    const alloc = std.testing.allocator;
+    var r = try parseAndGetRoot(alloc,
+        \\class Used { foo() { return 1; } }
+        \\class Unused { bar() { return 2; } }
+    );
+    defer r.arena.deinit();
+
+    var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
+    defer skip.deinit();
+
+    const names: [1][]const u8 = .{"Used"};
+    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip);
+
+    // Unused class (no extends) → 미사용 → 제거
+    var skipped: u32 = 0;
+    var it = skip.iterator(.{});
+    while (it.next()) |_| skipped += 1;
+    try std.testing.expect(skipped >= 1);
 }
 
 test "statement shaker: var with call initializer is side-effectful" {
@@ -687,6 +726,28 @@ test "statement shaker: no removable statements → early return" {
     var it = skip.iterator(.{});
     while (it.next()) |_| skipped += 1;
     try std.testing.expectEqual(@as(u32, 0), skipped);
+}
+
+test "statement shaker: identifier_reference initializer is side-effect-free" {
+    // const x = someExistingVar → side-effect-free (identifier reference)
+    const alloc = std.testing.allocator;
+    var r = try parseAndGetRoot(alloc,
+        \\const x = globalVal;
+        \\function unused() { return 1; }
+    );
+    defer r.arena.deinit();
+
+    var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
+    defer skip.deinit();
+
+    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
+
+    // const x = globalVal → side-effect-free (identifier) → x 미사용 → 제거
+    // unused도 미사용 → 제거
+    var skipped: u32 = 0;
+    var it = skip.iterator(.{});
+    while (it.next()) |_| skipped += 1;
+    try std.testing.expect(skipped >= 2);
 }
 
 test "statement shaker module compiles" {
