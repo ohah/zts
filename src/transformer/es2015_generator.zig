@@ -369,8 +369,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // then body
             try collectBodyOperations(self, then_body, ops, next_label);
 
-            // goto end
-            try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = end_label } });
+            // goto end (then body가 return/break로 끝나면 생략 — dead code 방지)
+            if (ops.items.len == 0 or (ops.items[ops.items.len - 1].code != .return_op and ops.items[ops.items.len - 1].code != .break_op)) {
+                try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = end_label } });
+            }
 
             // else label
             if (!else_body.isNone()) {
