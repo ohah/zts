@@ -3812,3 +3812,29 @@ test "ES2015: computed no transform on esnext" {
     defer r.deinit();
     try std.testing.expectEqualStrings("var o={[k]:v};", r.output);
 }
+
+// --- ES2015: default/rest parameters ---
+
+test "ES2015: default parameter" {
+    var r = try e2eTarget(std.testing.allocator, "function f(x=1){return x;}", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function f(x){x=x===void 0?1:x;return x;}", r.output);
+}
+
+test "ES2015: rest parameter" {
+    var r = try e2eTarget(std.testing.allocator, "function f(a,...rest){return rest;}", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function f(a){var rest=[].slice.call(arguments,1);return rest;}", r.output);
+}
+
+test "ES2015: default + rest combined" {
+    var r = try e2eTarget(std.testing.allocator, "function f(x=1,...rest){}", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function f(x){x=x===void 0?1:x;var rest=[].slice.call(arguments,1);}", r.output);
+}
+
+test "ES2015: params no transform on esnext" {
+    var r = try e2eTarget(std.testing.allocator, "function f(x=1,...rest){}", .esnext);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function f(x=1,...rest){}", r.output);
+}
