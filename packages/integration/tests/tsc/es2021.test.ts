@@ -1,5 +1,5 @@
 import { describe, test } from "bun:test";
-import { expectPass, expectError } from "./helpers";
+import { expectPass } from "./helpers";
 
 describe("TSC: es2021", () => {
   test("es2021LocalesObjectArgument", async () => {

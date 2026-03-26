@@ -1,5 +1,5 @@
 import { describe, test } from "bun:test";
-import { expectPass, expectError } from "./helpers";
+import { expectPass } from "./helpers";
 
 describe("TSC: es2025", () => {
   test("float16Array", async () => {

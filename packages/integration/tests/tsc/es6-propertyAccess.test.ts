@@ -1,5 +1,5 @@
 import { describe, test } from "bun:test";
-import { expectPass, expectError } from "./helpers";
+import { expectPass } from "./helpers";
 
 describe("TSC: es6/propertyAccess", () => {
   test("propertyAccessNumericLiterals.es6", async () => {
