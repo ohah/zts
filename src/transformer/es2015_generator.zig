@@ -206,12 +206,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     const expr = self.old_ast.getNode(expr_idx);
 
                     if (expr.tag == .yield_expression) {
-                        // yield value → [4, value], 다음 case에서 재개
                         const value_idx = expr.data.unary.operand;
+                        const is_delegate = (expr.data.unary.flags & 1) != 0;
                         const new_value = if (!value_idx.isNone()) try self.visitNode(value_idx) else NodeIndex.none;
-                        try ops.append(self.allocator, .{ .code = .yield_op, .arg = .{ .node = new_value } });
+                        // yield* → [5, iter], yield → [4, value]
+                        const opcode: OpCode = if (is_delegate) .yield_star else .yield_op;
+                        try ops.append(self.allocator, .{ .code = opcode, .arg = .{ .node = new_value } });
                         next_label.* += 1;
-                        // yield 후 재개 지점 (nop으로 case 경계 생성)
                         try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
                     } else if (expr.tag == .assignment_expression) {
                         // x = yield value 패턴 감지
@@ -265,8 +266,19 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .while_statement => {
                     try collectWhileOperations(self, stmt_idx, stmt, ops, next_label);
                 },
+                .do_while_statement => {
+                    try collectDoWhileOperations(self, stmt_idx, stmt, ops, next_label);
+                },
+                .try_statement => {
+                    // try/catch/finally 안에 yield가 있으면 복잡한 변환 필요.
+                    // 현재는 yield 없는 경우만 처리 (그대로 visit).
+                    // yield가 있는 try/catch는 _state.trys 스택이 필요하여 추후 구현.
+                    const new_stmt = try self.visitNode(stmt_idx);
+                    if (!new_stmt.isNone()) {
+                        try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
+                    }
+                },
                 else => {
-                    // 기타 문: 그대로 visit
                     const new_stmt = try self.visitNode(stmt_idx);
                     if (!new_stmt.isNone()) {
                         try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
@@ -464,6 +476,43 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             // mark end_label
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+        }
+
+        /// do-while문의 연산 수집. body → condition 순서.
+        fn collectDoWhileOperations(self: *Transformer, stmt_idx: NodeIndex, stmt: Node, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
+            const condition = stmt.data.binary.left;
+            const body_idx = stmt.data.binary.right;
+
+            if (!containsYield(self, body_idx)) {
+                const new_stmt = try self.visitNode(stmt_idx);
+                if (!new_stmt.isNone()) {
+                    try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
+                }
+                return;
+            }
+
+            const body_label = next_label.*;
+            next_label.* += 1;
+
+            try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } }); // mark body_label
+
+            // body
+            const body_node = self.old_ast.getNode(body_idx);
+            if (body_node.tag == .block_statement) {
+                const body_stmts = self.old_ast.extra_data.items[body_node.data.list.start .. body_node.data.list.start + body_node.data.list.len];
+                for (body_stmts) |raw_idx| {
+                    try collectOperations(self, @enumFromInt(raw_idx), ops, next_label);
+                }
+            } else {
+                try collectOperations(self, body_idx, ops, next_label);
+            }
+
+            // condition → if true, goto body_label
+            const new_cond = try self.visitNode(condition);
+            try ops.append(self.allocator, .{
+                .code = .break_when_true,
+                .arg = .{ .label_and_node = .{ .label = body_label, .node = new_cond } },
+            });
         }
 
         /// generator body에서 모든 var 선언의 binding name을 수집 (호이스팅).
