@@ -329,12 +329,15 @@ pub fn emitWithTreeShaking(
                     names_buf.append(allocator, eb.local_name) catch break :blk null;
                 }
             }
-            // 다른 모듈의 import binding이 이 모듈을 참조하면 해당 이름도 포함
-            for (graph.modules.items) |*other| {
-                for (other.import_bindings) |ib| {
-                    if (ib.import_record_index >= other.import_records.len) continue;
-                    const rec = other.import_records[ib.import_record_index];
-                    if (rec.resolved == m.index and ib.kind == .named) {
+            // cross-module: 이 모듈을 import하는 모듈의 named binding도 포함
+            for (m.importers.items) |importer_idx| {
+                const imp_i = @intFromEnum(importer_idx);
+                if (imp_i >= graph.modules.items.len) continue;
+                const importer = &graph.modules.items[imp_i];
+                for (importer.import_bindings) |ib| {
+                    if (ib.kind != .named) continue;
+                    if (ib.import_record_index >= importer.import_records.len) continue;
+                    if (importer.import_records[ib.import_record_index].resolved == m.index) {
                         names_buf.append(allocator, ib.imported_name) catch break :blk null;
                     }
                 }

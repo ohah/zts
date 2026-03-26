@@ -42,11 +42,9 @@ pub fn markUnusedStatements(
     if (list.start + list.len > ast.extra_data.items.len) return;
     const stmt_raw_indices = ast.extra_data.items[list.start .. list.start + list.len];
 
-    // Statement 정보 수집
     var stmts = try allocator.alloc(StmtInfo, stmt_raw_indices.len);
     defer allocator.free(stmts);
 
-    // top-level 선언 이름 → stmt index
     var name_to_stmt: std.StringHashMapUnmanaged(u32) = .{};
     defer name_to_stmt.deinit(allocator);
 
@@ -73,8 +71,14 @@ pub fn markUnusedStatements(
         if (!stmts[i].has_side_effects) removable_count += 1;
     }
 
-    // 제거 가능한 statement가 없으면 조기 종료
     if (removable_count == 0) return;
+
+    // statements가 소스 순서(span.start)로 정렬되어 있는지 검증 (binary search 전제)
+    if (std.debug.runtime_safety) {
+        for (1..stmts.len) |i| {
+            std.debug.assert(stmts[i].span.start >= stmts[i - 1].span.start);
+        }
+    }
 
     // 각 statement의 참조 이름 수집 (span containment 기반)
     var stmt_refs = try allocator.alloc(std.StringHashMapUnmanaged(void), stmts.len);
@@ -86,11 +90,10 @@ pub fn markUnusedStatements(
 
     collectReferences(allocator, ast, stmts, stmt_refs, &name_to_stmt) catch return;
 
-    // BFS: used exports + side-effectful statements에서 도달 가능한 statements 추적
     var queue: std.ArrayListUnmanaged(u32) = .empty;
     defer queue.deinit(allocator);
 
-    // seed 1: side-effectful statements → 항상 포함
+    // seed: side-effectful statements + used exports
     for (stmts, 0..) |*stmt, i| {
         if (stmt.has_side_effects) {
             stmt.is_reachable = true;
@@ -98,7 +101,6 @@ pub fn markUnusedStatements(
         }
     }
 
-    // seed 2: used exports → 해당 선언 statement 포함
     for (used_export_names) |name| {
         if (name_to_stmt.get(name)) |si| {
             if (!stmts[si].is_reachable) {
@@ -108,7 +110,6 @@ pub fn markUnusedStatements(
         }
     }
 
-    // BFS 순회
     var head: u32 = 0;
     while (head < queue.items.len) : (head += 1) {
         const si = queue.items[head];
@@ -123,7 +124,6 @@ pub fn markUnusedStatements(
         }
     }
 
-    // 도달 불가능한 statements를 skip_nodes에 추가
     for (stmts) |stmt| {
         if (!stmt.is_reachable and stmt.node_idx < skip_nodes.capacity()) {
             skip_nodes.set(stmt.node_idx);
@@ -298,6 +298,8 @@ fn varDeclHasSideEffects(ast: *const Ast, node: Node) bool {
 }
 
 /// 표현식이 side-effect-free인지 판정 (리터럴, 함수/화살표 표현식 등).
+/// 초기값 표현식이 side-effect-free인지 판정.
+/// 리터럴과 함수 표현식만 safe. array/object/template은 내부에 호출이 있을 수 있으므로 제외.
 fn isExprSideEffectFree(tag: @import("../parser/ast.zig").Node.Tag) bool {
     return switch (tag) {
         .numeric_literal,
@@ -306,11 +308,8 @@ fn isExprSideEffectFree(tag: @import("../parser/ast.zig").Node.Tag) bool {
         .null_literal,
         .bigint_literal,
         .regexp_literal,
-        .template_literal,
         .function_expression,
         .arrow_function_expression,
-        .array_expression,
-        .object_expression,
         => true,
         else => false,
     };
