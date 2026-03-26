@@ -281,7 +281,7 @@ pub const ModuleGraph = struct {
         // 파싱 전에 package.json type 필드를 확인하여 오버라이드한다.
         // (이전에는 파싱 후 determineExportsKind에서만 확인했으나,
         //  파서가 import/export를 module 모드에서만 허용하므로 파싱 전에 필요)
-        if (!parser.is_module and self.isPackageTypeModule(module.path)) {
+        if (!parser.is_module and (module.is_module_field or self.isPackageTypeModule(module.path))) {
             parser.is_module = true;
             scanner.is_module = true;
         }
@@ -512,6 +512,12 @@ pub const ModuleGraph = struct {
                 }
 
                 const dep_idx = try self.addModule(r.path);
+
+                // module 필드를 통해 resolve된 .js → ESM으로 파싱
+                // 또는 이미 is_module_field인 모듈에서 import하는 같은 패키지의 .js도 ESM 전파
+                if (r.is_module_field or self.modules.items[mod_idx].is_module_field) {
+                    self.modules.items[@intFromEnum(dep_idx)].is_module_field = true;
+                }
 
                 // import_records 업데이트 (modules 배열이 재할당되었을 수 있으므로 다시 접근)
                 self.modules.items[mod_idx].import_records[rec_i].resolved = dep_idx;

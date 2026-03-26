@@ -31,6 +31,9 @@ pub const ResolveResult = struct {
     /// package.json "browser" 필드에서 false로 매핑된 파일.
     /// platform=browser에서 빈 CJS 모듈로 대체한다 (esbuild "(disabled)" 방식).
     disabled: bool = false,
+    /// package.json "module" 필드를 통해 resolve된 파일.
+    /// .js 확장자라도 ESM으로 파싱해야 함.
+    is_module_field: bool = false,
 };
 
 pub const ResolveError = error{
@@ -179,7 +182,11 @@ pub const Resolver = struct {
             const abs_path = std.fs.path.resolve(self.allocator, &.{ dir_path, mod }) catch
                 return error.OutOfMemory;
             defer self.allocator.free(abs_path);
-            if (self.fileExists(abs_path)) return self.makeResult(abs_path);
+            if (self.fileExists(abs_path)) {
+                var result = (try self.makeResult(abs_path)) orelse return null;
+                result.is_module_field = true;
+                return result;
+            }
         }
 
         // main 필드
@@ -290,7 +297,11 @@ pub const Resolver = struct {
             const abs_path = std.fs.path.resolve(self.allocator, &.{ pkg_dir_path, mod }) catch
                 return error.OutOfMemory;
             defer self.allocator.free(abs_path);
-            if (self.fileExists(abs_path)) return self.makeResult(abs_path);
+            if (self.fileExists(abs_path)) {
+                var result = (try self.makeResult(abs_path)) orelse return null;
+                result.is_module_field = true;
+                return result;
+            }
         }
 
         // 3. main 필드 (CJS 엔트리)
