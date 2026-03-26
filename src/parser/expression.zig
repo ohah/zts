@@ -877,6 +877,9 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                 }
             },
             .l_bracket => {
+                // decorator 안에서는 computed member access 금지
+                // @dec ["method"]() → ["method"]은 다음 class member의 computed key
+                if (self.ctx.in_decorator) break;
                 // 계산된 멤버 접근: a[b] — `in` 연산자 허용 (ECMAScript: [+In])
                 try self.advance();
                 const cm_saved = self.enterAllowInContext(true);
