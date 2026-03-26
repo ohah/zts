@@ -4157,3 +4157,179 @@ test "ES2015: generator try/catch/finally with yield" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "return [7]") != null); // endfinally
     try std.testing.expect(std.mem.indexOf(u8, r.output, "cleanup()") != null);
 }
+
+// ============================================================
+// ES2015 다운레벨링 추가 테스트
+// ============================================================
+
+// --- class extends/super ---
+
+test "ES2015: class extends with super()" {
+    var r = try e2eTarget(std.testing.allocator, "class C extends P{constructor(x){super(x);this.x=x;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "P.call(this,x)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends(C,P)") != null);
+}
+
+test "ES2015: class extends default constructor" {
+    var r = try e2eTarget(std.testing.allocator, "class C extends P{m(){}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "P.apply(this,arguments)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends(C,P)") != null);
+}
+
+test "ES2015: super.method() call" {
+    var r = try e2eTarget(std.testing.allocator, "class C extends P{m(){return super.m();}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "P.prototype.m.call(this)") != null);
+}
+
+// --- class getter/setter ---
+
+test "ES2015: class getter/setter paired" {
+    var r = try e2eTarget(std.testing.allocator, "class F{get v(){return 1;}set v(x){}}", .es5);
+    defer r.deinit();
+    // 하나의 Object.defineProperty로 합쳐져야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.defineProperty") != null);
+    // "get:" 와 "set:" 가 같은 호출 안에 있어야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "get:function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "set:function(x)") != null);
+}
+
+test "ES2015: class static getter" {
+    var r = try e2eTarget(std.testing.allocator, "class F{static get n(){return 1;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.defineProperty(F") != null);
+}
+
+// --- class expression ---
+
+test "ES2015: class expression simple" {
+    var r = try e2eTarget(std.testing.allocator, "const F=class{};", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _Class()") != null);
+}
+
+test "ES2015: class expression with method" {
+    var r = try e2eTarget(std.testing.allocator, "const F=class{m(){return 1;}};", .es5);
+    defer r.deinit();
+    // IIFE 패턴
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return _Class") != null);
+}
+
+test "ES2015: class expression with extends" {
+    var r = try e2eTarget(std.testing.allocator, "const F=class extends P{m(){}};", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(function()") != null);
+}
+
+// --- class private field ---
+
+test "ES2015: class private field WeakMap" {
+    var r = try e2eTarget(std.testing.allocator, "class F{#x=1;g(){return this.#x;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "new WeakMap") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_x.set(this,1)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_x.get(this)") != null);
+}
+
+test "ES2015: class private field set" {
+    var r = try e2eTarget(std.testing.allocator, "class F{#x=0;s(v){this.#x=v;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_x.set(this,v)") != null);
+}
+
+// --- destructuring rest ---
+
+test "ES2015: destructuring object rest" {
+    var r = try e2eTarget(std.testing.allocator, "var {a,...r}=obj;", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__rest") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "[\"a\"]") != null);
+}
+
+test "ES2015: destructuring array rest" {
+    var r = try e2eTarget(std.testing.allocator, "var [a,...r]=arr;", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".slice(1)") != null);
+}
+
+// --- generator labeled break/continue ---
+
+test "ES2015: generator labeled break" {
+    var r = try e2eTarget(std.testing.allocator, "function* g(){outer:for(var i=0;i<3;i++){if(i===1)break outer;yield i;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
+    // break outer → return [3, N] (end label로 점프)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [3,") != null);
+}
+
+test "ES2015: generator labeled continue" {
+    var r = try e2eTarget(std.testing.allocator, "function* g(){outer:for(var i=0;i<3;i++){if(i===1)continue outer;yield i;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
+    // continue outer → return [3, N] (update label로 점프 → i++ 실행)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "i++") != null);
+}
+
+// --- generator switch yield ---
+
+test "ES2015: generator switch with yield" {
+    var r = try e2eTarget(std.testing.allocator, "function* g(x){switch(x){case 1:yield 'a';break;default:yield 'b';}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
+    // switch → if-else 체인으로 분해
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "x===1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [4,\"a\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [4,\"b\"]") != null);
+}
+
+// --- static block ES5 ---
+
+test "ES2015: static block in class declaration" {
+    var r = try e2eTarget(std.testing.allocator, "class F{static v;static{F.v=42;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "F.v=42") != null);
+}
+
+// --- arrow this capture in class method ---
+
+test "ES2015: arrow this capture in class method" {
+    var r = try e2eTarget(std.testing.allocator, "class F{x=1;g(){var fn=()=>this.x;return fn();}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _this=this") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_this.x") != null);
+}
+
+// --- temp var hoisting ---
+
+test "ES2020: temp var hoisted for ?? in function" {
+    var r = try e2eTarget(std.testing.allocator, "function f(){return foo()??bar;}", .es2019);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_a=foo()") != null);
+}
+
+test "ES2020: temp var hoisted for ?. in function" {
+    var r = try e2eTarget(std.testing.allocator, "function f(){return foo()?.bar;}", .es2019);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _a") != null);
+}
+
+// --- ES2021 ---
+
+test "ES2021: &&= logical assignment" {
+    var r = try e2eTarget(std.testing.allocator, "let a=1;a&&=10;", .es2020);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "a&&(a=10)") != null);
+}
+
+// --- ES2022 → es2021 ---
+
+test "ES2022: static block to IIFE (target=es2021)" {
+    var r = try e2eTarget(std.testing.allocator, "class F{static{F.v=1;}}", .es2021);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "F.v=1") != null);
+}
