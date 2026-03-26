@@ -703,7 +703,14 @@ pub const Transformer = struct {
                 return self.copyNodeDirect(node);
             },
 
-            .boolean_literal, .null_literal, .numeric_literal, .string_literal, .bigint_literal, .regexp_literal, .identifier_reference => {
+            .boolean_literal,
+            .null_literal,
+            .numeric_literal,
+            .string_literal,
+            .bigint_literal,
+            .regexp_literal,
+            => self.copyNodeDirect(node),
+            .identifier_reference => {
                 // ES2015 arrow arguments 캡처: arrow body 안의 arguments → _arguments
                 if (self.options.target.needsES2015() and self.arrow_this_depth > 0) {
                     const text = self.old_ast.getText(node.data.string_ref);
@@ -1325,11 +1332,22 @@ pub const Transformer = struct {
             var capture_count: usize = 0;
 
             if (self.needs_this_var) {
-                capture_stmts[capture_count] = try self.buildCaptureVar("_this", .this_expression, node.span);
+                const this_init = try self.new_ast.addNode(.{
+                    .tag = .this_expression,
+                    .span = node.span,
+                    .data = .{ .none = 0 },
+                });
+                capture_stmts[capture_count] = try self.buildVarDecl("_this", this_init, node.span);
                 capture_count += 1;
             }
             if (self.needs_arguments_var) {
-                capture_stmts[capture_count] = try self.buildCaptureVar("_arguments", .identifier_reference, node.span);
+                const args_span = try self.new_ast.addString("arguments");
+                const args_init = try self.new_ast.addNode(.{
+                    .tag = .identifier_reference,
+                    .span = args_span,
+                    .data = .{ .string_ref = args_span },
+                });
+                capture_stmts[capture_count] = try self.buildVarDecl("_arguments", args_init, node.span);
                 capture_count += 1;
             }
 
@@ -1487,9 +1505,8 @@ pub const Transformer = struct {
         });
     }
 
-    /// var _this = this; 또는 var _arguments = arguments; 문 생성.
-    /// init_tag가 .this_expression이면 this, .identifier_reference이면 arguments.
-    fn buildCaptureVar(self: *Transformer, name: []const u8, init_tag: Tag, span: Span) Error!NodeIndex {
+    /// var <name> = <init_value>; 문 생성 (범용 헬퍼).
+    fn buildVarDecl(self: *Transformer, name: []const u8, init_value: NodeIndex, span: Span) Error!NodeIndex {
         const name_span = try self.new_ast.addString(name);
         const binding = try self.new_ast.addNode(.{
             .tag = .binding_identifier,
@@ -1497,30 +1514,11 @@ pub const Transformer = struct {
             .data = .{ .string_ref = name_span },
         });
 
-        // init_value: this 또는 arguments
-        const init_value = if (init_tag == .this_expression)
-            try self.new_ast.addNode(.{
-                .tag = .this_expression,
-                .span = span,
-                .data = .{ .none = 0 },
-            })
-        else blk: {
-            const args_span = try self.new_ast.addString("arguments");
-            break :blk try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = args_span,
-                .data = .{ .string_ref = args_span },
-            });
-        };
-
-        // variable_declarator: extra = [name, type_ann, init]
         const none = @intFromEnum(NodeIndex.none);
         const declarator = try self.addExtraNode(.variable_declarator, span, &.{
             @intFromEnum(binding), none, @intFromEnum(init_value),
         });
 
-        // variable_declaration: extra = [kind_flags, list_start, list_len]
-        // kind 0 = var
         const decl_list = try self.new_ast.addNodeList(&.{declarator});
         return self.addExtraNode(.variable_declaration, span, &.{
             0, // var
