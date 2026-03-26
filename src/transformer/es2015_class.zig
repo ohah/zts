@@ -156,7 +156,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 try self.pending_nodes.append(self.allocator, static_assign);
             }
 
-            // 모든 노드를 pending_nodes에 넣었으므로 .none 반환
+            // --- static block body → class 뒤에 emit ---
+            for (cm.static_block_stmts.items) |sb_stmt| {
+                try self.pending_nodes.append(self.allocator, sb_stmt);
+            }
+
             return .none;
         }
 
@@ -246,7 +250,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // 메서드/static/extends/private가 없으면 단순 function expression으로 변환
             const has_extra = cm.methods.items.len > 0 or cm.static_fields.items.len > 0 or
                 cm.accessors.items.len > 0 or cm.private_fields.items.len > 0 or
-                (has_super and super_span != null);
+                cm.static_block_stmts.items.len > 0 or (has_super and super_span != null);
 
             if (!has_extra) {
                 const func = self.new_ast.getNode(func_node);
@@ -297,7 +301,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 try self.scratch.append(self.allocator, static_assign);
             }
 
-            // 6. return ClassName;
+            // 6. static block body
+            for (cm.static_block_stmts.items) |sb_stmt| {
+                try self.scratch.append(self.allocator, sb_stmt);
+            }
+
+            // 7. return ClassName;
             const return_ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
             const return_stmt = try self.new_ast.addNode(.{
                 .tag = .return_statement,
@@ -624,6 +633,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             static_fields: std.ArrayList(FieldInfo),
             accessors: std.ArrayList(AccessorInfo),
             private_fields: std.ArrayList(PrivateFieldInfo),
+            static_block_stmts: std.ArrayList(NodeIndex),
 
             fn deinit(cm: *ClassifiedMembers, allocator: std.mem.Allocator) void {
                 for (cm.private_fields.items) |pf| {
@@ -634,6 +644,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 cm.static_fields.deinit(allocator);
                 cm.accessors.deinit(allocator);
                 cm.private_fields.deinit(allocator);
+                cm.static_block_stmts.deinit(allocator);
             }
         };
 
@@ -649,6 +660,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 .static_fields = .empty,
                 .accessors = .empty,
                 .private_fields = .empty,
+                .static_block_stmts = .empty,
             };
 
             for (members) |raw_idx| {
@@ -714,6 +726,21 @@ pub fn ES2015Class(comptime Transformer: type) type {
                         });
                         const field_stmt = try buildFieldAssign(self, this_node, key, init_val, span);
                         try cm.instance_fields.append(self.allocator, field_stmt);
+                    }
+                } else if (member.tag == .static_block) {
+                    // static block body의 문들을 class 뒤에 emit
+                    const sb_body_idx = member.data.unary.operand;
+                    if (!sb_body_idx.isNone()) {
+                        const sb_body = self.old_ast.getNode(sb_body_idx);
+                        if (sb_body.tag == .block_statement) {
+                            const sb_stmts = self.old_ast.extra_data.items[sb_body.data.list.start .. sb_body.data.list.start + sb_body.data.list.len];
+                            for (sb_stmts) |sb_raw| {
+                                const new_stmt = try self.visitNode(@enumFromInt(sb_raw));
+                                if (!new_stmt.isNone()) {
+                                    try cm.static_block_stmts.append(self.allocator, new_stmt);
+                                }
+                            }
+                        }
                     }
                 }
             }

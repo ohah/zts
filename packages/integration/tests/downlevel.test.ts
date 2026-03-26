@@ -1,0 +1,466 @@
+import { describe, test, expect, afterEach } from "bun:test";
+import { bundleAndRun } from "./helpers";
+
+// 런타임 헬퍼 (번들러가 아직 자동 주입하지 않으므로 인라인)
+const HELPERS = `
+var __extends = function(d, b) {
+  for (var p in b) if (Object.prototype.hasOwnProperty.call(b, p)) d[p] = b[p];
+  function __() { this.constructor = d; }
+  d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype, new __());
+};
+var __generator = function(body) {
+  var _ = { label: 0, sent: function() { return t[1]; }, trys: [], ops: [] }, f, y, t, g;
+  return g = { next: verb(0), "throw": verb(1), "return": verb(2) }, g[Symbol.iterator] = function() { return this; }, g;
+  function verb(n) { return function(v) { return step([n, v]); }; }
+  function step(op) {
+    if (f) throw new TypeError("Generator is already executing.");
+    while (g && (g = 0, op[0] && (_ = 0)), _) try {
+      if (f = 1, y && (t = op[0] & 2 ? y["return"] : op[0] ? y["throw"] || ((t = y["return"]) && t.call(y), 0) : y.next) && !(t = t.call(y, op[1])).done) return t;
+      if (y = 0, t) op = [op[0] & 2, t.value];
+      switch (op[0]) {
+        case 0: case 1: t = op; break;
+        case 4: _.label++; return { value: op[1], done: false };
+        case 5: _.label++; y = op[1]; op = [0]; continue;
+        case 7: op = _.ops.pop(); _.trys.pop(); continue;
+        default:
+          if (!(t = _.trys, t = t.length > 0 && t[t.length - 1]) && (op[0] === 6 || op[0] === 2)) { _ = 0; continue; }
+          if (op[0] === 3 && (!t || (op[1] > t[0] && op[1] < t[3]))) { _.label = op[1]; break; }
+          if (op[0] === 6 && _.label < t[1]) { _.label = t[1]; t = op; break; }
+          if (t && _.label < t[2]) { _.label = t[2]; _.ops.push(op); break; }
+          if (t[2]) _.ops.pop();
+          _.trys.pop(); continue;
+      }
+      op = body.call(null, _);
+    } catch (e) { op = [6, e]; y = 0; } finally { f = t = 0; }
+    if (op[0] & 5) throw op[1]; return { value: op[0] ? op[1] : void 0, done: true };
+  }
+};
+var __rest = function(s, e) {
+  var t = {};
+  for (var p in s) if (Object.prototype.hasOwnProperty.call(s, p) && e.indexOf(p) < 0) t[p] = s[p];
+  return t;
+};
+`;
+
+function withHelpers(code: string): string {
+  return HELPERS + code;
+}
+
+describe("ES 다운레벨링 런타임 테스트", () => {
+  let cleanup: (() => Promise<void>) | undefined;
+
+  afterEach(async () => {
+    if (cleanup) {
+      await cleanup();
+      cleanup = undefined;
+    }
+  });
+
+  // ===== ES2015 =====
+
+  describe("ES2015", () => {
+    test("template literal → string concat", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": "const name = 'world'; console.log(`hello ${name}`);" },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("hello world");
+    });
+
+    test("arrow function", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": "const add = (a: number, b: number) => a + b; console.log(add(1, 2));" },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("3");
+    });
+
+    test("arrow this capture", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Obj { x = 10; getX() { const fn = () => this.x; return fn(); } }
+            console.log(new Obj().getX());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("10");
+    });
+
+    test("let/const → var", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": "let x = 1; const y = 2; console.log(x + y);" },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("3");
+    });
+
+    test("default params", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts":
+            "function greet(name = 'world') { return 'hello ' + name; } console.log(greet());",
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("hello world");
+    });
+
+    test("rest params", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts":
+            "function sum(...nums: number[]) { return nums.reduce((a, b) => a + b, 0); } console.log(sum(1, 2, 3));",
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("6");
+    });
+
+    test("spread array", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": "const a = [1, 2]; const b = [0, ...a, 3]; console.log(JSON.stringify(b));" },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("[0,1,2,3]");
+    });
+
+    test("shorthand property", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": "const a = 1, b = 2; console.log(JSON.stringify({a, b}));" },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('{"a":1,"b":2}');
+    });
+
+    test("destructuring object", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": "const { a, b } = { a: 1, b: 2, c: 3 }; console.log(a + b);" },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("3");
+    });
+
+    test("destructuring array", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": "const [x, y] = [10, 20]; console.log(x + y);" },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("30");
+    });
+
+    test("destructuring rest (object)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": withHelpers(
+            "const { a, ...rest } = { a: 1, b: 2, c: 3 }; console.log(a, JSON.stringify(rest));",
+          ),
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('1 {"b":2,"c":3}');
+    });
+
+    test("destructuring rest (array)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts":
+            "const [first, ...rest] = [1, 2, 3, 4]; console.log(first, JSON.stringify(rest));",
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1 [2,3,4]");
+    });
+
+    test("class basic", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Foo { x: number; constructor(x: number) { this.x = x; } double() { return this.x * 2; } }
+            console.log(new Foo(5).double());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("10");
+    });
+
+    test("class extends/super", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": withHelpers(`
+            class Animal { name: string; constructor(name: string) { this.name = name; } speak() { return this.name; } }
+            class Dog extends Animal { speak() { return super.speak() + " barks"; } }
+            console.log(new Dog("Rex").speak());
+          `),
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("Rex barks");
+    });
+
+    test("class getter/setter", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Box { _v = 0; get value() { return this._v; } set value(v: number) { this._v = v; } }
+            const b = new Box(); b.value = 42; console.log(b.value);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42");
+    });
+
+    test("class expression", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const MyClass = class { x: number; constructor(x: number) { this.x = x; } get() { return this.x; } };
+            console.log(new MyClass(7).get());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("7");
+    });
+
+    test("generator .next()", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": withHelpers(`
+            function* gen() { yield 1; yield 2; yield 3; }
+            const g = gen();
+            const arr: number[] = [];
+            let r = g.next(); while (!r.done) { arr.push(r.value); r = g.next(); }
+            console.log(JSON.stringify(arr));
+          `),
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("[1,2,3]");
+    });
+
+    test("generator return", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": withHelpers(`
+            function* gen() { yield 1; return 99; }
+            const g = gen();
+            console.log(JSON.stringify(g.next()), JSON.stringify(g.next()));
+          `),
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('{"value":1,"done":false} {"value":99,"done":true}');
+    });
+
+    test("private field (#field → WeakMap)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Foo { #x = 10; getX() { return this.#x; } setX(v: number) { this.#x = v; } }
+            const f = new Foo(); f.setX(42); console.log(f.getX());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42");
+    });
+  });
+
+  // ===== ES2016 =====
+
+  describe("ES2016", () => {
+    test("exponentiation **", async () => {
+      const result = await bundleAndRun({ "index.ts": "console.log(2 ** 10);" }, "index.ts", [
+        "--target=es2015",
+      ]);
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1024");
+    });
+  });
+
+  // ===== ES2018 =====
+
+  describe("ES2018", () => {
+    test("object spread", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts":
+            "const a = { x: 1, y: 2 }; const b = { ...a, z: 3 }; console.log(JSON.stringify(b));",
+        },
+        "index.ts",
+        ["--target=es2017"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('{"x":1,"y":2,"z":3}');
+    });
+  });
+
+  // ===== ES2019 =====
+
+  describe("ES2019", () => {
+    test("optional catch binding", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts":
+            "let caught = false; try { throw new Error(); } catch { caught = true; } console.log(caught);",
+        },
+        "index.ts",
+        ["--target=es2018"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("true");
+    });
+  });
+
+  // ===== ES2020 =====
+
+  describe("ES2020", () => {
+    test("nullish coalescing ??", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": "const a = null ?? 'default'; const b = 0 ?? 'default'; console.log(a, b);" },
+        "index.ts",
+        ["--target=es2019"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("default 0");
+    });
+
+    test("optional chaining ?.", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": "const obj: any = { a: { b: 42 } }; console.log(obj?.a?.b, obj?.x?.y);" },
+        "index.ts",
+        ["--target=es2019"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42 undefined");
+    });
+  });
+
+  // ===== ES2021 =====
+
+  describe("ES2021", () => {
+    test("logical assignment ??=", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": "let a: number | null = null; a ??= 10; console.log(a);" },
+        "index.ts",
+        ["--target=es2020"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("10");
+    });
+
+    test("logical assignment ||=", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": "let a = 0; a ||= 5; console.log(a);" },
+        "index.ts",
+        ["--target=es2020"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("5");
+    });
+  });
+
+  // ===== ES2022 =====
+
+  describe("ES2022", () => {
+    test("class static block", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Foo { static value: number; static { Foo.value = 42; } }
+            console.log(Foo.value);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42");
+    });
+
+    test("class fields", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Foo { x = 1; static y = 2; }
+            const f = new Foo(); console.log(f.x, Foo.y);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1 2");
+    });
+  });
+});

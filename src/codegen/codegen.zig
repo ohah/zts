@@ -3413,7 +3413,7 @@ test "ES2020: ?? simple identifier" {
 test "ES2020: ?? side effect (temp var)" {
     var r = try e2eTarget(std.testing.allocator, "const x = foo() ?? b;", .es2019);
     defer r.deinit();
-    try std.testing.expectEqualStrings("const x=(_a=foo())!=null?_a:b;", r.output);
+    try std.testing.expectEqualStrings("var _a;const x=(_a=foo())!=null?_a:b;", r.output);
 }
 
 test "ES2020: ?? no transform on esnext" {
@@ -3451,7 +3451,7 @@ test "ES2020: ?. call" {
 test "ES2020: ?. side effect (temp var)" {
     var r = try e2eTarget(std.testing.allocator, "foo()?.bar;", .es2019);
     defer r.deinit();
-    try std.testing.expectEqualStrings("(_a=foo())==null?void 0:_a.bar;", r.output);
+    try std.testing.expectEqualStrings("var _a;(_a=foo())==null?void 0:_a.bar;", r.output);
 }
 
 test "ES2020: ?. chain continuation" {
@@ -3792,13 +3792,13 @@ test "ES2015: shorthand no transform on esnext" {
 test "ES2015: computed property lowering" {
     var r = try e2eTarget(std.testing.allocator, "var o={a:1,[k]:v,b:2};", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var o=(_a={a:1},_a[k]=v,_a.b=2,_a);", r.output);
+    try std.testing.expectEqualStrings("var _a;var o=(_a={a:1},_a[k]=v,_a.b=2,_a);", r.output);
 }
 
 test "ES2015: computed property only" {
     var r = try e2eTarget(std.testing.allocator, "var o={[k]:v};", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var o=(_a={},_a[k]=v,_a);", r.output);
+    try std.testing.expectEqualStrings("var _a;var o=(_a={},_a[k]=v,_a);", r.output);
 }
 
 test "ES2015: no computed - no transform" {
@@ -3940,25 +3940,25 @@ test "ES2015: for-of no transform on esnext" {
 test "ES2015: object destructuring" {
     var r = try e2eTarget(std.testing.allocator, "var {a,b}=obj;", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var _a=obj,a=_a.a,b=_a.b;", r.output);
+    try std.testing.expectEqualStrings("var _a;var _a=obj,a=_a.a,b=_a.b;", r.output);
 }
 
 test "ES2015: array destructuring" {
     var r = try e2eTarget(std.testing.allocator, "var [x,y]=arr;", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var _a=arr,x=_a[0],y=_a[1];", r.output);
+    try std.testing.expectEqualStrings("var _a;var _a=arr,x=_a[0],y=_a[1];", r.output);
 }
 
 test "ES2015: destructuring rename" {
     var r = try e2eTarget(std.testing.allocator, "var {a:c}=obj;", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var _a=obj,c=_a.a;", r.output);
+    try std.testing.expectEqualStrings("var _a;var _a=obj,c=_a.a;", r.output);
 }
 
 test "ES2015: destructuring default" {
     var r = try e2eTarget(std.testing.allocator, "var {a=1}=obj;", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var _a=obj,a=_a.a===void 0?1:_a.a;", r.output);
+    try std.testing.expectEqualStrings("var _a;var _a=obj,a=_a.a===void 0?1:_a.a;", r.output);
 }
 
 test "ES2015: destructuring no transform on esnext" {
