@@ -33,6 +33,7 @@ const es2022 = @import("es2022.zig");
 const es2015_template = @import("es2015_template.zig");
 const es2015_shorthand = @import("es2015_shorthand.zig");
 const es2015_computed = @import("es2015_computed.zig");
+const es2015_params = @import("es2015_params.zig");
 const es_helpers = @import("es_helpers.zig");
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 
@@ -1113,7 +1114,26 @@ pub const Transformer = struct {
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-        const pp = try self.visitParamsCollectProperties(old_params);
+        // ES2015: default/rest params → 파라미터 축소 + 바디 문 삽입
+        var es2015_body_stmts: ?std.ArrayList(NodeIndex) = null;
+        defer if (es2015_body_stmts) |*s| s.deinit(self.allocator);
+
+        const pp = if (self.options.target.needsES2015() and
+            es2015_params.ES2015Params(Transformer).hasDefaultOrRest(self, params_start, params_len))
+        blk: {
+            const lower_result = try es2015_params.ES2015Params(Transformer).lowerParams(
+                self,
+                params_start,
+                params_len,
+                node.span,
+            );
+            es2015_body_stmts = lower_result.body_stmts;
+            break :blk ParamPropertyResult{
+                .new_params = lower_result.new_params,
+                .prop_names = undefined,
+                .prop_count = 0,
+            };
+        } else try self.visitParamsCollectProperties(old_params);
 
         // 바디 방문
         const old_body_idx = self.readNodeIdx(e, 3);
@@ -1122,6 +1142,13 @@ pub const Transformer = struct {
         // parameter property가 있으면 바디 앞에 this.x = x 문 삽입
         if (pp.prop_count > 0 and !new_body.isNone()) {
             new_body = try self.insertParameterPropertyAssignments(new_body, pp.prop_names[0..pp.prop_count]);
+        }
+
+        // ES2015 default/rest 바디 문 삽입
+        if (es2015_body_stmts) |stmts| {
+            if (stmts.items.len > 0 and !new_body.isNone()) {
+                new_body = try self.prependStatementsToBody(new_body, stmts.items);
+            }
         }
 
         // React Fast Refresh: Hook 시그니처 감지 + _s() 호출 삽입
@@ -1229,6 +1256,34 @@ pub const Transformer = struct {
         }
 
         // 기존 바디 문들을 추가
+        const old_stmts = self.new_ast.extra_data.items[old_list.start .. old_list.start + old_list.len];
+        for (old_stmts) |raw_idx| {
+            try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+        }
+
+        const new_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+        return self.new_ast.addNode(.{
+            .tag = .block_statement,
+            .span = body.span,
+            .data = .{ .list = new_list },
+        });
+    }
+
+    /// block_statement 바디 앞에 문들을 삽입한다 (범용 버전).
+    fn prependStatementsToBody(self: *Transformer, body_idx: NodeIndex, stmts: []const NodeIndex) Error!NodeIndex {
+        const body = self.new_ast.getNode(body_idx);
+        if (body.tag != .block_statement) return body_idx;
+
+        const old_list = body.data.list;
+        const scratch_top = self.scratch.items.len;
+        defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+        // prepend 문들
+        for (stmts) |stmt| {
+            try self.scratch.append(self.allocator, stmt);
+        }
+
+        // 기존 바디 문들
         const old_stmts = self.new_ast.extra_data.items[old_list.start .. old_list.start + old_list.len];
         for (old_stmts) |raw_idx| {
             try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
