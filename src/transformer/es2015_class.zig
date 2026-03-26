@@ -161,6 +161,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 try self.pending_nodes.append(self.allocator, sb_stmt);
             }
 
+            // --- experimentalDecorators: __decorateClass 호출 생성 ---
+            if (self.options.experimental_decorators) {
+                try emitDecoratorsForLoweredClass(self, node, body_idx, name_span);
+            }
+
             return .none;
         }
 
@@ -1212,6 +1217,99 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     .data = .{ .unary = .{ .operand = call, .flags = 0 } },
                 });
                 try self.pending_nodes.append(self.allocator, stmt);
+            }
+        }
+        /// ES2015 lowering된 class에 experimentalDecorators 처리를 추가.
+        /// class → function+prototype 변환 후, member/class/param decorator를 __decorateClass 호출로 emit.
+        fn emitDecoratorsForLoweredClass(
+            self: *Transformer,
+            node: Node,
+            body_idx: NodeIndex,
+            name_span: Span,
+        ) Transformer.Error!void {
+            const extras = self.old_ast.extra_data.items;
+            const e = node.data.extra;
+
+            // class decorator: extra offset 6, 7
+            const old_deco_start = extras[e + 6];
+            const old_deco_len = extras[e + 7];
+
+            // body 멤버를 순회하여 member decorator + constructor param decorator 수집
+            const body_node = self.old_ast.getNode(body_idx);
+            const members = extras[body_node.data.list.start .. body_node.data.list.start + body_node.data.list.len];
+
+            var member_decos: std.ArrayList(Transformer.MemberDecoratorInfo) = .empty;
+            defer {
+                for (member_decos.items) |md| self.allocator.free(md.decorators);
+                member_decos.deinit(self.allocator);
+            }
+
+            var ctor_param_decos: std.ArrayList(NodeIndex) = .empty;
+            defer ctor_param_decos.deinit(self.allocator);
+
+            for (members) |raw_idx| {
+                const member = self.old_ast.getNode(@enumFromInt(raw_idx));
+                if (member.tag == .method_definition) {
+                    const me = member.data.extra;
+                    const flags = extras[me + 4];
+                    const is_static = (flags & 0x01) != 0;
+                    const key: NodeIndex = @enumFromInt(extras[me]);
+
+                    if (!is_static and isConstructorKey(self, key)) {
+                        // constructor param decorator
+                        const params_start = extras[me + 1];
+                        const params_len = extras[me + 2];
+                        try self.collectParamDecorators(&ctor_param_decos, params_start, params_len);
+                        continue;
+                    }
+
+                    // method decorator + param decorator
+                    const deco_start = extras[me + 5];
+                    const deco_len = extras[me + 6];
+                    const params_start = extras[me + 1];
+                    const params_len = extras[me + 2];
+                    if (deco_len > 0 or params_len > 0) {
+                        const new_key = try self.visitNode(key);
+                        try self.collectMemberDecorators(
+                            &member_decos, deco_start, deco_len,
+                            params_start, params_len,
+                            new_key, is_static, 1,
+                        );
+                    }
+                } else if (member.tag == .property_definition) {
+                    // property decorator
+                    const me = member.data.extra;
+                    const flags = extras[me + 2];
+                    const is_static = (flags & 0x01) != 0;
+                    const deco_start = extras[me + 3];
+                    const deco_len = extras[me + 4];
+                    if (deco_len > 0) {
+                        const new_key = try self.visitNode(@enumFromInt(extras[me]));
+                        try self.collectMemberDecorators(
+                            &member_decos, deco_start, deco_len,
+                            0, 0, new_key, is_static, 2,
+                        );
+                    }
+                }
+            }
+
+            // decorator가 없으면 아무것도 안 함
+            if (old_deco_len == 0 and member_decos.items.len == 0 and ctor_param_decos.items.len == 0) return;
+
+            const decorate_span = try self.new_ast.addString("__decorateClass");
+
+            // member decorator 호출: __decorateClass([dec], Foo.prototype, "name", kind)
+            for (member_decos.items) |md| {
+                const call_stmt = try self.buildDecorateClassMemberCall(decorate_span, name_span, md);
+                try self.pending_nodes.append(self.allocator, call_stmt);
+            }
+
+            // class + constructor param decorator 호출: Foo = __decorateClass([...], Foo)
+            if (old_deco_len > 0 or ctor_param_decos.items.len > 0) {
+                const class_deco_stmt = try self.buildDecorateClassCall(
+                    decorate_span, name_span, old_deco_start, old_deco_len, ctor_param_decos.items,
+                );
+                try self.pending_nodes.append(self.allocator, class_deco_stmt);
             }
         }
     };
