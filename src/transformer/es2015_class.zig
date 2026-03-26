@@ -39,6 +39,7 @@ const NodeList = ast_mod.NodeList;
 const Tag = Node.Tag;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
+const es_helpers = @import("es_helpers.zig");
 
 pub fn ES2015Class(comptime Transformer: type) type {
     return struct {
@@ -123,11 +124,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // --- static fields → ClassName.field = value ---
             for (cm.static_fields.items) |field| {
-                const class_ref = try self.new_ast.addNode(.{
-                    .tag = .identifier_reference,
-                    .span = name_span,
-                    .data = .{ .string_ref = name_span },
-                });
+                const class_ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
                 const static_assign = try buildFieldAssign(self, class_ref, field.key, field.init, span);
                 try self.pending_nodes.append(self.allocator, static_assign);
             }
@@ -239,21 +236,13 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // 5. static fields
             for (cm.static_fields.items) |field| {
-                const class_ref = try self.new_ast.addNode(.{
-                    .tag = .identifier_reference,
-                    .span = name_span,
-                    .data = .{ .string_ref = name_span },
-                });
+                const class_ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
                 const static_assign = try buildFieldAssign(self, class_ref, field.key, field.init, span);
                 try self.scratch.append(self.allocator, static_assign);
             }
 
             // 6. return ClassName;
-            const return_ref = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = name_span,
-                .data = .{ .string_ref = name_span },
-            });
+            const return_ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
             const return_stmt = try self.new_ast.addNode(.{
                 .tag = .return_statement,
                 .span = span,
@@ -292,15 +281,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .unary = .{ .operand = wrapper_fn, .flags = 0 } },
             });
-            const call_args = try self.new_ast.addNodeList(&.{});
-            const call_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(paren), call_args.start, call_args.len, 0,
-            });
-            return self.new_ast.addNode(.{
-                .tag = .call_expression,
-                .span = span,
-                .data = .{ .extra = call_extra },
-            });
+            return es_helpers.makeCallExpr(self, paren, &.{}, span);
         }
 
         // ================================================================
@@ -328,23 +309,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const span = node.span;
 
             // Parent.call
-            const parent_ref = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = super_class_span,
-                .data = .{ .string_ref = super_class_span },
-            });
-            const call_span = try self.new_ast.addString("call");
-            const call_prop = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = call_span,
-                .data = .{ .string_ref = call_span },
-            });
-            const me = try self.new_ast.addExtras(&.{ @intFromEnum(parent_ref), @intFromEnum(call_prop), 0 });
-            const callee = try self.new_ast.addNode(.{
-                .tag = .static_member_expression,
-                .span = span,
-                .data = .{ .extra = me },
-            });
+            const parent_ref = try es_helpers.makeIdentifierRefFromSpan(self, super_class_span);
+            const call_prop = try es_helpers.makeIdentifierRef(self, "call");
+            const callee = try es_helpers.makeStaticMember(self, parent_ref, call_prop, span);
 
             // args: [this, ...original_args]
             const this_node = try self.new_ast.addNode(.{
@@ -411,51 +378,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const method_prop_idx: NodeIndex = @enumFromInt(callee_extras[ce + 1]);
 
             // Parent.prototype.method
-            const parent_ref = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = super_class_span,
-                .data = .{ .string_ref = super_class_span },
-            });
-            const proto_span = try self.new_ast.addString("prototype");
-            const proto_prop = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = proto_span,
-                .data = .{ .string_ref = proto_span },
-            });
-            const proto_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(parent_ref), @intFromEnum(proto_prop), 0,
-            });
-            const proto_member = try self.new_ast.addNode(.{
-                .tag = .static_member_expression,
-                .span = span,
-                .data = .{ .extra = proto_extra },
-            });
+            const proto_member = try buildPrototypeRef(self, super_class_span, span);
 
             const new_method_prop = try self.visitNode(method_prop_idx);
-            const method_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(proto_member), @intFromEnum(new_method_prop), 0,
-            });
-            const method_member = try self.new_ast.addNode(.{
-                .tag = .static_member_expression,
-                .span = span,
-                .data = .{ .extra = method_extra },
-            });
+            const method_member = try es_helpers.makeStaticMember(self, proto_member, new_method_prop, span);
 
             // Parent.prototype.method.call
-            const call_span = try self.new_ast.addString("call");
-            const call_prop = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = call_span,
-                .data = .{ .string_ref = call_span },
-            });
-            const call_me = try self.new_ast.addExtras(&.{
-                @intFromEnum(method_member), @intFromEnum(call_prop), 0,
-            });
-            const call_callee = try self.new_ast.addNode(.{
-                .tag = .static_member_expression,
-                .span = span,
-                .data = .{ .extra = call_me },
-            });
+            const call_prop = try es_helpers.makeIdentifierRef(self, "call");
+            const call_callee = try es_helpers.makeStaticMember(self, method_member, call_prop, span);
 
             // args: [this, ...original_args]
             const this_node = try self.new_ast.addNode(.{
@@ -507,41 +437,24 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const span = node.span;
 
             // Parent.prototype
-            const parent_ref = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = super_class_span,
-                .data = .{ .string_ref = super_class_span },
-            });
-            const proto_span = try self.new_ast.addString("prototype");
-            const proto_prop = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = proto_span,
-                .data = .{ .string_ref = proto_span },
-            });
-            const proto_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(parent_ref), @intFromEnum(proto_prop), 0,
-            });
-            const proto_member = try self.new_ast.addNode(.{
-                .tag = .static_member_expression,
-                .span = span,
-                .data = .{ .extra = proto_extra },
-            });
+            const proto_member = try buildPrototypeRef(self, super_class_span, span);
 
             // Parent.prototype.method
             const new_prop = try self.visitNode(prop_idx);
-            const method_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(proto_member), @intFromEnum(new_prop), 0,
-            });
-            return self.new_ast.addNode(.{
-                .tag = .static_member_expression,
-                .span = span,
-                .data = .{ .extra = method_extra },
-            });
+            return es_helpers.makeStaticMember(self, proto_member, new_prop, span);
         }
 
         // ================================================================
         // 내부 헬퍼
         // ================================================================
+
+        /// ClassName.prototype static_member_expression 생성.
+        /// buildPrototypeAssignment, emitAccessors, lowerSuperMethodCall, lowerSuperMember에서 공통 사용.
+        fn buildPrototypeRef(self: *Transformer, class_name_span: Span, span: Span) Transformer.Error!NodeIndex {
+            const class_ref = try es_helpers.makeIdentifierRefFromSpan(self, class_name_span);
+            const proto_prop = try es_helpers.makeIdentifierRef(self, "prototype");
+            return es_helpers.makeStaticMember(self, class_ref, proto_prop, span);
+        }
 
         const MethodInfo = struct {
             member_idx: NodeIndex,
@@ -643,12 +556,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
         /// instance field: obj = this, static field: obj = ClassName identifier.
         fn buildFieldAssign(self: *Transformer, obj: NodeIndex, key_idx: NodeIndex, init_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const new_key = try self.visitNode(key_idx);
-            const me = try self.new_ast.addExtras(&.{ @intFromEnum(obj), @intFromEnum(new_key), 0 });
-            const member = try self.new_ast.addNode(.{
-                .tag = .static_member_expression,
-                .span = span,
-                .data = .{ .extra = me },
-            });
+            const member = try es_helpers.makeStaticMember(self, obj, new_key, span);
             const new_init = try self.visitNode(init_idx);
             const assign = try self.new_ast.addNode(.{
                 .tag = .assignment_expression,
@@ -759,25 +667,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
         /// function Child() { return Parent.apply(this, arguments) || this; }
         fn buildDefaultSuperConstructor(self: *Transformer, name: NodeIndex, super_class_span: Span, span: Span) Transformer.Error!NodeIndex {
             // Parent.apply(this, arguments)
-            const parent_ref = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = super_class_span,
-                .data = .{ .string_ref = super_class_span },
-            });
-            const apply_span = try self.new_ast.addString("apply");
-            const apply_prop = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = apply_span,
-                .data = .{ .string_ref = apply_span },
-            });
-            const me = try self.new_ast.addExtras(&.{
-                @intFromEnum(parent_ref), @intFromEnum(apply_prop), 0,
-            });
-            const callee = try self.new_ast.addNode(.{
-                .tag = .static_member_expression,
-                .span = span,
-                .data = .{ .extra = me },
-            });
+            const parent_ref = try es_helpers.makeIdentifierRefFromSpan(self, super_class_span);
+            const apply_prop = try es_helpers.makeIdentifierRef(self, "apply");
+            const callee = try es_helpers.makeStaticMember(self, parent_ref, apply_prop, span);
 
             // args: [this, arguments]
             const this_node = try self.new_ast.addNode(.{
@@ -785,21 +677,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .none = 0 },
             });
-            const args_span = try self.new_ast.addString("arguments");
-            const args_ref = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = args_span,
-                .data = .{ .string_ref = args_span },
-            });
-            const args_list = try self.new_ast.addNodeList(&.{ this_node, args_ref });
-            const call_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(callee), args_list.start, args_list.len, 0,
-            });
-            const apply_call = try self.new_ast.addNode(.{
-                .tag = .call_expression,
-                .span = span,
-                .data = .{ .extra = call_extra },
-            });
+            const args_ref = try es_helpers.makeIdentifierRef(self, "arguments");
+            const apply_call = try es_helpers.makeCallExpr(self, callee, &.{ this_node, args_ref }, span);
 
             // Parent.apply(this, arguments) || this
             const this2 = try self.new_ast.addNode(.{
@@ -846,33 +725,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
         /// __extends(Child, Parent) expression_statement 생성.
         fn buildExtendsCall(self: *Transformer, child_span: Span, parent_span: Span, span: Span) Transformer.Error!NodeIndex {
-            const extends_span = try self.new_ast.addString("__extends");
-            const extends_ref = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = extends_span,
-                .data = .{ .string_ref = extends_span },
-            });
-
-            const child_ref = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = child_span,
-                .data = .{ .string_ref = child_span },
-            });
-            const parent_ref = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = parent_span,
-                .data = .{ .string_ref = parent_span },
-            });
-
-            const args = try self.new_ast.addNodeList(&.{ child_ref, parent_ref });
-            const call_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(extends_ref), args.start, args.len, 0,
-            });
-            const call = try self.new_ast.addNode(.{
-                .tag = .call_expression,
-                .span = span,
-                .data = .{ .extra = call_extra },
-            });
+            const extends_ref = try es_helpers.makeIdentifierRef(self, "__extends");
+            const child_ref = try es_helpers.makeIdentifierRefFromSpan(self, child_span);
+            const parent_ref = try es_helpers.makeIdentifierRefFromSpan(self, parent_span);
+            const call = try es_helpers.makeCallExpr(self, extends_ref, &.{ child_ref, parent_ref }, span);
 
             return self.new_ast.addNode(.{
                 .tag = .expression_statement,
@@ -921,42 +777,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
             });
 
             // ClassName 또는 ClassName.prototype
-            const class_ref = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = class_name_span,
-                .data = .{ .string_ref = class_name_span },
-            });
-
             const target = if (info.is_static)
-                class_ref
-            else blk: {
-                // ClassName.prototype
-                const proto_span = try self.new_ast.addString("prototype");
-                const proto_prop = try self.new_ast.addNode(.{
-                    .tag = .identifier_reference,
-                    .span = proto_span,
-                    .data = .{ .string_ref = proto_span },
-                });
-                const proto_extra = try self.new_ast.addExtras(&.{
-                    @intFromEnum(class_ref), @intFromEnum(proto_prop), 0,
-                });
-                break :blk try self.new_ast.addNode(.{
-                    .tag = .static_member_expression,
-                    .span = span,
-                    .data = .{ .extra = proto_extra },
-                });
-            };
+                try es_helpers.makeIdentifierRefFromSpan(self, class_name_span)
+            else
+                try buildPrototypeRef(self, class_name_span, span);
 
             // target.methodName
             const new_key = try self.visitNode(key_idx);
-            const member_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(target), @intFromEnum(new_key), 0,
-            });
-            const member_access = try self.new_ast.addNode(.{
-                .tag = .static_member_expression,
-                .span = span,
-                .data = .{ .extra = member_extra },
-            });
+            const member_access = try es_helpers.makeStaticMember(self, target, new_key, span);
 
             // target.methodName = function() {}
             const assign = try self.new_ast.addNode(.{
@@ -976,7 +804,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
         /// getter/setter → Object.defineProperty(target, "prop", { get/set: function() {} })
         fn emitAccessors(self: *Transformer, items: []const AccessorInfo, class_name_span: Span, span: Span) Transformer.Error!void {
             // 공통 문자열을 루프 밖에서 한 번만 할당
-            const proto_span = try self.new_ast.addString("prototype");
             const obj_str_span = try self.new_ast.addString("Object");
             const dp_str_span = try self.new_ast.addString("defineProperty");
 
@@ -1007,12 +834,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
                 // property name: "get" or "set"
                 const accessor_name = if (info.is_getter) "get" else "set";
-                const accessor_span = try self.new_ast.addString(accessor_name);
-                const accessor_key = try self.new_ast.addNode(.{
-                    .tag = .identifier_reference,
-                    .span = accessor_span,
-                    .data = .{ .string_ref = accessor_span },
-                });
+                const accessor_key = try es_helpers.makeIdentifierRef(self, accessor_name);
 
                 // { get: function() {} } or { set: function(v) {} }
                 const prop = try self.new_ast.addNode(.{
@@ -1028,28 +850,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 });
 
                 // target: ClassName.prototype 또는 ClassName
-                const class_ref = try self.new_ast.addNode(.{
-                    .tag = .identifier_reference,
-                    .span = class_name_span,
-                    .data = .{ .string_ref = class_name_span },
-                });
                 const target = if (info.is_static)
-                    class_ref
-                else blk: {
-                    const proto_prop = try self.new_ast.addNode(.{
-                        .tag = .identifier_reference,
-                        .span = proto_span,
-                        .data = .{ .string_ref = proto_span },
-                    });
-                    const proto_extra = try self.new_ast.addExtras(&.{
-                        @intFromEnum(class_ref), @intFromEnum(proto_prop), 0,
-                    });
-                    break :blk try self.new_ast.addNode(.{
-                        .tag = .static_member_expression,
-                        .span = span,
-                        .data = .{ .extra = proto_extra },
-                    });
-                };
+                    try es_helpers.makeIdentifierRefFromSpan(self, class_name_span)
+                else
+                    try buildPrototypeRef(self, class_name_span, span);
 
                 // key를 string literal로 변환 (원본 소스에서 이름 추출)
                 // string_literal은 codegen에서 따옴표를 포함한 텍스트를 기대하므로 감싸서 저장
@@ -1067,34 +871,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 });
 
                 // Object.defineProperty(target, "key", descriptor)
-                const obj_ref = try self.new_ast.addNode(.{
-                    .tag = .identifier_reference,
-                    .span = obj_str_span,
-                    .data = .{ .string_ref = obj_str_span },
-                });
-                const dp_prop = try self.new_ast.addNode(.{
-                    .tag = .identifier_reference,
-                    .span = dp_str_span,
-                    .data = .{ .string_ref = dp_str_span },
-                });
-                const dp_extra = try self.new_ast.addExtras(&.{
-                    @intFromEnum(obj_ref), @intFromEnum(dp_prop), 0,
-                });
-                const dp_callee = try self.new_ast.addNode(.{
-                    .tag = .static_member_expression,
-                    .span = span,
-                    .data = .{ .extra = dp_extra },
-                });
+                const obj_ref = try es_helpers.makeIdentifierRefFromSpan(self, obj_str_span);
+                const dp_prop = try es_helpers.makeIdentifierRefFromSpan(self, dp_str_span);
+                const dp_callee = try es_helpers.makeStaticMember(self, obj_ref, dp_prop, span);
 
-                const args = try self.new_ast.addNodeList(&.{ target, key_str, desc_obj });
-                const call_extra = try self.new_ast.addExtras(&.{
-                    @intFromEnum(dp_callee), args.start, args.len, 0,
-                });
-                const call = try self.new_ast.addNode(.{
-                    .tag = .call_expression,
-                    .span = span,
-                    .data = .{ .extra = call_extra },
-                });
+                const call = try es_helpers.makeCallExpr(self, dp_callee, &.{ target, key_str, desc_obj }, span);
                 const stmt = try self.new_ast.addNode(.{
                     .tag = .expression_statement,
                     .span = span,

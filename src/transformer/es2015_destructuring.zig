@@ -164,12 +164,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 // _ref.key
                 const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
                 const new_key = try self.visitNode(key_idx);
-                const me = try self.new_ast.addExtras(&.{ @intFromEnum(ref), @intFromEnum(new_key), 0 });
-                const access = try self.new_ast.addNode(.{
-                    .tag = .static_member_expression,
-                    .span = span,
-                    .data = .{ .extra = me },
-                });
+                const access = try es_helpers.makeStaticMember(self, ref, new_key, span);
 
                 if (prop.tag == .assignment_target_property_identifier) {
                     const key_node = self.old_ast.getNode(key_idx);
@@ -230,21 +225,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 if (elem.tag == .assignment_target_rest) continue;
 
                 // _ref[idx]
-                const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
-                var idx_buf: [16]u8 = undefined;
-                const idx_str = std.fmt.bufPrint(&idx_buf, "{d}", .{idx}) catch "0";
-                const idx_span = try self.new_ast.addString(idx_str);
-                const idx_node = try self.new_ast.addNode(.{
-                    .tag = .numeric_literal,
-                    .span = idx_span,
-                    .data = .{ .none = 0 },
-                });
-                const access_extra = try self.new_ast.addExtras(&.{ @intFromEnum(ref), @intFromEnum(idx_node), 0 });
-                const access = try self.new_ast.addNode(.{
-                    .tag = .computed_member_expression,
-                    .span = span,
-                    .data = .{ .extra = access_extra },
-                });
+                const access = try makeArrayAccess(self, ref_span, idx, span);
 
                 if (elem.tag == .assignment_target_with_default) {
                     // [x = 1] → x = _ref[0] === void 0 ? 1 : _ref[0]
@@ -257,10 +238,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         .data = .{ .binary = .{ .left = access, .right = void_zero, .flags = @intFromEnum(token_mod.Kind.eq3) } },
                     });
                     // _ref[idx] 다시 생성 (access는 eq_check에서 소비)
-                    const ref2 = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
-                    const idx_node2 = try self.new_ast.addNode(.{ .tag = .numeric_literal, .span = idx_span, .data = .{ .none = 0 } });
-                    const access2_extra = try self.new_ast.addExtras(&.{ @intFromEnum(ref2), @intFromEnum(idx_node2), 0 });
-                    const access2 = try self.new_ast.addNode(.{ .tag = .computed_member_expression, .span = span, .data = .{ .extra = access2_extra } });
+                    const access2 = try makeArrayAccess(self, ref_span, idx, span);
                     const conditional = try self.new_ast.addNode(.{
                         .tag = .conditional_expression,
                         .span = span,
@@ -360,12 +338,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     });
                 } else blk: {
                     const new_key = try self.visitNode(key_idx);
-                    const me = try self.new_ast.addExtras(&.{ @intFromEnum(ref), @intFromEnum(new_key), 0 });
-                    break :blk try self.new_ast.addNode(.{
-                        .tag = .static_member_expression,
-                        .span = span,
-                        .data = .{ .extra = me },
-                    });
+                    break :blk try es_helpers.makeStaticMember(self, ref, new_key, span);
                 };
 
                 // value 처리: shorthand vs long-form, default value
@@ -428,43 +401,14 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 }
 
                 // _ref[idx]
-                const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
-                var idx_buf: [16]u8 = undefined;
-                const idx_str = std.fmt.bufPrint(&idx_buf, "{d}", .{idx}) catch "0";
-                const idx_span = try self.new_ast.addString(idx_str);
-                const idx_node = try self.new_ast.addNode(.{
-                    .tag = .numeric_literal,
-                    .span = idx_span,
-                    .data = .{ .none = 0 },
-                });
-                const access_extra = try self.new_ast.addExtras(&.{
-                    @intFromEnum(ref), @intFromEnum(idx_node), 0,
-                });
-                const elem_access = try self.new_ast.addNode(.{
-                    .tag = .computed_member_expression,
-                    .span = span,
-                    .data = .{ .extra = access_extra },
-                });
+                const elem_access = try makeArrayAccess(self, ref_span, idx, span);
 
                 if (elem.tag == .assignment_pattern) {
                     // default: [x = 1] → var x = _ref[0] === void 0 ? 1 : _ref[0]
                     const binding = try self.visitNode(elem.data.binary.left);
                     const default_val = try self.visitNode(elem.data.binary.right);
                     const void_zero = try es_helpers.makeVoidZero(self, span);
-                    const ref2 = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
-                    const idx_node2 = try self.new_ast.addNode(.{
-                        .tag = .numeric_literal,
-                        .span = idx_span,
-                        .data = .{ .none = 0 },
-                    });
-                    const access_extra2 = try self.new_ast.addExtras(&.{
-                        @intFromEnum(ref2), @intFromEnum(idx_node2), 0,
-                    });
-                    const elem_access2 = try self.new_ast.addNode(.{
-                        .tag = .computed_member_expression,
-                        .span = span,
-                        .data = .{ .extra = access_extra2 },
-                    });
+                    const elem_access2 = try makeArrayAccess(self, ref_span, idx, span);
                     const eq_check = try self.new_ast.addNode(.{
                         .tag = .binary_expression,
                         .span = span,
@@ -508,12 +452,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             // _ref.key 다시 생성 (access는 이미 eq_check에서 소비)
             const ref2 = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
             const new_key = try self.visitNode(key_idx);
-            const me = try self.new_ast.addExtras(&.{ @intFromEnum(ref2), @intFromEnum(new_key), 0 });
-            const access2 = try self.new_ast.addNode(.{
-                .tag = .static_member_expression,
-                .span = span,
-                .data = .{ .extra = me },
-            });
+            const access2 = try es_helpers.makeStaticMember(self, ref2, new_key, span);
             return self.new_ast.addNode(.{
                 .tag = .conditional_expression,
                 .span = span,
@@ -533,42 +472,30 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             });
         }
 
+        /// _ref[idx] computed member expression 생성 (배열 인덱스 접근).
+        fn makeArrayAccess(self: *Transformer, ref_span: Span, idx: usize, span: Span) Transformer.Error!NodeIndex {
+            const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
+            const idx_node = try es_helpers.makeNumericLiteral(self, @intCast(idx));
+            const access_extra = try self.new_ast.addExtras(&.{
+                @intFromEnum(ref), @intFromEnum(idx_node), 0,
+            });
+            return self.new_ast.addNode(.{
+                .tag = .computed_member_expression,
+                .span = span,
+                .data = .{ .extra = access_extra },
+            });
+        }
+
         /// _ref.slice(N) 호출 생성 (array rest 변환용).
         fn buildArraySlice(self: *Transformer, ref_span: Span, start_idx: usize, span: Span) Transformer.Error!NodeIndex {
             // _ref.slice
             const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
-            const slice_span = try self.new_ast.addString("slice");
-            const slice_prop = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = slice_span,
-                .data = .{ .string_ref = slice_span },
-            });
-            const me = try self.new_ast.addExtras(&.{ @intFromEnum(ref), @intFromEnum(slice_prop), 0 });
-            const callee = try self.new_ast.addNode(.{
-                .tag = .static_member_expression,
-                .span = span,
-                .data = .{ .extra = me },
-            });
+            const slice_prop = try es_helpers.makeIdentifierRef(self, "slice");
+            const callee = try es_helpers.makeStaticMember(self, ref, slice_prop, span);
 
             // slice(N)
-            var idx_buf: [16]u8 = undefined;
-            const idx_str = std.fmt.bufPrint(&idx_buf, "{d}", .{start_idx}) catch "0";
-            const idx_span = try self.new_ast.addString(idx_str);
-            const idx_node = try self.new_ast.addNode(.{
-                .tag = .numeric_literal,
-                .span = idx_span,
-                .data = .{ .none = 0 },
-            });
-
-            const args = try self.new_ast.addNodeList(&.{idx_node});
-            const call_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(callee), args.start, args.len, 0,
-            });
-            return self.new_ast.addNode(.{
-                .tag = .call_expression,
-                .span = span,
-                .data = .{ .extra = call_extra },
-            });
+            const idx_node = try es_helpers.makeNumericLiteral(self, @intCast(start_idx));
+            return es_helpers.makeCallExpr(self, callee, &.{idx_node}, span);
         }
 
         /// rest = __rest(_ref, ["key1", "key2"]) declarator 생성.
@@ -582,12 +509,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             const binding = try self.visitNode(rest_idx);
 
             // __rest 호출: __rest(_ref, ["key1", "key2"])
-            const rest_helper_span = try self.new_ast.addString("__rest");
-            const rest_callee = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = rest_helper_span,
-                .data = .{ .string_ref = rest_helper_span },
-            });
+            const rest_callee = try es_helpers.makeIdentifierRef(self, "__rest");
 
             // _ref 참조
             const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
@@ -619,15 +541,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             });
 
             // __rest(_ref, [...])
-            const args = try self.new_ast.addNodeList(&.{ ref, arr_node });
-            const call_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(rest_callee), args.start, args.len, 0,
-            });
-            const call = try self.new_ast.addNode(.{
-                .tag = .call_expression,
-                .span = span,
-                .data = .{ .extra = call_extra },
-            });
+            const call = try es_helpers.makeCallExpr(self, rest_callee, &.{ ref, arr_node }, span);
 
             return makeDeclarator(self, binding, call, span);
         }

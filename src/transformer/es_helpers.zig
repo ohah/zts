@@ -61,6 +61,63 @@ pub fn makeVoidZero(self: anytype, span: Span) !NodeIndex {
     });
 }
 
+/// 이름 문자열로 identifier_reference 노드 생성.
+/// addString + addNode를 한 번에 수행.
+pub fn makeIdentifierRef(self: anytype, name: []const u8) !NodeIndex {
+    const name_span = try self.new_ast.addString(name);
+    return self.new_ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = name_span,
+        .data = .{ .string_ref = name_span },
+    });
+}
+
+/// Span으로 identifier_reference 노드 생성 (이미 addString된 span 사용).
+pub fn makeIdentifierRefFromSpan(self: anytype, name_span: Span) !NodeIndex {
+    return self.new_ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = name_span,
+        .data = .{ .string_ref = name_span },
+    });
+}
+
+/// obj.prop static member expression 생성.
+/// extra = [object, property, flags=0]
+pub fn makeStaticMember(self: anytype, obj: NodeIndex, prop: NodeIndex, span: Span) !NodeIndex {
+    const me = try self.new_ast.addExtras(&.{ @intFromEnum(obj), @intFromEnum(prop), 0 });
+    return self.new_ast.addNode(.{
+        .tag = .static_member_expression,
+        .span = span,
+        .data = .{ .extra = me },
+    });
+}
+
+/// callee(args...) call expression 생성.
+/// extra = [callee, args_start, args_len, flags=0]
+pub fn makeCallExpr(self: anytype, callee: NodeIndex, args: []const NodeIndex, span: Span) !NodeIndex {
+    const args_list = try self.new_ast.addNodeList(args);
+    const call_extra = try self.new_ast.addExtras(&.{
+        @intFromEnum(callee), args_list.start, args_list.len, 0,
+    });
+    return self.new_ast.addNode(.{
+        .tag = .call_expression,
+        .span = span,
+        .data = .{ .extra = call_extra },
+    });
+}
+
+/// u32 값으로 numeric_literal 노드 생성.
+pub fn makeNumericLiteral(self: anytype, value: u32) !NodeIndex {
+    var buf: [16]u8 = undefined;
+    const str = std.fmt.bufPrint(&buf, "{d}", .{value}) catch "0";
+    const num_span = try self.new_ast.addString(str);
+    return self.new_ast.addNode(.{
+        .tag = .numeric_literal,
+        .span = num_span,
+        .data = .{ .none = 0 },
+    });
+}
+
 /// `base == null` 노드를 새 AST에 생성.
 pub fn makeEqNull(self: anytype, base: NodeIndex, span: Span) !NodeIndex {
     const null_span = try self.new_ast.addString("null");

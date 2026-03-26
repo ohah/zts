@@ -1161,18 +1161,6 @@ pub const Transformer = struct {
         return self.new_ast.addNode(.{ .tag = tag, .span = span, .data = .{ .extra = new_extra } });
     }
 
-    /// 숫자 리터럴 노드 생성 (u32 → numeric_literal).
-    pub fn makeNumericLiteral(self: *Transformer, value: u32, _: Span) Error!NodeIndex {
-        var buf: [16]u8 = undefined;
-        const str = std.fmt.bufPrint(&buf, "{d}", .{value}) catch "0";
-        const num_span = try self.new_ast.addString(str);
-        return self.new_ast.addNode(.{
-            .tag = .numeric_literal,
-            .span = num_span,
-            .data = .{ .none = 0 },
-        });
-    }
-
     // ================================================================
     // JSX 노드 변환
     // ================================================================
