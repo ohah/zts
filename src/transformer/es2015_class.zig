@@ -532,6 +532,39 @@ pub fn ES2015Class(comptime Transformer: type) type {
             return buildWeakMapCall(self, var_name, "set", @enumFromInt(all_extras[le]), &.{node.data.binary.right}, node.span);
         }
 
+        /// this.#x++ → _x.set(this, _x.get(this) + 1)
+        /// this.#x-- → _x.set(this, _x.get(this) - 1)
+        pub fn lowerPrivateFieldUpdate(self: *Transformer, operand: Node, op_flags: u32, span: Span) ?Transformer.Error!NodeIndex {
+            const all_extras = self.old_ast.extra_data.items;
+            const oe = operand.data.extra;
+            if (oe + 1 >= all_extras.len) return null;
+            const obj_idx: NodeIndex = @enumFromInt(all_extras[oe]);
+            const var_name = findPrivateFieldVarName(self, @enumFromInt(all_extras[oe + 1])) orelse return null;
+
+            // _x.get(this)
+            const get_call = try buildWeakMapCall(self, var_name, "get", obj_idx, &.{}, span);
+
+            const op_kind = op_flags & 0xFF;
+            const is_increment = (op_kind == @intFromEnum(token_mod.Kind.plus2));
+            const bin_op: u16 = if (is_increment) @intFromEnum(token_mod.Kind.plus) else @intFromEnum(token_mod.Kind.minus);
+
+            // _x.get(this) + 1 or - 1
+            const one = try es_helpers.makeNumericLiteral(self, 1);
+            const add_node = try self.new_ast.addNode(.{
+                .tag = .binary_expression,
+                .span = span,
+                .data = .{ .binary = .{ .left = get_call, .right = one, .flags = bin_op } },
+            });
+
+            // _x.set(this, add_node) — buildWeakMapCall 미사용: add_node가 이미 new_ast 노드라
+            // visitNode를 거치면 안 됨. obj_idx는 this이므로 이중 visit 안전.
+            const wm_ref = try es_helpers.makeIdentifierRef(self, var_name);
+            const set_prop = try es_helpers.makeIdentifierRef(self, "set");
+            const callee = try es_helpers.makeStaticMember(self, wm_ref, set_prop, span);
+            const new_obj = try self.visitNode(obj_idx);
+            return es_helpers.makeCallExpr(self, callee, &.{ new_obj, add_node }, span);
+        }
+
         /// _name.method(obj, extra_args...) 호출 생성.
         fn buildWeakMapCall(self: *Transformer, wm_name: []const u8, method: []const u8, obj_idx: NodeIndex, extra_arg_indices: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const wm_ref = try es_helpers.makeIdentifierRef(self, wm_name);
