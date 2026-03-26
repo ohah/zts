@@ -36,6 +36,7 @@ const es2015_computed = @import("es2015_computed.zig");
 const es2015_params = @import("es2015_params.zig");
 const es2015_spread = @import("es2015_spread.zig");
 const es2015_arrow = @import("es2015_arrow.zig");
+const es2015_for_of = @import("es2015_for_of.zig");
 const es_helpers = @import("es_helpers.zig");
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 
@@ -504,10 +505,15 @@ pub const Transformer = struct {
             .if_statement,
             .conditional_expression,
             .for_in_statement,
-            .for_of_statement,
             .for_await_of_statement,
             .try_statement,
             => self.visitTernaryNode(node),
+            .for_of_statement => {
+                if (self.options.target.needsES2015()) {
+                    return es2015_for_of.ES2015ForOf(Transformer).lowerForOfStatement(self, node);
+                }
+                return self.visitTernaryNode(node);
+            },
 
             // === extra 기반 노드: 별도 처리 ===
             .variable_declaration => self.visitVariableDeclaration(node),
@@ -1290,7 +1296,7 @@ pub const Transformer = struct {
     }
 
     /// block_statement 바디 앞에 문들을 삽입한다 (범용 버전).
-    fn prependStatementsToBody(self: *Transformer, body_idx: NodeIndex, stmts: []const NodeIndex) Error!NodeIndex {
+    pub fn prependStatementsToBody(self: *Transformer, body_idx: NodeIndex, stmts: []const NodeIndex) Error!NodeIndex {
         const body = self.new_ast.getNode(body_idx);
         if (body.tag != .block_statement) return body_idx;
 
