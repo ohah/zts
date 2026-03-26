@@ -1271,9 +1271,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     if (deco_len > 0 or params_len > 0) {
                         const new_key = try self.visitNode(key);
                         try self.collectMemberDecorators(
-                            &member_decos, deco_start, deco_len,
-                            params_start, params_len,
-                            new_key, is_static, 1,
+                            &member_decos,
+                            deco_start,
+                            deco_len,
+                            params_start,
+                            params_len,
+                            new_key,
+                            is_static,
+                            1,
                         );
                     }
                 } else if (member.tag == .property_definition) {
@@ -1286,8 +1291,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     if (deco_len > 0) {
                         const new_key = try self.visitNode(@enumFromInt(extras[me]));
                         try self.collectMemberDecorators(
-                            &member_decos, deco_start, deco_len,
-                            0, 0, new_key, is_static, 2,
+                            &member_decos,
+                            deco_start,
+                            deco_len,
+                            0,
+                            0,
+                            new_key,
+                            is_static,
+                            2,
                         );
                     }
                 }
@@ -1307,7 +1318,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // class + constructor param decorator 호출: Foo = __decorateClass([...], Foo)
             if (old_deco_len > 0 or ctor_param_decos.items.len > 0) {
                 const class_deco_stmt = try self.buildDecorateClassCall(
-                    decorate_span, name_span, old_deco_start, old_deco_len, ctor_param_decos.items,
+                    decorate_span,
+                    name_span,
+                    old_deco_start,
+                    old_deco_len,
+                    ctor_param_decos.items,
                 );
                 try self.pending_nodes.append(self.allocator, class_deco_stmt);
             }

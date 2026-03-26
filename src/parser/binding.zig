@@ -80,7 +80,7 @@ pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
             const none = @intFromEnum(NodeIndex.none);
             const span_start = if (deco_start_pos != 0) deco_start_pos else modifier_span.start;
             const extra_start = try self.ast.addExtras(&.{
-                @intFromEnum(inner), none,           none,
+                @intFromEnum(inner), none,             none,
                 modifier_flags,      decorators.start, decorators.len,
             });
             return try self.ast.addNode(.{
@@ -96,7 +96,7 @@ pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
         const inner = try parseBindingPatternInner(self);
         const none = @intFromEnum(NodeIndex.none);
         const extra_start = try self.ast.addExtras(&.{
-            @intFromEnum(inner), none,           none,
+            @intFromEnum(inner), none,             none,
             0,                   decorators.start, decorators.len,
         });
         return try self.ast.addNode(.{
