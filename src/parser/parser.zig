@@ -1417,9 +1417,9 @@ pub const Parser = struct {
             .assignment_pattern => {
                 try self.collectBoundNames(node.data.binary.left);
             },
-            // TS parameter property (public x) → operand가 실제 바인딩
+            // formal_parameter: extra = [pattern, type_ann, default, flags, deco_start, deco_len]
             .formal_parameter => {
-                try self.collectBoundNames(node.data.unary.operand);
+                try self.collectBoundNames(@enumFromInt(self.ast.extra_data.items[node.data.extra]));
             },
             // ...rest → operand가 실제 바인딩 (배열/객체 패턴 포함)
             .spread_element, .rest_element, .binding_rest_element => {
@@ -1465,8 +1465,8 @@ pub const Parser = struct {
             .binding_identifier => node.span,
             // x = default → left가 binding name
             .assignment_pattern => self.extractParamName(node.data.binary.left),
-            // TS parameter property (public x 등) → operand가 binding
-            .formal_parameter => self.extractParamName(node.data.unary.operand),
+            // formal_parameter: extra = [pattern, type_ann, default, flags, deco_start, deco_len]
+            .formal_parameter => self.extractParamName(@enumFromInt(self.ast.extra_data.items[node.data.extra])),
             // rest parameter (...x) → operand가 binding
             .spread_element => self.extractParamName(node.data.unary.operand),
             // destructuring([a,b], {a,b})은 이름이 여럿 — collectBoundNames 사용

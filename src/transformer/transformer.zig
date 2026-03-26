@@ -1466,9 +1466,10 @@ pub const Transformer = struct {
 
         for (old_params) |raw_idx| {
             const param_node = self.old_ast.getNode(@enumFromInt(raw_idx));
-            // formal_parameter + unary flags!=0 → parameter property
-            if (param_node.tag == .formal_parameter and param_node.data.unary.flags != 0) {
-                const inner = try self.visitNode(param_node.data.unary.operand);
+            // formal_parameter: extra = [pattern, type_ann, default, flags, deco_start, deco_len]
+            // flags != 0 → parameter property (public/private/protected/readonly/override)
+            if (param_node.tag == .formal_parameter and self.old_ast.extra_data.items[param_node.data.extra + 3] != 0) {
+                const inner = try self.visitNode(@enumFromInt(self.old_ast.extra_data.items[param_node.data.extra]));
                 try self.scratch.append(self.allocator, inner);
                 if (result.prop_count < result.prop_names.len) {
                     result.prop_names[result.prop_count] = inner;
@@ -1741,6 +1742,9 @@ pub const Transformer = struct {
         var static_field_assignments: std.ArrayList(FieldAssignment) = .empty;
         defer static_field_assignments.deinit(self.allocator);
 
+        var ctor_param_decos: std.ArrayList(NodeIndex) = .empty;
+        defer ctor_param_decos.deinit(self.allocator);
+
         var ctx = ClassMemberContext{
             .class_members = &class_members,
             .field_assignments = &field_assignments,
@@ -1749,6 +1753,7 @@ pub const Transformer = struct {
             .existing_constructor_pos = &existing_constructor_pos,
             .static_block_iifes = if (self.options.target.needsClassStaticBlock()) &static_block_iifes else null,
             .static_field_assignments = if (!self.options.use_define_for_class_fields) &static_field_assignments else null,
+            .ctor_param_decos = &ctor_param_decos,
         };
 
         // ES2022 static block this 치환을 위한 클래스 이름 추출
@@ -1855,7 +1860,7 @@ pub const Transformer = struct {
             const old_deco_start = self.readU32(e, 6);
             const old_deco_len = self.readU32(e, 7);
 
-            if (old_deco_len > 0 or member_decorators.items.len > 0) {
+            if (old_deco_len > 0 or member_decorators.items.len > 0 or ctor_param_decos.items.len > 0) {
                 return try self.transformExperimentalDecorators(
                     node,
                     new_name,
@@ -1866,6 +1871,7 @@ pub const Transformer = struct {
                     member_decorators.items,
                     static_block_iifes.items,
                     static_field_assignments.items,
+                    ctor_param_decos.items,
                 );
             }
         }
@@ -1962,6 +1968,8 @@ pub const Transformer = struct {
         class_name_span: ?Span = null,
         /// useDefineForClassFields=false: static field → class 밖 할당문
         static_field_assignments: ?*std.ArrayList(FieldAssignment) = null,
+        /// constructor parameter decorator → class-level __decorateClass에 포함
+        ctor_param_decos: *std.ArrayList(NodeIndex),
     };
 
     fn classifyClassMember(
@@ -1979,7 +1987,7 @@ pub const Transformer = struct {
 
         // method_definition: extra = [key, params_start, params_len, body, flags, deco_start, deco_len]
         if (member.tag == .method_definition) {
-            try self.classifyMethodDefinition(member, ctx.class_members, ctx.member_decorators, ctx.existing_constructor, ctx.existing_constructor_pos);
+            try self.classifyMethodDefinition(member, ctx);
             return;
         }
 
@@ -2028,7 +2036,7 @@ pub const Transformer = struct {
             const deco_len = self.readU32(me, 4);
             if (deco_len > 0) {
                 const new_key = try self.visitNode(self.readNodeIdx(me, 0));
-                try self.collectMemberDecorators(member_decorators, deco_start, deco_len, new_key, is_static, 2);
+                try self.collectMemberDecorators(member_decorators, deco_start, deco_len, 0, 0, new_key, is_static, 2);
             }
         }
 
@@ -2086,46 +2094,55 @@ pub const Transformer = struct {
     fn classifyMethodDefinition(
         self: *Transformer,
         member: Node,
-        class_members: *std.ArrayList(NodeIndex),
-        member_decorators: *std.ArrayList(MemberDecoratorInfo),
-        existing_constructor: *?NodeIndex,
-        existing_constructor_pos: *?usize,
+        ctx: *ClassMemberContext,
     ) Error!void {
+        const class_members = ctx.class_members;
+        const member_decorators = ctx.member_decorators;
         const me = member.data.extra;
         const flags = self.readU32(me, 4);
         const is_static = (flags & 0x01) != 0;
 
         // constructor 감지
-        if (!is_static) {
+        const is_ctor = if (!is_static) blk: {
             const key_idx = self.readNodeIdx(me, 0);
             const key_node = self.old_ast.getNode(key_idx);
-            const is_ctor = blk: {
-                if (key_node.tag == .identifier_reference) {
-                    const name = self.old_ast.source[key_node.span.start..key_node.span.end];
-                    break :blk std.mem.eql(u8, name, "constructor");
-                }
-                break :blk false;
-            };
-
-            if (is_ctor) {
-                const new_member = try self.visitMethodDefinition(member);
-                if (!new_member.isNone()) {
-                    existing_constructor.* = new_member;
-                    existing_constructor_pos.* = class_members.items.len;
-                    try class_members.append(self.allocator, new_member);
-                }
-                return;
+            if (key_node.tag == .identifier_reference) {
+                const name = self.old_ast.source[key_node.span.start..key_node.span.end];
+                break :blk std.mem.eql(u8, name, "constructor");
             }
+            break :blk false;
+        } else false;
+
+        if (is_ctor) {
+            // constructor parameter decorator → class-level __decorateClass에 포함
+            if (self.options.experimental_decorators) {
+                const params_start = self.readU32(me, 1);
+                const params_len = self.readU32(me, 2);
+                try self.collectParamDecorators(ctx.ctor_param_decos, params_start, params_len);
+            }
+
+            const new_member = try self.visitMethodDefinition(member);
+            if (!new_member.isNone()) {
+                ctx.existing_constructor.* = new_member;
+                ctx.existing_constructor_pos.* = class_members.items.len;
+                try class_members.append(self.allocator, new_member);
+            }
+            return;
         }
 
-        // 일반 메서드: experimentalDecorators의 member decorator 수집
-        // NOTE: parameter decorator는 파서에서 수집되지 않으므로 현재 미지원 (#437)
+        // 일반 메서드: member decorator + parameter decorator 수집 (single-pass)
         if (self.options.experimental_decorators) {
             const deco_start = self.readU32(me, 5);
             const deco_len = self.readU32(me, 6);
-            if (deco_len > 0) {
+            const params_start = self.readU32(me, 1);
+            const params_len = self.readU32(me, 2);
+            if (deco_len > 0 or params_len > 0) {
                 const new_key = try self.visitNode(self.readNodeIdx(me, 0));
-                try self.collectMemberDecorators(member_decorators, deco_start, deco_len, new_key, is_static, 1);
+                try self.collectMemberDecorators(
+                    member_decorators, deco_start, deco_len,
+                    params_start, params_len,
+                    new_key, is_static, 1,
+                );
             }
         }
 
@@ -2169,7 +2186,7 @@ pub const Transformer = struct {
     };
 
     /// experimentalDecorators: member decorator 정보
-    const MemberDecoratorInfo = struct {
+    pub const MemberDecoratorInfo = struct {
         /// decorator expression들 (new AST)
         decorators: []NodeIndex,
         /// member key (new AST)
@@ -2180,32 +2197,127 @@ pub const Transformer = struct {
         kind: u32,
     };
 
-    /// experimentalDecorators: member decorator 수집 헬퍼
-    fn collectMemberDecorators(
+    /// decorator 노드에서 expression 부분을 visit하여 반환.
+    /// decorator 태그이면 operand(expression)를, 아니면 노드 자체를 visit.
+    pub fn visitDecoratorExpression(self: *Transformer, raw_idx: u32) Error!NodeIndex {
+        const deco_node = self.old_ast.getNode(@enumFromInt(raw_idx));
+        return if (deco_node.tag == .decorator)
+            self.visitNode(deco_node.data.unary.operand)
+        else
+            self.visitNode(@enumFromInt(raw_idx));
+    }
+
+    /// experimentalDecorators: member/parameter decorator를 수집하여 MemberDecoratorInfo에 저장.
+    /// parameter decorator는 __decorateParam(index, dec) 호출 노드로 래핑.
+    /// params_start/params_len이 0이면 parameter decorator 수집을 건너뜀.
+    pub fn collectMemberDecorators(
         self: *Transformer,
         list: *std.ArrayList(MemberDecoratorInfo),
         deco_start: u32,
         deco_len: u32,
+        params_start: u32,
+        params_len: u32,
         key: NodeIndex,
         is_static: bool,
         kind: u32,
     ) Error!void {
-        const old_deco_indices = self.old_ast.extra_data.items[deco_start .. deco_start + deco_len];
-        var deco_nodes = try self.allocator.alloc(NodeIndex, old_deco_indices.len);
-        for (old_deco_indices, 0..) |raw_idx, j| {
-            // decorator 노드의 operand (expression 부분)를 방문
-            const deco_node = self.old_ast.getNode(@enumFromInt(raw_idx));
-            if (deco_node.tag == .decorator) {
-                deco_nodes[j] = try self.visitNode(deco_node.data.unary.operand);
-            } else {
-                deco_nodes[j] = try self.visitNode(@enumFromInt(raw_idx));
+        const scratch_top = self.scratch.items.len;
+        defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+        // 1) parameter decorator → __decorateParam(index, dec)
+        if (params_len > 0) {
+            try self.appendParamDecorators(&self.scratch, params_start, params_len);
+        }
+
+        // 2) member decorator (method/property 자체에 붙은 decorator)
+        if (deco_len > 0) {
+            const old_deco_indices = self.old_ast.extra_data.items[deco_start .. deco_start + deco_len];
+            for (old_deco_indices) |raw_idx| {
+                try self.scratch.append(self.allocator, try self.visitDecoratorExpression(raw_idx));
             }
         }
+
+        const collected = self.scratch.items[scratch_top..];
+        if (collected.len == 0) return;
+
+        const deco_nodes = try self.allocator.alloc(NodeIndex, collected.len);
+        @memcpy(deco_nodes, collected);
+
         try list.append(self.allocator, .{
             .decorators = deco_nodes,
             .key = key,
             .is_static = is_static,
             .kind = kind,
+        });
+    }
+
+    /// __decorateParam(index, decorator) 호출 expression 노드 생성
+    /// constructor의 parameter decorator만 수집하여 __decorateParam 노드 리스트에 추가.
+    /// collectMemberDecorators의 param 수집 부분과 동일한 appendParamDecorators를 사용.
+    pub fn collectParamDecorators(
+        self: *Transformer,
+        list: *std.ArrayList(NodeIndex),
+        params_start: u32,
+        params_len: u32,
+    ) Error!void {
+        try self.appendParamDecorators(list, params_start, params_len);
+    }
+
+    /// parameter decorator를 __decorateParam(index, dec) 형태로 변환하여 list에 추가.
+    /// collectMemberDecorators와 collectParamDecorators 양쪽에서 사용.
+    fn appendParamDecorators(
+        self: *Transformer,
+        list: anytype,
+        params_start: u32,
+        params_len: u32,
+    ) Error!void {
+        const zero_span = Span{ .start = 0, .end = 0 };
+        const old_params = self.old_ast.extra_data.items[params_start .. params_start + params_len];
+        for (old_params, 0..) |raw_idx, param_index| {
+            const param = self.old_ast.getNode(@enumFromInt(raw_idx));
+            if (param.tag != .formal_parameter) continue;
+            const pe = param.data.extra;
+            const pdeco_start = self.old_ast.extra_data.items[pe + 4];
+            const pdeco_len = self.old_ast.extra_data.items[pe + 5];
+            if (pdeco_len == 0) continue;
+
+            const pdeco_indices = self.old_ast.extra_data.items[pdeco_start .. pdeco_start + pdeco_len];
+            for (pdeco_indices) |deco_raw_idx| {
+                const dec_expr = try self.visitDecoratorExpression(deco_raw_idx);
+                const param_deco = try self.buildDecorateParamCall(param_index, dec_expr, zero_span);
+                try list.append(self.allocator, param_deco);
+            }
+        }
+    }
+
+    pub fn buildDecorateParamCall(
+        self: *Transformer,
+        param_index: usize,
+        dec_expr: NodeIndex,
+        span: Span,
+    ) Error!NodeIndex {
+        // callee: __decorateParam
+        const callee_span = try self.new_ast.addString("__decorateParam");
+        const callee = try self.new_ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = callee_span,
+            .data = .{ .string_ref = callee_span },
+        });
+
+        // arg1: index (numeric literal)
+        var index_buf: [10]u8 = undefined;
+        const index_text = std.fmt.bufPrint(&index_buf, "{d}", .{param_index}) catch "0";
+        const index_span = try self.new_ast.addString(index_text);
+        const index_node = try self.new_ast.addNode(.{
+            .tag = .numeric_literal,
+            .span = index_span,
+            .data = .{ .number_bytes = @bitCast(@as(f64, @floatFromInt(param_index))) },
+        });
+
+        // arg2: decorator expression
+        const args = try self.new_ast.addNodeList(&.{ index_node, dec_expr });
+        return self.addExtraNode(.call_expression, span, &.{
+            @intFromEnum(callee), args.start, args.len, 0,
         });
     }
 
@@ -2443,6 +2555,7 @@ pub const Transformer = struct {
         member_decos: []const MemberDecoratorInfo,
         static_block_iifes: []const NodeIndex,
         static_field_assigns: []const FieldAssignment,
+        ctor_param_decos: []const NodeIndex,
     ) Error!NodeIndex {
         const none = @intFromEnum(NodeIndex.none);
         const decorate_span = try self.new_ast.addString("__decorateClass");
@@ -2461,8 +2574,8 @@ pub const Transformer = struct {
             empty_list.start, empty_list.len, // decorator 제거
         });
 
-        // class decorator가 있으면 → let Foo = class Foo {}; 로 변환
-        if (old_deco_len > 0 and class_name_text != null) {
+        // class decorator 또는 constructor param decorator가 있으면 → let Foo = class Foo {}; 로 변환
+        if ((old_deco_len > 0 or ctor_param_decos.len > 0) and class_name_text != null) {
             // let Foo = class Foo {};
             const name_span = self.new_ast.getNode(new_name).data.string_ref;
             const var_name = try self.new_ast.addNode(.{
@@ -2490,8 +2603,8 @@ pub const Transformer = struct {
                 try self.pending_nodes.append(self.allocator, call_stmt);
             }
 
-            // class decorator 호출: Foo = __decorateClass([dec], Foo)
-            const class_deco_stmt = try self.buildDecorateClassCall(decorate_span, name_span, old_deco_start, old_deco_len);
+            // class + constructor param decorator 호출: Foo = __decorateClass([...paramDecos, ...classDecos], Foo)
+            const class_deco_stmt = try self.buildDecorateClassCall(decorate_span, name_span, old_deco_start, old_deco_len, ctor_param_decos);
             try self.pending_nodes.append(self.allocator, class_deco_stmt);
 
             // static field: Foo.x = value (decorator 호출 뒤에 배치)
@@ -2561,7 +2674,7 @@ pub const Transformer = struct {
     }
 
     /// __decorateClass([dec1, dec2], Foo.prototype, "methodName", kind) 호출문 생성
-    fn buildDecorateClassMemberCall(
+    pub fn buildDecorateClassMemberCall(
         self: *Transformer,
         decorate_span: Span,
         class_name_span: Span,
@@ -2641,13 +2754,14 @@ pub const Transformer = struct {
         });
     }
 
-    /// Foo = __decorateClass([dec1, dec2], Foo) 호출문 생성 (class decorator)
-    fn buildDecorateClassCall(
+    /// Foo = __decorateClass([...ctorParamDecos, ...classDecos], Foo) 호출문 생성 (class + constructor param decorator)
+    pub fn buildDecorateClassCall(
         self: *Transformer,
         decorate_span: Span,
         class_name_span: Span,
         old_deco_start: u32,
         old_deco_len: u32,
+        ctor_param_decos: []const NodeIndex,
     ) Error!NodeIndex {
         const zero_span = Span{ .start = 0, .end = 0 };
 
@@ -2658,20 +2772,20 @@ pub const Transformer = struct {
             .data = .{ .string_ref = decorate_span },
         });
 
-        // arg1: [dec1, dec2, ...]
-        const old_deco_indices = self.old_ast.extra_data.items[old_deco_start .. old_deco_start + old_deco_len];
-
+        // arg1: [...ctorParamDecos, ...classDecos]
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-        for (old_deco_indices) |raw_idx| {
-            const deco_node = self.old_ast.getNode(@enumFromInt(raw_idx));
-            if (deco_node.tag == .decorator) {
-                const visited = try self.visitNode(deco_node.data.unary.operand);
-                try self.scratch.append(self.allocator, visited);
-            } else {
-                const visited = try self.visitNode(@enumFromInt(raw_idx));
-                try self.scratch.append(self.allocator, visited);
+        // constructor parameter decorators 먼저 (TypeScript 순서: __param → class decorator)
+        for (ctor_param_decos) |param_deco| {
+            try self.scratch.append(self.allocator, param_deco);
+        }
+
+        // class decorators
+        if (old_deco_len > 0) {
+            const old_deco_indices = self.old_ast.extra_data.items[old_deco_start .. old_deco_start + old_deco_len];
+            for (old_deco_indices) |raw_idx| {
+                try self.scratch.append(self.allocator, try self.visitDecoratorExpression(raw_idx));
             }
         }
 
@@ -2879,23 +2993,24 @@ pub const Transformer = struct {
     }
 
     /// formal_parameter:
-    ///   - extra_data = [pattern, type_ann, default_value, decorators_start, decorators_len]
-    ///   - 또는 unary = { operand=inner, flags=modifier_flags } (parameter property)
-    /// parameter property (unary)는 visitFunction/visitMethodDefinition에서 직접 처리하지만,
+    ///   extra = [pattern, type_ann, default, flags, deco_start, deco_len]
+    /// flags: parameter property modifier (public=0x01, private=0x02, protected=0x04, readonly=0x08, override=0x10)
+    /// parameter property (flags!=0)는 visitFunction/visitMethodDefinition에서 직접 처리하지만,
     /// 다른 경로에서 도달할 수 있으므로 방어적으로 처리.
     fn visitFormalParameter(self: *Transformer, node: Node) Error!NodeIndex {
-        // parameter property (unary 레이아웃): modifier 제거하고 내부 패턴만 반환
-        if (node.data.unary.flags != 0) {
-            return self.visitNode(node.data.unary.operand);
-        }
         const e = node.data.extra;
+        const flags = self.readU32(e, 3);
+        // parameter property: modifier 제거하고 내부 패턴만 반환
+        if (flags != 0) {
+            return self.visitNode(self.readNodeIdx(e, 0));
+        }
         const new_pattern = try self.visitNode(self.readNodeIdx(e, 0));
         const new_default = try self.visitNode(self.readNodeIdx(e, 2));
-        const new_decos = try self.visitExtraList(self.readU32(e, 3), self.readU32(e, 4));
+        const new_decos = try self.visitExtraList(self.readU32(e, 4), self.readU32(e, 5));
         const none = @intFromEnum(NodeIndex.none);
         return self.addExtraNode(.formal_parameter, node.span, &.{
             @intFromEnum(new_pattern), none,          @intFromEnum(new_default), // type_ann 제거
-            new_decos.start,           new_decos.len,
+            0,                         new_decos.start, new_decos.len,
         });
     }
 
@@ -4024,6 +4139,69 @@ test "experimentalDecorators: preserves class without decorators" {
     try std.testing.expectEqual(@as(u32, 1), r.statementCount());
 }
 
+test "experimentalDecorators: parameter decorator" {
+    // class Foo { method(@track a) {} }
+    // → class Foo { method(a) {} } + __decorateClass([__decorateParam(0, track)], Foo.prototype, "method", 1);
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class Foo { method(@track a: number) {} }",
+        .{ .experimental_decorators = true },
+    );
+    defer r.deinit();
+    // class_declaration + __decorateClass call = 2 statements
+    try std.testing.expectEqual(@as(u32, 2), r.statementCount());
+}
+
+test "experimentalDecorators: parameter decorator + method decorator" {
+    // class Foo { @log method(@track a) {} }
+    // → class Foo { method(a) {} } + __decorateClass([__decorateParam(0, track), log], Foo.prototype, "method", 1);
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class Foo { @log method(@track a: number) {} }",
+        .{ .experimental_decorators = true },
+    );
+    defer r.deinit();
+    // class_declaration + __decorateClass call = 2 statements
+    try std.testing.expectEqual(@as(u32, 2), r.statementCount());
+}
+
+test "experimentalDecorators: multiple parameter decorators" {
+    // class Foo { method(@a x, @b y) {} }
+    // → __decorateClass([__decorateParam(0, a), __decorateParam(1, b)], ...)
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class Foo { method(@a x: number, @b y: string) {} }",
+        .{ .experimental_decorators = true },
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(u32, 2), r.statementCount());
+}
+
+test "experimentalDecorators: constructor parameter decorator" {
+    // class C { constructor(@dec p: number) {} }
+    // → let C = class C { constructor(p) {} }; C = __decorateClass([__decorateParam(0, dec)], C);
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class C { constructor(@dec p: number) {} }",
+        .{ .experimental_decorators = true },
+    );
+    defer r.deinit();
+    // let C = class C {...}; + C = __decorateClass(...) = 2 statements
+    try std.testing.expectEqual(@as(u32, 2), r.statementCount());
+}
+
+test "experimentalDecorators: constructor param + class decorator" {
+    // @sealed class C { constructor(@dec p: number) {} }
+    // → let C = class C {...}; C = __decorateClass([__decorateParam(0, dec), sealed], C);
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "@sealed class C { constructor(@dec p: number) {} }",
+        .{ .experimental_decorators = true },
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(u32, 2), r.statementCount());
+}
+
 // ============================================================
 // 두 옵션 동시 활성화 테스트
 // ============================================================
@@ -4037,6 +4215,45 @@ test "both options: useDefineForClassFields=false + experimentalDecorators" {
     defer r.deinit();
     // class with constructor (x moved) + __decorateClass call for greet
     // → class_declaration + decorator call = 2 statements
+    try std.testing.expectEqual(@as(u32, 2), r.statementCount());
+}
+
+// ============================================================
+// decorator + ES5 target (#436)
+// ============================================================
+
+test "experimentalDecorators + es5: class decorator" {
+    // @tag class Foo { greet() {} }
+    // → function Foo() {} Foo.prototype.greet = ...; Foo = __decorateClass([tag], Foo);
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "@tag class Foo { greet() { return 'hi'; } }",
+        .{ .experimental_decorators = true, .target = .es5 },
+    );
+    defer r.deinit();
+    // function Foo() {} + prototype assign + Foo = __decorateClass(...) = 3 statements
+    try std.testing.expectEqual(@as(u32, 3), r.statementCount());
+}
+
+test "experimentalDecorators + es5: method decorator" {
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class Foo { @log greet() {} }",
+        .{ .experimental_decorators = true, .target = .es5 },
+    );
+    defer r.deinit();
+    // function Foo() {} + prototype assign + __decorateClass member call = 3 statements
+    try std.testing.expectEqual(@as(u32, 3), r.statementCount());
+}
+
+test "experimentalDecorators + es5: ctor param decorator" {
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class Foo { constructor(@dec p: number) {} }",
+        .{ .experimental_decorators = true, .target = .es5 },
+    );
+    defer r.deinit();
+    // function Foo(p) {} + Foo = __decorateClass([__decorateParam(0, dec)], Foo) = 2 statements
     try std.testing.expectEqual(@as(u32, 2), r.statementCount());
 }
 

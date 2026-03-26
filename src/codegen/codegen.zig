@@ -1631,9 +1631,10 @@ pub const Codegen = struct {
 
     fn emitFormalParam(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
-        const extras = self.ast.extra_data.items[e .. e + 5];
+        // extra = [pattern, type_ann, default, flags, deco_start, deco_len]
+        const extras = self.ast.extra_data.items[e .. e + 6];
         const pattern: NodeIndex = @enumFromInt(extras[0]);
-        // extras[1] = type_ann (스킵)
+        // extras[1] = type_ann (스킵), extras[3] = flags (스킵), extras[4..5] = decorators (스킵)
         const default_val: NodeIndex = @enumFromInt(extras[2]);
 
         try self.emitNode(pattern);

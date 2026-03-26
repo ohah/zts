@@ -9,6 +9,7 @@ const ast_mod = @import("ast.zig");
 const Node = ast_mod.Node;
 const Tag = Node.Tag;
 const NodeIndex = ast_mod.NodeIndex;
+const NodeList = ast_mod.NodeList;
 const token_mod = @import("../lexer/token.zig");
 const Kind = token_mod.Kind;
 const Span = token_mod.Span;
@@ -17,17 +18,24 @@ const ParseError2 = @import("parser.zig").ParseError2;
 
 pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
     // TS parameter decorator: @dec x, @dec(() => 0) x
-    // 데코레이터는 TS에서 스트리핑되므로 파싱 후 무시한다.
     // 데코레이터 표현식은 클래스의 외부 스코프에서 평가되므로,
     // @dec(await x)에서 await이 유효하려면 외부 async 컨텍스트를 복원해야 한다.
+    // decorator를 수집하여 formal_parameter extra에 저장한다.
+    var decorators = ast_mod.NodeList{ .start = 0, .len = 0 };
+    var deco_start_pos: u32 = 0;
     if (self.current() == .at) {
+        deco_start_pos = self.currentSpan().start;
         const saved_async = self.ctx.in_async;
         const saved_formal = self.in_formal_parameters;
         self.ctx.in_async = self.class_scope_async;
         self.in_formal_parameters = false;
+        const deco_scratch_top = self.saveScratch();
         while (self.current() == .at) {
-            _ = try self.parseDecorator();
+            const dec = try self.parseDecorator();
+            try self.scratch.append(self.allocator, dec);
         }
+        decorators = try self.ast.addNodeList(self.scratch.items[deco_scratch_top..]);
+        self.restoreScratch(deco_scratch_top);
         self.ctx.in_async = saved_async;
         self.in_formal_parameters = saved_formal;
     }
@@ -45,7 +53,7 @@ pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
         // modifier 뒤에 식별자가 오면 parameter property
         // readonly/override는 identifier로 토큰화되므로 next == .identifier에 포함됨
         if (next == .identifier or next == .l_bracket or next == .l_curly) {
-            var modifier_flags: u16 = if (is_readonly)
+            var modifier_flags: u32 = if (is_readonly)
                 0x08
             else if (is_override)
                 0x10
@@ -67,14 +75,43 @@ pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
             }
 
             const inner = try parseBindingPattern(self);
+            // formal_parameter: extra = [pattern, type_ann, default, flags, deco_start, deco_len]
+            // type_ann과 default는 inner에 이미 포함 (binding_identifier + tryWrapDefaultValue)
+            const none = @intFromEnum(NodeIndex.none);
+            const span_start = if (deco_start_pos != 0) deco_start_pos else modifier_span.start;
+            const extra_start = try self.ast.addExtras(&.{
+                @intFromEnum(inner), none,           none,
+                modifier_flags,      decorators.start, decorators.len,
+            });
             return try self.ast.addNode(.{
                 .tag = .formal_parameter,
-                .span = .{ .start = modifier_span.start, .end = self.currentSpan().start },
-                .data = .{ .unary = .{ .operand = inner, .flags = modifier_flags } },
+                .span = .{ .start = span_start, .end = self.currentSpan().start },
+                .data = .{ .extra = extra_start },
             });
         }
     }
 
+    // decorator만 있고 modifier가 없는 경우: formal_parameter로 감싸서 decorator 보존
+    if (decorators.len > 0) {
+        const inner = try parseBindingPatternInner(self);
+        const none = @intFromEnum(NodeIndex.none);
+        const extra_start = try self.ast.addExtras(&.{
+            @intFromEnum(inner), none,           none,
+            0,                   decorators.start, decorators.len,
+        });
+        return try self.ast.addNode(.{
+            .tag = .formal_parameter,
+            .span = .{ .start = deco_start_pos, .end = self.currentSpan().start },
+            .data = .{ .extra = extra_start },
+        });
+    }
+
+    return parseBindingPatternInner(self);
+}
+
+/// decorator/modifier 처리 후의 순수 바인딩 패턴 파싱.
+/// parseBindingPattern에서 decorator가 있을 때 내부 패턴을 파싱하기 위해 분리.
+fn parseBindingPatternInner(self: *Parser) ParseError2!NodeIndex {
     // rest parameter: ...pattern
     if (self.current() == .dot3) {
         const rest_start = self.currentSpan().start;

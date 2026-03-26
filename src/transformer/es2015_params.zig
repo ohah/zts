@@ -35,14 +35,12 @@ pub fn ES2015Params(comptime Transformer: type) type {
             for (old_params) |raw_idx| {
                 const param = self.old_ast.getNode(@enumFromInt(raw_idx));
                 if (param.tag == .spread_element or param.tag == .rest_element) return true;
-                if (param.tag == .formal_parameter and param.data.unary.flags == 0) {
-                    // extra 레이아웃: [pattern, type_ann, default_value, ...]
+                if (param.tag == .formal_parameter) {
+                    // extra = [pattern, type_ann, default, flags, deco_start, deco_len]
                     const extras = self.old_ast.extra_data.items;
                     const pe = param.data.extra;
-                    if (pe + 2 < extras.len) {
-                        const default_val: NodeIndex = @enumFromInt(extras[pe + 2]);
-                        if (!default_val.isNone()) return true;
-                    }
+                    const default_val: NodeIndex = @enumFromInt(extras[pe + 2]);
+                    if (!default_val.isNone()) return true;
                 }
                 // assignment_pattern도 default를 의미
                 if (param.tag == .assignment_pattern) return true;
@@ -82,14 +80,12 @@ pub fn ES2015Params(comptime Transformer: type) type {
                     continue;
                 }
 
-                if (param.tag == .formal_parameter and param.data.unary.flags == 0) {
+                if (param.tag == .formal_parameter) {
+                    // extra = [pattern, type_ann, default, flags, deco_start, deco_len]
                     const pe = param.data.extra;
                     const extras = self.old_ast.extra_data.items;
                     const pattern_idx: NodeIndex = @enumFromInt(extras[pe]);
-                    const default_idx: NodeIndex = if (pe + 2 < extras.len)
-                        @enumFromInt(extras[pe + 2])
-                    else
-                        .none;
+                    const default_idx: NodeIndex = @enumFromInt(extras[pe + 2]);
 
                     if (!default_idx.isNone()) {
                         // default parameter: x = val → x; body에 x = x === void 0 ? val : x 삽입
