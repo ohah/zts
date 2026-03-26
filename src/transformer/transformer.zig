@@ -64,6 +64,7 @@ pub const TransformOptions = struct {
     target: Target = .esnext,
 
     pub const Target = enum {
+        es5,
         es2015,
         es2016,
         es2017,
@@ -75,6 +76,12 @@ pub const TransformOptions = struct {
         es2024,
         esnext,
 
+        /// 해당 타겟에서 ES2015 변환이 필요한지 (target < es2015, 즉 es5).
+        /// arrow, template literal, class, destructuring, for-of, let/const,
+        /// default/rest params, spread, computed property, shorthand, generator.
+        pub fn needsES2015(self: Target) bool {
+            return @intFromEnum(self) < @intFromEnum(Target.es2015);
+        }
         /// 해당 타겟에서 exponentiation operator (**) 변환이 필요한지
         pub fn needsExponentiation(self: Target) bool {
             return @intFromEnum(self) < @intFromEnum(Target.es2016);
@@ -108,6 +115,25 @@ pub const TransformOptions = struct {
             return @intFromEnum(self) < @intFromEnum(Target.es2018);
         }
     };
+};
+
+/// 런타임 헬퍼 사용 추적 비트맵.
+/// transformer가 각 변환 시 해당 비트를 설정하고,
+/// 번들러 emitter가 필요한 헬퍼만 출력에 주입한다.
+pub const RuntimeHelpers = packed struct(u16) {
+    /// __async: async/await → generator wrapper (ES2017)
+    async_helper: bool = false,
+    /// __extends: class 상속 prototype chain (ES2015)
+    extends: bool = false,
+    /// __spreadArray: spread 연산 (ES2015)
+    spread_array: bool = false,
+    /// __generator: generator 상태 머신 (ES2015)
+    generator: bool = false,
+    /// __rest: destructuring rest (ES2015)
+    rest: bool = false,
+    /// __values: for-of iterator protocol (ES2015)
+    values: bool = false,
+    _padding: u10 = 0,
 };
 
 /// AST-to-AST 변환기.
@@ -165,6 +191,11 @@ pub const Transformer = struct {
     /// 0이면 static block 최상위 (this 치환 대상), >0이면 중첩 함수 안 (치환 안 함).
     /// arrow function은 this를 상속하므로 depth를 올리지 않는다.
     this_depth: u32 = 0,
+
+    /// 런타임 헬퍼 사용 추적.
+    /// 각 변환이 헬퍼를 사용하면 해당 비트를 설정한다.
+    /// 번들러 emitter가 이 비트맵을 읽어 필요한 헬퍼만 출력에 주입한다.
+    runtime_helpers: RuntimeHelpers = .{},
 
     /// React Fast Refresh: 감지된 컴포넌트 등록 목록.
     /// transform 완료 후 프로그램 끝에 $RefreshReg$ 호출로 주입.
