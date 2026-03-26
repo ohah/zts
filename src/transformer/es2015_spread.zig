@@ -196,7 +196,13 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             });
 
             // Foo.bind.apply(Foo, [null].concat(args))
-            const callee_ref2 = try self.visitNode(callee_idx);
+            // new_callee를 재사용하지 않고 새 identifier 생성 (AST 노드는 1곳에서만 참조)
+            const new_callee_node = self.new_ast.getNode(new_callee);
+            const callee_ref2 = try self.new_ast.addNode(.{
+                .tag = .identifier_reference,
+                .span = new_callee_node.span,
+                .data = .{ .string_ref = new_callee_node.data.string_ref },
+            });
             const apply_args = try self.new_ast.addNodeList(&.{ callee_ref2, null_concat });
             const apply_extra = try self.new_ast.addExtras(&.{
                 @intFromEnum(apply_member), apply_args.start, apply_args.len, 0,

@@ -3983,6 +3983,19 @@ test "ES2015: assignment array destructuring" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "y=_a[1]") != null);
 }
 
+test "ES2015: assignment destructuring with default" {
+    var r = try e2eTarget(std.testing.allocator, "({a=1,b}=obj);", .es5);
+    defer r.deinit();
+    // a = _ref.a === void 0 ? 1 : _ref.a
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "void 0?1:") != null);
+}
+
+test "ES2015: assignment array destructuring with default" {
+    var r = try e2eTarget(std.testing.allocator, "([x=1,y]=arr);", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "void 0?1:") != null);
+}
+
 // --- ES2015: let/const → var ---
 
 test "ES2015: let to var" {

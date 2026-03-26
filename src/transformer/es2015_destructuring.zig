@@ -171,26 +171,53 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     .data = .{ .extra = me },
                 });
 
-                // target = _ref.key
-                const target_node = if (prop.tag == .assignment_target_property_identifier) blk: {
-                    // shorthand {a} → a = _ref.a
+                if (prop.tag == .assignment_target_property_identifier) {
                     const key_node = self.old_ast.getNode(key_idx);
-                    break :blk try self.new_ast.addNode(.{
+                    const target_node = try self.new_ast.addNode(.{
                         .tag = .identifier_reference,
                         .span = key_node.span,
                         .data = .{ .string_ref = key_node.data.string_ref },
                     });
-                } else blk: {
-                    // long-form {a: b} → b = _ref.a
-                    break :blk try self.visitNode(prop.data.binary.right);
-                };
 
-                const assign = try self.new_ast.addNode(.{
-                    .tag = .assignment_expression,
-                    .span = span,
-                    .data = .{ .binary = .{ .left = target_node, .right = access, .flags = 0 } },
-                });
-                try self.scratch.append(self.allocator, assign);
+                    // shorthand_with_default: {a = 1} → a = _ref.a === void 0 ? 1 : _ref.a
+                    // flags bit 0 = shorthand_with_default, right = default value
+                    const is_shorthand_default = (prop.data.binary.flags & 0x01) != 0;
+                    const rhs = if (is_shorthand_default and !prop.data.binary.right.isNone()) blk: {
+                        const default_val = try self.visitNode(prop.data.binary.right);
+                        break :blk try buildDefaulted(self, access, default_val, ref_span, key_idx, span);
+                    } else access;
+
+                    const assign = try self.new_ast.addNode(.{
+                        .tag = .assignment_expression,
+                        .span = span,
+                        .data = .{ .binary = .{ .left = target_node, .right = rhs, .flags = 0 } },
+                    });
+                    try self.scratch.append(self.allocator, assign);
+                } else {
+                    // long-form {a: b} 또는 {a: b = 1}
+                    const right_idx = prop.data.binary.right;
+                    const right_node = self.old_ast.getNode(right_idx);
+
+                    if (right_node.tag == .assignment_target_with_default) {
+                        const target_node = try self.visitNode(right_node.data.binary.left);
+                        const default_val = try self.visitNode(right_node.data.binary.right);
+                        const rhs = try buildDefaulted(self, access, default_val, ref_span, key_idx, span);
+                        const assign = try self.new_ast.addNode(.{
+                            .tag = .assignment_expression,
+                            .span = span,
+                            .data = .{ .binary = .{ .left = target_node, .right = rhs, .flags = 0 } },
+                        });
+                        try self.scratch.append(self.allocator, assign);
+                    } else {
+                        const target_node = try self.visitNode(right_idx);
+                        const assign = try self.new_ast.addNode(.{
+                            .tag = .assignment_expression,
+                            .span = span,
+                            .data = .{ .binary = .{ .left = target_node, .right = access, .flags = 0 } },
+                        });
+                        try self.scratch.append(self.allocator, assign);
+                    }
+                }
             }
         }
 
@@ -219,14 +246,42 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     .data = .{ .extra = access_extra },
                 });
 
-                // target = _ref[idx]
-                const target_node = try self.visitNode(@enumFromInt(raw_idx));
-                const assign = try self.new_ast.addNode(.{
-                    .tag = .assignment_expression,
-                    .span = span,
-                    .data = .{ .binary = .{ .left = target_node, .right = access, .flags = 0 } },
-                });
-                try self.scratch.append(self.allocator, assign);
+                if (elem.tag == .assignment_target_with_default) {
+                    // [x = 1] → x = _ref[0] === void 0 ? 1 : _ref[0]
+                    const target_node = try self.visitNode(elem.data.binary.left);
+                    const default_val = try self.visitNode(elem.data.binary.right);
+                    const void_zero = try es_helpers.makeVoidZero(self, span);
+                    const eq_check = try self.new_ast.addNode(.{
+                        .tag = .binary_expression,
+                        .span = span,
+                        .data = .{ .binary = .{ .left = access, .right = void_zero, .flags = @intFromEnum(token_mod.Kind.eq3) } },
+                    });
+                    // _ref[idx] 다시 생성 (access는 eq_check에서 소비)
+                    const ref2 = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
+                    const idx_node2 = try self.new_ast.addNode(.{ .tag = .numeric_literal, .span = idx_span, .data = .{ .none = 0 } });
+                    const access2_extra = try self.new_ast.addExtras(&.{ @intFromEnum(ref2), @intFromEnum(idx_node2), 0 });
+                    const access2 = try self.new_ast.addNode(.{ .tag = .computed_member_expression, .span = span, .data = .{ .extra = access2_extra } });
+                    const conditional = try self.new_ast.addNode(.{
+                        .tag = .conditional_expression,
+                        .span = span,
+                        .data = .{ .ternary = .{ .a = eq_check, .b = default_val, .c = access2 } },
+                    });
+                    const assign = try self.new_ast.addNode(.{
+                        .tag = .assignment_expression,
+                        .span = span,
+                        .data = .{ .binary = .{ .left = target_node, .right = conditional, .flags = 0 } },
+                    });
+                    try self.scratch.append(self.allocator, assign);
+                } else {
+                    // target = _ref[idx]
+                    const target_node = try self.visitNode(@enumFromInt(raw_idx));
+                    const assign = try self.new_ast.addNode(.{
+                        .tag = .assignment_expression,
+                        .span = span,
+                        .data = .{ .binary = .{ .left = target_node, .right = access, .flags = 0 } },
+                    });
+                    try self.scratch.append(self.allocator, assign);
+                }
             }
         }
 
