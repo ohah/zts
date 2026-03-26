@@ -703,13 +703,7 @@ pub const Transformer = struct {
                 return self.copyNodeDirect(node);
             },
 
-            .boolean_literal,
-            .null_literal,
-            .numeric_literal,
-            .string_literal,
-            .bigint_literal,
-            .regexp_literal,
-            .identifier_reference => {
+            .boolean_literal, .null_literal, .numeric_literal, .string_literal, .bigint_literal, .regexp_literal, .identifier_reference => {
                 // ES2015 arrow arguments 캡처: arrow body 안의 arguments → _arguments
                 if (self.options.target.needsES2015() and self.arrow_this_depth > 0) {
                     const text = self.old_ast.getText(node.data.string_ref);
