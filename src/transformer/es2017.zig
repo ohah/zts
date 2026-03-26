@@ -141,6 +141,8 @@ pub fn ES2017(comptime Transformer: type) type {
             });
         }
 
+        /// __async(function*() { ... })() — 즉시 호출.
+        /// __async는 래퍼 함수를 반환하므로 ()로 즉시 실행해야 Promise를 얻음.
         fn buildAsyncHelperCall(self: *Transformer, gen_func: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const async_span = try self.new_ast.addString("__async");
             const async_ref = try self.new_ast.addNode(.{
@@ -149,16 +151,29 @@ pub fn ES2017(comptime Transformer: type) type {
                 .data = .{ .string_ref = async_span },
             });
             const args = try self.new_ast.addNodeList(&.{gen_func});
-            const call_extra = try self.new_ast.addExtras(&.{
+            const inner_call_extra = try self.new_ast.addExtras(&.{
                 @intFromEnum(async_ref),
                 args.start,
                 args.len,
                 0,
             });
+            const inner_call = try self.new_ast.addNode(.{
+                .tag = .call_expression,
+                .span = span,
+                .data = .{ .extra = inner_call_extra },
+            });
+            // __async(gen)() — 즉시 호출
+            const empty_args = try self.new_ast.addNodeList(&.{});
+            const outer_call_extra = try self.new_ast.addExtras(&.{
+                @intFromEnum(inner_call),
+                empty_args.start,
+                empty_args.len,
+                0,
+            });
             return self.new_ast.addNode(.{
                 .tag = .call_expression,
                 .span = span,
-                .data = .{ .extra = call_extra },
+                .data = .{ .extra = outer_call_extra },
             });
         }
     };
