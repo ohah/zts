@@ -83,73 +83,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
             defer self.current_super_class = saved_super;
 
             // 클래스 바디 멤버 분류
-            const body_node = self.old_ast.getNode(body_idx);
-            const members = self.old_ast.extra_data.items[body_node.data.list.start .. body_node.data.list.start + body_node.data.list.len];
-
-            var constructor_idx: ?NodeIndex = null;
-            var methods: std.ArrayList(MethodInfo) = .empty;
-            defer methods.deinit(self.allocator);
-            var instance_fields: std.ArrayList(NodeIndex) = .empty;
-            defer instance_fields.deinit(self.allocator);
-            var static_fields: std.ArrayList(FieldInfo) = .empty;
-            defer static_fields.deinit(self.allocator);
-            var accessors: std.ArrayList(AccessorInfo) = .empty;
-            defer accessors.deinit(self.allocator);
-
-            for (members) |raw_idx| {
-                const member = self.old_ast.getNode(@enumFromInt(raw_idx));
-
-                if (member.tag == .method_definition) {
-                    const me = member.data.extra;
-                    const key: NodeIndex = @enumFromInt(extras[me]);
-                    const flags = extras[me + 4];
-                    const is_static = (flags & 0x01) != 0;
-                    const kind = (flags >> 1) & 0x03; // 0=method, 1=get, 2=set
-
-                    if (!is_static and isConstructorKey(self, key)) {
-                        constructor_idx = @enumFromInt(raw_idx);
-                        continue;
-                    }
-
-                    if (kind == 1 or kind == 2) {
-                        // getter/setter
-                        try accessors.append(self.allocator, .{
-                            .member_idx = @enumFromInt(raw_idx),
-                            .is_static = is_static,
-                            .is_getter = kind == 1,
-                        });
-                    } else {
-                        try methods.append(self.allocator, .{
-                            .member_idx = @enumFromInt(raw_idx),
-                            .is_static = is_static,
-                        });
-                    }
-                } else if (member.tag == .property_definition) {
-                    // property_definition: extra = [key, init_val, flags, deco_start, deco_len]
-                    const pe = member.data.extra;
-                    const key: NodeIndex = @enumFromInt(extras[pe]);
-                    const init_val: NodeIndex = @enumFromInt(extras[pe + 1]);
-                    const flags = extras[pe + 2];
-                    const is_static = (flags & 0x01) != 0;
-
-                    if (is_static and !init_val.isNone()) {
-                        try static_fields.append(self.allocator, .{ .key = key, .init = init_val });
-                    } else if (!is_static and !init_val.isNone()) {
-                        // this.key = init → constructor body에 삽입
-                        const this_node = try self.new_ast.addNode(.{
-                            .tag = .this_expression,
-                            .span = span,
-                            .data = .{ .none = 0 },
-                        });
-                        const field_stmt = try buildFieldAssign(self, this_node, key, init_val, span);
-                        try instance_fields.append(self.allocator, field_stmt);
-                    }
-                }
-                // static_block 등은 ES2022 변환이 먼저 처리
-            }
+            var cm = try classifyMembers(self, body_idx, span);
+            defer cm.deinit(self.allocator);
 
             // --- function declaration 생성 (pending_nodes에 추가) ---
-            var func_node = if (constructor_idx) |ctor_idx|
+            var func_node = if (cm.constructor_idx) |ctor_idx|
                 try buildFunctionFromConstructor(self, ctor_idx, new_name, span)
             else if (has_super and super_span != null)
                 // extends가 있고 constructor가 없으면:
@@ -159,8 +97,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 try buildEmptyFunction(self, new_name, span);
 
             // instance fields → constructor body 앞에 삽입
-            if (instance_fields.items.len > 0) {
-                func_node = try prependToFunctionBody(self, func_node, instance_fields.items);
+            if (cm.instance_fields.items.len > 0) {
+                func_node = try prependToFunctionBody(self, func_node, cm.instance_fields.items);
             }
 
             try self.pending_nodes.append(self.allocator, func_node);
@@ -173,19 +111,18 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
 
             // --- prototype assignment 생성 (pending_nodes에 추가) ---
-            for (methods.items) |info| {
+            for (cm.methods.items) |info| {
                 const proto_assign = try buildPrototypeAssignment(self, info, name_span, span);
                 try self.pending_nodes.append(self.allocator, proto_assign);
             }
 
             // --- getter/setter → Object.defineProperty ---
-            // 같은 property 이름의 getter/setter를 묶어서 처리
-            if (accessors.items.len > 0) {
-                try emitAccessors(self, accessors.items, name_span, span);
+            if (cm.accessors.items.len > 0) {
+                try emitAccessors(self, cm.accessors.items, name_span, span);
             }
 
             // --- static fields → ClassName.field = value ---
-            for (static_fields.items) |field| {
+            for (cm.static_fields.items) |field| {
                 const class_ref = try self.new_ast.addNode(.{
                     .tag = .identifier_reference,
                     .span = name_span,
@@ -245,85 +182,26 @@ pub fn ES2015Class(comptime Transformer: type) type {
             defer self.current_super_class = saved_super;
 
             // 바디 멤버 분류
-            const body_node = self.old_ast.getNode(body_idx);
-            const members = self.old_ast.extra_data.items[body_node.data.list.start .. body_node.data.list.start + body_node.data.list.len];
-
-            var constructor_idx: ?NodeIndex = null;
-            var methods: std.ArrayList(MethodInfo) = .empty;
-            defer methods.deinit(self.allocator);
-            var instance_fields: std.ArrayList(NodeIndex) = .empty;
-            defer instance_fields.deinit(self.allocator);
-            var static_fields: std.ArrayList(FieldInfo) = .empty;
-            defer static_fields.deinit(self.allocator);
-            var accessors: std.ArrayList(AccessorInfo) = .empty;
-            defer accessors.deinit(self.allocator);
-
-            for (members) |raw_idx| {
-                const member = self.old_ast.getNode(@enumFromInt(raw_idx));
-
-                if (member.tag == .method_definition) {
-                    const me = member.data.extra;
-                    const key: NodeIndex = @enumFromInt(extras[me]);
-                    const flags = extras[me + 4];
-                    const is_static = (flags & 0x01) != 0;
-                    const kind = (flags >> 1) & 0x03;
-
-                    if (!is_static and isConstructorKey(self, key)) {
-                        constructor_idx = @enumFromInt(raw_idx);
-                        continue;
-                    }
-
-                    if (kind == 1 or kind == 2) {
-                        try accessors.append(self.allocator, .{
-                            .member_idx = @enumFromInt(raw_idx),
-                            .is_static = is_static,
-                            .is_getter = kind == 1,
-                        });
-                    } else {
-                        try methods.append(self.allocator, .{
-                            .member_idx = @enumFromInt(raw_idx),
-                            .is_static = is_static,
-                        });
-                    }
-                } else if (member.tag == .property_definition) {
-                    const pe = member.data.extra;
-                    const key: NodeIndex = @enumFromInt(extras[pe]);
-                    const init_val: NodeIndex = @enumFromInt(extras[pe + 1]);
-                    const flags = extras[pe + 2];
-                    const is_static = (flags & 0x01) != 0;
-
-                    if (is_static and !init_val.isNone()) {
-                        try static_fields.append(self.allocator, .{ .key = key, .init = init_val });
-                    } else if (!is_static and !init_val.isNone()) {
-                        const this_node = try self.new_ast.addNode(.{
-                            .tag = .this_expression,
-                            .span = span,
-                            .data = .{ .none = 0 },
-                        });
-                        const field_stmt = try buildFieldAssign(self, this_node, key, init_val, span);
-                        try instance_fields.append(self.allocator, field_stmt);
-                    }
-                }
-            }
+            var cm = try classifyMembers(self, body_idx, span);
+            defer cm.deinit(self.allocator);
 
             // constructor → function declaration
-            var func_node = if (constructor_idx) |ctor_idx|
+            var func_node = if (cm.constructor_idx) |ctor_idx|
                 try buildFunctionFromConstructor(self, ctor_idx, name_node, span)
             else if (has_super and super_span != null)
                 try buildDefaultSuperConstructor(self, name_node, super_span.?, span)
             else
                 try buildEmptyFunction(self, name_node, span);
 
-            if (instance_fields.items.len > 0) {
-                func_node = try prependToFunctionBody(self, func_node, instance_fields.items);
+            if (cm.instance_fields.items.len > 0) {
+                func_node = try prependToFunctionBody(self, func_node, cm.instance_fields.items);
             }
 
             // 메서드/static/extends가 없으면 단순 function expression으로 변환
-            const has_extra = methods.items.len > 0 or static_fields.items.len > 0 or
-                accessors.items.len > 0 or (has_super and super_span != null);
+            const has_extra = cm.methods.items.len > 0 or cm.static_fields.items.len > 0 or
+                cm.accessors.items.len > 0 or (has_super and super_span != null);
 
             if (!has_extra) {
-                // function declaration → function expression으로 태그만 변경
                 const func = self.new_ast.getNode(func_node);
                 return self.new_ast.addNode(.{
                     .tag = .function_expression,
@@ -336,27 +214,22 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-            // 1. function declaration
             try self.scratch.append(self.allocator, func_node);
 
-            // 2. __extends call
             if (has_super and super_span != null) {
                 const extends_call = try buildExtendsCall(self, name_span, super_span.?, span);
                 try self.scratch.append(self.allocator, extends_call);
                 self.runtime_helpers.extends = true;
             }
 
-            // 3. prototype assignments
-            for (methods.items) |info| {
+            for (cm.methods.items) |info| {
                 const proto_assign = try buildPrototypeAssignment(self, info, name_span, span);
                 try self.scratch.append(self.allocator, proto_assign);
             }
 
-            // 4. accessors
-            // emitAccessors는 pending_nodes에 추가하므로 여기서는 직접 scratch에 추가
             const pending_top = self.pending_nodes.items.len;
-            if (accessors.items.len > 0) {
-                try emitAccessors(self, accessors.items, name_span, span);
+            if (cm.accessors.items.len > 0) {
+                try emitAccessors(self, cm.accessors.items, name_span, span);
             }
             // pending_nodes에서 scratch로 이동
             for (self.pending_nodes.items[pending_top..]) |p| {
@@ -365,7 +238,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             self.pending_nodes.shrinkRetainingCapacity(pending_top);
 
             // 5. static fields
-            for (static_fields.items) |field| {
+            for (cm.static_fields.items) |field| {
                 const class_ref = try self.new_ast.addNode(.{
                     .tag = .identifier_reference,
                     .span = name_span,
@@ -685,6 +558,86 @@ pub fn ES2015Class(comptime Transformer: type) type {
             is_static: bool,
             is_getter: bool,
         };
+
+        /// 클래스 바디 멤버를 분류: constructor, methods, instance_fields, static_fields, accessors.
+        const ClassifiedMembers = struct {
+            constructor_idx: ?NodeIndex,
+            methods: std.ArrayList(MethodInfo),
+            instance_fields: std.ArrayList(NodeIndex),
+            static_fields: std.ArrayList(FieldInfo),
+            accessors: std.ArrayList(AccessorInfo),
+
+            fn deinit(cm: *ClassifiedMembers, allocator: std.mem.Allocator) void {
+                cm.methods.deinit(allocator);
+                cm.instance_fields.deinit(allocator);
+                cm.static_fields.deinit(allocator);
+                cm.accessors.deinit(allocator);
+            }
+        };
+
+        fn classifyMembers(self: *Transformer, body_idx: NodeIndex, span: Span) Transformer.Error!ClassifiedMembers {
+            const extras = self.old_ast.extra_data.items;
+            const body_node = self.old_ast.getNode(body_idx);
+            const members = extras[body_node.data.list.start .. body_node.data.list.start + body_node.data.list.len];
+
+            var cm = ClassifiedMembers{
+                .constructor_idx = null,
+                .methods = .empty,
+                .instance_fields = .empty,
+                .static_fields = .empty,
+                .accessors = .empty,
+            };
+
+            for (members) |raw_idx| {
+                const member = self.old_ast.getNode(@enumFromInt(raw_idx));
+
+                if (member.tag == .method_definition) {
+                    const me = member.data.extra;
+                    const key: NodeIndex = @enumFromInt(extras[me]);
+                    const flags = extras[me + 4];
+                    const is_static = (flags & 0x01) != 0;
+                    const kind = (flags >> 1) & 0x03; // 0=method, 1=get, 2=set
+
+                    if (!is_static and isConstructorKey(self, key)) {
+                        cm.constructor_idx = @enumFromInt(raw_idx);
+                        continue;
+                    }
+
+                    if (kind == 1 or kind == 2) {
+                        try cm.accessors.append(self.allocator, .{
+                            .member_idx = @enumFromInt(raw_idx),
+                            .is_static = is_static,
+                            .is_getter = kind == 1,
+                        });
+                    } else {
+                        try cm.methods.append(self.allocator, .{
+                            .member_idx = @enumFromInt(raw_idx),
+                            .is_static = is_static,
+                        });
+                    }
+                } else if (member.tag == .property_definition) {
+                    const pe = member.data.extra;
+                    const key: NodeIndex = @enumFromInt(extras[pe]);
+                    const init_val: NodeIndex = @enumFromInt(extras[pe + 1]);
+                    const flags = extras[pe + 2];
+                    const is_static = (flags & 0x01) != 0;
+
+                    if (is_static and !init_val.isNone()) {
+                        try cm.static_fields.append(self.allocator, .{ .key = key, .init = init_val });
+                    } else if (!is_static and !init_val.isNone()) {
+                        const this_node = try self.new_ast.addNode(.{
+                            .tag = .this_expression,
+                            .span = span,
+                            .data = .{ .none = 0 },
+                        });
+                        const field_stmt = try buildFieldAssign(self, this_node, key, init_val, span);
+                        try cm.instance_fields.append(self.allocator, field_stmt);
+                    }
+                }
+            }
+
+            return cm;
+        }
 
         /// obj.key = init expression_statement 생성.
         /// instance field: obj = this, static field: obj = ClassName identifier.
@@ -1022,8 +975,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
         /// getter/setter → Object.defineProperty(target, "prop", { get/set: function() {} })
         fn emitAccessors(self: *Transformer, items: []const AccessorInfo, class_name_span: Span, span: Span) Transformer.Error!void {
-            // 같은 key를 가진 getter/setter를 쌍으로 묶어 처리해야 하지만,
-            // 간단한 구현으로 각 accessor를 개별 Object.defineProperty로 emit
+            // 공통 문자열을 루프 밖에서 한 번만 할당
+            const proto_span = try self.new_ast.addString("prototype");
+            const obj_str_span = try self.new_ast.addString("Object");
+            const dp_str_span = try self.new_ast.addString("defineProperty");
+
             for (items) |info| {
                 const member = self.old_ast.getNode(info.member_idx);
                 const method_extras = self.old_ast.extra_data.items;
@@ -1080,7 +1036,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 const target = if (info.is_static)
                     class_ref
                 else blk: {
-                    const proto_span = try self.new_ast.addString("prototype");
                     const proto_prop = try self.new_ast.addNode(.{
                         .tag = .identifier_reference,
                         .span = proto_span,
@@ -1112,17 +1067,15 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 });
 
                 // Object.defineProperty(target, "key", descriptor)
-                const obj_span = try self.new_ast.addString("Object");
                 const obj_ref = try self.new_ast.addNode(.{
                     .tag = .identifier_reference,
-                    .span = obj_span,
-                    .data = .{ .string_ref = obj_span },
+                    .span = obj_str_span,
+                    .data = .{ .string_ref = obj_str_span },
                 });
-                const dp_span = try self.new_ast.addString("defineProperty");
                 const dp_prop = try self.new_ast.addNode(.{
                     .tag = .identifier_reference,
-                    .span = dp_span,
-                    .data = .{ .string_ref = dp_span },
+                    .span = dp_str_span,
+                    .data = .{ .string_ref = dp_str_span },
                 });
                 const dp_extra = try self.new_ast.addExtras(&.{
                     @intFromEnum(obj_ref), @intFromEnum(dp_prop), 0,
