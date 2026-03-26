@@ -4106,3 +4106,22 @@ test "ES2015: generator no transform on esnext" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "function*") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") == null);
 }
+
+test "ES2015: generator var hoisting with yield" {
+    var r = try e2eTarget(std.testing.allocator, "function* gen(){var x=yield 1;return x;}", .es5);
+    defer r.deinit();
+    // var x가 switch 밖에 호이스팅됨
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var x") != null);
+    // x = _state.sent()
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_state.sent()") != null);
+    // generator 플래그 제거
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function*") == null);
+}
+
+test "ES2015: generator var hoisting without yield" {
+    var r = try e2eTarget(std.testing.allocator, "function* gen(){var a=1;yield a;}", .es5);
+    defer r.deinit();
+    // var a가 호이스팅됨, case 안에는 a=1 assignment만
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [4,a]") != null);
+}
