@@ -1012,7 +1012,9 @@ if (sizeComparisons.length > 0) {
   const smaller = sizeComparisons.filter((c) => c.ratio < 1).length;
   const similar = sizeComparisons.filter((c) => c.ratio >= 1 && c.ratio <= 1.1).length;
   const larger = sizeComparisons.filter((c) => c.ratio > 1.1).length;
-  console.log(`\nAverage ratio: ${avgRatio.toFixed(2)}x | Smaller: ${smaller} | Similar(±10%): ${similar} | Larger: ${larger}`);
+  console.log(
+    `\nAverage ratio: ${avgRatio.toFixed(2)}x | Smaller: ${smaller} | Similar(±10%): ${similar} | Larger: ${larger}`,
+  );
 }
 
 if (passed < total) {
