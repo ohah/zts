@@ -1040,8 +1040,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
                 const none = @intFromEnum(NodeIndex.none);
                 const func_extra = try self.new_ast.addExtras(&.{
-                    none, new_params.start, new_params.len,
-                    @intFromEnum(new_body), 0, none,
+                    none,                   new_params.start, new_params.len,
+                    @intFromEnum(new_body), 0,                none,
                 });
                 const func_expr = try self.new_ast.addNode(.{
                     .tag = .function_expression,
