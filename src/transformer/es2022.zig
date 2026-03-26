@@ -1,12 +1,16 @@
 //! ES2022 다운레벨링: class static block
 //!
 //! --target < es2022 일 때 활성화.
-//! class Foo { static { console.log("init"); } }
-//! → class Foo {} (() => { console.log("init"); })();
+//! class Foo { static { this.x = 1; } }
+//! → class Foo {} (() => { Foo.x = 1; })();
 //!
-//! 제한사항: static block 내부의 `this` (클래스 자체 참조)는 아직 클래스 이름으로
-//! 치환하지 않음. `this.x = 1` 같은 패턴이 있으면 런타임에 잘못된 `this`를 참조.
-//! TODO: body 순회하여 this_expression → ClassName 참조로 교체 (esbuild 방식)
+//! static block 안의 `this`는 클래스 자체를 참조한다.
+//! IIFE로 추출하면 arrow function의 `this`가 outer scope를 가리키게 되므로,
+//! `this` → 클래스 이름으로 치환해야 한다 (oxc 방식: this_depth 카운터).
+//!
+//! - 일반 함수(function)는 자체 `this` 바인딩 → this_depth 증가 → 치환 안 함
+//! - arrow function은 `this` 상속 → this_depth 변경 없음 → 치환됨
+//! - 익명 클래스는 치환하지 않음 (this가 outer scope 가리킴)
 //!
 //! 스펙:
 //! - class static block: https://tc39.es/ecma262/#sec-static-blocks (ES2022, TC39 Stage 4)
@@ -14,7 +18,7 @@
 //!
 //! 참고:
 //! - esbuild: internal/js_parser/js_parser_lower_class.go (lowerAllStaticFields)
-//! - oxc: crates/oxc_transformer/src/es2022/
+//! - oxc: crates/oxc_transformer/src/es2022/ (StaticVisitor, this_depth)
 
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
@@ -30,6 +34,8 @@ pub fn ES2022(comptime Transformer: type) type {
         /// 클래스 바디에서 static block을 제거하고, IIFE로 변환하여 pending_nodes에 추가한다.
         /// 반환값: static block이 있었으면 true, 없었으면 false.
         ///
+        /// class_name_span: 클래스 이름의 Span. null이면 익명 클래스 (this 치환 안 함).
+        ///
         /// 동작:
         ///   1. 원본 class_body의 멤버를 순회
         ///   2. static_block이 아닌 멤버 → 그대로 방문하여 새 body에 추가
@@ -40,6 +46,7 @@ pub fn ES2022(comptime Transformer: type) type {
             body_idx: NodeIndex,
             new_body_out: *NodeIndex,
             static_block_iifes: *std.ArrayList(NodeIndex),
+            class_name_span: ?Span,
         ) Transformer.Error!bool {
             const body_node = self.old_ast.getNode(body_idx);
             const body_members = self.old_ast.extra_data.items[body_node.data.list.start .. body_node.data.list.start + body_node.data.list.len];
@@ -68,7 +75,7 @@ pub fn ES2022(comptime Transformer: type) type {
                 const member = self.old_ast.getNode(@enumFromInt(raw_idx));
                 if (member.tag == .static_block) {
                     // static block → IIFE로 변환
-                    const iife = try buildStaticBlockIIFE(self, member);
+                    const iife = try buildStaticBlockIIFE(self, member, class_name_span);
                     try static_block_iifes.append(self.allocator, iife);
                 } else {
                     // 일반 멤버 → 그대로 방문
@@ -99,7 +106,21 @@ pub fn ES2022(comptime Transformer: type) type {
 
         /// static block의 body를 IIFE `(() => { ...body... })()`로 변환.
         /// static block: unary node, operand = block_statement (function_body)
-        pub fn buildStaticBlockIIFE(self: *Transformer, static_block_node: Node) Transformer.Error!NodeIndex {
+        ///
+        /// class_name_span이 있으면 body 안의 this → 클래스 이름으로 치환.
+        /// 치환은 transformer의 static_block_class_name / this_depth 필드를 통해
+        /// visitNode(.this_expression) 단계에서 수행된다.
+        pub fn buildStaticBlockIIFE(self: *Transformer, static_block_node: Node, class_name_span: ?Span) Transformer.Error!NodeIndex {
+            // static block body 방문 시 this 치환 컨텍스트 설정
+            const saved_class_name = self.static_block_class_name;
+            const saved_this_depth = self.this_depth;
+            self.static_block_class_name = class_name_span;
+            self.this_depth = 0;
+            defer {
+                self.static_block_class_name = saved_class_name;
+                self.this_depth = saved_this_depth;
+            }
+
             // static block의 body를 방문
             const new_body = try self.visitNode(static_block_node.data.unary.operand);
 
