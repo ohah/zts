@@ -4207,6 +4207,102 @@ test "experimentalDecorators: constructor param + class decorator" {
     try std.testing.expectEqual(@as(u32, 2), r.statementCount());
 }
 
+test "experimentalDecorators: decorator call expression @dec(arg)" {
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class Foo { method(@dec(true) p: number) {} }",
+        .{ .experimental_decorators = true },
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(u32, 2), r.statementCount());
+}
+
+test "experimentalDecorators: derived class constructor param" {
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class Base {} class C extends Base { constructor(@foo prop: any) { super(); } }",
+        .{ .experimental_decorators = true },
+    );
+    defer r.deinit();
+    // class Base {} + let C = class C extends Base {...} + C = __decorateClass(...) = 3 statements
+    try std.testing.expectEqual(@as(u32, 3), r.statementCount());
+}
+
+test "experimentalDecorators: static method param decorator" {
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class C { static method(@dec p: number) {} }",
+        .{ .experimental_decorators = true },
+    );
+    defer r.deinit();
+    // class C {...} + __decorateClass([__decorateParam(0, dec)], C, "method", 1) = 2 statements
+    try std.testing.expectEqual(@as(u32, 2), r.statementCount());
+}
+
+test "experimentalDecorators: multiple decorators on single param" {
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class C { method(@a @b p: number) {} }",
+        .{ .experimental_decorators = true },
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(u32, 2), r.statementCount());
+}
+
+test "experimentalDecorators: param with default value" {
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class C { method(@dec p: number = 42) {} }",
+        .{ .experimental_decorators = true },
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(u32, 2), r.statementCount());
+}
+
+test "experimentalDecorators: class + method + param all combined" {
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "@sealed class C { @log method(@validate p: number) { return p; } }",
+        .{ .experimental_decorators = true },
+    );
+    defer r.deinit();
+    // let C = class C {...} + __decorateClass member + C = __decorateClass class = 3 statements
+    try std.testing.expectEqual(@as(u32, 3), r.statementCount());
+}
+
+test "experimentalDecorators: inline arrow decorator" {
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class C { method(@((t: any, k: any, i: any) => {}) p: number) {} }",
+        .{ .experimental_decorators = true },
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(u32, 2), r.statementCount());
+}
+
+test "experimentalDecorators: decorator + parameter property modifier" {
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class C { constructor(@dec public p: number) {} }",
+        .{ .experimental_decorators = true },
+    );
+    defer r.deinit();
+    // let C = class C { constructor(p) { this.p = p; } } + C = __decorateClass([__decorateParam(0, dec)], C) = 2
+    try std.testing.expectEqual(@as(u32, 2), r.statementCount());
+}
+
+test "experimentalDecorators + es5: inheritance + all decorators" {
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class Base {} @sealed class C extends Base { constructor(@dec p: any) { super(); } @log greet() {} }",
+        .{ .experimental_decorators = true, .target = .es5 },
+    );
+    defer r.deinit();
+    // function Base() {} + function C(p) { Base.call(this); } + __extends(C, Base)
+    // + Foo.prototype.greet = ... + __decorateClass member + C = __decorateClass class = 6 statements
+    try std.testing.expectEqual(@as(u32, 6), r.statementCount());
+}
+
 // ============================================================
 // 두 옵션 동시 활성화 테스트
 // ============================================================
