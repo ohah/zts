@@ -55,6 +55,27 @@ const DECORATOR_RUNTIME =
 ;
 const DECORATOR_RUNTIME_MIN = "var __defProp2=Object.defineProperty;var __getOwnPropDesc=Object.getOwnPropertyDescriptor;var __decorateClass=(decorators,target,key,kind)=>{var result=kind>1?void 0:kind?__getOwnPropDesc(target,key):target;for(var i=decorators.length-1,decorator;i>=0;i--)if(decorator=decorators[i])result=(kind?decorator(target,key,result):decorator(result))||result;if(kind&&result)__defProp2(target,key,result);return result};var __decorateParam=(index,decorator)=>(target,key)=>decorator(target,key,index);";
 
+/// __async 런타임 헬퍼: async/await → generator 변환 시 주입 (esbuild 호환).
+/// generator-to-Promise wrapper. this/arguments를 fn.apply로 보존.
+///
+/// 스펙 참고: esbuild internal/runtime/runtime.go __async
+const ASYNC_RUNTIME =
+    \\var __async = (fn) => function(...args) {
+    \\  return new Promise((resolve, reject) => {
+    \\    var gen = fn.apply(this, args);
+    \\    function step(key, arg) {
+    \\      try { var info = gen[key](arg); var value = info.value; }
+    \\      catch (error) { reject(error); return; }
+    \\      if (info.done) resolve(value);
+    \\      else Promise.resolve(value).then(val => step("next", val), err => step("throw", err));
+    \\    }
+    \\    step("next");
+    \\  });
+    \\};
+    \\
+;
+const ASYNC_RUNTIME_MIN = "var __async=(fn)=>function(...args){return new Promise((resolve,reject)=>{var gen=fn.apply(this,args);function step(key,arg){try{var info=gen[key](arg);var value=info.value}catch(error){reject(error);return}if(info.done)resolve(value);else Promise.resolve(value).then(val=>step(\"next\",val),err=>step(\"throw\",err))}step(\"next\")})};";
+
 /// HMR 런타임: 모듈 레지스트리 + __zts_require + import.meta.hot API.
 /// dev mode 번들 상단에 주입된다.
 ///
@@ -162,6 +183,8 @@ pub const EmitOptions = struct {
     experimental_decorators: bool = false,
     /// useDefineForClassFields=false
     use_define_for_class_fields: bool = true,
+    /// ES 타겟 레벨
+    target: @import("../transformer/transformer.zig").TransformOptions.Target = .esnext,
     /// 타겟 플랫폼. import.meta polyfill 방식을 결정한다.
     platform: @import("../codegen/codegen.zig").Platform = .browser,
 
@@ -253,6 +276,15 @@ pub fn emitWithTreeShaking(
             try output.appendSlice(allocator, DECORATOR_RUNTIME_MIN);
         } else {
             try output.appendSlice(allocator, DECORATOR_RUNTIME);
+        }
+    }
+
+    // Async 런타임 주입: target < es2017 시
+    if (options.target.needsAsyncAwait()) {
+        if (options.minify) {
+            try output.appendSlice(allocator, ASYNC_RUNTIME_MIN);
+        } else {
+            try output.appendSlice(allocator, ASYNC_RUNTIME);
         }
     }
 
@@ -546,6 +578,7 @@ pub fn emitDevModule(
         .define = options.define,
         .experimental_decorators = options.experimental_decorators,
         .use_define_for_class_fields = options.use_define_for_class_fields,
+        .target = options.target,
     });
     if (module.semantic) |sem| {
         transformer.old_symbol_ids = sem.symbol_ids;
@@ -710,6 +743,13 @@ pub fn emitChunks(
                 try chunk_output.appendSlice(allocator, DECORATOR_RUNTIME_MIN);
             } else {
                 try chunk_output.appendSlice(allocator, DECORATOR_RUNTIME);
+            }
+        }
+        if (options.target.needsAsyncAwait()) {
+            if (options.minify) {
+                try chunk_output.appendSlice(allocator, ASYNC_RUNTIME_MIN);
+            } else {
+                try chunk_output.appendSlice(allocator, ASYNC_RUNTIME);
             }
         }
 
@@ -1089,6 +1129,7 @@ pub fn emitModule(
         .define = options.define,
         .experimental_decorators = options.experimental_decorators,
         .use_define_for_class_fields = options.use_define_for_class_fields,
+        .target = options.target,
     });
     // symbol_ids 전파: semantic analyzer가 생성한 원본 AST의 symbol_ids를
     // transformer가 new_ast 기준으로 재매핑

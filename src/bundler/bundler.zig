@@ -50,6 +50,8 @@ pub const BundleOptions = struct {
     experimental_decorators: bool = false,
     /// useDefineForClassFields=false (tsconfig)
     use_define_for_class_fields: bool = true,
+    /// ES 타겟 레벨
+    target: @import("../transformer/transformer.zig").TransformOptions.Target = .esnext,
 };
 
 pub const BundleResult = struct {
@@ -213,6 +215,7 @@ pub const Bundler = struct {
                     .platform = self.options.platform,
                     .experimental_decorators = self.options.experimental_decorators,
                     .use_define_for_class_fields = self.options.use_define_for_class_fields,
+                    .target = self.options.target,
                 },
                 if (linker) |*l| l else null,
             );
@@ -242,6 +245,7 @@ pub const Bundler = struct {
                     .platform = self.options.platform,
                     .experimental_decorators = self.options.experimental_decorators,
                     .use_define_for_class_fields = self.options.use_define_for_class_fields,
+                    .target = self.options.target,
                 },
                 if (linker) |*l| l else null,
             );
@@ -267,6 +271,7 @@ pub const Bundler = struct {
                     .platform = self.options.platform,
                     .experimental_decorators = self.options.experimental_decorators,
                     .use_define_for_class_fields = self.options.use_define_for_class_fields,
+                    .target = self.options.target,
                 },
                 if (linker) |*l| l else null,
                 if (shaker) |*s| s else null,
