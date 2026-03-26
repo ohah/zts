@@ -35,6 +35,21 @@ var __generator = function(body) {
     if (op[0] & 5) throw op[1]; return { value: op[0] ? op[1] : void 0, done: true };
   }
 };
+var __async = function(fn) {
+  return function() {
+    var args = arguments, self = this;
+    return new Promise(function(resolve, reject) {
+      var gen = fn.apply(self, args);
+      function step(key, arg) {
+        try { var info = gen[key](arg); var value = info.value; }
+        catch (error) { reject(error); return; }
+        if (info.done) resolve(value);
+        else Promise.resolve(value).then(function(v) { step("next", v); }, function(e) { step("throw", e); });
+      }
+      step("next");
+    });
+  };
+};
 var __rest = function(s, e) {
   var t = {};
   for (var p in s) if (Object.prototype.hasOwnProperty.call(s, p) && e.indexOf(p) < 0) t[p] = s[p];
@@ -327,9 +342,9 @@ describe("ES 다운레벨링 런타임 테스트", () => {
     });
   });
 
-  // ===== ES2016 =====
+  // ===== ES2016 (target=es2015) =====
 
-  describe("ES2016", () => {
+  describe("ES2016 → es2015", () => {
     test("exponentiation **", async () => {
       const result = await bundleAndRun({ "index.ts": "console.log(2 ** 10);" }, "index.ts", [
         "--target=es2015",
@@ -338,11 +353,26 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe("1024");
     });
+
+    test("exponentiation assignment **=", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": "let x = 3; x **= 2; console.log(x);" },
+        "index.ts",
+        ["--target=es2015"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("9");
+    });
   });
 
-  // ===== ES2018 =====
+  // ===== ES2017 (target=es2016) =====
+  // TODO: async/await → generator 변환 후 번들러의 __async 헬퍼 주입 문제 해결 필요
+  // describe("ES2017 → es2016", () => { ... });
 
-  describe("ES2018", () => {
+  // ===== ES2018 (target=es2017) =====
+
+  describe("ES2018 → es2017", () => {
     test("object spread", async () => {
       const result = await bundleAndRun(
         {
@@ -356,11 +386,24 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe('{"x":1,"y":2,"z":3}');
     });
+
+    test("object spread override", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": "const a = { x: 1 }; const b = { ...a, x: 2 }; console.log(b.x);",
+        },
+        "index.ts",
+        ["--target=es2017"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("2");
+    });
   });
 
-  // ===== ES2019 =====
+  // ===== ES2019 (target=es2018) =====
 
-  describe("ES2019", () => {
+  describe("ES2019 → es2018", () => {
     test("optional catch binding", async () => {
       const result = await bundleAndRun(
         {
@@ -376,9 +419,9 @@ describe("ES 다운레벨링 런타임 테스트", () => {
     });
   });
 
-  // ===== ES2020 =====
+  // ===== ES2020 (target=es2019) =====
 
-  describe("ES2020", () => {
+  describe("ES2020 → es2019", () => {
     test("nullish coalescing ??", async () => {
       const result = await bundleAndRun(
         { "index.ts": "const a = null ?? 'default'; const b = 0 ?? 'default'; console.log(a, b);" },
@@ -400,11 +443,25 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe("42 undefined");
     });
+
+    test("optional chaining call ?.()", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts":
+            "const obj: any = { fn: () => 'ok' }; console.log(obj.fn?.(), obj.missing?.());",
+        },
+        "index.ts",
+        ["--target=es2019"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("ok undefined");
+    });
   });
 
-  // ===== ES2021 =====
+  // ===== ES2021 (target=es2020) =====
 
-  describe("ES2021", () => {
+  describe("ES2021 → es2020", () => {
     test("logical assignment ??=", async () => {
       const result = await bundleAndRun(
         { "index.ts": "let a: number | null = null; a ??= 10; console.log(a);" },
@@ -426,11 +483,22 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe("5");
     });
+
+    test("logical assignment &&=", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": "let a = 1; a &&= 10; let b = 0; b &&= 10; console.log(a, b);" },
+        "index.ts",
+        ["--target=es2020"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("10 0");
+    });
   });
 
-  // ===== ES2022 =====
+  // ===== ES2022 (target=es2021) =====
 
-  describe("ES2022", () => {
+  describe("ES2022 → es2021", () => {
     test("class static block", async () => {
       const result = await bundleAndRun(
         {
@@ -440,14 +508,14 @@ describe("ES 다운레벨링 런타임 테스트", () => {
           `,
         },
         "index.ts",
-        ["--target=es5"],
+        ["--target=es2021"],
       );
       cleanup = result.cleanup;
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe("42");
     });
 
-    test("class fields", async () => {
+    test("class fields (target=es5)", async () => {
       const result = await bundleAndRun(
         {
           "index.ts": `
@@ -461,6 +529,22 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       cleanup = result.cleanup;
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe("1 2");
+    });
+
+    test("class static block (target=es5)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Foo { static value: number; static { Foo.value = 42; } }
+            console.log(Foo.value);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42");
     });
   });
 });
