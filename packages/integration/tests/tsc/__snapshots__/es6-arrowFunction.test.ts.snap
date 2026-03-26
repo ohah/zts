@@ -1,0 +1,318 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`TSC: es6/arrowFunction emitArrowFunction 1`] = `
+"// @strict: false
+var f1 = () => {
+};
+var f2 = (x, y) => {
+};
+var f3 = (x, y, ...rest) => {
+};
+var f4 = (x, y, z=10) => {
+};
+function foo(func) {
+}
+foo(() => true);
+foo(() => {
+	return false;
+});
+"
+`;
+
+exports[`TSC: es6/arrowFunction emitArrowFunctionAsIs 1`] = `
+"// @strict: false
+var arrow1 = (a) => {
+};
+var arrow2 = (a) => {
+};
+var arrow3 = (a,b) => {
+};
+"
+`;
+
+exports[`TSC: es6/arrowFunction emitArrowFunctionAsIsES6 1`] = `
+"// @strict: false
+var arrow1 = (a) => {
+};
+var arrow2 = (a) => {
+};
+var arrow3 = (a,b) => {
+};
+"
+`;
+
+exports[`TSC: es6/arrowFunction emitArrowFunctionES6 1`] = `
+"// @strict: false
+var f1 = () => {
+};
+var f2 = (x, y) => {
+};
+var f3 = (x, y, ...rest) => {
+};
+var f4 = (x, y, z=10) => {
+};
+function foo(func) {
+}
+foo(() => true);
+foo(() => {
+	return false;
+});
+// Binding patterns in arrow functions
+var p1 = ([a]) => {
+};
+var p2 = ([...a]) => {
+};
+var p3 = ([, a]) => {
+};
+var p4 = ([, ...a]) => {
+};
+var p5 = ([a=1]) => {
+};
+var p6 = ({ a:a }) => {
+};
+var p7 = ({ a:{ b:b } }) => {
+};
+var p8 = ({ a:a=1 }) => {
+};
+var p9 = ({ a:{ b:b=1 }={ b: 1 } }) => {
+};
+var p10 = ([{ value:value, done:done }]) => {
+};
+"
+`;
+
+exports[`TSC: es6/arrowFunction emitArrowFunctionsAsIs 1`] = `
+"// @strict: false
+var arrow1 = (a) => {
+};
+var arrow2 = (a) => {
+};
+var arrow3 = (a,b) => {
+};
+"
+`;
+
+exports[`TSC: es6/arrowFunction emitArrowFunctionsAsIsES6 1`] = `
+"// @strict: false
+var arrow1 = (a) => {
+};
+var arrow2 = (a) => {
+};
+var arrow3 = (a,b) => {
+};
+"
+`;
+
+exports[`TSC: es6/arrowFunction emitArrowFunctionThisCapturing 1`] = `
+"// @strict: false
+var f1 = () => {
+	this.age = 10;
+};
+var f2 = (x) => {
+	this.name = x;
+};
+function foo(func) {
+}
+foo(() => {
+	this.age = 100;
+	return true;
+});
+"
+`;
+
+exports[`TSC: es6/arrowFunction emitArrowFunctionThisCapturingES6 1`] = `
+"// @strict: false
+var f1 = () => {
+	this.age = 10;
+};
+var f2 = (x) => {
+	this.name = x;
+};
+function foo(func) {
+}
+foo(() => {
+	this.age = 100;
+	return true;
+});
+"
+`;
+
+exports[`TSC: es6/arrowFunction emitArrowFunctionWhenUsingArguments01_ES6 1`] = `
+"// @strict: false
+var a = () => {
+	var arg = arguments[0];
+};
+// error
+var b = function() {
+	var a = () => {
+		var arg = arguments[0];
+	};
+};
+// error
+function baz() {
+	() => {
+		var arg = arguments[0];
+	};
+}
+function foo(inputFunc) {
+}
+foo(() => {
+	var arg = arguments[0];
+});
+// error
+function bar() {
+	var arg = arguments[0];
+}
+// no error
+() => {
+	function foo() {
+		var arg = arguments[0];
+	}
+};
+// no error
+"
+`;
+
+exports[`TSC: es6/arrowFunction emitArrowFunctionWhenUsingArguments01 1`] = `
+"// @strict: false
+var a = () => {
+	var arg = arguments[0];
+};
+// error
+var b = function() {
+	var a = () => {
+		var arg = arguments[0];
+	};
+};
+// error
+function baz() {
+	() => {
+		var arg = arguments[0];
+	};
+}
+function foo(inputFunc) {
+}
+foo(() => {
+	var arg = arguments[0];
+});
+// error
+function bar() {
+	var arg = arguments[0];
+}
+// no error
+() => {
+	function foo() {
+		var arg = arguments[0];
+	}
+};
+// no error
+"
+`;
+
+exports[`TSC: es6/arrowFunction emitArrowFunctionWhenUsingArguments02_ES6 1`] = `
+"// @strict: false
+var a = () => arguments;
+"
+`;
+
+exports[`TSC: es6/arrowFunction emitArrowFunctionWhenUsingArguments02 1`] = `
+"// @strict: false
+var a = () => arguments;
+"
+`;
+
+exports[`TSC: es6/arrowFunction emitArrowFunctionWhenUsingArguments09_ES6 1`] = `
+"// @strict: false
+function f(_arguments) {
+	var a = () => () => arguments;
+}
+"
+`;
+
+exports[`TSC: es6/arrowFunction emitArrowFunctionWhenUsingArguments09 1`] = `
+"// @strict: false
+function f(_arguments) {
+	var a = () => () => arguments;
+}
+"
+`;
+
+exports[`TSC: es6/arrowFunction emitArrowFunctionWhenUsingArguments10_ES6 1`] = `
+"// @strict: false
+function f() {
+	var _arguments = 10;
+	var a = () => () => arguments;
+}
+"
+`;
+
+exports[`TSC: es6/arrowFunction emitArrowFunctionWhenUsingArguments10 1`] = `
+"// @strict: false
+function f() {
+	var _arguments = 10;
+	var a = () => () => arguments;
+}
+"
+`;
+
+exports[`TSC: es6/arrowFunction emitArrowFunctionWhenUsingArguments18_ES6 1`] = `
+"// @strict: false
+function f() {
+	var { arguments:args } = { arguments };
+	if (Math.random()) {
+		return () => arguments;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/arrowFunction emitArrowFunctionWhenUsingArguments18 1`] = `
+"// @strict: false
+function f() {
+	var { arguments:args } = { arguments };
+	if (Math.random()) {
+		return () => arguments;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/arrowFunction emitArrowFunctionWhenUsingArguments19_ES6 1`] = `
+"// @strict: false
+function f() {
+	function g() {
+		var _arguments = 10;
+		// No capture in 'g', so no conflict.
+function h() {
+			var capture = () => arguments;
+			// Should trigger an '_arguments' capture into function 'h'
+foo(_arguments);
+		}
+	}
+	// Error as this does not resolve to the user defined '_arguments'
+function foo(x) {
+		return 100;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/arrowFunction emitArrowFunctionWhenUsingArguments19 1`] = `
+"// @strict: false
+function f() {
+	function g() {
+		var _arguments = 10;
+		// No capture in 'g', so no conflict.
+function h() {
+			var capture = () => arguments;
+			// Should trigger an '_arguments' capture into function 'h'
+foo(_arguments);
+		}
+	}
+	// Error as this does not resolve to the user defined '_arguments'
+function foo(x) {
+		return 100;
+	}
+}
+"
+`;

@@ -1,0 +1,412 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`TSC: es6/classDeclaration classWithSemicolonClassElementES61 1`] = `
+"class C {
+}
+"
+`;
+
+exports[`TSC: es6/classDeclaration classWithSemicolonClassElementES62 1`] = `
+"class C {
+}
+"
+`;
+
+exports[`TSC: es6/classDeclaration emitClassDeclarationOverloadInES6 1`] = `""`;
+
+exports[`TSC: es6/classDeclaration emitClassDeclarationWithConstructorInES6 1`] = `
+"// @strict: false
+class A {
+	y;
+	constructor(x) {
+	}
+	foo() {
+	}
+}
+class B {
+	y;
+	x = "hello";
+	_bar;
+	constructor(x,z="hello",...args) {
+		this.y = 10;
+	}
+	baz(z,v) {
+		return this._bar;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/classDeclaration emitClassDeclarationWithExtensionAndTypeArgumentInES6 1`] = `""`;
+
+exports[`TSC: es6/classDeclaration emitClassDeclarationWithExtensionInES6 1`] = `
+"// @target: es6
+class B {
+	baz(a,y=10) {
+	}
+}
+class C extends B {
+	foo() {
+	}
+	baz(a,y) {
+		super.baz(a, y);
+	}
+}
+class D extends C {
+	constructor() {
+		super();
+	}
+	foo() {
+		super.foo();
+	}
+	baz() {
+		super.baz("hello", 10);
+	}
+}
+"
+`;
+
+exports[`TSC: es6/classDeclaration emitClassDeclarationWithGetterSetterInES6 1`] = `
+"// @target:es6
+class C {
+	_name;
+	get name() {
+		return this._name;
+	}
+	static get name2() {
+		return "BYE";
+	}
+	static get ["computedname"]() {
+		return "";
+	}
+	get ["computedname1"]() {
+		return "";
+	}
+	get ["computedname2"]() {
+		return "";
+	}
+	set ["computedname3"](x) {
+	}
+	set ["computedname4"](y) {
+	}
+	set foo(a) {
+	}
+	static set bar(b) {
+	}
+	static set ["computedname"](b) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/classDeclaration emitClassDeclarationWithLiteralPropertyNameInES6 1`] = `
+"// @target: es6
+class B {
+	"hello" = 10;
+	0b110 = "world";
+	0o23534 = "WORLD";
+	20 = "twenty";
+	"foo"() {
+	}
+	0b1110() {
+	}
+	11() {
+	}
+	interface() {
+	}
+	static "hi" = 10000;
+	static 22 = "twenty-two";
+	static 0b101 = "binary";
+	static 0o3235 = "octal";
+}
+"
+`;
+
+exports[`TSC: es6/classDeclaration emitClassDeclarationWithMethodInES6 1`] = `
+"// @target:es6
+class D {
+	_bar;
+	foo() {
+	}
+	["computedName1"]() {
+	}
+	["computedName2"](a) {
+	}
+	["computedName3"](a) {
+		return 1;
+	}
+	bar() {
+		return this._bar;
+	}
+	baz(a,x) {
+		return "HELLO";
+	}
+	static ["computedname4"]() {
+	}
+	static ["computedname5"](a) {
+	}
+	static ["computedname6"](a) {
+		return true;
+	}
+	static staticMethod() {
+		var x = 1 + 2;
+		return x;
+	}
+	static foo(a) {
+	}
+	static bar(a) {
+		return 1;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/classDeclaration emitClassDeclarationWithPropertyAccessInHeritageClause1 1`] = `
+"class B {
+}
+function foo() {
+	return { B: B };
+}
+class C extends (foo()).B {
+}
+"
+`;
+
+exports[`TSC: es6/classDeclaration emitClassDeclarationWithPropertyAssignmentInES6 1`] = `
+"// @target:es6
+class C {
+	x = "Hello world";
+}
+class D {
+	x = "Hello world";
+	y;
+	constructor() {
+		this.y = 10;
+	}
+}
+class E extends D {
+	z = true;
+}
+class F extends D {
+	z = true;
+	j;
+	constructor() {
+		super();
+		this.j = "HI";
+	}
+}
+"
+`;
+
+exports[`TSC: es6/classDeclaration emitClassDeclarationWithStaticPropertyAssignmentInES6 1`] = `
+"// @target:es6
+class C {
+	static z = "Foo";
+}
+class D {
+	x = 20000;
+	static b = true;
+}
+"
+`;
+
+exports[`TSC: es6/classDeclaration emitClassDeclarationWithSuperMethodCall01 1`] = `
+"//@target: es6
+class Parent {
+	foo() {
+	}
+}
+class Foo extends Parent {
+	foo() {
+		var x = () => super.foo();
+	}
+}
+"
+`;
+
+exports[`TSC: es6/classDeclaration emitClassDeclarationWithThisKeywordInES6 1`] = `
+"// @target: es6
+class B {
+	x = 10;
+	constructor() {
+		this.x = 10;
+	}
+	static log(a) {
+	}
+	foo() {
+		B.log(this.x);
+	}
+	get X() {
+		return this.x;
+	}
+	set bX(y) {
+		this.x = y;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/classDeclaration emitClassDeclarationWithTypeArgumentAndOverloadInES6 1`] = `""`;
+
+exports[`TSC: es6/classDeclaration emitClassDeclarationWithTypeArgumentInES6 1`] = `
+"// @target: es6
+class B {
+	x;
+	B;
+	constructor(a) {
+		this.B = a;
+	}
+	foo() {
+		return this.x;
+	}
+	get BB() {
+		return this.B;
+	}
+	set BBWith(c) {
+		this.B = c;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/classDeclaration exportDefaultClassWithStaticPropertyAssignmentsInES6 1`] = `
+"export default class {
+	static z = "Foo";
+}
+"
+`;
+
+exports[`TSC: es6/classDeclaration superCallBeforeThisAccessing1 1`] = `
+"// @strict: false
+class Base {
+	constructor(c) {
+	}
+}
+class D extends Base {
+	_t;
+	constructor() {
+		super(i);
+		var s = { t: this._t };
+		var i = Factory.create(s);
+	}
+}
+"
+`;
+
+exports[`TSC: es6/classDeclaration superCallBeforeThisAccessing2 1`] = `
+"// @strict: false
+class Base {
+	constructor(c) {
+	}
+}
+class D extends Base {
+	_t;
+	constructor() {
+		super(() => {
+			this._t;
+		});
+	}
+}
+// no error. only check when this is directly accessing in constructor
+"
+`;
+
+exports[`TSC: es6/classDeclaration superCallBeforeThisAccessing3 1`] = `
+"// @target: es2015
+class Base {
+	constructor(c) {
+	}
+}
+class D extends Base {
+	_t;
+	constructor() {
+		let x = () => {
+			this._t;
+		};
+		x();
+		// no error; we only check super is called before this when the container is a constructor
+this._t;
+		// error
+super(undefined);
+	}
+}
+"
+`;
+
+exports[`TSC: es6/classDeclaration superCallBeforeThisAccessing4 1`] = `
+"// @target: es2015
+class D extends null {
+	_t;
+	constructor() {
+		this._t;
+		super();
+	}
+}
+class E extends null {
+	_t;
+	constructor() {
+		super();
+		this._t;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/classDeclaration superCallBeforeThisAccessing5 1`] = `
+"// @strict: false
+class D extends null {
+	_t;
+	constructor() {
+		this._t;
+	}
+}
+// No error
+"
+`;
+
+exports[`TSC: es6/classDeclaration superCallBeforeThisAccessing6 1`] = `
+"// @target: es2015
+class Base {
+	constructor(c) {
+	}
+}
+class D extends Base {
+	_t;
+	constructor() {
+		super(this);
+	}
+}
+"
+`;
+
+exports[`TSC: es6/classDeclaration superCallBeforeThisAccessing7 1`] = `
+"// @target: es2015
+class Base {
+	constructor(c) {
+	}
+}
+class D extends Base {
+	_t;
+	constructor() {
+		let x = { j: this._t };
+		super(undefined);
+	}
+}
+"
+`;
+
+exports[`TSC: es6/classDeclaration superCallBeforeThisAccessing8 1`] = `
+"// @strict: false
+class Base {
+	constructor(c) {
+	}
+}
+class D extends Base {
+	_t;
+	constructor() {
+		let x = { k: super(undefined), j: this._t };
+	}
+}
+// no error
+"
+`;

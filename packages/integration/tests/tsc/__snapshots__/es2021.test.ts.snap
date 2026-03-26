@@ -1,0 +1,176 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`TSC: es2021 es2021LocalesObjectArgument 1`] = `
+"const enUS = new Intl.Locale("en-US");
+const deDE = new Intl.Locale("de-DE");
+const jaJP = new Intl.Locale("ja-JP");
+new Intl.ListFormat(enUS);
+new Intl.ListFormat([deDE, jaJP]);
+Intl.ListFormat.supportedLocalesOf(enUS);
+Intl.ListFormat.supportedLocalesOf([deDE, jaJP]);
+"
+`;
+
+exports[`TSC: es2021 intlDateTimeFormatRangeES2021 1`] = `
+"new Intl.DateTimeFormat().formatRange(new Date(0), new Date());
+const [part] = new Intl.DateTimeFormat().formatRangeToParts(1000, 1000000000);
+"
+`;
+
+exports[`TSC: es2021 logicalAssignment1 1`] = `
+"a &&= "foo";
+b ||= "foo";
+c ??= "foo";
+d &&= 42;
+e ||= 42;
+f ??= 42;
+g &&= 42;
+h ||= 42;
+i ??= 42;
+"
+`;
+
+exports[`TSC: es2021 logicalAssignment10 1`] = `
+"var count = 0;
+var obj = {};
+function incr() {
+	return ++count;
+}
+const oobj = { obj };
+obj[incr()] ??= incr();
+oobj["obj"][incr()] ??= incr();
+"
+`;
+
+exports[`TSC: es2021 logicalAssignment2 1`] = `
+"a.baz &&= result.baz;
+b.baz ||= result.baz;
+c.baz ??= result.baz;
+a.foo["baz"] &&= result.foo.baz;
+b.foo["baz"] ||= result.foo.baz;
+c.foo["baz"] ??= result.foo.baz;
+a.foo.bar().baz &&= result.foo.bar().baz;
+b.foo.bar().baz ||= result.foo.bar().baz;
+c.foo.bar().baz ??= result.foo.bar().baz;
+"
+`;
+
+exports[`TSC: es2021 logicalAssignment3 1`] = `
+"(a.baz) &&= result.baz;
+(b.baz) ||= result.baz;
+(c.baz) ??= result.baz;
+"
+`;
+
+exports[`TSC: es2021 logicalAssignment4 1`] = `
+"function foo1(results) {
+	(results ||= []).push(100);
+}
+function foo2(results) {
+	(results ??= []).push(100);
+}
+function foo3(results) {
+	results ||= [];
+	results.push(100);
+}
+function foo4(results) {
+	results ??= [];
+	results.push(100);
+}
+function doSomethingWithAlias(thing,defaultValue) {
+	if (v === 1) {
+		if (thing &&= thing.original) {
+			thing.name;
+		}
+	} else if (v === 2) {
+		if (thing &&= defaultValue) {
+			thing.name;
+			defaultValue.name;
+		}
+	} else if (v === 3) {
+		if (thing ||= defaultValue) {
+			thing.name;
+			defaultValue.name;
+		}
+	} else {
+		if (thing ??= defaultValue) {
+			thing.name;
+			defaultValue.name;
+		}
+	}
+}
+"
+`;
+
+exports[`TSC: es2021 logicalAssignment5 1`] = `
+"function foo1(f) {
+	f ??= ((a) => a);
+	f(42);
+}
+function foo2(f) {
+	f ||= ((a) => a);
+	f(42);
+}
+function foo3(f) {
+	f &&= ((a) => a);
+	f(42);
+}
+function bar1(f) {
+	f ??= (f.toString(),((a) => a));
+	f(42);
+}
+function bar2(f) {
+	f ||= (f.toString(),((a) => a));
+	f(42);
+}
+function bar3(f) {
+	f &&= (f.toString(),((a) => a));
+	f(42);
+}
+"
+`;
+
+exports[`TSC: es2021 logicalAssignment6 1`] = `
+"function foo1(results,results1) {
+	(results ||= (results1 ||= [])).push(100);
+}
+function foo2(results,results1) {
+	(results ??= (results1 ??= [])).push(100);
+}
+function foo3(results,results1) {
+	(results &&= (results1 &&= [])).push(100);
+}
+"
+`;
+
+exports[`TSC: es2021 logicalAssignment7 1`] = `
+"function foo1(results,results1) {
+	(results ||= results1 ||= []).push(100);
+}
+function foo2(results,results1) {
+	(results ??= results1 ??= []).push(100);
+}
+function foo3(results,results1) {
+	(results &&= results1 &&= []).push(100);
+}
+"
+`;
+
+exports[`TSC: es2021 logicalAssignment8 1`] = `
+"function foo1(results) {
+	(results ||= bar?.value ?? []).push(100);
+}
+function foo2(results) {
+	(results ??= bar?.value ?? []).push(100);
+}
+function foo3(results) {
+	(results &&= bar?.value ?? []).push(100);
+}
+"
+`;
+
+exports[`TSC: es2021 logicalAssignment9 1`] = `
+"x.a ??= true;
+x.a &&= false;
+"
+`;

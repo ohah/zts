@@ -1,0 +1,36 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`TSC: es6/variableDeclarations VariableDeclaration10_es6 1`] = `
+"let a = 1;
+"
+`;
+
+exports[`TSC: es6/variableDeclarations VariableDeclaration12_es6 1`] = `
+"let x;
+"
+`;
+
+exports[`TSC: es6/variableDeclarations VariableDeclaration3_es6 1`] = `
+"const a = 1;
+"
+`;
+
+exports[`TSC: es6/variableDeclarations VariableDeclaration5_es6 1`] = `
+"const a = 1;
+"
+`;
+
+exports[`TSC: es6/variableDeclarations VariableDeclaration7_es6 1`] = `
+"let a;
+"
+`;
+
+exports[`TSC: es6/variableDeclarations VariableDeclaration8_es6 1`] = `
+"let a = 1;
+"
+`;
+
+exports[`TSC: es6/variableDeclarations VariableDeclaration9_es6 1`] = `
+"let a;
+"
+`;

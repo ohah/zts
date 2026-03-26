@@ -1,0 +1,103 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`TSC: es6/decorators decoratorOnClassAccessor1.es6 1`] = `
+"export default class {
+	@dec
+	get accessor() {
+		return 1;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/decorators decoratorOnClass1.es6 1`] = `
+"@dec class C {
+}
+let c = new C();
+"
+`;
+
+exports[`TSC: es6/decorators decoratorOnClass2.es6 1`] = `
+"export class C {
+}
+let c = new C();
+"
+`;
+
+exports[`TSC: es6/decorators decoratorOnClass3.es6 1`] = `
+"export default class C {
+}
+let c = new C();
+"
+`;
+
+exports[`TSC: es6/decorators decoratorOnClass4.es6 1`] = `
+"export default class {
+}
+"
+`;
+
+exports[`TSC: es6/decorators decoratorOnClass5.es6 1`] = `
+"@dec class C {
+	static x() {
+		return C.y;
+	}
+	static y = 1;
+}
+let c = new C();
+"
+`;
+
+exports[`TSC: es6/decorators decoratorOnClass6.es6 1`] = `
+"export class C {
+	static x() {
+		return C.y;
+	}
+	static y = 1;
+}
+let c = new C();
+"
+`;
+
+exports[`TSC: es6/decorators decoratorOnClass7.es6 1`] = `
+"export default class C {
+	static x() {
+		return C.y;
+	}
+	static y = 1;
+}
+let c = new C();
+"
+`;
+
+exports[`TSC: es6/decorators decoratorOnClass8.es6 1`] = `
+"export default class {
+	static y = 1;
+}
+"
+`;
+
+exports[`TSC: es6/decorators decoratorOnClassMethod1.es6 1`] = `
+"export default class {
+	@dec
+	method() {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/decorators decoratorOnClassMethodParameter1.es6 1`] = `
+"export default class {
+	method(p) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/decorators decoratorOnClassProperty1.es6 1`] = `
+"export default class {
+	@dec
+	prop;
+}
+"
+`;

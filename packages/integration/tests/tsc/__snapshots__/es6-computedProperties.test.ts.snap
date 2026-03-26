@@ -1,0 +1,1628 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`TSC: es6/computedProperties computedPropertyNames1_ES5 1`] = `
+"var v = { get [0 + 1]() {
+	return 0;
+}, set [0 + 1](v) {
+} };
+//No error
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames1_ES6 1`] = `
+"var v = { get [0 + 1]() {
+	return 0;
+}, set [0 + 1](v) {
+} };
+//No error
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames10_ES5 1`] = `
+"var s;
+var n;
+var a;
+var v = { [s]() {
+}, [n]() {
+}, [s + s]() {
+}, [s + n]() {
+}, [+s]() {
+}, [""]() {
+}, [0]() {
+}, [a]() {
+}, [true]() {
+}, [\`hello bye\`]() {
+}, [\`hello \${a} bye\`]() {
+} };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames10_ES6 1`] = `
+"var s;
+var n;
+var a;
+var v = { [s]() {
+}, [n]() {
+}, [s + s]() {
+}, [s + n]() {
+}, [+s]() {
+}, [""]() {
+}, [0]() {
+}, [a]() {
+}, [true]() {
+}, [\`hello bye\`]() {
+}, [\`hello \${a} bye\`]() {
+} };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames11_ES5 1`] = `
+"var s;
+var n;
+var a;
+var v = { get [s]() {
+	return 0;
+}, set [n](v) {
+}, get [s + s]() {
+	return 0;
+}, set [s + n](v) {
+}, get [+s]() {
+	return 0;
+}, set [""](v) {
+}, get [0]() {
+	return 0;
+}, set [a](v) {
+}, get [true]() {
+	return 0;
+}, set [\`hello bye\`](v) {
+}, get [\`hello \${a} bye\`]() {
+	return 0;
+} };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames11_ES6 1`] = `
+"var s;
+var n;
+var a;
+var v = { get [s]() {
+	return 0;
+}, set [n](v) {
+}, get [s + s]() {
+	return 0;
+}, set [s + n](v) {
+}, get [+s]() {
+	return 0;
+}, set [""](v) {
+}, get [0]() {
+	return 0;
+}, set [a](v) {
+}, get [true]() {
+	return 0;
+}, set [\`hello bye\`](v) {
+}, get [\`hello \${a} bye\`]() {
+	return 0;
+} };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames12_ES5 1`] = `
+"var s;
+var n;
+var a;
+class C {
+	[s];
+	[n] = n;
+	static [s + s];
+	[s + n] = 2;
+	[+s];
+	static [""];
+	[0];
+	[a];
+	static [true];
+	[\`hello bye\`] = 0;
+	static [\`hello \${a} bye\`] = 0;
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames12_ES6 1`] = `
+"var s;
+var n;
+var a;
+class C {
+	[s];
+	[n] = n;
+	static [s + s];
+	[s + n] = 2;
+	[+s];
+	static [""];
+	[0];
+	[a];
+	static [true];
+	[\`hello bye\`] = 0;
+	static [\`hello \${a} bye\`] = 0;
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames13_ES5 1`] = `
+"var s;
+var n;
+var a;
+class C {
+	[s]() {
+	}
+	[n]() {
+	}
+	static [s + s]() {
+	}
+	[s + n]() {
+	}
+	[+s]() {
+	}
+	static [""]() {
+	}
+	[0]() {
+	}
+	[a]() {
+	}
+	static [true]() {
+	}
+	[\`hello bye\`]() {
+	}
+	static [\`hello \${a} bye\`]() {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames13_ES6 1`] = `
+"var s;
+var n;
+var a;
+class C {
+	[s]() {
+	}
+	[n]() {
+	}
+	static [s + s]() {
+	}
+	[s + n]() {
+	}
+	[+s]() {
+	}
+	static [""]() {
+	}
+	[0]() {
+	}
+	[a]() {
+	}
+	static [true]() {
+	}
+	[\`hello bye\`]() {
+	}
+	static [\`hello \${a} bye\`]() {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames14_ES5 1`] = `
+"var b;
+class C {
+	[b]() {
+	}
+	static [true]() {
+	}
+	[[]]() {
+	}
+	static [{}]() {
+	}
+	[undefined]() {
+	}
+	static [null]() {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames14_ES6 1`] = `
+"var b;
+class C {
+	[b]() {
+	}
+	static [true]() {
+	}
+	[[]]() {
+	}
+	static [{}]() {
+	}
+	[undefined]() {
+	}
+	static [null]() {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames15_ES5 1`] = `
+"var p1;
+var p2;
+var p3;
+class C {
+	[p1]() {
+	}
+	[p2]() {
+	}
+	[p3]() {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames15_ES6 1`] = `
+"var p1;
+var p2;
+var p3;
+class C {
+	[p1]() {
+	}
+	[p2]() {
+	}
+	[p3]() {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames16_ES5 1`] = `
+"var s;
+var n;
+var a;
+class C {
+	get [s]() {
+		return 0;
+	}
+	set [n](v) {
+	}
+	static get [s + s]() {
+		return 0;
+	}
+	set [s + n](v) {
+	}
+	get [+s]() {
+		return 0;
+	}
+	static set [""](v) {
+	}
+	get [0]() {
+		return 0;
+	}
+	set [a](v) {
+	}
+	static get [true]() {
+		return 0;
+	}
+	set [\`hello bye\`](v) {
+	}
+	get [\`hello \${a} bye\`]() {
+		return 0;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames16_ES6 1`] = `
+"var s;
+var n;
+var a;
+class C {
+	get [s]() {
+		return 0;
+	}
+	set [n](v) {
+	}
+	static get [s + s]() {
+		return 0;
+	}
+	set [s + n](v) {
+	}
+	get [+s]() {
+		return 0;
+	}
+	static set [""](v) {
+	}
+	get [0]() {
+		return 0;
+	}
+	set [a](v) {
+	}
+	static get [true]() {
+		return 0;
+	}
+	set [\`hello bye\`](v) {
+	}
+	get [\`hello \${a} bye\`]() {
+		return 0;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames17_ES5 1`] = `
+"var b;
+class C {
+	get [b]() {
+		return 0;
+	}
+	static set [true](v) {
+	}
+	get [[]]() {
+		return 0;
+	}
+	set [{}](v) {
+	}
+	static get [undefined]() {
+		return 0;
+	}
+	set [null](v) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames17_ES6 1`] = `
+"var b;
+class C {
+	get [b]() {
+		return 0;
+	}
+	static set [true](v) {
+	}
+	get [[]]() {
+		return 0;
+	}
+	set [{}](v) {
+	}
+	static get [undefined]() {
+		return 0;
+	}
+	set [null](v) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames18_ES5 1`] = `
+"function foo() {
+	var obj = { [this.bar]: 0 };
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames18_ES6 1`] = `
+"function foo() {
+	var obj = { [this.bar]: 0 };
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames19_ES5 1`] = `
+"var M;((M) => {var obj = { [this.bar]: 0 };})(M || (M = {}));
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames19_ES6 1`] = `
+"var M;((M) => {var obj = { [this.bar]: 0 };})(M || (M = {}));
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames2_ES5 1`] = `
+"var methodName = "method";
+var accessorName = "accessor";
+class C {
+	[methodName]() {
+	}
+	static [methodName]() {
+	}
+	get [accessorName]() {
+	}
+	set [accessorName](v) {
+	}
+	static get [accessorName]() {
+	}
+	static set [accessorName](v) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames2_ES6 1`] = `
+"var methodName = "method";
+var accessorName = "accessor";
+class C {
+	[methodName]() {
+	}
+	static [methodName]() {
+	}
+	get [accessorName]() {
+	}
+	set [accessorName](v) {
+	}
+	static get [accessorName]() {
+	}
+	static set [accessorName](v) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames20_ES5 1`] = `
+"var obj = { [this.bar]: 0 };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames20_ES6 1`] = `
+"var obj = { [this.bar]: 0 };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames21_ES5 1`] = `
+"class C {
+	bar() {
+		return 0;
+	}
+	[this.bar()]() {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames21_ES6 1`] = `
+"class C {
+	bar() {
+		return 0;
+	}
+	[this.bar()]() {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames22_ES5 1`] = `
+"class C {
+	bar() {
+		var obj = { [this.bar()]() {
+		} };
+		return 0;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames22_ES6 1`] = `
+"class C {
+	bar() {
+		var obj = { [this.bar()]() {
+		} };
+		return 0;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames23_ES5 1`] = `
+"class C {
+	bar() {
+		return 0;
+	}
+	[{ [this.bar()]: 1 }[0]]() {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames23_ES6 1`] = `
+"class C {
+	bar() {
+		return 0;
+	}
+	[{ [this.bar()]: 1 }[0]]() {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames25_ES5 1`] = `
+"class Base {
+	bar() {
+		return 0;
+	}
+}
+class C extends Base {
+	foo() {
+		var obj = { [super.bar()]() {
+		} };
+		return 0;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames25_ES6 1`] = `
+"class Base {
+	bar() {
+		return 0;
+	}
+}
+class C extends Base {
+	foo() {
+		var obj = { [super.bar()]() {
+		} };
+		return 0;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames28_ES5 1`] = `
+"class Base {
+}
+class C extends Base {
+	constructor() {
+		super();
+		var obj = { [(super(),"prop")]() {
+		} };
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames28_ES6 1`] = `
+"class Base {
+}
+class C extends Base {
+	constructor() {
+		super();
+		var obj = { [(super(),"prop")]() {
+		} };
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames29_ES5 1`] = `
+"class C {
+	bar() {
+		() => {
+			var obj = { [this.bar()]() {
+			} };
+		};
+		// needs capture
+return 0;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames29_ES6 1`] = `
+"class C {
+	bar() {
+		() => {
+			var obj = { [this.bar()]() {
+			} };
+		};
+		// needs capture
+return 0;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames30_ES5 1`] = `
+"class Base {
+}
+class C extends Base {
+	constructor() {
+		super();
+		() => {
+			var obj = { // Ideally, we would capture this. But the reference is
+// illegal, and not capturing this is consistent with
+//treatment of other similar violations.
+[(super(),"prop")]() {
+			} };
+		};
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames30_ES6 1`] = `
+"class Base {
+}
+class C extends Base {
+	constructor() {
+		super();
+		() => {
+			var obj = { // Ideally, we would capture this. But the reference is
+// illegal, and not capturing this is consistent with
+//treatment of other similar violations.
+[(super(),"prop")]() {
+			} };
+		};
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames31_ES5 1`] = `
+"class Base {
+	bar() {
+		return 0;
+	}
+}
+class C extends Base {
+	foo() {
+		() => {
+			var obj = { [super.bar()]() {
+			} };
+		};
+		// needs capture
+return 0;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames31_ES6 1`] = `
+"class Base {
+	bar() {
+		return 0;
+	}
+}
+class C extends Base {
+	foo() {
+		() => {
+			var obj = { [super.bar()]() {
+			} };
+		};
+		// needs capture
+return 0;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames32_ES5 1`] = `
+"function foo() {
+	return "";
+}
+class C {
+	bar() {
+		return 0;
+	}
+	[foo()]() {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames32_ES6 1`] = `
+"function foo() {
+	return "";
+}
+class C {
+	bar() {
+		return 0;
+	}
+	[foo()]() {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames33_ES5 1`] = `
+"function foo() {
+	return "";
+}
+class C {
+	bar() {
+		var obj = { [foo()]() {
+		} };
+		return 0;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames33_ES6 1`] = `
+"function foo() {
+	return "";
+}
+class C {
+	bar() {
+		var obj = { [foo()]() {
+		} };
+		return 0;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames34_ES5 1`] = `
+"function foo() {
+	return "";
+}
+class C {
+	static bar() {
+		var obj = { [foo()]() {
+		} };
+		return 0;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames34_ES6 1`] = `
+"function foo() {
+	return "";
+}
+class C {
+	static bar() {
+		var obj = { [foo()]() {
+		} };
+		return 0;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames36_ES5 1`] = `
+"class Foo {
+	x;
+}
+class Foo2 {
+	x;
+	y;
+}
+class C {
+	// Computed properties
+get ["get1"]() {
+		return new Foo();
+	}
+	set ["set1"](p) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames36_ES6 1`] = `
+"class Foo {
+	x;
+}
+class Foo2 {
+	x;
+	y;
+}
+class C {
+	// Computed properties
+get ["get1"]() {
+		return new Foo();
+	}
+	set ["set1"](p) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames37_ES5 1`] = `
+"class Foo {
+	x;
+}
+class Foo2 {
+	x;
+	y;
+}
+class C {
+	// Computed properties
+get ["get1"]() {
+		return new Foo();
+	}
+	set ["set1"](p) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames37_ES6 1`] = `
+"class Foo {
+	x;
+}
+class Foo2 {
+	x;
+	y;
+}
+class C {
+	// Computed properties
+get ["get1"]() {
+		return new Foo();
+	}
+	set ["set1"](p) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames38_ES5 1`] = `
+"class Foo {
+	x;
+}
+class Foo2 {
+	x;
+	y;
+}
+class C {
+	// Computed properties
+get [1 << 6]() {
+		return new Foo();
+	}
+	set [1 << 6](p) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames38_ES6 1`] = `
+"class Foo {
+	x;
+}
+class Foo2 {
+	x;
+	y;
+}
+class C {
+	// Computed properties
+get [1 << 6]() {
+		return new Foo();
+	}
+	set [1 << 6](p) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames39_ES5 1`] = `
+"class Foo {
+	x;
+}
+class Foo2 {
+	x;
+	y;
+}
+class C {
+	// Computed properties
+get [1 << 6]() {
+		return new Foo();
+	}
+	set [1 << 6](p) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames39_ES6 1`] = `
+"class Foo {
+	x;
+}
+class Foo2 {
+	x;
+	y;
+}
+class C {
+	// Computed properties
+get [1 << 6]() {
+		return new Foo();
+	}
+	set [1 << 6](p) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames4_ES5 1`] = `
+"var s;
+var n;
+var a;
+var v = { [s]: 0, [n]: n, [s + s]: 1, [s + n]: 2, [+s]: s, [""]: 0, [0]: 0, [a]: 1, [true]: 0, [\`hello bye\`]: 0, [\`hello \${a} bye\`]: 0 };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames4_ES6 1`] = `
+"var s;
+var n;
+var a;
+var v = { [s]: 0, [n]: n, [s + s]: 1, [s + n]: 2, [+s]: s, [""]: 0, [0]: 0, [a]: 1, [true]: 0, [\`hello bye\`]: 0, [\`hello \${a} bye\`]: 0 };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames40_ES5 1`] = `
+"class Foo {
+	x;
+}
+class Foo2 {
+	x;
+	y;
+}
+class C {
+	// Computed properties
+[""]() {
+		return new Foo();
+	}
+	[""]() {
+		return new Foo2();
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames40_ES6 1`] = `
+"class Foo {
+	x;
+}
+class Foo2 {
+	x;
+	y;
+}
+class C {
+	// Computed properties
+[""]() {
+		return new Foo();
+	}
+	[""]() {
+		return new Foo2();
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames41_ES5 1`] = `
+"class Foo {
+	x;
+}
+class Foo2 {
+	x;
+	y;
+}
+class C {
+	// Computed properties
+static [""]() {
+		return new Foo();
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames41_ES6 1`] = `
+"class Foo {
+	x;
+}
+class Foo2 {
+	x;
+	y;
+}
+class C {
+	// Computed properties
+static [""]() {
+		return new Foo();
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames42_ES5 1`] = `
+"class Foo {
+	x;
+}
+class Foo2 {
+	x;
+	y;
+}
+class C {
+	// Computed properties
+[""];
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames42_ES6 1`] = `
+"class Foo {
+	x;
+}
+class Foo2 {
+	x;
+	y;
+}
+class C {
+	// Computed properties
+[""];
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames43_ES5 1`] = `
+"class Foo {
+	x;
+}
+class Foo2 {
+	x;
+	y;
+}
+class C {
+}
+class D extends C {
+	// Computed properties
+get ["get1"]() {
+		return new Foo();
+	}
+	set ["set1"](p) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames43_ES6 1`] = `
+"class Foo {
+	x;
+}
+class Foo2 {
+	x;
+	y;
+}
+class C {
+}
+class D extends C {
+	// Computed properties
+get ["get1"]() {
+		return new Foo();
+	}
+	set ["set1"](p) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames44_ES5 1`] = `
+"class Foo {
+	x;
+}
+class Foo2 {
+	x;
+	y;
+}
+class C {
+	get ["get1"]() {
+		return new Foo();
+	}
+}
+class D extends C {
+	set ["set1"](p) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames44_ES6 1`] = `
+"class Foo {
+	x;
+}
+class Foo2 {
+	x;
+	y;
+}
+class C {
+	get ["get1"]() {
+		return new Foo();
+	}
+}
+class D extends C {
+	set ["set1"](p) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames45_ES5 1`] = `
+"class Foo {
+	x;
+}
+class Foo2 {
+	x;
+	y;
+}
+class C {
+	get ["get1"]() {
+		return new Foo();
+	}
+}
+class D extends C {
+	// No error when the indexer is in a class more derived than the computed property
+set ["set1"](p) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames45_ES6 1`] = `
+"class Foo {
+	x;
+}
+class Foo2 {
+	x;
+	y;
+}
+class C {
+	get ["get1"]() {
+		return new Foo();
+	}
+}
+class D extends C {
+	// No error when the indexer is in a class more derived than the computed property
+set ["set1"](p) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames46_ES5 1`] = `
+"var o = { ["" || 0]: 0 };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames46_ES6 1`] = `
+"var o = { ["" || 0]: 0 };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames47_ES5 1`] = `
+"var E1 = /* @__PURE__ */ ((E1) => {E1[E1["x"]=0]="x";return E1;})(E1 || {});
+var E2 = /* @__PURE__ */ ((E2) => {E2[E2["x"]=0]="x";return E2;})(E2 || {});
+var o = { [E1.x || E2.x]: 0 };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames47_ES6 1`] = `
+"var E1 = /* @__PURE__ */ ((E1) => {E1[E1["x"]=0]="x";return E1;})(E1 || {});
+var E2 = /* @__PURE__ */ ((E2) => {E2[E2["x"]=0]="x";return E2;})(E2 || {});
+var o = { [E1.x || E2.x]: 0 };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames48_ES5 1`] = `
+"var E = /* @__PURE__ */ ((E) => {E[E["x"]=0]="x";return E;})(E || {});
+var a;
+extractIndexer({ [a]: "" });
+// Should return string
+extractIndexer({ [E.x]: "" });
+// Should return string
+extractIndexer({ ["" || 0]: "" });
+// Should return any (widened form of undefined)
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames48_ES6 1`] = `
+"var E = /* @__PURE__ */ ((E) => {E[E["x"]=0]="x";return E;})(E || {});
+var a;
+extractIndexer({ [a]: "" });
+// Should return string
+extractIndexer({ [E.x]: "" });
+// Should return string
+extractIndexer({ ["" || 0]: "" });
+// Should return any (widened form of undefined)
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames49_ES5 1`] = `""`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames49_ES6 1`] = `""`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames5_ES5 1`] = `
+"var v = { [b]: 0, [true]: 1, [[]]: 0, [{}]: 0, [undefined]: undefined, [null]: null };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames5_ES6 1`] = `
+"var v = { [b]: 0, [true]: 1, [[]]: 0, [{}]: 0, [undefined]: undefined, [null]: null };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames50_ES5 1`] = `""`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames50_ES6 1`] = `""`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames51_ES5 1`] = `
+"function f() {
+	var t;
+	var k;
+	var v = { [t]: 0, [k]: 1 };
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames51_ES6 1`] = `
+"function f() {
+	var t;
+	var k;
+	var v = { [t]: 0, [k]: 1 };
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames52 1`] = `
+"const array = [];
+for (let i = 0; i < 10; ++i) {
+	array.push(class C {
+		[i] = () => C;
+		static [i] = 100;
+	});
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames6_ES5 1`] = `
+"var v = { [p1]: 0, [p2]: 1, [p3]: 2 };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames6_ES6 1`] = `
+"var v = { [p1]: 0, [p2]: 1, [p3]: 2 };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames7_ES5 1`] = `
+"var E = /* @__PURE__ */ ((E) => {E[E["member"]=0]="member";return E;})(E || {});
+var v = { [E.member]: 0 };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames7_ES6 1`] = `
+"var E = /* @__PURE__ */ ((E) => {E[E["member"]=0]="member";return E;})(E || {});
+var v = { [E.member]: 0 };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames8_ES5 1`] = `
+"function f() {
+	var t;
+	var u;
+	var v = { [t]: 0, [u]: 1 };
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames8_ES6 1`] = `
+"function f() {
+	var t;
+	var u;
+	var v = { [t]: 0, [u]: 1 };
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames9_ES5 1`] = `
+"function f(x) {
+}
+var v = { [f("")]: 0, [f(0)]: 0, [f(true)]: 0 };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames9_ES6 1`] = `
+"function f(x) {
+}
+var v = { [f("")]: 0, [f(0)]: 0, [f(true)]: 0 };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesContextualType1_ES5 1`] = `
+"// Doesn't get hit
+var o = { ["" + 0](y) {
+	return y.length;
+}, ["" + 1]: (y) => y.length };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesContextualType1_ES6 1`] = `
+"// Doesn't get hit
+var o = { ["" + 0](y) {
+	return y.length;
+}, ["" + 1]: (y) => y.length };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesContextualType10_ES5 1`] = `
+"var o = { [+"foo"]: "", [+"bar"]: 0 };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesContextualType10_ES6 1`] = `
+"var o = { [+"foo"]: "", [+"bar"]: 0 };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesContextualType2_ES5 1`] = `
+"// Doesn't get hit
+var o = { [+"foo"](y) {
+	return y.length;
+}, [+"bar"]: (y) => y.length };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesContextualType2_ES6 1`] = `
+"// Doesn't get hit
+var o = { [+"foo"](y) {
+	return y.length;
+}, [+"bar"]: (y) => y.length };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesContextualType3_ES5 1`] = `
+"var o = { [+"foo"](y) {
+	return y.length;
+}, [+"bar"]: (y) => y.length };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesContextualType3_ES6 1`] = `
+"var o = { [+"foo"](y) {
+	return y.length;
+}, [+"bar"]: (y) => y.length };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesContextualType4_ES5 1`] = `
+"var o = { ["" + "foo"]: "", ["" + "bar"]: 0 };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesContextualType4_ES6 1`] = `
+"var o = { ["" + "foo"]: "", ["" + "bar"]: 0 };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesContextualType5_ES5 1`] = `
+"var o = { [+"foo"]: "", [+"bar"]: 0 };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesContextualType5_ES6 1`] = `
+"var o = { [+"foo"]: "", [+"bar"]: 0 };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesContextualType6_ES5 1`] = `
+"foo({ p: "", 0: () => {
+}, ["hi" + "bye"]: true, [0 + 1]: 0, [+"hi"]: [0] });
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesContextualType6_ES6 1`] = `
+"foo({ p: "", 0: () => {
+}, ["hi" + "bye"]: true, [0 + 1]: 0, [+"hi"]: [0] });
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesContextualType7_ES5 1`] = `
+"foo({ 0: () => {
+}, ["hi" + "bye"]: true, [0 + 1]: 0, [+"hi"]: [0] });
+g({ p: "" });
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesContextualType7_ES6 1`] = `
+"foo({ 0: () => {
+}, ["hi" + "bye"]: true, [0 + 1]: 0, [+"hi"]: [0] });
+g({ p: "" });
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesContextualType8_ES5 1`] = `
+"var o = { ["" + "foo"]: "", ["" + "bar"]: 0 };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesContextualType8_ES6 1`] = `
+"var o = { ["" + "foo"]: "", ["" + "bar"]: 0 };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesContextualType9_ES5 1`] = `
+"var o = { [+"foo"]: "", [+"bar"]: 0 };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesContextualType9_ES6 1`] = `
+"var o = { [+"foo"]: "", [+"bar"]: 0 };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesDeclarationEmit1_ES5 1`] = `
+"class C {
+	["" + ""]() {
+	}
+	get ["" + ""]() {
+		return 0;
+	}
+	set ["" + ""](x) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesDeclarationEmit1_ES6 1`] = `
+"class C {
+	["" + ""]() {
+	}
+	get ["" + ""]() {
+		return 0;
+	}
+	set ["" + ""](x) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesDeclarationEmit2_ES5 1`] = `
+"class C {
+	static ["" + ""]() {
+	}
+	static get ["" + ""]() {
+		return 0;
+	}
+	static set ["" + ""](x) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesDeclarationEmit2_ES6 1`] = `
+"class C {
+	static ["" + ""]() {
+	}
+	static get ["" + ""]() {
+		return 0;
+	}
+	static set ["" + ""](x) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesDeclarationEmit3_ES5 1`] = `""`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesDeclarationEmit3_ES6 1`] = `""`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesDeclarationEmit4_ES5 1`] = `
+"var v;
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesDeclarationEmit4_ES6 1`] = `
+"var v;
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesDeclarationEmit5_ES5 1`] = `
+"var v = { ["" + ""]: 0, ["" + ""]() {
+}, get ["" + ""]() {
+	return 0;
+}, set ["" + ""](x) {
+} };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesDeclarationEmit5_ES6 1`] = `
+"var v = { ["" + ""]: 0, ["" + ""]() {
+}, get ["" + ""]() {
+	return 0;
+}, set ["" + ""](x) {
+} };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesDeclarationEmit6_ES5 1`] = `
+"var v = { [-1]: {}, [+1]: {}, [~1]: {}, [!1]: {} };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesDeclarationEmit6_ES6 1`] = `
+"var v = { [-1]: {}, [+1]: {}, [~1]: {}, [!1]: {} };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesOnOverloads_ES5 1`] = `
+"var methodName = "method";
+var accessorName = "accessor";
+class C {
+	[methodName](v) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesOnOverloads_ES6 1`] = `
+"var methodName = "method";
+var accessorName = "accessor";
+class C {
+	[methodName](v) {
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesSourceMap1_ES5 1`] = `
+"class C {
+	["hello"]() {
+		debugger;
+	}
+	get ["goodbye"]() {
+		return 0;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesSourceMap1_ES6 1`] = `
+"class C {
+	["hello"]() {
+		debugger;
+	}
+	get ["goodbye"]() {
+		return 0;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesSourceMap2_ES5 1`] = `
+"var v = { ["hello"]() {
+	debugger;
+}, get ["goodbye"]() {
+	return 0;
+} };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesSourceMap2_ES6 1`] = `
+"var v = { ["hello"]() {
+	debugger;
+}, get ["goodbye"]() {
+	return 0;
+} };
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNamesWithStaticProperty 1`] = `
+"class C1 {
+	static staticProp = 10;
+	get [C1.staticProp]() {
+		return "hello";
+	}
+	set [C1.staticProp](x) {
+		var y = x;
+	}
+	[C1.staticProp]() {
+	}
+}
+(class C2 {
+	static staticProp = 10;
+	get [C2.staticProp]() {
+		return "hello";
+	}
+	set [C2.staticProp](x) {
+		var y = x;
+	}
+	[C2.staticProp]() {
+	}
+});
+"
+`;

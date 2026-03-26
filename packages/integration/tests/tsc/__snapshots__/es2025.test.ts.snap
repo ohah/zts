@@ -1,0 +1,22 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`TSC: es2025 float16Array 1`] = `
+"const float16 = new Float16Array(4);
+"
+`;
+
+exports[`TSC: es2025 intlDurationFormat 1`] = `
+"new Intl.DurationFormat("en").format({ years: 1, hours: 20, minutes: 15, seconds: 35 });
+"
+`;
+
+exports[`TSC: es2025 regExpEscape 1`] = `
+"const regExp = new RegExp(RegExp.escape("foo.bar"));
+regExp.test("foo.bar");
+"
+`;
+
+exports[`TSC: es2025 syncIteratorHelpers 1`] = `
+"[1, 2, 3, 4].values().filter((x) => x % 2 === 0).map((x) => x * 10).toArray();
+"
+`;
