@@ -77,6 +77,9 @@ pub const Module = struct {
     /// platform=browser에서 Node 빌트인 모듈을 빈 CJS로 대체 (esbuild "(disabled)" 방식).
     /// AST가 없고, emitter가 빈 __commonJS wrapper를 출력한다.
     is_disabled: bool = false,
+    /// package.json "module" 필드를 통해 resolve된 파일.
+    /// .js 확장자라도 ESM으로 파싱해야 함.
+    is_module_field: bool = false,
     /// DFS 후위 순서 = ESM 실행 순서 (D058, D076).
     /// maxInt = 미방문 (DFS에서 할당되지 않음).
     exec_index: u32,
