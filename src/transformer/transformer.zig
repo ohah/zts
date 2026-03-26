@@ -2723,21 +2723,26 @@ pub const Transformer = struct {
             });
         } else class_ref;
 
-        // arg3: "methodName" — key 노드의 텍스트를 따옴표로 감싸 문자열 리터럴로
+        // arg3: "methodName" 또는 computed key expression
         const key_node = self.new_ast.getNode(md.key);
-        const key_text = self.new_ast.getText(key_node.data.string_ref);
-        // 문자열 리터럴은 따옴표를 포함해야 codegen이 올바르게 출력
-        var quoted_buf: [256]u8 = undefined;
-        quoted_buf[0] = '"';
-        const copy_len = @min(key_text.len, quoted_buf.len - 2);
-        @memcpy(quoted_buf[1 .. 1 + copy_len], key_text[0..copy_len]);
-        quoted_buf[1 + copy_len] = '"';
-        const quoted_span = try self.new_ast.addString(quoted_buf[0 .. 2 + copy_len]);
-        const key_string = try self.new_ast.addNode(.{
-            .tag = .string_literal,
-            .span = quoted_span,
-            .data = .{ .string_ref = quoted_span },
-        });
+        const key_string = if (key_node.tag == .computed_property_key)
+            // computed key: [expr] → 그대로 expression 전달
+            key_node.data.unary.operand
+        else blk: {
+            // 일반 key: identifier/string → 따옴표로 감싼 문자열 리터럴
+            const key_text = self.new_ast.getText(key_node.data.string_ref);
+            var quoted_buf: [256]u8 = undefined;
+            quoted_buf[0] = '"';
+            const copy_len = @min(key_text.len, quoted_buf.len - 2);
+            @memcpy(quoted_buf[1 .. 1 + copy_len], key_text[0..copy_len]);
+            quoted_buf[1 + copy_len] = '"';
+            const quoted_span = try self.new_ast.addString(quoted_buf[0 .. 2 + copy_len]);
+            break :blk try self.new_ast.addNode(.{
+                .tag = .string_literal,
+                .span = quoted_span,
+                .data = .{ .string_ref = quoted_span },
+            });
+        };
 
         // arg4: kind (1=method, 2=property) — string_table에 숫자 텍스트 저장
         const kind_text = if (md.kind == 1) "1" else "2";

@@ -338,6 +338,11 @@ pub fn parseDecoratedStatement(self: *Parser) ParseError2!NodeIndex {
 pub fn parseDecorator(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     try self.advance(); // skip @
+    // decorator expression에서 computed member access ([) 금지
+    // @dec ["method"]()에서 ["method"]은 다음 멤버의 computed key이지 dec의 member access가 아님
+    const saved_in_decorator = self.ctx.in_decorator;
+    defer self.ctx.in_decorator = saved_in_decorator;
+    self.ctx.in_decorator = true;
     const expr = try self.parseCallExpression();
 
     // TS decorator with type arguments: @x<Type> property
