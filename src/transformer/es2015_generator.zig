@@ -270,13 +270,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     try collectDoWhileOperations(self, stmt_idx, stmt, ops, next_label);
                 },
                 .try_statement => {
-                    // try/catch/finally 안에 yield가 있으면 복잡한 변환 필요.
-                    // 현재는 yield 없는 경우만 처리 (그대로 visit).
-                    // yield가 있는 try/catch는 _state.trys 스택이 필요하여 추후 구현.
-                    const new_stmt = try self.visitNode(stmt_idx);
-                    if (!new_stmt.isNone()) {
-                        try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
-                    }
+                    try collectTryOperations(self, stmt_idx, stmt, ops, next_label);
                 },
                 else => {
                     const new_stmt = try self.visitNode(stmt_idx);
@@ -512,6 +506,190 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             try ops.append(self.allocator, .{
                 .code = .break_when_true,
                 .arg = .{ .label_and_node = .{ .label = body_label, .node = new_cond } },
+            });
+        }
+
+        /// try/catch/finally 안의 yield를 상태 머신으로 변환.
+        /// try_statement: ternary { a=block, b=catch_clause, c=finally_block }
+        /// catch_clause: binary { left=param, right=body }
+        ///
+        /// 변환 패턴:
+        ///   _state.trys.push([try_label, catch_label, finally_label, end_label])
+        ///   try body → yield points
+        ///   goto end
+        ///   catch: param = _state.sent(); catch body
+        ///   finally: finally body + return [7] (endfinally)
+        fn collectTryOperations(self: *Transformer, stmt_idx: NodeIndex, stmt: Node, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
+            const try_body = stmt.data.ternary.a;
+            const catch_clause = stmt.data.ternary.b;
+            const finally_body = stmt.data.ternary.c;
+
+            // yield가 없으면 그대로 visit
+            if (!containsYield(self, try_body) and !containsYield(self, catch_clause) and !containsYield(self, finally_body)) {
+                const new_stmt = try self.visitNode(stmt_idx);
+                if (!new_stmt.isNone()) {
+                    try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
+                }
+                return;
+            }
+
+            // label 할당
+            const try_label = next_label.*;
+            _ = try_label;
+            const catch_label = next_label.* + 1;
+            const finally_label = if (!finally_body.isNone()) next_label.* + 2 else catch_label;
+            const end_label = if (!finally_body.isNone()) next_label.* + 3 else next_label.* + 2;
+            next_label.* = end_label + 1;
+
+            // _state.trys.push([try_label, catch_label, finally_label, end_label])
+            const trys_push = try buildTrysPush(self, catch_label, if (!finally_body.isNone()) finally_label else end_label, end_label, stmt.span);
+            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = trys_push } });
+
+            // try body
+            const body_node = self.old_ast.getNode(try_body);
+            if (body_node.tag == .block_statement) {
+                const body_stmts = self.old_ast.extra_data.items[body_node.data.list.start .. body_node.data.list.start + body_node.data.list.len];
+                for (body_stmts) |raw_idx| {
+                    try collectOperations(self, @enumFromInt(raw_idx), ops, next_label);
+                }
+            }
+
+            // goto end (or finally)
+            try ops.append(self.allocator, .{
+                .code = .break_op,
+                .arg = .{ .label = if (!finally_body.isNone()) finally_label else end_label },
+            });
+
+            // catch label
+            if (!catch_clause.isNone()) {
+                try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+
+                const catch_node = self.old_ast.getNode(catch_clause);
+                const catch_param = catch_node.data.binary.left;
+                const catch_body_idx = catch_node.data.binary.right;
+
+                // catch param = _state.sent()
+                if (!catch_param.isNone()) {
+                    const new_param = try self.visitNode(catch_param);
+                    const sent = try buildSentCall(self, stmt.span);
+                    const assign = try self.new_ast.addNode(.{
+                        .tag = .assignment_expression,
+                        .span = stmt.span,
+                        .data = .{ .binary = .{ .left = new_param, .right = sent, .flags = 0 } },
+                    });
+                    const assign_stmt = try self.new_ast.addNode(.{
+                        .tag = .expression_statement,
+                        .span = stmt.span,
+                        .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
+                    });
+                    try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
+                }
+
+                // catch body
+                const catch_body_node = self.old_ast.getNode(catch_body_idx);
+                if (catch_body_node.tag == .block_statement) {
+                    const body_stmts = self.old_ast.extra_data.items[catch_body_node.data.list.start .. catch_body_node.data.list.start + catch_body_node.data.list.len];
+                    for (body_stmts) |raw_idx| {
+                        try collectOperations(self, @enumFromInt(raw_idx), ops, next_label);
+                    }
+                }
+
+                // goto end (or finally)
+                try ops.append(self.allocator, .{
+                    .code = .break_op,
+                    .arg = .{ .label = if (!finally_body.isNone()) finally_label else end_label },
+                });
+            }
+
+            // finally label
+            if (!finally_body.isNone()) {
+                try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+
+                const finally_node = self.old_ast.getNode(finally_body);
+                if (finally_node.tag == .block_statement) {
+                    const body_stmts = self.old_ast.extra_data.items[finally_node.data.list.start .. finally_node.data.list.start + finally_node.data.list.len];
+                    for (body_stmts) |raw_idx| {
+                        try collectOperations(self, @enumFromInt(raw_idx), ops, next_label);
+                    }
+                }
+
+                // return [7] (endfinally)
+                const endfinally_ret = try buildInstructionReturn(self, 7, .none, stmt.span);
+                try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = endfinally_ret } });
+            }
+
+            // end label
+            try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+        }
+
+        /// _state.trys.push([catch_label, finally_label, end_label]) expression_statement 생성.
+        fn buildTrysPush(self: *Transformer, catch_label: u32, finally_label: u32, end_label: u32, span: Span) Transformer.Error!NodeIndex {
+            const state_ref = try buildStateRef(self, span);
+
+            // _state.trys
+            const trys_span = try self.new_ast.addString("trys");
+            const trys_prop = try self.new_ast.addNode(.{
+                .tag = .identifier_reference,
+                .span = trys_span,
+                .data = .{ .string_ref = trys_span },
+            });
+            const trys_me = try self.new_ast.addExtras(&.{
+                @intFromEnum(state_ref), @intFromEnum(trys_prop), 0,
+            });
+            const trys_member = try self.new_ast.addNode(.{
+                .tag = .static_member_expression,
+                .span = span,
+                .data = .{ .extra = trys_me },
+            });
+
+            // _state.trys.push
+            const push_span = try self.new_ast.addString("push");
+            const push_prop = try self.new_ast.addNode(.{
+                .tag = .identifier_reference,
+                .span = push_span,
+                .data = .{ .string_ref = push_span },
+            });
+            const push_me = try self.new_ast.addExtras(&.{
+                @intFromEnum(trys_member), @intFromEnum(push_prop), 0,
+            });
+            const push_member = try self.new_ast.addNode(.{
+                .tag = .static_member_expression,
+                .span = span,
+                .data = .{ .extra = push_me },
+            });
+
+            // [catch_label, finally_label, end_label] 배열
+            var buf1: [16]u8 = undefined;
+            var buf2: [16]u8 = undefined;
+            var buf3: [16]u8 = undefined;
+            const s1 = std.fmt.bufPrint(&buf1, "{d}", .{catch_label}) catch "0";
+            const s2 = std.fmt.bufPrint(&buf2, "{d}", .{finally_label}) catch "0";
+            const s3 = std.fmt.bufPrint(&buf3, "{d}", .{end_label}) catch "0";
+            const n1 = try self.new_ast.addNode(.{ .tag = .numeric_literal, .span = try self.new_ast.addString(s1), .data = .{ .none = 0 } });
+            const n2 = try self.new_ast.addNode(.{ .tag = .numeric_literal, .span = try self.new_ast.addString(s2), .data = .{ .none = 0 } });
+            const n3 = try self.new_ast.addNode(.{ .tag = .numeric_literal, .span = try self.new_ast.addString(s3), .data = .{ .none = 0 } });
+            const arr_list = try self.new_ast.addNodeList(&.{ n1, n2, n3 });
+            const arr = try self.new_ast.addNode(.{
+                .tag = .array_expression,
+                .span = span,
+                .data = .{ .list = arr_list },
+            });
+
+            // _state.trys.push([...])
+            const call_args = try self.new_ast.addNodeList(&.{arr});
+            const call_extra = try self.new_ast.addExtras(&.{
+                @intFromEnum(push_member), call_args.start, call_args.len, 0,
+            });
+            const call = try self.new_ast.addNode(.{
+                .tag = .call_expression,
+                .span = span,
+                .data = .{ .extra = call_extra },
+            });
+
+            return self.new_ast.addNode(.{
+                .tag = .expression_statement,
+                .span = span,
+                .data = .{ .unary = .{ .operand = call, .flags = 0 } },
             });
         }
 
