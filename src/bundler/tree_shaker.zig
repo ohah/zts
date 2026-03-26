@@ -402,7 +402,6 @@ pub const TreeShaker = struct {
                 }
             } else if (ib.kind == .namespace) {
                 if (ib.namespace_used_properties) |props| {
-                    // 정적 분석으로 사용된 프로퍼티만 마킹
                     for (props) |prop_name| {
                         if (self.linker.resolveExportChain(rec.resolved, prop_name, 0)) |c| {
                             const canon_idx = @intFromEnum(c.module_index);
@@ -416,17 +415,12 @@ pub const TreeShaker = struct {
                         }
                         try self.markExportUsed(@intCast(target_mod), prop_name);
                     }
-                    if (!self.included.isSet(target_mod)) {
-                        self.included.set(target_mod);
-                        newly_included = true;
-                    }
                 } else {
-                    // fallback: 동적 접근 등으로 전체 사용
                     try self.markAllExportsUsed(@intCast(target_mod));
-                    if (!self.included.isSet(target_mod)) {
-                        self.included.set(target_mod);
-                        newly_included = true;
-                    }
+                }
+                if (!self.included.isSet(target_mod)) {
+                    self.included.set(target_mod);
+                    newly_included = true;
                 }
             }
         }
