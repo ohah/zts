@@ -4303,6 +4303,238 @@ test "ES2015: arrow this capture in class method" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_this.x") != null);
 }
 
+// --- arrow edge cases ---
+
+test "ES2015: arrow returning object literal" {
+    var r = try e2eTarget(std.testing.allocator, "var f = () => ({ x: 1 });", .es5);
+    defer r.deinit();
+    // 객체 리터럴 반환 시 괄호 유지
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "x:1") != null);
+}
+
+test "ES2015: arrow with destructuring param" {
+    var r = try e2eTarget(std.testing.allocator, "var f = ({x,y}) => x+y;", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function(") != null);
+}
+
+test "ES2015: nested arrow this capture" {
+    var r = try e2eTarget(std.testing.allocator, "function outer(){var f=()=>{var g=()=>this.x;};}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _this=this") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_this.x") != null);
+}
+
+test "ES2015: arrow in object method preserves this" {
+    var r = try e2eTarget(std.testing.allocator, "var obj={m(){return ()=>this;}};", .es5);
+    defer r.deinit();
+    // arrow → function 변환 + _this 참조
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_this") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function()") != null);
+}
+
+// --- destructuring edge cases ---
+
+test "ES2015: nested object destructuring" {
+    var r = try e2eTarget(std.testing.allocator, "var {a:{b}}=obj;", .es5);
+    defer r.deinit();
+    // 중첩 구조분해 → 임시 변수 사용
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".a") != null);
+}
+
+test "ES2015: array in object destructuring" {
+    var r = try e2eTarget(std.testing.allocator, "var {a:[x,y]}=obj;", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "[0]") != null);
+}
+
+test "ES2015: destructuring function parameter" {
+    var r = try e2eTarget(std.testing.allocator, "function f({a,b}){return a+b;}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function f(") != null);
+}
+
+test "ES2015: destructuring with computed key" {
+    var r = try e2eTarget(std.testing.allocator, "var k='x';var {[k]:v}=obj;", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var") != null);
+}
+
+test "ES2015: for-of with destructuring" {
+    var r = try e2eTarget(std.testing.allocator, "for(const [k,v] of arr){}", .es5);
+    defer r.deinit();
+    // for-of → index loop, const → var
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".length") != null);
+}
+
+// --- class edge cases ---
+
+test "ES2015: class with computed method" {
+    var r = try e2eTarget(std.testing.allocator, "var k='m';class F{[k](){return 1;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function F()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "prototype") != null);
+}
+
+test "ES2015: class with multiple fields" {
+    var r = try e2eTarget(std.testing.allocator, "class F{a=1;b='hi';c=true;}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "this.a=1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "this.b=\"hi\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "this.c=true") != null);
+}
+
+test "ES2015: class constructor with super and field" {
+    var r = try e2eTarget(std.testing.allocator, "class B{x=0;}class D extends B{y=1;constructor(){super();this.z=2;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "this.y=1") != null);
+}
+
+// --- generator edge cases ---
+
+test "ES2015: generator with while yield" {
+    var r = try e2eTarget(std.testing.allocator, "function* g(){var i=0;while(i<3){yield i;i++;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [4,i]") != null);
+}
+
+test "ES2015: generator expression" {
+    var r = try e2eTarget(std.testing.allocator, "var g=function*(){yield 1;yield 2;};", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
+}
+
+test "ES2015: generator with multiple return" {
+    var r = try e2eTarget(std.testing.allocator, "function* g(x){if(x>0){return 'pos';}yield 0;return 'neg';}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
+    // yield 0 → [4, 0], return "neg" → [2, "neg"]
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [2,\"neg\"]") != null);
+}
+
+// --- for-of edge cases ---
+
+test "ES2015: for-of with let" {
+    var r = try e2eTarget(std.testing.allocator, "for(let x of arr){f(x);}", .es5);
+    defer r.deinit();
+    // let → var + for-of → index loop
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var") != null);
+}
+
+test "ES2015: for-of with break" {
+    var r = try e2eTarget(std.testing.allocator, "for(const x of arr){if(x>1)break;}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "break") != null);
+}
+
+// --- spread edge cases ---
+
+test "ES2015: spread in new with apply" {
+    var r = try e2eTarget(std.testing.allocator, "new Foo(...args);", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "apply") != null or std.mem.indexOf(u8, r.output, "concat") != null);
+}
+
+test "ES2015: spread multiple arrays" {
+    var r = try e2eTarget(std.testing.allocator, "var x=[...a,...b,...c];", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "concat") != null);
+}
+
+// --- template literal edge cases ---
+
+test "ES2015: template with expression" {
+    var r = try e2eTarget(std.testing.allocator, "var s=`${a+b} = ${c}`;", .es5);
+    defer r.deinit();
+    // 백틱 → 문자열 연결
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "+") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\" = \"") != null or std.mem.indexOf(u8, r.output, "' = '") != null);
+}
+
+test "ES2015: template nested" {
+    var r = try e2eTarget(std.testing.allocator, "var s=`a${`b${c}`}d`;", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "+") != null);
+}
+
+// --- combined features ---
+
+test "ES2015: class with generator method" {
+    var r = try e2eTarget(std.testing.allocator, "class F{*gen(){yield 1;}}", .es5);
+    defer r.deinit();
+    // class → function + prototype
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "prototype") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "gen") != null);
+}
+
+test "ES2015: destructuring with spread and default" {
+    var r = try e2eTarget(std.testing.allocator, "var {a=1,...rest}=obj;", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__rest") != null or std.mem.indexOf(u8, r.output, "hasOwnProperty") != null);
+}
+
+test "ES2015: multiple let in for-of" {
+    var r = try e2eTarget(std.testing.allocator, "for(const [a,b] of items){let sum=a+b;f(sum);}", .es5);
+    defer r.deinit();
+    // const/let → var, for-of → index loop, destructuring → temp
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var") != null);
+}
+
+// --- ES2020 edge cases ---
+
+test "ES2020: ?? nested" {
+    var r = try e2eTarget(std.testing.allocator, "const x = a ?? b ?? c;", .es2019);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "!=null") != null);
+}
+
+test "ES2020: ?. deep chain" {
+    var r = try e2eTarget(std.testing.allocator, "a?.b?.c?.d;", .es2019);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "==null?void 0") != null);
+}
+
+test "ES2020: ?. with method call" {
+    var r = try e2eTarget(std.testing.allocator, "obj?.method(1,2);", .es2019);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "==null?void 0") != null);
+}
+
+test "ES2020: ?? with ?. combined" {
+    var r = try e2eTarget(std.testing.allocator, "const x = a?.b ?? 'default';", .es2019);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "!=null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "==null?void 0") != null);
+}
+
+// --- ES2021 edge cases ---
+
+test "ES2021: ??= with member expression" {
+    var r = try e2eTarget(std.testing.allocator, "obj.x ??= 5;", .es2020);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "obj.x") != null);
+}
+
+test "ES2021: ||= with member expression" {
+    var r = try e2eTarget(std.testing.allocator, "obj.x ||= 5;", .es2020);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "obj.x") != null);
+}
+
+// --- ES2022 edge cases ---
+
+test "ES2022: static block with side effects" {
+    var r = try e2eTarget(std.testing.allocator, "class F{static count=0;static{F.count++;}}", .es2021);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "F.count++") != null or std.mem.indexOf(u8, r.output, "F.count+=1") != null);
+}
+
 // --- temp var hoisting ---
 
 test "ES2020: temp var hoisted for ?? in function" {

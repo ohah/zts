@@ -29,6 +29,9 @@ pub const ImportBinding = struct {
     local_span: Span,
     /// 어떤 import 문에서 왔는지 (ImportRecord 인덱스)
     import_record_index: u32,
+    /// namespace import에서 실제 접근된 프로퍼티 목록 (v.object → "object")
+    /// null = 전체 사용 (동적 접근, namespace 탈출 등 fallback)
+    namespace_used_properties: ?[]const []const u8 = null,
 
     pub const Kind = enum {
         default,
@@ -435,6 +438,144 @@ fn extractObjectPatternNames(
                 });
             },
             else => {},
+        }
+    }
+}
+
+/// namespace import의 실제 프로퍼티 접근을 수집한다.
+/// `import * as v from 'mod'; v.object(); v.parse();`
+/// → v의 namespace_used_properties = ["object", "parse"]
+///
+/// namespace가 member access 외의 방식으로 사용되면 (함수 인자, 대입 등)
+/// fallback으로 null (전체 사용)을 유지한다.
+pub fn collectNamespaceAccesses(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    bindings: []ImportBinding,
+) !void {
+    // namespace import local_name → binding index 매핑
+    var ns_map: std.StringHashMapUnmanaged(usize) = .{};
+    defer ns_map.deinit(allocator);
+    for (bindings, 0..) |ib, i| {
+        if (ib.kind == .namespace) {
+            try ns_map.put(allocator, ib.local_name, i);
+        }
+    }
+    if (ns_map.count() == 0) return;
+
+    // member access의 object로 사용된 identifier 노드 인덱스 추적
+    var member_obj_set = std.AutoHashMap(u32, void).init(allocator);
+    defer member_obj_set.deinit();
+
+    // 프로퍼티 이름 수집 (binding index → property names)
+    var props_map = std.AutoHashMap(usize, std.ArrayList([]const u8)).init(allocator);
+    defer {
+        var it = props_map.valueIterator();
+        while (it.next()) |list| list.deinit(allocator);
+        props_map.deinit();
+    }
+
+    // Pass 1: static_member_expression에서 v.xxx 패턴 수집
+    for (ast.nodes.items, 0..) |node, ni| {
+        if (node.tag != .static_member_expression) continue;
+        const me = node.data.extra;
+        if (!ast.hasExtra(me, 1)) continue;
+
+        const obj_idx = ast.readExtraNode(me, 0);
+        const obj_ni = @intFromEnum(obj_idx);
+        if (obj_ni >= ast.nodes.items.len) continue;
+        const obj = ast.nodes.items[obj_ni];
+        if (obj.tag != .identifier_reference) continue;
+
+        const obj_name = ast.source[obj.span.start..obj.span.end];
+        const binding_idx = ns_map.get(obj_name) orelse continue;
+
+        // property 이름 추출
+        const prop_idx = ast.readExtraNode(me, 1);
+        const prop_ni = @intFromEnum(prop_idx);
+        if (prop_ni >= ast.nodes.items.len) continue;
+        const prop = ast.nodes.items[prop_ni];
+        const prop_name = ast.source[prop.span.start..prop.span.end];
+
+        // member access의 object identifier 노드를 기록
+        try member_obj_set.put(@intCast(obj_ni), {});
+
+        // 프로퍼티 이름 수집 (중복 허용 — 후에 deduplicate)
+        const entry = try props_map.getOrPut(binding_idx);
+        if (!entry.found_existing) entry.value_ptr.* = std.ArrayList([]const u8){ .items = &.{}, .capacity = 0 };
+        try entry.value_ptr.append(allocator, prop_name);
+
+        _ = ni;
+    }
+
+    // Pass 2: namespace 심볼이 member access 외에서 사용되면 fallback
+    // (함수 인자, 대입, computed member 등)
+    for (ast.nodes.items, 0..) |node, ni| {
+        switch (node.tag) {
+            .identifier_reference => {
+                const name = ast.source[node.span.start..node.span.end];
+                if (ns_map.get(name)) |binding_idx| {
+                    if (!member_obj_set.contains(@intCast(ni))) {
+                        // member access가 아닌 곳에서 사용 → namespace 탈출
+                        bindings[binding_idx].namespace_used_properties = null;
+                        _ = ns_map.remove(name);
+                    }
+                }
+            },
+            .computed_member_expression => {
+                // v[dynamic] 패턴도 namespace 탈출로 간주
+                const me = node.data.extra;
+                if (!ast.hasExtra(me, 0)) continue;
+                const obj_idx = ast.readExtraNode(me, 0);
+                const obj_ni = @intFromEnum(obj_idx);
+                if (obj_ni >= ast.nodes.items.len) continue;
+                const obj = ast.nodes.items[obj_ni];
+                if (obj.tag != .identifier_reference) continue;
+                const obj_name = ast.source[obj.span.start..obj.span.end];
+                if (ns_map.get(obj_name)) |binding_idx| {
+                    bindings[binding_idx].namespace_used_properties = null;
+                    _ = ns_map.remove(obj_name);
+                }
+            },
+            else => {},
+        }
+    }
+
+    // 결과를 ImportBinding에 반영
+    var map_it = props_map.iterator();
+    while (map_it.next()) |entry| {
+        const binding_idx = entry.key_ptr.*;
+        if (bindings[binding_idx].namespace_used_properties == null and
+            !ns_map.contains(bindings[binding_idx].local_name))
+        {
+            // 이미 fallback 처리됨 (namespace 탈출)
+            continue;
+        }
+
+        // 중복 제거 후 slice로 변환
+        var unique: std.StringHashMapUnmanaged(void) = .{};
+        defer unique.deinit(allocator);
+        for (entry.value_ptr.items) |name| {
+            try unique.put(allocator, name, {});
+        }
+
+        const props = try allocator.alloc([]const u8, unique.count());
+        var i: usize = 0;
+        var kit = unique.keyIterator();
+        while (kit.next()) |key| : (i += 1) {
+            props[i] = key.*;
+        }
+        bindings[binding_idx].namespace_used_properties = props;
+    }
+
+    // namespace import인데 member access가 하나도 없는 경우 → 빈 배열 (아무것도 사용 안 함)
+    for (bindings) |*ib| {
+        if (ib.kind == .namespace and !props_map.contains(@intFromPtr(ib) -% @intFromPtr(bindings.ptr))) {
+            // props_map에 없으면 member access 없음
+            // 하지만 ns_map에 남아있어야 fallback이 아닌 것
+            if (ns_map.contains(ib.local_name)) {
+                ib.namespace_used_properties = &.{};
+            }
         }
     }
 }
