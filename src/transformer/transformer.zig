@@ -32,6 +32,7 @@ const es2021 = @import("es2021.zig");
 const es2022 = @import("es2022.zig");
 const es2015_template = @import("es2015_template.zig");
 const es2015_shorthand = @import("es2015_shorthand.zig");
+const es2015_computed = @import("es2015_computed.zig");
 const es_helpers = @import("es_helpers.zig");
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 
@@ -356,11 +357,16 @@ pub const Transformer = struct {
                 return self.visitListNode(node);
             },
 
-            // object_expression: spread가 있으면 ES2018 다운레벨링 대상
+            // object_expression: spread(ES2018) 또는 computed property(ES2015) 다운레벨링
             .object_expression => {
                 if (self.options.target.needsObjectSpread()) {
                     if (es2018.ES2018(Transformer).hasSpreadProperty(self, node)) {
                         return es2018.ES2018(Transformer).lowerObjectSpread(self, node);
+                    }
+                }
+                if (self.options.target.needsES2015()) {
+                    if (es2015_computed.ES2015Computed(Transformer).hasComputedProperty(self, node)) {
+                        return es2015_computed.ES2015Computed(Transformer).lowerComputedProperties(self, node);
                     }
                 }
                 return self.visitListNode(node);

@@ -3786,3 +3786,29 @@ test "ES2015: shorthand no transform on esnext" {
     defer r.deinit();
     try std.testing.expectEqualStrings("var o={x,y};", r.output);
 }
+
+// --- ES2015: computed property ---
+
+test "ES2015: computed property lowering" {
+    var r = try e2eTarget(std.testing.allocator, "var o={a:1,[k]:v,b:2};", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var o=(_a={a:1},_a[k]=v,_a.b=2,_a);", r.output);
+}
+
+test "ES2015: computed property only" {
+    var r = try e2eTarget(std.testing.allocator, "var o={[k]:v};", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var o=(_a={},_a[k]=v,_a);", r.output);
+}
+
+test "ES2015: no computed - no transform" {
+    var r = try e2eTarget(std.testing.allocator, "var o={a:1,b:2};", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var o={a:1,b:2};", r.output);
+}
+
+test "ES2015: computed no transform on esnext" {
+    var r = try e2eTarget(std.testing.allocator, "var o={[k]:v};", .esnext);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var o={[k]:v};", r.output);
+}
