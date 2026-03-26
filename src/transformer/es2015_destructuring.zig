@@ -1,10 +1,14 @@
 //! ES2015 다운레벨링: destructuring
 //!
 //! --target < es2015 일 때 활성화.
-//! const { a, b } = obj → var _obj = obj, a = _obj.a, b = _obj.b
-//! const [x, y] = arr → var _arr = arr, x = _arr[0], y = _arr[1]
-//! const { a, ...rest } = obj → var _obj = obj, a = _obj.a, rest = __rest(_obj, ["a"])
-//! function f({ x, y }) {} → function f(_ref) { var x = _ref.x, y = _ref.y; }
+//!
+//! variable_declarator에서 binding pattern을 감지하여 개별 선언으로 분해:
+//!   const { a, b } = obj → var _ref = obj; var a = _ref.a; var b = _ref.b;
+//!   const [x, y] = arr  → var _ref = arr; var x = _ref[0]; var y = _ref[1];
+//!   const { a = 1 } = obj → var _ref = obj; var a = _ref.a === void 0 ? 1 : _ref.a;
+//!
+//! 구현: variable_declaration 레벨에서 처리.
+//! destructuring이 있는 declarator를 여러 declarator로 풀어서 대체한다.
 //!
 //! 스펙:
 //! - https://tc39.es/ecma262/#sec-destructuring-assignment (ES2015)
@@ -12,22 +16,311 @@
 //!
 //! 참고:
 //! - SWC: crates/swc_ecma_compat_es2015/src/destructuring.rs (~1388줄)
-//! - esbuild: pkg/js_parser/js_parser_lower.go
 
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
+const NodeList = ast_mod.NodeList;
 const Tag = Node.Tag;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
+const es_helpers = @import("es_helpers.zig");
 
-pub fn ES2015Destructuring(comptime _: type) type {
+pub fn ES2015Destructuring(comptime Transformer: type) type {
     return struct {
-        // TODO: lowerObjectDestructuring
-        // TODO: lowerArrayDestructuring
-        // TODO: lowerDestructuringAssignment
-        // TODO: lowerDestructuringParam
+        /// variable_declaration에 destructuring pattern이 있는지 확인.
+        pub fn hasDestructuring(self: *const Transformer, node: Node) bool {
+            const extras = self.old_ast.extra_data.items;
+            const e = node.data.extra;
+            if (e + 2 >= extras.len) return false;
+            const list_start = extras[e + 1];
+            const list_len = extras[e + 2];
+            const decls = extras[list_start .. list_start + list_len];
+            for (decls) |raw_idx| {
+                const decl = self.old_ast.getNode(@enumFromInt(raw_idx));
+                if (decl.tag != .variable_declarator) continue;
+                const name: NodeIndex = @enumFromInt(extras[decl.data.extra]);
+                if (name.isNone()) continue;
+                const name_node = self.old_ast.getNode(name);
+                if (name_node.tag == .object_pattern or name_node.tag == .array_pattern) return true;
+            }
+            return false;
+        }
+
+        /// destructuring이 있는 variable_declaration을 분해한다.
+        /// 각 destructuring declarator를 여러 개의 단순 declarator로 풀어서 반환.
+        pub fn lowerDestructuringDeclaration(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            const extras = self.old_ast.extra_data.items;
+            const e = node.data.extra;
+            const span = node.span;
+
+            const list_start = extras[e + 1];
+            const list_len = extras[e + 2];
+            const old_decls = extras[list_start .. list_start + list_len];
+
+            const scratch_top = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+            for (old_decls) |raw_idx| {
+                const decl = self.old_ast.getNode(@enumFromInt(raw_idx));
+                if (decl.tag != .variable_declarator) continue;
+
+                const name_idx: NodeIndex = @enumFromInt(extras[decl.data.extra]);
+                const init_idx: NodeIndex = @enumFromInt(extras[decl.data.extra + 2]);
+
+                if (name_idx.isNone()) continue;
+                const name_node = self.old_ast.getNode(name_idx);
+
+                if (name_node.tag == .object_pattern or name_node.tag == .array_pattern) {
+                    // destructuring → 분해
+                    // 먼저 init을 임시 변수에 저장
+                    const new_init = try self.visitNode(init_idx);
+                    const temp_span = try es_helpers.makeTempVarSpan(self);
+                    const temp_binding = try self.new_ast.addNode(.{
+                        .tag = .binding_identifier,
+                        .span = temp_span,
+                        .data = .{ .string_ref = temp_span },
+                    });
+
+                    // var _ref = init
+                    const ref_decl = try makeDeclarator(self, temp_binding, new_init, span);
+                    try self.scratch.append(self.allocator, ref_decl);
+
+                    // 패턴을 개별 declarator로 분해
+                    try emitPatternDeclarators(self, name_node, temp_span, span);
+                } else {
+                    // 일반 declarator: 그대로 visit
+                    const new_decl = try self.visitNode(@enumFromInt(raw_idx));
+                    if (!new_decl.isNone()) {
+                        try self.scratch.append(self.allocator, new_decl);
+                    }
+                }
+            }
+
+            // 새 variable_declaration
+            const new_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+            const var_extra = try self.new_ast.addExtras(&.{ 0, new_list.start, new_list.len }); // 0 = var
+            return self.new_ast.addNode(.{
+                .tag = .variable_declaration,
+                .span = span,
+                .data = .{ .extra = var_extra },
+            });
+        }
+
+        /// object_pattern 또는 array_pattern을 개별 declarator로 분해.
+        /// ref_span은 임시 변수의 span (_ref).
+        fn emitPatternDeclarators(self: *Transformer, pattern: Node, ref_span: Span, span: Span) Transformer.Error!void {
+            if (pattern.tag == .object_pattern) {
+                try emitObjectPatternDeclarators(self, pattern, ref_span, span);
+            } else if (pattern.tag == .array_pattern) {
+                try emitArrayPatternDeclarators(self, pattern, ref_span, span);
+            }
+        }
+
+        /// object_pattern의 각 property를 declarator로 변환.
+        /// { a, b: c, d = 1 } → var a = _ref.a, c = _ref.b, d = _ref.d === void 0 ? 1 : _ref.d
+        fn emitObjectPatternDeclarators(self: *Transformer, pattern: Node, ref_span: Span, span: Span) Transformer.Error!void {
+            const members = self.old_ast.extra_data.items[pattern.data.list.start .. pattern.data.list.start + pattern.data.list.len];
+
+            for (members) |raw_idx| {
+                const prop = self.old_ast.getNode(@enumFromInt(raw_idx));
+
+                if (prop.tag == .rest_element) {
+                    // ...rest는 현재 미지원 (TODO: __rest 헬퍼)
+                    continue;
+                }
+
+                if (prop.tag != .binding_property) continue;
+
+                const key_idx = prop.data.binary.left;
+                const value_idx = prop.data.binary.right;
+
+                // _ref.key (static member access)
+                const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
+                const key_node = self.old_ast.getNode(key_idx);
+
+                const member_access = if (key_node.tag == .computed_property_key) blk: {
+                    const inner = try self.visitNode(key_node.data.unary.operand);
+                    const me = try self.new_ast.addExtras(&.{ @intFromEnum(ref), @intFromEnum(inner), 0 });
+                    break :blk try self.new_ast.addNode(.{
+                        .tag = .computed_member_expression,
+                        .span = span,
+                        .data = .{ .extra = me },
+                    });
+                } else blk: {
+                    const new_key = try self.visitNode(key_idx);
+                    const me = try self.new_ast.addExtras(&.{ @intFromEnum(ref), @intFromEnum(new_key), 0 });
+                    break :blk try self.new_ast.addNode(.{
+                        .tag = .static_member_expression,
+                        .span = span,
+                        .data = .{ .extra = me },
+                    });
+                };
+
+                // value 처리: shorthand vs long-form, default value
+                if (value_idx.isNone() or @intFromEnum(value_idx) == @intFromEnum(key_idx)) {
+                    // shorthand: { a } → var a = _ref.a
+                    const binding = try self.new_ast.addNode(.{
+                        .tag = .binding_identifier,
+                        .span = key_node.span,
+                        .data = .{ .string_ref = key_node.data.string_ref },
+                    });
+                    const decl = try makeDeclarator(self, binding, member_access, span);
+                    try self.scratch.append(self.allocator, decl);
+                } else {
+                    const value_node = self.old_ast.getNode(value_idx);
+                    if (value_node.tag == .assignment_pattern) {
+                        // default: { a = 1 } → var a = _ref.a === void 0 ? 1 : _ref.a
+                        const binding = try self.visitNode(value_node.data.binary.left);
+                        const default_val = try self.visitNode(value_node.data.binary.right);
+                        const defaulted = try buildDefaulted(self, member_access, default_val, ref_span, key_idx, span);
+                        const decl = try makeDeclarator(self, binding, defaulted, span);
+                        try self.scratch.append(self.allocator, decl);
+                    } else if (value_node.tag == .object_pattern or value_node.tag == .array_pattern) {
+                        // nested: { a: { b } } → var _ref2 = _ref.a; var b = _ref2.b
+                        const nested_span = try es_helpers.makeTempVarSpan(self);
+                        const nested_binding = try self.new_ast.addNode(.{
+                            .tag = .binding_identifier,
+                            .span = nested_span,
+                            .data = .{ .string_ref = nested_span },
+                        });
+                        const nested_decl = try makeDeclarator(self, nested_binding, member_access, span);
+                        try self.scratch.append(self.allocator, nested_decl);
+                        try emitPatternDeclarators(self, value_node, nested_span, span);
+                    } else {
+                        // long-form: { a: b } → var b = _ref.a
+                        const binding = try self.visitNode(value_idx);
+                        const decl = try makeDeclarator(self, binding, member_access, span);
+                        try self.scratch.append(self.allocator, decl);
+                    }
+                }
+            }
+        }
+
+        /// array_pattern의 각 요소를 declarator로 변환.
+        /// [x, y] → var x = _ref[0], y = _ref[1]
+        fn emitArrayPatternDeclarators(self: *Transformer, pattern: Node, ref_span: Span, span: Span) Transformer.Error!void {
+            const members = self.old_ast.extra_data.items[pattern.data.list.start .. pattern.data.list.start + pattern.data.list.len];
+
+            for (members, 0..) |raw_idx, idx| {
+                const elem = self.old_ast.getNode(@enumFromInt(raw_idx));
+
+                if (elem.tag == .elision) continue; // 빈 슬롯 스킵
+
+                if (elem.tag == .rest_element or elem.tag == .spread_element) {
+                    // ...rest → var rest = _ref.slice(N)
+                    // 현재는 간소화: 미지원
+                    continue;
+                }
+
+                // _ref[idx]
+                const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
+                var idx_buf: [16]u8 = undefined;
+                const idx_str = std.fmt.bufPrint(&idx_buf, "{d}", .{idx}) catch "0";
+                const idx_span = try self.new_ast.addString(idx_str);
+                const idx_node = try self.new_ast.addNode(.{
+                    .tag = .numeric_literal,
+                    .span = idx_span,
+                    .data = .{ .none = 0 },
+                });
+                const access_extra = try self.new_ast.addExtras(&.{
+                    @intFromEnum(ref), @intFromEnum(idx_node), 0,
+                });
+                const elem_access = try self.new_ast.addNode(.{
+                    .tag = .computed_member_expression,
+                    .span = span,
+                    .data = .{ .extra = access_extra },
+                });
+
+                if (elem.tag == .assignment_pattern) {
+                    // default: [x = 1] → var x = _ref[0] === void 0 ? 1 : _ref[0]
+                    const binding = try self.visitNode(elem.data.binary.left);
+                    const default_val = try self.visitNode(elem.data.binary.right);
+                    const void_zero = try es_helpers.makeVoidZero(self, span);
+                    const ref2 = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
+                    const idx_node2 = try self.new_ast.addNode(.{
+                        .tag = .numeric_literal,
+                        .span = idx_span,
+                        .data = .{ .none = 0 },
+                    });
+                    const access_extra2 = try self.new_ast.addExtras(&.{
+                        @intFromEnum(ref2), @intFromEnum(idx_node2), 0,
+                    });
+                    const elem_access2 = try self.new_ast.addNode(.{
+                        .tag = .computed_member_expression,
+                        .span = span,
+                        .data = .{ .extra = access_extra2 },
+                    });
+                    const eq_check = try self.new_ast.addNode(.{
+                        .tag = .binary_expression,
+                        .span = span,
+                        .data = .{ .binary = .{ .left = elem_access, .right = void_zero, .flags = @intFromEnum(token_mod.Kind.eq3) } },
+                    });
+                    const conditional = try self.new_ast.addNode(.{
+                        .tag = .conditional_expression,
+                        .span = span,
+                        .data = .{ .ternary = .{ .a = eq_check, .b = default_val, .c = elem_access2 } },
+                    });
+                    const decl = try makeDeclarator(self, binding, conditional, span);
+                    try self.scratch.append(self.allocator, decl);
+                } else if (elem.tag == .object_pattern or elem.tag == .array_pattern) {
+                    // nested: [[a, b]] → var _ref2 = _ref[0]; var a = _ref2[0]; ...
+                    const nested_span = try es_helpers.makeTempVarSpan(self);
+                    const nested_binding = try self.new_ast.addNode(.{
+                        .tag = .binding_identifier,
+                        .span = nested_span,
+                        .data = .{ .string_ref = nested_span },
+                    });
+                    const nested_decl = try makeDeclarator(self, nested_binding, elem_access, span);
+                    try self.scratch.append(self.allocator, nested_decl);
+                    try emitPatternDeclarators(self, elem, nested_span, span);
+                } else {
+                    // 단순: [x] → var x = _ref[0]
+                    const binding = try self.visitNode(@enumFromInt(raw_idx));
+                    const decl = try makeDeclarator(self, binding, elem_access, span);
+                    try self.scratch.append(self.allocator, decl);
+                }
+            }
+        }
+
+        /// _ref.key === void 0 ? default : _ref.key
+        fn buildDefaulted(self: *Transformer, access: NodeIndex, default_val: NodeIndex, ref_span: Span, key_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const void_zero = try es_helpers.makeVoidZero(self, span);
+            const eq_check = try self.new_ast.addNode(.{
+                .tag = .binary_expression,
+                .span = span,
+                .data = .{ .binary = .{ .left = access, .right = void_zero, .flags = @intFromEnum(token_mod.Kind.eq3) } },
+            });
+            // _ref.key 다시 생성 (access는 이미 eq_check에서 소비)
+            const ref2 = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
+            const key_node = self.old_ast.getNode(key_idx);
+            const new_key = try self.visitNode(key_idx);
+            _ = key_node;
+            const me = try self.new_ast.addExtras(&.{ @intFromEnum(ref2), @intFromEnum(new_key), 0 });
+            const access2 = try self.new_ast.addNode(.{
+                .tag = .static_member_expression,
+                .span = span,
+                .data = .{ .extra = me },
+            });
+            return self.new_ast.addNode(.{
+                .tag = .conditional_expression,
+                .span = span,
+                .data = .{ .ternary = .{ .a = eq_check, .b = default_val, .c = access2 } },
+            });
+        }
+
+        /// variable_declarator 노드 생성 헬퍼
+        fn makeDeclarator(self: *Transformer, binding: NodeIndex, init: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const de = try self.new_ast.addExtras(&.{
+                @intFromEnum(binding), @intFromEnum(NodeIndex.none), @intFromEnum(init),
+            });
+            return self.new_ast.addNode(.{
+                .tag = .variable_declarator,
+                .span = span,
+                .data = .{ .extra = de },
+            });
+        }
     };
 }
 

@@ -3926,3 +3926,35 @@ test "ES2015: for-of no transform on esnext" {
     defer r.deinit();
     try std.testing.expectEqualStrings("for(const x of arr){}", r.output);
 }
+
+// --- ES2015: destructuring ---
+
+test "ES2015: object destructuring" {
+    var r = try e2eTarget(std.testing.allocator, "var {a,b}=obj;", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var _a=obj,a=_a.a,b=_a.b;", r.output);
+}
+
+test "ES2015: array destructuring" {
+    var r = try e2eTarget(std.testing.allocator, "var [x,y]=arr;", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var _a=arr,x=_a[0],y=_a[1];", r.output);
+}
+
+test "ES2015: destructuring rename" {
+    var r = try e2eTarget(std.testing.allocator, "var {a:c}=obj;", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var _a=obj,c=_a.a;", r.output);
+}
+
+test "ES2015: destructuring default" {
+    var r = try e2eTarget(std.testing.allocator, "var {a=1}=obj;", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var _a=obj,a=_a.a===void 0?1:_a.a;", r.output);
+}
+
+test "ES2015: destructuring no transform on esnext" {
+    var r = try e2eTarget(std.testing.allocator, "var {a,b}=obj;", .esnext);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var {a:a,b:b}=obj;", r.output);
+}

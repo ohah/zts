@@ -37,6 +37,7 @@ const es2015_params = @import("es2015_params.zig");
 const es2015_spread = @import("es2015_spread.zig");
 const es2015_arrow = @import("es2015_arrow.zig");
 const es2015_for_of = @import("es2015_for_of.zig");
+const es2015_destructuring = @import("es2015_destructuring.zig");
 const es_helpers = @import("es_helpers.zig");
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 
@@ -1093,6 +1094,12 @@ pub const Transformer = struct {
 
     /// variable_declaration: extra_data = [kind_flags, list.start, list.len]
     fn visitVariableDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
+        // ES2015: destructuring pattern → 개별 declarator로 분해
+        if (self.options.target.needsES2015()) {
+            if (es2015_destructuring.ES2015Destructuring(Transformer).hasDestructuring(self, node)) {
+                return es2015_destructuring.ES2015Destructuring(Transformer).lowerDestructuringDeclaration(self, node);
+            }
+        }
         const e = node.data.extra;
         const new_list = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
         return self.addExtraNode(.variable_declaration, node.span, &.{ self.readU32(e, 0), new_list.start, new_list.len });
