@@ -34,6 +34,7 @@ const es2015_template = @import("es2015_template.zig");
 const es2015_shorthand = @import("es2015_shorthand.zig");
 const es2015_computed = @import("es2015_computed.zig");
 const es2015_params = @import("es2015_params.zig");
+const es2015_spread = @import("es2015_spread.zig");
 const es_helpers = @import("es_helpers.zig");
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 
@@ -342,7 +343,6 @@ pub const Transformer = struct {
             // === 리스트 노드: 자식을 하나씩 방문하며 복사 ===
             .program,
             .block_statement,
-            .array_expression,
             .sequence_expression,
             .class_body,
             .formal_parameters,
@@ -354,6 +354,16 @@ pub const Transformer = struct {
             .template_literal => {
                 if (self.options.target.needsES2015()) {
                     return es2015_template.ES2015Template(Transformer).lowerTemplateLiteral(self, node);
+                }
+                return self.visitListNode(node);
+            },
+
+            // array_expression: spread(ES2015) 다운레벨링
+            .array_expression => {
+                if (self.options.target.needsES2015()) {
+                    if (es2015_spread.ES2015Spread(Transformer).hasSpreadInArray(self, node)) {
+                        return es2015_spread.ES2015Spread(Transformer).lowerSpreadArray(self, node);
+                    }
                 }
                 return self.visitListNode(node);
             },
@@ -537,6 +547,12 @@ pub const Transformer = struct {
                 if (self.options.target.needsOptionalChaining()) {
                     if (es2020.ES2020(Transformer).findOptionalChainBase(self, node)) |base_idx| {
                         return es2020.ES2020(Transformer).lowerOptionalChain(self, node, base_idx);
+                    }
+                }
+                // ES2015: spread in call → .apply()
+                if (self.options.target.needsES2015()) {
+                    if (es2015_spread.ES2015Spread(Transformer).hasSpreadArg(self, node)) {
+                        return es2015_spread.ES2015Spread(Transformer).lowerSpreadCall(self, node);
                     }
                 }
                 return self.visitCallExpression(node);
