@@ -3726,39 +3726,39 @@ test "ES2022: multiple static blocks with this" {
 // --- ES2015: template literal ---
 
 test "ES2015: no-substitution template" {
-    var r = try e2eTarget(std.testing.allocator, "const x=`hello`;", .es5);
+    var r = try e2eTarget(std.testing.allocator, "var x=`hello`;", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("const x=\"hello\";", r.output);
+    try std.testing.expectEqualStrings("var x=\"hello\";", r.output);
 }
 
 test "ES2015: template with substitution" {
-    var r = try e2eTarget(std.testing.allocator, "const x=`a${b}c`;", .es5);
+    var r = try e2eTarget(std.testing.allocator, "var x=`a${b}c`;", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("const x=\"a\" + b + \"c\";", r.output);
+    try std.testing.expectEqualStrings("var x=\"a\" + b + \"c\";", r.output);
 }
 
 test "ES2015: template empty head" {
-    var r = try e2eTarget(std.testing.allocator, "const x=`${a}`;", .es5);
+    var r = try e2eTarget(std.testing.allocator, "var x=`${a}`;", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("const x=\"\" + a;", r.output);
+    try std.testing.expectEqualStrings("var x=\"\" + a;", r.output);
 }
 
 test "ES2015: template multiple substitutions" {
-    var r = try e2eTarget(std.testing.allocator, "const x=`${a}${b}`;", .es5);
+    var r = try e2eTarget(std.testing.allocator, "var x=`${a}${b}`;", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("const x=\"\" + a + b;", r.output);
+    try std.testing.expectEqualStrings("var x=\"\" + a + b;", r.output);
 }
 
 test "ES2015: template with text between substitutions" {
-    var r = try e2eTarget(std.testing.allocator, "const x=`a${b}c${d}e`;", .es5);
+    var r = try e2eTarget(std.testing.allocator, "var x=`a${b}c${d}e`;", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("const x=\"a\" + b + \"c\" + d + \"e\";", r.output);
+    try std.testing.expectEqualStrings("var x=\"a\" + b + \"c\" + d + \"e\";", r.output);
 }
 
 test "ES2015: empty template" {
-    var r = try e2eTarget(std.testing.allocator, "const x=``;", .es5);
+    var r = try e2eTarget(std.testing.allocator, "var x=``;", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("const x=\"\";", r.output);
+    try std.testing.expectEqualStrings("var x=\"\";", r.output);
 }
 
 test "ES2015: template no transform on esnext" {
@@ -3959,4 +3959,30 @@ test "ES2015: destructuring no transform on esnext" {
     var r = try e2eTarget(std.testing.allocator, "var {a,b}=obj;", .esnext);
     defer r.deinit();
     try std.testing.expectEqualStrings("var {a:a,b:b}=obj;", r.output);
+}
+
+// --- ES2015: let/const → var ---
+
+test "ES2015: let to var" {
+    var r = try e2eTarget(std.testing.allocator, "let x=1;", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var x=1;", r.output);
+}
+
+test "ES2015: const to var" {
+    var r = try e2eTarget(std.testing.allocator, "const y=2;", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var y=2;", r.output);
+}
+
+test "ES2015: var stays var" {
+    var r = try e2eTarget(std.testing.allocator, "var z=3;", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var z=3;", r.output);
+}
+
+test "ES2015: let/const no transform on esnext" {
+    var r = try e2eTarget(std.testing.allocator, "let x=1;const y=2;", .esnext);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let x=1;const y=2;", r.output);
 }
