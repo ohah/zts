@@ -275,6 +275,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .labeled_statement => {
                     try collectLabeledOperations(self, stmt, ops, next_label);
                 },
+                .switch_statement => {
+                    try collectSwitchOperations(self, stmt_idx, stmt, ops, next_label);
+                },
                 .break_statement, .continue_statement => {
                     const label_idx = stmt.data.unary.operand;
                     if (!label_idx.isNone() and self.generator_label_stack.items.len > 0) {
@@ -580,6 +583,120 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             }
 
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+        }
+
+        /// switch문의 연산 수집.
+        /// switch(x) { case 1: yield a; break; default: yield b; }
+        /// → if-else 체인으로 분해 + 각 case body를 순서대로 배치.
+        /// case_labels는 sentinel+fixup으로 body 처리 후 결정.
+        fn collectSwitchOperations(self: *Transformer, stmt_idx: NodeIndex, stmt: Node, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
+            const all_extras = self.old_ast.extra_data.items;
+            const e = stmt.data.extra;
+            const disc_idx: NodeIndex = @enumFromInt(all_extras[e]);
+            const cases_start_val = all_extras[e + 1];
+            const cases_len_val = all_extras[e + 2];
+
+            if (!containsYield(self, stmt_idx)) {
+                const new_stmt = try self.visitNode(stmt_idx);
+                if (!new_stmt.isNone()) {
+                    try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
+                }
+                return;
+            }
+
+            const new_disc = try self.visitNode(disc_idx);
+            const cases = all_extras[cases_start_val .. cases_start_val + cases_len_val];
+
+            // 각 case에 고유 sentinel 할당 (body 처리 후 실제 label로 fixup)
+            const sentinel_base = LABEL_SENTINEL_BASE - 100; // 충분히 떨어진 sentinel 영역
+            var case_sentinels = try self.allocator.alloc(u32, cases.len);
+            defer self.allocator.free(case_sentinels);
+            var default_case_idx: ?usize = null;
+
+            for (cases, 0..) |raw_idx, i| {
+                case_sentinels[i] = sentinel_base - @as(u32, @intCast(i));
+
+                // default case 감지
+                const case_node = self.old_ast.getNode(@enumFromInt(raw_idx));
+                const ce = case_node.data.extra;
+                const test_idx: NodeIndex = @enumFromInt(all_extras[ce]);
+                if (test_idx.isNone()) {
+                    default_case_idx = i;
+                }
+            }
+
+            const end_sentinel = sentinel_base - @as(u32, @intCast(cases.len));
+            const ops_start = ops.items.len;
+
+            // 분기 코드: if (disc === caseTest) goto case_sentinel
+            for (cases, 0..) |raw_idx, i| {
+                const case_node = self.old_ast.getNode(@enumFromInt(raw_idx));
+                const ce = case_node.data.extra;
+                const test_idx: NodeIndex = @enumFromInt(all_extras[ce]);
+
+                if (test_idx.isNone()) continue; // default
+
+                const new_test = try self.visitNode(test_idx);
+                const eq_check = try self.new_ast.addNode(.{
+                    .tag = .binary_expression,
+                    .span = stmt.span,
+                    .data = .{ .binary = .{
+                        .left = new_disc,
+                        .right = new_test,
+                        .flags = @intFromEnum(token_mod.Kind.eq3),
+                    } },
+                });
+
+                try ops.append(self.allocator, .{
+                    .code = .break_when_true,
+                    .arg = .{ .label_and_node = .{ .label = case_sentinels[i], .node = eq_check } },
+                });
+            }
+
+            // default가 있으면 goto default, 없으면 goto end
+            if (default_case_idx) |di| {
+                try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = case_sentinels[di] } });
+            } else {
+                try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = end_sentinel } });
+            }
+
+            // 각 case body 출력 + 실제 label 할당
+            var actual_labels = try self.allocator.alloc(u32, cases.len);
+            defer self.allocator.free(actual_labels);
+
+            for (cases, 0..) |raw_idx, i| {
+                // case body 시작 지점에 실제 label 할당
+                actual_labels[i] = next_label.*;
+                next_label.* += 1;
+                try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+
+                const case_node = self.old_ast.getNode(@enumFromInt(raw_idx));
+                const ce = case_node.data.extra;
+                const stmts_s = all_extras[ce + 1];
+                const stmts_l = all_extras[ce + 2];
+                const case_stmts = all_extras[stmts_s .. stmts_s + stmts_l];
+
+                for (case_stmts) |case_stmt_raw| {
+                    const case_stmt = self.old_ast.getNode(@enumFromInt(case_stmt_raw));
+                    if (case_stmt.tag == .break_statement and case_stmt.data.unary.operand.isNone()) {
+                        try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = end_sentinel } });
+                    } else {
+                        try collectOperations(self, @enumFromInt(case_stmt_raw), ops, next_label);
+                    }
+                }
+            }
+
+            // end label
+            const actual_end = next_label.*;
+            next_label.* += 1;
+            try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+
+            // fixup: sentinel → actual labels
+            const ops_slice = ops.items[ops_start..];
+            for (case_sentinels, 0..) |sent, i| {
+                fixupSentinel(ops_slice, sent, actual_labels[i]);
+            }
+            fixupSentinel(ops_slice, end_sentinel, actual_end);
         }
 
         /// do-while문의 연산 수집. body → condition 순서.
@@ -927,6 +1044,32 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     const e = node.data.extra;
                     if (e + 3 >= extras.len) return false;
                     return containsYield(self, @enumFromInt(extras[e + 3])); // body
+                },
+                .switch_statement => {
+                    // switch_statement: extra = [discriminant, cases.start, cases.len]
+                    const extras = self.old_ast.extra_data.items;
+                    const e = node.data.extra;
+                    if (e + 2 >= extras.len) return false;
+                    const cases_start = extras[e + 1];
+                    const cases_len = extras[e + 2];
+                    const cases = extras[cases_start .. cases_start + cases_len];
+                    for (cases) |raw_idx| {
+                        if (containsYield(self, @enumFromInt(raw_idx))) return true;
+                    }
+                    return false;
+                },
+                .switch_case => {
+                    // switch_case: extra = [test, stmts_start, stmts_len]
+                    const extras = self.old_ast.extra_data.items;
+                    const e = node.data.extra;
+                    if (e + 2 >= extras.len) return false;
+                    const stmts_start = extras[e + 1];
+                    const stmts_len = extras[e + 2];
+                    const stmts = extras[stmts_start .. stmts_start + stmts_len];
+                    for (stmts) |raw_idx| {
+                        if (containsYield(self, @enumFromInt(raw_idx))) return true;
+                    }
+                    return false;
                 },
                 .variable_declaration => {
                     const extras = self.old_ast.extra_data.items;
