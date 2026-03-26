@@ -297,14 +297,47 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
         /// object_pattern의 각 property를 declarator로 변환.
         /// { a, b: c, d = 1 } → var a = _ref.a, c = _ref.b, d = _ref.d === void 0 ? 1 : _ref.d
+        /// { a, ...rest } → var a = _ref.a, rest = __rest(_ref, ["a"])
         fn emitObjectPatternDeclarators(self: *Transformer, pattern: Node, ref_span: Span, span: Span) Transformer.Error!void {
             const members = self.old_ast.extra_data.items[pattern.data.list.start .. pattern.data.list.start + pattern.data.list.len];
 
+            // 1단계: rest가 아닌 property key 이름을 수집 (__rest의 exclude 배열용)
+            var exclude_keys: [64][]const u8 = undefined;
+            var exclude_count: usize = 0;
+            var rest_binding_idx: ?NodeIndex = null;
+
+            for (members) |raw_idx| {
+                const prop = self.old_ast.getNode(@enumFromInt(raw_idx));
+                if (prop.tag == .rest_element or prop.tag == .binding_rest_element) {
+                    // rest element의 operand가 바인딩 이름
+                    rest_binding_idx = prop.data.unary.operand;
+                    continue;
+                }
+                if (prop.tag != .binding_property) continue;
+                // key 이름 수집
+                const key_idx_inner = prop.data.binary.left;
+                if (!key_idx_inner.isNone()) {
+                    const key_node_inner = self.old_ast.getNode(key_idx_inner);
+                    if ((key_node_inner.tag == .identifier_reference or key_node_inner.tag == .binding_identifier) and
+                        exclude_count < exclude_keys.len)
+                    {
+                        exclude_keys[exclude_count] = self.old_ast.source[key_node_inner.span.start..key_node_inner.span.end];
+                        exclude_count += 1;
+                    }
+                }
+            }
+
+            // 2단계: 각 property를 declarator로 변환
             for (members) |raw_idx| {
                 const prop = self.old_ast.getNode(@enumFromInt(raw_idx));
 
-                if (prop.tag == .rest_element) {
-                    // ...rest는 현재 미지원 (TODO: __rest 헬퍼)
+                if (prop.tag == .rest_element or prop.tag == .binding_rest_element) {
+                    // rest: var rest = __rest(_ref, ["a", "b"])
+                    if (rest_binding_idx) |rest_idx| {
+                        const rest_decl = try buildRestDeclarator(self, rest_idx, ref_span, exclude_keys[0..exclude_count], span);
+                        try self.scratch.append(self.allocator, rest_decl);
+                        self.runtime_helpers.rest = true;
+                    }
                     continue;
                 }
 
@@ -385,9 +418,12 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
                 if (elem.tag == .elision) continue; // 빈 슬롯 스킵
 
-                if (elem.tag == .rest_element or elem.tag == .spread_element) {
+                if (elem.tag == .rest_element or elem.tag == .spread_element or elem.tag == .binding_rest_element) {
                     // ...rest → var rest = _ref.slice(N)
-                    // 현재는 간소화: 미지원
+                    const rest_binding = try self.visitNode(elem.data.unary.operand);
+                    const rest_init = try buildArraySlice(self, ref_span, idx, span);
+                    const rest_decl = try makeDeclarator(self, rest_binding, rest_init, span);
+                    try self.scratch.append(self.allocator, rest_decl);
                     continue;
                 }
 
@@ -495,6 +531,105 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .extra = de },
             });
+        }
+
+        /// _ref.slice(N) 호출 생성 (array rest 변환용).
+        fn buildArraySlice(self: *Transformer, ref_span: Span, start_idx: usize, span: Span) Transformer.Error!NodeIndex {
+            // _ref.slice
+            const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
+            const slice_span = try self.new_ast.addString("slice");
+            const slice_prop = try self.new_ast.addNode(.{
+                .tag = .identifier_reference,
+                .span = slice_span,
+                .data = .{ .string_ref = slice_span },
+            });
+            const me = try self.new_ast.addExtras(&.{ @intFromEnum(ref), @intFromEnum(slice_prop), 0 });
+            const callee = try self.new_ast.addNode(.{
+                .tag = .static_member_expression,
+                .span = span,
+                .data = .{ .extra = me },
+            });
+
+            // slice(N)
+            var idx_buf: [16]u8 = undefined;
+            const idx_str = std.fmt.bufPrint(&idx_buf, "{d}", .{start_idx}) catch "0";
+            const idx_span = try self.new_ast.addString(idx_str);
+            const idx_node = try self.new_ast.addNode(.{
+                .tag = .numeric_literal,
+                .span = idx_span,
+                .data = .{ .none = 0 },
+            });
+
+            const args = try self.new_ast.addNodeList(&.{idx_node});
+            const call_extra = try self.new_ast.addExtras(&.{
+                @intFromEnum(callee), args.start, args.len, 0,
+            });
+            return self.new_ast.addNode(.{
+                .tag = .call_expression,
+                .span = span,
+                .data = .{ .extra = call_extra },
+            });
+        }
+
+        /// rest = __rest(_ref, ["key1", "key2"]) declarator 생성.
+        fn buildRestDeclarator(
+            self: *Transformer,
+            rest_idx: NodeIndex,
+            ref_span: Span,
+            exclude_keys: []const []const u8,
+            span: Span,
+        ) Transformer.Error!NodeIndex {
+            const binding = try self.visitNode(rest_idx);
+
+            // __rest 호출: __rest(_ref, ["key1", "key2"])
+            const rest_helper_span = try self.new_ast.addString("__rest");
+            const rest_callee = try self.new_ast.addNode(.{
+                .tag = .identifier_reference,
+                .span = rest_helper_span,
+                .data = .{ .string_ref = rest_helper_span },
+            });
+
+            // _ref 참조
+            const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
+
+            // exclude 배열: ["key1", "key2"]
+            const scratch_top = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+            for (exclude_keys) |key| {
+                // 따옴표 포함 문자열 리터럴
+                var buf: [256]u8 = undefined;
+                buf[0] = '"';
+                @memcpy(buf[1 .. 1 + key.len], key);
+                buf[1 + key.len] = '"';
+                const str_span = try self.new_ast.addString(buf[0 .. key.len + 2]);
+                const str_node = try self.new_ast.addNode(.{
+                    .tag = .string_literal,
+                    .span = str_span,
+                    .data = .{ .string_ref = str_span },
+                });
+                try self.scratch.append(self.allocator, str_node);
+            }
+
+            const arr_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+            const arr_node = try self.new_ast.addNode(.{
+                .tag = .array_expression,
+                .span = span,
+                .data = .{ .list = arr_list },
+            });
+
+            // __rest(_ref, [...])
+            const args = try self.new_ast.addNodeList(&.{ ref, arr_node });
+            const call_extra = try self.new_ast.addExtras(&.{
+                @intFromEnum(rest_callee), args.start, args.len, 0,
+            });
+            const call = try self.new_ast.addNode(.{
+                .tag = .call_expression,
+                .span = span,
+                .data = .{ .extra = call_extra },
+            });
+
+            return makeDeclarator(self, binding, call, span);
         }
     };
 }

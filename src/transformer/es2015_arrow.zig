@@ -12,7 +12,9 @@
 //!   3. formal_parameters(list) → 괄호 형태 ((x, y) => ...)
 //!
 //! this/arguments 캡처:
-//!   현재 미구현. 완전한 구현 시 외부 함수에서 var _this = this 삽입 필요.
+//!   arrow body 안의 this → _this, arguments → _arguments로 치환.
+//!   외부 함수(visitFunction)에서 var _this = this; / var _arguments = arguments; 삽입.
+//!   중첩 arrow는 같은 _this를 공유, 내부 일반 함수는 별도 스코프.
 //!
 //! 스펙:
 //! - https://tc39.es/ecma262/#sec-arrow-function-definitions (ES2015)
@@ -30,6 +32,8 @@ const Tag = Node.Tag;
 pub fn ES2015Arrow(comptime Transformer: type) type {
     return struct {
         /// arrow_function_expression → function_expression 변환.
+        /// arrow body 안의 this → _this, arguments → _arguments 치환을 위해
+        /// arrow_this_depth를 증가시킨 상태로 body를 방문한다.
         pub fn lowerArrowFunction(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const extras = self.old_ast.extra_data.items;
             const e = node.data.extra;
@@ -87,7 +91,11 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                 }
             };
 
+            // arrow body 안의 this/arguments를 캡처하기 위해 depth 증가.
+            // visitNode에서 this → _this, arguments → _arguments로 치환된다.
+            self.arrow_this_depth += 1;
             const new_body = try self.visitNode(body_idx);
+            self.arrow_this_depth -= 1;
 
             // expression body → { return expr; }
             const func_body = blk: {
