@@ -80,6 +80,7 @@ interface ProjectConfig {
   format?: "esm" | "cjs";
   platform?: "node" | "browser";
   tsconfig?: Record<string, boolean>;
+  target?: string; // --target=es5, --target=es2015, etc.
 }
 
 function testProject(p: ProjectConfig): SmokeResult {
@@ -127,6 +128,7 @@ function testProject(p: ProjectConfig): SmokeResult {
     const ztsExternalArgs = ext.flatMap((e) => ["--external", e]);
     const ztsFormatArgs = format === "cjs" ? ["--format=cjs"] : [];
     const ztsTsconfigArgs = p.tsconfig ? ["-p", join(dir, "tsconfig.json")] : [];
+    const ztsTargetArgs = p.target ? [`--target=${p.target}`] : [];
     result.zts = bundleAndRun(
       ZTS_BIN,
       [
@@ -138,6 +140,7 @@ function testProject(p: ProjectConfig): SmokeResult {
         ...ztsExternalArgs,
         ...ztsFormatArgs,
         ...ztsTsconfigArgs,
+        ...ztsTargetArgs,
       ],
       ztsOut,
     );
@@ -788,6 +791,112 @@ const projects: ProjectConfig[] = [
     pkg: "kysely",
     entry: `import { Kysely, DummyDriver, SqliteAdapter, SqliteIntrospector, SqliteQueryCompiler } from 'kysely';\nconst db = new Kysely({ dialect: { createAdapter: () => new SqliteAdapter(), createDriver: () => new DummyDriver(), createIntrospector: (db) => new SqliteIntrospector(db), createQueryCompiler: () => new SqliteQueryCompiler() } });\nconsole.log(typeof db.selectFrom);`,
   },
+
+  // ============================================================
+  // 다운레벨링 스모크 테스트 — 각 ES 타겟별 실제 패키지 빌드+실행
+  // ============================================================
+
+  // --- target=es5 (ES2015 전체 다운레벨링) ---
+  {
+    name: "lodash-es@es5",
+    pkg: "lodash-es",
+    entry: `import { uniq, sortBy } from 'lodash-es';\nconsole.log(JSON.stringify(uniq([1,2,2,3])));`,
+    target: "es5",
+  },
+  {
+    name: "clsx@es5",
+    pkg: "clsx",
+    entry: `import { clsx } from 'clsx';\nconsole.log(clsx('a', false, 'b', {c:true}));`,
+    target: "es5",
+  },
+  {
+    name: "ms@es5",
+    pkg: "ms",
+    entry: `import ms from 'ms';\nconsole.log(ms('2 days'));`,
+    target: "es5",
+  },
+  {
+    name: "deepmerge@es5",
+    pkg: "deepmerge",
+    entry: `import dm from 'deepmerge';\nconsole.log(JSON.stringify(dm({a:1},{b:2})));`,
+    target: "es5",
+  },
+  {
+    name: "fast-deep-equal@es5",
+    pkg: "fast-deep-equal",
+    entry: `import eq from 'fast-deep-equal';\nconsole.log(eq({a:1},{a:1}));`,
+    target: "es5",
+  },
+  {
+    name: "semver@es5",
+    pkg: "semver",
+    entry: `import semver from 'semver';\nconsole.log(semver.gt('2.0.0','1.0.0'));`,
+    target: "es5",
+  },
+
+  // --- target=es2015 (ES2016 다운레벨링: **) ---
+  {
+    name: "lodash-es@es2015",
+    pkg: "lodash-es",
+    entry: `import { uniq } from 'lodash-es';\nconsole.log(JSON.stringify(uniq([1,2,2,3])));`,
+    target: "es2015",
+  },
+  {
+    name: "superjson@es2015",
+    pkg: "superjson",
+    entry: `import superjson from 'superjson';\nconsole.log(superjson.stringify({a:1}));`,
+    target: "es2015",
+  },
+
+  // --- target=es2017 (ES2018 다운레벨링: object spread) ---
+  {
+    name: "defu@es2017",
+    pkg: "defu",
+    entry: `import { defu } from 'defu';\nconsole.log(JSON.stringify(defu({a:1},{a:2,b:3})));`,
+    target: "es2017",
+  },
+
+  // --- target=es2019 (ES2020 다운레벨링: ??, ?.) ---
+  {
+    name: "clsx@es2019",
+    pkg: "clsx",
+    entry: `import { clsx } from 'clsx';\nconsole.log(clsx('a', false, 'b'));`,
+    target: "es2019",
+  },
+  {
+    name: "nanoid@es2019",
+    pkg: "nanoid",
+    entry: `import { nanoid } from 'nanoid';\nconsole.log(nanoid().length >= 21);`,
+    target: "es2019",
+  },
+
+  // --- target=es2020 (ES2021 다운레벨링: ??=, ||=, &&=) ---
+  {
+    name: "dayjs@es2020",
+    pkg: "dayjs",
+    entry: `import dayjs from 'dayjs';\nconsole.log(dayjs('2024-01-01').format('YYYY/MM/DD'));`,
+    target: "es2020",
+  },
+  {
+    name: "ohash@es2020",
+    pkg: "ohash",
+    entry: `import { hash } from 'ohash';\nconsole.log(typeof hash({a:1}));`,
+    target: "es2020",
+  },
+
+  // --- target=es2021 (ES2022 다운레벨링: static block, class fields) ---
+  {
+    name: "lru-cache@es2021",
+    pkg: "lru-cache",
+    entry: `import { LRUCache } from 'lru-cache';\nconst c = new LRUCache({max:10});\nc.set('a',1);\nconsole.log(c.get('a'));`,
+    target: "es2021",
+  },
+  {
+    name: "nanostores@es2021",
+    pkg: "nanostores",
+    entry: `import { atom } from 'nanostores';\nconst c = atom(0);\nc.set(42);\nconsole.log(c.get());`,
+    target: "es2021",
+  },
 ];
 
 // ============================================================
@@ -796,9 +905,16 @@ const projects: ProjectConfig[] = [
 
 console.log("ZTS Smoke Test — Real Project Bundling\n");
 
+// CLI: --filter=<패턴> 으로 이름 필터링 (예: --filter=@es5, --filter=lodash)
+const filterArg = process.argv.find((a) => a.startsWith("--filter="));
+const filterPattern = filterArg ? filterArg.split("=")[1] : null;
+const filteredProjects = filterPattern
+  ? projects.filter((p) => p.name.includes(filterPattern))
+  : projects;
+
 const results: SmokeResult[] = [];
 
-for (const p of projects) {
+for (const p of filteredProjects) {
   process.stdout.write(`Testing ${p.name}... `);
   const r = testProject(p);
   results.push(r);
