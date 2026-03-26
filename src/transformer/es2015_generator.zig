@@ -1128,13 +1128,45 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     }
                     return false;
                 },
-                .if_statement => containsReturn(self, node.data.ternary.b) or containsReturn(self, node.data.ternary.c),
+                .if_statement, .for_in_statement, .for_of_statement => {
+                    return containsReturn(self, node.data.ternary.b) or containsReturn(self, node.data.ternary.c);
+                },
                 .while_statement, .do_while_statement, .labeled_statement => containsReturn(self, node.data.binary.right),
                 .for_statement => {
                     const extras = self.old_ast.extra_data.items;
                     const e = node.data.extra;
                     if (e + 3 >= extras.len) return false;
                     return containsReturn(self, @enumFromInt(extras[e + 3]));
+                },
+                .switch_statement => {
+                    const extras = self.old_ast.extra_data.items;
+                    const e = node.data.extra;
+                    if (e + 2 >= extras.len) return false;
+                    const cases_start = extras[e + 1];
+                    const cases_len = extras[e + 2];
+                    const cases = extras[cases_start .. cases_start + cases_len];
+                    for (cases) |raw_idx| {
+                        if (containsReturn(self, @enumFromInt(raw_idx))) return true;
+                    }
+                    return false;
+                },
+                .switch_case => {
+                    const extras = self.old_ast.extra_data.items;
+                    const e = node.data.extra;
+                    if (e + 2 >= extras.len) return false;
+                    const stmts_start = extras[e + 1];
+                    const stmts_len = extras[e + 2];
+                    const stmts = extras[stmts_start .. stmts_start + stmts_len];
+                    for (stmts) |raw_idx| {
+                        if (containsReturn(self, @enumFromInt(raw_idx))) return true;
+                    }
+                    return false;
+                },
+                .try_statement => {
+                    // try: ternary { a=block, b=catch, c=finally }
+                    return containsReturn(self, node.data.ternary.a) or
+                        containsReturn(self, node.data.ternary.b) or
+                        containsReturn(self, node.data.ternary.c);
                 },
                 else => false,
             };
