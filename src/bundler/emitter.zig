@@ -163,6 +163,8 @@ const SourceMap = @import("../codegen/sourcemap.zig");
 const Linker = @import("linker.zig").Linker;
 const LinkingMetadata = @import("linker.zig").LinkingMetadata;
 const TreeShaker = @import("tree_shaker.zig").TreeShaker;
+const statement_shaker = @import("statement_shaker.zig");
+const ExportBinding = @import("binding_scanner.zig").ExportBinding;
 
 pub const EmitOptions = struct {
     format: Format = .esm,
@@ -313,7 +315,23 @@ pub fn emitWithTreeShaking(
 
     for (sorted.items) |m| {
         const is_entry = if (entry_idx) |ei| @intFromEnum(m.index) == ei else false;
-        const code = try emitModule(allocator, m, options, linker, is_entry) orelse continue;
+
+        // statement-level tree-shaking: used export names 계산
+        var names_buf: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer names_buf.deinit(allocator);
+        const used_names: ?[]const []const u8 = if (shaker) |s| blk: {
+            const mod_idx: u32 = @intFromEnum(m.index);
+            if (s.isExportUsed(mod_idx, "*")) break :blk null;
+            for (m.export_bindings) |eb| {
+                if (eb.kind == .re_export_all) continue;
+                if (s.isExportUsed(mod_idx, eb.exported_name)) {
+                    names_buf.append(allocator, eb.local_name) catch break :blk null;
+                }
+            }
+            break :blk names_buf.items;
+        } else null;
+
+        const code = try emitModule(allocator, m, options, linker, is_entry, used_names) orelse continue;
         defer allocator.free(code);
 
         if (!options.minify) {
@@ -903,7 +921,7 @@ pub fn emitChunks(
             const m = &modules[mi];
 
             const is_entry = if (entry_mod_idx) |ei| mi == ei else false;
-            const raw_code = try emitModule(allocator, m, options, linker, is_entry) orelse continue;
+            const raw_code = try emitModule(allocator, m, options, linker, is_entry, null) orelse continue;
             defer allocator.free(raw_code);
 
             // 동적 import 경로 리라이트: import('./page') → import('./page.js')
@@ -1105,6 +1123,7 @@ pub fn emitModule(
     options: EmitOptions,
     linker: ?*const Linker,
     is_entry: bool,
+    used_export_names: ?[]const []const u8,
 ) !?[]const u8 {
     // JSON 모듈: 내용을 module.exports = <JSON>으로 래핑
     if (module.module_type == .json) {
@@ -1159,6 +1178,20 @@ pub fn emitModule(
         if (override_syms) |syms| {
             md.symbol_ids = syms;
         }
+        // statement-level tree-shaking: 미사용 top-level statement 제거
+        // statement-level tree-shaking: 미사용 top-level statement 제거
+        if (used_export_names) |names| {
+            if (!is_entry) {
+                statement_shaker.markUnusedStatements(
+                    arena_alloc,
+                    &transformer.new_ast,
+                    root,
+                    names,
+                    &md.skip_nodes,
+                ) catch {};
+            }
+        }
+
         metadata = md;
     }
 
