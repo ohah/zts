@@ -142,7 +142,6 @@ pub fn ES2017(comptime Transformer: type) type {
         }
 
         fn buildAsyncHelperCall(self: *Transformer, gen_func: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            self.runtime_helpers.async_helper = true;
             const async_span = try self.new_ast.addString("__async");
             const async_ref = try self.new_ast.addNode(.{
                 .tag = .identifier_reference,
