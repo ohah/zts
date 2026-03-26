@@ -38,6 +38,7 @@ const es2015_spread = @import("es2015_spread.zig");
 const es2015_arrow = @import("es2015_arrow.zig");
 const es2015_for_of = @import("es2015_for_of.zig");
 const es2015_destructuring = @import("es2015_destructuring.zig");
+const es2015_block_scoping = @import("es2015_block_scoping.zig");
 const es_helpers = @import("es_helpers.zig");
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 
@@ -1101,8 +1102,12 @@ pub const Transformer = struct {
             }
         }
         const e = node.data.extra;
+        const kind_flags = if (self.options.target.needsES2015())
+            es2015_block_scoping.lowerKindFlags(self.readU32(e, 0))
+        else
+            self.readU32(e, 0);
         const new_list = try self.visitExtraList(self.readU32(e, 1), self.readU32(e, 2));
-        return self.addExtraNode(.variable_declaration, node.span, &.{ self.readU32(e, 0), new_list.start, new_list.len });
+        return self.addExtraNode(.variable_declaration, node.span, &.{ kind_flags, new_list.start, new_list.len });
     }
 
     /// variable_declarator: extra_data = [name, type_ann, init]
