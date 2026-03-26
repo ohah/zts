@@ -39,6 +39,7 @@ const es2015_arrow = @import("es2015_arrow.zig");
 const es2015_for_of = @import("es2015_for_of.zig");
 const es2015_destructuring = @import("es2015_destructuring.zig");
 const es2015_block_scoping = @import("es2015_block_scoping.zig");
+const es2015_class = @import("es2015_class.zig");
 const es_helpers = @import("es_helpers.zig");
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 
@@ -548,7 +549,12 @@ pub const Transformer = struct {
                 }
                 return self.visitArrowFunction(node);
             },
-            .class_declaration,
+            .class_declaration => {
+                if (self.options.target.needsES2015()) {
+                    return es2015_class.ES2015Class(Transformer).lowerClassDeclaration(self, node);
+                }
+                return self.visitClass(node);
+            },
             .class_expression,
             => self.visitClass(node),
             .for_statement => self.visitForStatement(node),
