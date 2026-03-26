@@ -35,6 +35,7 @@ const es2015_shorthand = @import("es2015_shorthand.zig");
 const es2015_computed = @import("es2015_computed.zig");
 const es2015_params = @import("es2015_params.zig");
 const es2015_spread = @import("es2015_spread.zig");
+const es2015_arrow = @import("es2015_arrow.zig");
 const es_helpers = @import("es_helpers.zig");
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 
@@ -533,6 +534,9 @@ pub const Transformer = struct {
                     if (e + 2 < extras.len and (extras[e + 2] & ast_mod.ArrowFlags.is_async) != 0) {
                         return es2017_mod.ES2017(Transformer).lowerAsyncArrow(self, node);
                     }
+                }
+                if (self.options.target.needsES2015()) {
+                    return es2015_arrow.ES2015Arrow(Transformer).lowerArrowFunction(self, node);
                 }
                 return self.visitArrowFunction(node);
             },
