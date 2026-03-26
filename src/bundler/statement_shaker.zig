@@ -266,6 +266,14 @@ fn extractObjectPatternNames(
                     try extractObjectPatternNames(ast, val, stmt_idx, name_to_stmt, allocator);
                 } else if (val.tag == .array_pattern) {
                     try extractArrayPatternNames(ast, val, stmt_idx, name_to_stmt, allocator);
+                } else if (val.tag == .assignment_pattern) {
+                    // { a = 1 } → assignment_pattern { left=binding, right=default }
+                    const binding_idx = val.data.binary.left;
+                    if (!binding_idx.isNone() and @intFromEnum(binding_idx) < ast.nodes.items.len) {
+                        const binding = ast.nodes.items[@intFromEnum(binding_idx)];
+                        const name = ast.getText(binding.span);
+                        if (name.len > 0) try name_to_stmt.put(allocator, name, stmt_idx);
+                    }
                 } else {
                     const name = ast.getText(val.span);
                     if (name.len > 0) try name_to_stmt.put(allocator, name, stmt_idx);
@@ -305,6 +313,14 @@ fn extractArrayPatternNames(
             const arg = elem.data.unary.operand;
             if (!arg.isNone() and @intFromEnum(arg) < ast.nodes.items.len) {
                 const name = ast.getText(ast.nodes.items[@intFromEnum(arg)].span);
+                if (name.len > 0) try name_to_stmt.put(allocator, name, stmt_idx);
+            }
+        } else if (elem.tag == .assignment_pattern) {
+            // [a = 1] → assignment_pattern { left=binding, right=default }
+            const binding_idx = elem.data.binary.left;
+            if (!binding_idx.isNone() and @intFromEnum(binding_idx) < ast.nodes.items.len) {
+                const binding = ast.nodes.items[@intFromEnum(binding_idx)];
+                const name = ast.getText(binding.span);
                 if (name.len > 0) try name_to_stmt.put(allocator, name, stmt_idx);
             }
         } else {

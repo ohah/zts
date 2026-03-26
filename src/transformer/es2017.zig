@@ -13,6 +13,7 @@
 
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
+const es_helpers = @import("es_helpers.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const token_mod = @import("../lexer/token.zig");
@@ -162,12 +163,15 @@ pub fn ES2017(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .extra = inner_call_extra },
             });
-            // __async(gen)() — 즉시 호출
-            const empty_args = try self.new_ast.addNodeList(&.{});
+            // __async(gen).call(this) — this 바인딩 보존
+            const call_prop = try es_helpers.makeIdentifierRef(self, "call");
+            const member = try es_helpers.makeStaticMember(self, inner_call, call_prop, span);
+            const this_ref = try es_helpers.makeIdentifierRef(self, "this");
+            const this_args = try self.new_ast.addNodeList(&.{this_ref});
             const outer_call_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(inner_call),
-                empty_args.start,
-                empty_args.len,
+                @intFromEnum(member),
+                this_args.start,
+                this_args.len,
                 0,
             });
             return self.new_ast.addNode(.{
