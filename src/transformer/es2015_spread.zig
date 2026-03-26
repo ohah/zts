@@ -65,14 +65,14 @@ pub fn ES2015Spread(comptime Transformer: type) type {
 
             // this context: obj.f(...) → obj.f.apply(obj, ...)
             // 단순 f(...) → f.apply(void 0, ...)
-            const callee_node = self.old_ast.getNode(callee_idx);
-            const is_member = callee_node.tag == .static_member_expression or
-                callee_node.tag == .computed_member_expression;
+            const new_callee_node = self.new_ast.getNode(new_callee);
+            const is_member = new_callee_node.tag == .static_member_expression or
+                new_callee_node.tag == .computed_member_expression;
 
             const this_arg = if (is_member) blk: {
-                // obj.f → obj를 추출하여 apply의 this로 사용
-                const obj_idx: NodeIndex = @enumFromInt(self.old_ast.extra_data.items[callee_node.data.extra]);
-                break :blk try self.visitNode(obj_idx);
+                // 이미 visit된 new_callee에서 obj를 추출 (이중 visit 방지)
+                const obj_idx: NodeIndex = @enumFromInt(self.new_ast.extra_data.items[new_callee_node.data.extra]);
+                break :blk obj_idx;
             } else try es_helpers.makeVoidZero(self, span);
 
             // args를 하나의 배열로 조합

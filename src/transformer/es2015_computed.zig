@@ -88,7 +88,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             });
 
             // _a = { ... }
-            const temp_ref = try makeTempIdentifier(self, temp_span, span);
+            const temp_ref = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
             const init_assign = try self.new_ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
@@ -104,7 +104,9 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                 const member = self.old_ast.getNode(@enumFromInt(raw_idx));
 
                 if (member.tag == .method_definition or member.tag == .spread_element) {
-                    // method/spread는 그대로 visit (간소화: 여기서는 스킵)
+                    // method_definition은 Object.defineProperty로 변환해야 하나
+                    // ES5 환경에서도 method shorthand 없이 동작하므로 현재는 스킵.
+                    // spread_element는 es2018 변환이 먼저 처리하므로 여기 도달하지 않음.
                     continue;
                 }
 
@@ -126,7 +128,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                     // computed: _a[expr]
                     const inner_key = try self.visitNode(key.data.unary.operand);
                     const me = try self.new_ast.addExtras(&.{
-                        @intFromEnum(try makeTempIdentifier(self, temp_span, span)),
+                        @intFromEnum(try es_helpers.makeTempVarRef(self, temp_span, temp_span)),
                         @intFromEnum(inner_key),
                         0,
                     });
@@ -139,7 +141,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                     // static: _a.key
                     const new_key = try self.visitNode(key_idx);
                     const me = try self.new_ast.addExtras(&.{
-                        @intFromEnum(try makeTempIdentifier(self, temp_span, span)),
+                        @intFromEnum(try es_helpers.makeTempVarRef(self, temp_span, temp_span)),
                         @intFromEnum(new_key),
                         0,
                     });
@@ -159,7 +161,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             }
 
             // 마지막에 _a 반환
-            try self.scratch.append(self.allocator, try makeTempIdentifier(self, temp_span, span));
+            try self.scratch.append(self.allocator, try es_helpers.makeTempVarRef(self, temp_span, temp_span));
 
             // (sequence_expression) — 괄호로 감싸야 올바른 우선순위
             const seq_list = try self.new_ast.addNodeList(self.scratch.items[seq_scratch_top..]);
@@ -174,15 +176,6 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                 .tag = .parenthesized_expression,
                 .span = span,
                 .data = .{ .unary = .{ .operand = seq, .flags = 0 } },
-            });
-        }
-
-        fn makeTempIdentifier(self: *Transformer, temp_span: Span, node_span: Span) Transformer.Error!NodeIndex {
-            _ = node_span;
-            return self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = temp_span,
-                .data = .{ .string_ref = temp_span },
             });
         }
     };
