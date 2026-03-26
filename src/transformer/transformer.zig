@@ -40,6 +40,7 @@ const es2015_for_of = @import("es2015_for_of.zig");
 const es2015_destructuring = @import("es2015_destructuring.zig");
 const es2015_block_scoping = @import("es2015_block_scoping.zig");
 const es2015_class = @import("es2015_class.zig");
+const es2015_generator = @import("es2015_generator.zig");
 const es_helpers = @import("es_helpers.zig");
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 
@@ -535,11 +536,18 @@ pub const Transformer = struct {
             .function_expression,
             => {
                 if (self.options.target.needsAsyncAwait()) {
-                    // async flag 확인 (extra data의 flags 필드)
                     const extras = self.old_ast.extra_data.items;
                     const e = node.data.extra;
                     if (e + 4 < extras.len and (extras[e + 4] & ast_mod.FunctionFlags.is_async) != 0) {
                         return es2017_mod.ES2017(Transformer).lowerAsyncFunction(self, node);
+                    }
+                }
+                // ES2015: generator function → 상태 머신
+                if (self.options.target.needsES2015()) {
+                    const extras = self.old_ast.extra_data.items;
+                    const e = node.data.extra;
+                    if (e + 4 < extras.len and (extras[e + 4] & ast_mod.FunctionFlags.is_generator) != 0) {
+                        return es2015_generator.ES2015Generator(Transformer).lowerGeneratorFunction(self, node);
                     }
                 }
                 return self.visitFunction(node);
