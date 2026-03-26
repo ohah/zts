@@ -3864,3 +3864,41 @@ test "ES2015: spread no transform on esnext" {
     defer r.deinit();
     try std.testing.expectEqualStrings("f(...arr);", r.output);
 }
+
+// --- ES2015: arrow function ---
+
+test "ES2015: arrow expression body" {
+    var r = try e2eTarget(std.testing.allocator, "var f=()=>42;", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var f=function(){return 42;};", r.output);
+}
+
+test "ES2015: arrow with param" {
+    var r = try e2eTarget(std.testing.allocator, "var f=x=>x+1;", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var f=function(x){return x + 1;};", r.output);
+}
+
+test "ES2015: arrow with parens param" {
+    var r = try e2eTarget(std.testing.allocator, "var f=(x)=>x+1;", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var f=function(x){return x + 1;};", r.output);
+}
+
+test "ES2015: arrow block body" {
+    var r = try e2eTarget(std.testing.allocator, "var f=(x)=>{return x;};", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var f=function(x){return x;};", r.output);
+}
+
+test "ES2015: arrow multiple params" {
+    var r = try e2eTarget(std.testing.allocator, "var f=(a,b)=>a+b;", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var f=function(a,b){return a + b;};", r.output);
+}
+
+test "ES2015: arrow no transform on esnext" {
+    var r = try e2eTarget(std.testing.allocator, "var f=()=>42;", .esnext);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var f=()=>42;", r.output);
+}
