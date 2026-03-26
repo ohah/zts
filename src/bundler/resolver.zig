@@ -147,6 +147,10 @@ pub const Resolver = struct {
         // path가 디렉토리인지 확인
         if (!self.dirExists(path)) return null;
 
+        // 디렉토리 내 package.json의 main/module 필드 확인 (서브패스 package.json 패턴)
+        // 예: fp-ts/function/package.json → { "main": "../lib/function.js", "module": "../es6/function.js" }
+        if (try self.tryDirectoryPackageJson(path)) |result| return result;
+
         for (index_files) |index_name| {
             const index_path = std.fs.path.resolve(self.allocator, &.{ path, index_name }) catch
                 return error.OutOfMemory;
@@ -156,6 +160,37 @@ pub const Resolver = struct {
                 return self.makeResult(index_path);
             }
         }
+        return null;
+    }
+
+    /// 디렉토리 내 package.json에서 module/main 필드를 읽어 resolve 시도.
+    /// fp-ts 등에서 사용하는 서브패스 package.json 패턴 지원.
+    fn tryDirectoryPackageJson(self: *Resolver, dir_path: []const u8) ResolveError!?ResolveResult {
+        var dir = std.fs.cwd().openDir(dir_path, .{}) catch return null;
+        defer dir.close();
+
+        var parsed = pkg_json.parsePackageJson(self.allocator, dir) catch return null;
+        defer parsed.deinit();
+
+        const pkg = &parsed.pkg;
+
+        // module 필드 우선 (ESM)
+        if (pkg.module) |mod| {
+            const abs_path = std.fs.path.resolve(self.allocator, &.{ dir_path, mod }) catch
+                return error.OutOfMemory;
+            defer self.allocator.free(abs_path);
+            if (self.fileExists(abs_path)) return self.makeResult(abs_path);
+        }
+
+        // main 필드
+        if (pkg.main) |main| {
+            const abs_path = std.fs.path.resolve(self.allocator, &.{ dir_path, main }) catch
+                return error.OutOfMemory;
+            defer self.allocator.free(abs_path);
+            if (self.fileExists(abs_path)) return self.makeResult(abs_path);
+            if (try self.tryExtensions(abs_path)) |result| return result;
+        }
+
         return null;
     }
 
