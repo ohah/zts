@@ -411,13 +411,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } }); // mark cond_label
 
-            // test (end_label은 sentinel — fixup 예정)
+            // test (end_label은 sentinel — body 처리 후 fixup)
+            const for_end_sent = LABEL_SENTINEL_BASE; // for loop 전용 sentinel
             const for_ops_start = ops.items.len;
             if (!test_idx.isNone()) {
                 const new_test = try self.visitNode(test_idx);
                 try ops.append(self.allocator, .{
                     .code = .break_when_false,
-                    .arg = .{ .label_and_node = .{ .label = LABEL_SENTINEL, .node = new_test } },
+                    .arg = .{ .label_and_node = .{ .label = for_end_sent, .node = new_test } },
                 });
             }
 
@@ -448,18 +449,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const end_label = next_label.*;
             next_label.* += 1;
 
-            // fixup: for_ops_start 이후의 SENTINEL → end_label
-            for (ops.items[for_ops_start..]) |*op| {
-                if (op.code == .break_when_false or op.code == .break_when_true) {
-                    if (op.arg == .label_and_node and op.arg.label_and_node.label == LABEL_SENTINEL) {
-                        op.arg = .{ .label_and_node = .{ .label = end_label, .node = op.arg.label_and_node.node } };
-                    }
-                } else if (op.code == .break_op) {
-                    if (op.arg == .label and op.arg.label == LABEL_SENTINEL) {
-                        op.arg = .{ .label = end_label };
-                    }
-                }
-            }
+            // fixup: for_end_sent → end_label
+            fixupSentinel(ops.items[for_ops_start..], for_end_sent, end_label);
 
             // mark end_label
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
@@ -501,10 +492,38 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
         }
 
-        const LABEL_SENTINEL = std.math.maxInt(u32);
+        const LABEL_SENTINEL_BASE = std.math.maxInt(u32);
+
+        /// nesting depth에 따라 고유한 break/continue sentinel 생성.
+        /// 중첩 labeled scope에서 sentinel 충돌을 방지.
+        fn breakSentinel(depth: usize) u32 {
+            return LABEL_SENTINEL_BASE - @as(u32, @intCast(depth * 2));
+        }
+        fn continueSentinel(depth: usize) u32 {
+            return LABEL_SENTINEL_BASE - @as(u32, @intCast(depth * 2)) - 1;
+        }
+
+        /// ops 슬라이스에서 sentinel 값을 실제 label로 교체.
+        fn fixupSentinel(ops_slice: []Operation, sentinel: u32, actual: u32) void {
+            for (ops_slice) |*op| {
+                switch (op.code) {
+                    .break_op => {
+                        if (op.arg == .label and op.arg.label == sentinel) {
+                            op.arg = .{ .label = actual };
+                        }
+                    },
+                    .break_when_false, .break_when_true => {
+                        if (op.arg == .label_and_node and op.arg.label_and_node.label == sentinel) {
+                            op.arg = .{ .label_and_node = .{ .label = actual, .node = op.arg.label_and_node.node } };
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
 
         /// labeled statement의 연산 수집.
-        /// break_label은 body 처리 후에 결정 (sentinel+fixup).
+        /// break/continue label은 body 처리 후에 결정 (sentinel+fixup).
         fn collectLabeledOperations(self: *Transformer, stmt: Node, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
             const label_idx = stmt.data.binary.left;
             const body_idx = stmt.data.binary.right;
@@ -521,24 +540,25 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 body_node.tag == .for_in_statement or
                 body_node.tag == .for_of_statement;
 
-            // continue_label: while/do-while은 cond_label (미리 알 수 있음)
-            // for loop은 update_label (body 처리 후 결정 → LABEL_SENTINEL-1 + fixup)
             const is_for = body_node.tag == .for_statement;
+            const depth = self.generator_label_stack.items.len;
+            const break_sent = breakSentinel(depth);
+            const continue_sent = continueSentinel(depth);
+
             const continue_label: ?u32 = if (!is_loop)
                 null
             else if (is_for)
-                LABEL_SENTINEL - 1 // for loop: body 처리 후 fixup
+                continue_sent // for loop: body 처리 후 fixup
             else
                 next_label.*; // while/do-while: cond_label
 
-            // break_label은 sentinel, body 처리 후 fixup
             const ops_start = ops.items.len;
             const saved_update_label = self.generator_for_update_label;
             self.generator_for_update_label = null;
 
             try self.generator_label_stack.append(self.allocator, .{
                 .name = label_name,
-                .break_label = LABEL_SENTINEL,
+                .break_label = break_sent,
                 .continue_label = continue_label,
             });
 
@@ -546,23 +566,17 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             _ = self.generator_label_stack.pop();
 
-            // for loop의 update_label은 collectForOperations에서 설정됨
             const actual_continue = if (is_for) self.generator_for_update_label orelse @as(u32, 0) else @as(u32, 0);
             self.generator_for_update_label = saved_update_label;
 
-            // end_label
             const end_label = next_label.*;
             next_label.* += 1;
 
             // fixup: break sentinel → end_label, continue sentinel → actual_continue
-            for (ops.items[ops_start..]) |*op| {
-                if (op.code == .break_op) {
-                    if (op.arg == .label and op.arg.label == LABEL_SENTINEL) {
-                        op.arg = .{ .label = end_label };
-                    } else if (is_for and op.arg == .label and op.arg.label == LABEL_SENTINEL - 1) {
-                        op.arg = .{ .label = actual_continue };
-                    }
-                }
+            const ops_slice = ops.items[ops_start..];
+            fixupSentinel(ops_slice, break_sent, end_label);
+            if (is_for) {
+                fixupSentinel(ops_slice, continue_sent, actual_continue);
             }
 
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
@@ -906,6 +920,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 => containsYield(self, node.data.ternary.a) or containsYield(self, node.data.ternary.b) or containsYield(self, node.data.ternary.c),
                 .while_statement,
                 .do_while_statement,
+                .labeled_statement,
                 => containsYield(self, node.data.binary.left) or containsYield(self, node.data.binary.right),
                 .for_statement => {
                     const extras = self.old_ast.extra_data.items;
