@@ -1699,9 +1699,10 @@ pub const Scanner = struct {
             }
 
             // 줄바꿈: 템플릿 리터럴에서는 허용됨 (일반 문자열과 다름)
+            // has_newline_before는 설정하지 않음 — 토큰 사이의 줄바꿈만 추적해야 함
+            // template literal 내부 줄바꿈으로 ASI가 발생하면 안 됨
             if (c == '\n' or c == '\r') {
                 _ = try self.handleNewline();
-                self.token.has_newline_before = true;
                 continue;
             }
 
