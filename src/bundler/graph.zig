@@ -67,7 +67,15 @@ pub const ModuleGraph = struct {
         for (self.modules.items) |*m| {
             // import_records, import_bindings, export_bindings는 graph allocator 소유.
             if (m.import_records.len > 0) self.allocator.free(m.import_records);
-            if (m.import_bindings.len > 0) self.allocator.free(m.import_bindings);
+            if (m.import_bindings.len > 0) {
+                // namespace_used_properties 해제
+                for (m.import_bindings) |ib| {
+                    if (ib.namespace_used_properties) |props| {
+                        if (props.len > 0) self.allocator.free(props);
+                    }
+                }
+                self.allocator.free(m.import_bindings);
+            }
             if (m.export_bindings.len > 0) self.allocator.free(m.export_bindings);
             m.deinit(self.allocator); // parse_arena.deinit() + dependencies/importers 해제
         }
@@ -344,6 +352,8 @@ pub const ModuleGraph = struct {
         module.wrap_kind = if (module.exports_kind == .commonjs) .cjs else .none;
 
         module.import_bindings = binding_scanner_mod.extractImportBindings(self.allocator, ast, scan_result.records) catch &.{};
+        // namespace import의 실제 프로퍼티 접근 수집 (tree-shaking 정밀도 향상)
+        binding_scanner_mod.collectNamespaceAccesses(self.allocator, ast, module.import_bindings) catch {};
         module.export_bindings = binding_scanner_mod.extractExportBindings(self.allocator, ast, scan_result.records, module.import_bindings) catch &.{};
 
         self.applySideEffectsFromPackageJson(module);
