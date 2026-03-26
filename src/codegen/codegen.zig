@@ -4009,6 +4009,20 @@ test "ES2015: empty class" {
     try std.testing.expectEqualStrings("function Empty(){}", r.output);
 }
 
+test "ES2015: class with instance field" {
+    var r = try e2eTarget(std.testing.allocator, "class Foo{x=1;}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function Foo()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "this.x=1") != null);
+}
+
+test "ES2015: class with static field" {
+    var r = try e2eTarget(std.testing.allocator, "class Foo{static y=2;}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function Foo()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Foo.y=2") != null);
+}
+
 test "ES2015: class no transform on esnext" {
     var r = try e2eTarget(std.testing.allocator, "class Foo{}", .esnext);
     defer r.deinit();
