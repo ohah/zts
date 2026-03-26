@@ -13,6 +13,8 @@
 //!   - getter/setter: 미지원 (Object.defineProperty 필요)
 //!   - private members (#field): 미지원
 //!   - class expression: 미지원 (declaration만)
+//!   - class fields (property_definition): 무시 (constructor로 이동 필요)
+//!   - static blocks: 무시 (ES2022 변환이 먼저 처리)
 //!
 //! 스펙:
 //! - https://tc39.es/ecma262/#sec-class-definitions (ES2015)
