@@ -354,15 +354,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             });
 
             // then body
-            const then_node = self.old_ast.getNode(then_body);
-            if (then_node.tag == .block_statement) {
-                const then_stmts = self.old_ast.extra_data.items[then_node.data.list.start .. then_node.data.list.start + then_node.data.list.len];
-                for (then_stmts) |raw_idx| {
-                    try collectOperations(self, @enumFromInt(raw_idx), ops, next_label);
-                }
-            } else {
-                try collectOperations(self, then_body, ops, next_label);
-            }
+            try collectBodyOperations(self, then_body, ops, next_label);
 
             // goto end
             try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = end_label } });
@@ -371,15 +363,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             if (!else_body.isNone()) {
                 // mark else_label (nop으로 case 경계)
                 try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
-                const else_node = self.old_ast.getNode(else_body);
-                if (else_node.tag == .block_statement) {
-                    const else_stmts = self.old_ast.extra_data.items[else_node.data.list.start .. else_node.data.list.start + else_node.data.list.len];
-                    for (else_stmts) |raw_idx| {
-                        try collectOperations(self, @enumFromInt(raw_idx), ops, next_label);
-                    }
-                } else {
-                    try collectOperations(self, else_body, ops, next_label);
-                }
+                try collectBodyOperations(self, else_body, ops, next_label);
             }
 
             // mark end_label
@@ -439,15 +423,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             }
 
             // body
-            const body_node = self.old_ast.getNode(body_idx);
-            if (body_node.tag == .block_statement) {
-                const body_stmts = self.old_ast.extra_data.items[body_node.data.list.start .. body_node.data.list.start + body_node.data.list.len];
-                for (body_stmts) |raw_idx| {
-                    try collectOperations(self, @enumFromInt(raw_idx), ops, next_label);
-                }
-            } else {
-                try collectOperations(self, body_idx, ops, next_label);
-            }
+            try collectBodyOperations(self, body_idx, ops, next_label);
 
             // update
             if (!update_idx.isNone()) {
@@ -496,15 +472,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             });
 
             // body
-            const body_node = self.old_ast.getNode(body_idx);
-            if (body_node.tag == .block_statement) {
-                const body_stmts = self.old_ast.extra_data.items[body_node.data.list.start .. body_node.data.list.start + body_node.data.list.len];
-                for (body_stmts) |raw_idx| {
-                    try collectOperations(self, @enumFromInt(raw_idx), ops, next_label);
-                }
-            } else {
-                try collectOperations(self, body_idx, ops, next_label);
-            }
+            try collectBodyOperations(self, body_idx, ops, next_label);
 
             // goto cond_label
             try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = cond_label } });
@@ -583,15 +551,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } }); // mark body_label
 
             // body
-            const body_node = self.old_ast.getNode(body_idx);
-            if (body_node.tag == .block_statement) {
-                const body_stmts = self.old_ast.extra_data.items[body_node.data.list.start .. body_node.data.list.start + body_node.data.list.len];
-                for (body_stmts) |raw_idx| {
-                    try collectOperations(self, @enumFromInt(raw_idx), ops, next_label);
-                }
-            } else {
-                try collectOperations(self, body_idx, ops, next_label);
-            }
+            try collectBodyOperations(self, body_idx, ops, next_label);
 
             // condition → if true, goto body_label
             const new_cond = try self.visitNode(condition);
@@ -638,13 +598,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = trys_push } });
 
             // try body
-            const body_node = self.old_ast.getNode(try_body);
-            if (body_node.tag == .block_statement) {
-                const body_stmts = self.old_ast.extra_data.items[body_node.data.list.start .. body_node.data.list.start + body_node.data.list.len];
-                for (body_stmts) |raw_idx| {
-                    try collectOperations(self, @enumFromInt(raw_idx), ops, next_label);
-                }
-            }
+            try collectBodyOperations(self, try_body, ops, next_label);
 
             // goto end (or finally)
             try ops.append(self.allocator, .{
@@ -678,13 +632,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 }
 
                 // catch body
-                const catch_body_node = self.old_ast.getNode(catch_body_idx);
-                if (catch_body_node.tag == .block_statement) {
-                    const body_stmts = self.old_ast.extra_data.items[catch_body_node.data.list.start .. catch_body_node.data.list.start + catch_body_node.data.list.len];
-                    for (body_stmts) |raw_idx| {
-                        try collectOperations(self, @enumFromInt(raw_idx), ops, next_label);
-                    }
-                }
+                try collectBodyOperations(self, catch_body_idx, ops, next_label);
 
                 // goto end (or finally)
                 try ops.append(self.allocator, .{
@@ -697,13 +645,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             if (!finally_body.isNone()) {
                 try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
 
-                const finally_node = self.old_ast.getNode(finally_body);
-                if (finally_node.tag == .block_statement) {
-                    const body_stmts = self.old_ast.extra_data.items[finally_node.data.list.start .. finally_node.data.list.start + finally_node.data.list.len];
-                    for (body_stmts) |raw_idx| {
-                        try collectOperations(self, @enumFromInt(raw_idx), ops, next_label);
-                    }
-                }
+                try collectBodyOperations(self, finally_body, ops, next_label);
 
                 // return [7] (endfinally)
                 const endfinally_ret = try buildInstructionReturn(self, 7, .none, stmt.span);
@@ -716,50 +658,20 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
         /// _state.trys.push([catch_label, finally_label, end_label]) expression_statement 생성.
         fn buildTrysPush(self: *Transformer, catch_label: u32, finally_label: u32, end_label: u32, span: Span) Transformer.Error!NodeIndex {
-            const state_ref = try buildStateRef(self, span);
+            const state_ref = try es_helpers.makeIdentifierRef(self, "_state");
 
             // _state.trys
-            const trys_span = try self.new_ast.addString("trys");
-            const trys_prop = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = trys_span,
-                .data = .{ .string_ref = trys_span },
-            });
-            const trys_me = try self.new_ast.addExtras(&.{
-                @intFromEnum(state_ref), @intFromEnum(trys_prop), 0,
-            });
-            const trys_member = try self.new_ast.addNode(.{
-                .tag = .static_member_expression,
-                .span = span,
-                .data = .{ .extra = trys_me },
-            });
+            const trys_prop = try es_helpers.makeIdentifierRef(self, "trys");
+            const trys_member = try es_helpers.makeStaticMember(self, state_ref, trys_prop, span);
 
             // _state.trys.push
-            const push_span = try self.new_ast.addString("push");
-            const push_prop = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = push_span,
-                .data = .{ .string_ref = push_span },
-            });
-            const push_me = try self.new_ast.addExtras(&.{
-                @intFromEnum(trys_member), @intFromEnum(push_prop), 0,
-            });
-            const push_member = try self.new_ast.addNode(.{
-                .tag = .static_member_expression,
-                .span = span,
-                .data = .{ .extra = push_me },
-            });
+            const push_prop = try es_helpers.makeIdentifierRef(self, "push");
+            const push_member = try es_helpers.makeStaticMember(self, trys_member, push_prop, span);
 
             // [catch_label, finally_label, end_label] 배열
-            var buf1: [16]u8 = undefined;
-            var buf2: [16]u8 = undefined;
-            var buf3: [16]u8 = undefined;
-            const s1 = std.fmt.bufPrint(&buf1, "{d}", .{catch_label}) catch "0";
-            const s2 = std.fmt.bufPrint(&buf2, "{d}", .{finally_label}) catch "0";
-            const s3 = std.fmt.bufPrint(&buf3, "{d}", .{end_label}) catch "0";
-            const n1 = try self.new_ast.addNode(.{ .tag = .numeric_literal, .span = try self.new_ast.addString(s1), .data = .{ .none = 0 } });
-            const n2 = try self.new_ast.addNode(.{ .tag = .numeric_literal, .span = try self.new_ast.addString(s2), .data = .{ .none = 0 } });
-            const n3 = try self.new_ast.addNode(.{ .tag = .numeric_literal, .span = try self.new_ast.addString(s3), .data = .{ .none = 0 } });
+            const n1 = try es_helpers.makeNumericLiteral(self, catch_label);
+            const n2 = try es_helpers.makeNumericLiteral(self, finally_label);
+            const n3 = try es_helpers.makeNumericLiteral(self, end_label);
             const arr_list = try self.new_ast.addNodeList(&.{ n1, n2, n3 });
             const arr = try self.new_ast.addNode(.{
                 .tag = .array_expression,
@@ -768,15 +680,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             });
 
             // _state.trys.push([...])
-            const call_args = try self.new_ast.addNodeList(&.{arr});
-            const call_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(push_member), call_args.start, call_args.len, 0,
-            });
-            const call = try self.new_ast.addNode(.{
-                .tag = .call_expression,
-                .span = span,
-                .data = .{ .extra = call_extra },
-            });
+            const call = try es_helpers.makeCallExpr(self, push_member, &.{arr}, span);
 
             return self.new_ast.addNode(.{
                 .tag = .expression_statement,
@@ -1033,86 +937,20 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     .break_op => {
                         // return [3, label]
                         const label = if (op.arg == .label) op.arg.label else 0;
-                        var label_buf: [16]u8 = undefined;
-                        const label_str = std.fmt.bufPrint(&label_buf, "{d}", .{label}) catch "0";
-                        const label_span = try self.new_ast.addString(label_str);
-                        const label_node = try self.new_ast.addNode(.{
-                            .tag = .numeric_literal,
-                            .span = label_span,
-                            .data = .{ .none = 0 },
-                        });
+                        const label_node = try es_helpers.makeNumericLiteral(self, label);
                         const ret = try buildInstructionReturn(self, 3, label_node, span);
                         try current_case_stmts.append(self.allocator, ret);
                     },
                     .break_when_false => {
                         if (op.arg == .label_and_node) {
-                            const label = op.arg.label_and_node.label;
-                            const cond = op.arg.label_and_node.node;
-                            // if (!(cond)) return [3, label]
-                            // 괄호로 감싸서 우선순위 보장
-                            const paren_cond = try self.new_ast.addNode(.{
-                                .tag = .parenthesized_expression,
-                                .span = span,
-                                .data = .{ .unary = .{ .operand = cond, .flags = 0 } },
-                            });
-                            const neg = try self.new_ast.addNode(.{
-                                .tag = .unary_expression,
-                                .span = span,
-                                .data = .{ .extra = try self.new_ast.addExtras(&.{
-                                    @intFromEnum(paren_cond),
-                                    @intFromEnum(token_mod.Kind.bang),
-                                }) },
-                            });
-                            var buf: [16]u8 = undefined;
-                            const label_str = std.fmt.bufPrint(&buf, "{d}", .{label}) catch "0";
-                            const label_span = try self.new_ast.addString(label_str);
-                            const label_node = try self.new_ast.addNode(.{
-                                .tag = .numeric_literal,
-                                .span = label_span,
-                                .data = .{ .none = 0 },
-                            });
-                            const break_ret = try buildInstructionReturn(self, 3, label_node, span);
-                            // if (!cond) { return [3, label]; }
-                            const if_body_list = try self.new_ast.addNodeList(&.{break_ret});
-                            const if_body = try self.new_ast.addNode(.{
-                                .tag = .block_statement,
-                                .span = span,
-                                .data = .{ .list = if_body_list },
-                            });
-                            const if_stmt = try self.new_ast.addNode(.{
-                                .tag = .if_statement,
-                                .span = span,
-                                .data = .{ .ternary = .{ .a = neg, .b = if_body, .c = .none } },
-                            });
-                            try current_case_stmts.append(self.allocator, if_stmt);
+                            const stmt = try buildConditionalBreak(self, op.arg.label_and_node.label, op.arg.label_and_node.node, true, span);
+                            try current_case_stmts.append(self.allocator, stmt);
                         }
                     },
                     .break_when_true => {
-                        // 유사한 패턴 (조건 반전 없음)
                         if (op.arg == .label_and_node) {
-                            const label = op.arg.label_and_node.label;
-                            const cond = op.arg.label_and_node.node;
-                            var buf: [16]u8 = undefined;
-                            const label_str = std.fmt.bufPrint(&buf, "{d}", .{label}) catch "0";
-                            const label_span = try self.new_ast.addString(label_str);
-                            const label_node = try self.new_ast.addNode(.{
-                                .tag = .numeric_literal,
-                                .span = label_span,
-                                .data = .{ .none = 0 },
-                            });
-                            const break_ret = try buildInstructionReturn(self, 3, label_node, span);
-                            const if_body_list = try self.new_ast.addNodeList(&.{break_ret});
-                            const if_body = try self.new_ast.addNode(.{
-                                .tag = .block_statement,
-                                .span = span,
-                                .data = .{ .list = if_body_list },
-                            });
-                            const if_stmt = try self.new_ast.addNode(.{
-                                .tag = .if_statement,
-                                .span = span,
-                                .data = .{ .ternary = .{ .a = cond, .b = if_body, .c = .none } },
-                            });
-                            try current_case_stmts.append(self.allocator, if_stmt);
+                            const stmt = try buildConditionalBreak(self, op.arg.label_and_node.label, op.arg.label_and_node.node, false, span);
+                            try current_case_stmts.append(self.allocator, stmt);
                         }
                     },
                     .yield_star => {
@@ -1130,21 +968,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             }
 
             // switch(_state.label) { cases... }
-            const state_ref = try buildStateRef(self, span);
-            const label_span_str = try self.new_ast.addString("label");
-            const label_prop = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = label_span_str,
-                .data = .{ .string_ref = label_span_str },
-            });
-            const member_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(state_ref), @intFromEnum(label_prop), 0,
-            });
-            const discriminant = try self.new_ast.addNode(.{
-                .tag = .static_member_expression,
-                .span = span,
-                .data = .{ .extra = member_extra },
-            });
+            const state_ref = try es_helpers.makeIdentifierRef(self, "_state");
+            const label_prop = try es_helpers.makeIdentifierRef(self, "label");
+            const discriminant = try es_helpers.makeStaticMember(self, state_ref, label_prop, span);
 
             // switch_statement: extra = [discriminant, cases_start, cases_len]
             const cases_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
@@ -1160,17 +986,57 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             });
         }
 
+        /// block_statement이면 내부 문들을 순회, 아니면 단일 문으로 collectOperations.
+        fn collectBodyOperations(self: *Transformer, body_idx: NodeIndex, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
+            const body_node = self.old_ast.getNode(body_idx);
+            if (body_node.tag == .block_statement) {
+                const stmts = self.old_ast.extra_data.items[body_node.data.list.start .. body_node.data.list.start + body_node.data.list.len];
+                for (stmts) |raw_idx| {
+                    try collectOperations(self, @enumFromInt(raw_idx), ops, next_label);
+                }
+            } else {
+                try collectOperations(self, body_idx, ops, next_label);
+            }
+        }
+
+        /// 조건부 break: if (cond) return [3, label] 또는 if (!cond) return [3, label].
+        /// negate=true이면 조건을 !로 반전.
+        fn buildConditionalBreak(self: *Transformer, label: u32, cond: NodeIndex, negate: bool, span: Span) Transformer.Error!NodeIndex {
+            const final_cond = if (negate) blk: {
+                const paren_cond = try self.new_ast.addNode(.{
+                    .tag = .parenthesized_expression,
+                    .span = span,
+                    .data = .{ .unary = .{ .operand = cond, .flags = 0 } },
+                });
+                break :blk try self.new_ast.addNode(.{
+                    .tag = .unary_expression,
+                    .span = span,
+                    .data = .{ .extra = try self.new_ast.addExtras(&.{
+                        @intFromEnum(paren_cond),
+                        @intFromEnum(token_mod.Kind.bang),
+                    }) },
+                });
+            } else cond;
+
+            const label_node = try es_helpers.makeNumericLiteral(self, label);
+            const break_ret = try buildInstructionReturn(self, 3, label_node, span);
+            const if_body_list = try self.new_ast.addNodeList(&.{break_ret});
+            const if_body = try self.new_ast.addNode(.{
+                .tag = .block_statement,
+                .span = span,
+                .data = .{ .list = if_body_list },
+            });
+            return self.new_ast.addNode(.{
+                .tag = .if_statement,
+                .span = span,
+                .data = .{ .ternary = .{ .a = final_cond, .b = if_body, .c = .none } },
+            });
+        }
+
         /// switch case 노드 생성: case N: stmts...
         /// switch_case: extra = [test_expr, stmts_start, stmts_len]
         fn buildSwitchCase(self: *Transformer, case_num: u32, stmts: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            var buf: [16]u8 = undefined;
-            const num_str = std.fmt.bufPrint(&buf, "{d}", .{case_num}) catch "0";
-            const num_span = try self.new_ast.addString(num_str);
-            const test_node = try self.new_ast.addNode(.{
-                .tag = .numeric_literal,
-                .span = num_span,
-                .data = .{ .none = 0 },
-            });
+            const test_node = try es_helpers.makeNumericLiteral(self, case_num);
 
             const body_list = try self.new_ast.addNodeList(stmts);
             const case_extra = try self.new_ast.addExtras(&.{
@@ -1188,14 +1054,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
         /// return [instruction, value] 문 생성.
         pub fn buildInstructionReturn(self: *Transformer, instruction: u32, value: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            var buf: [16]u8 = undefined;
-            const inst_str = std.fmt.bufPrint(&buf, "{d}", .{instruction}) catch "0";
-            const inst_span = try self.new_ast.addString(inst_str);
-            const inst_node = try self.new_ast.addNode(.{
-                .tag = .numeric_literal,
-                .span = inst_span,
-                .data = .{ .none = 0 },
-            });
+            const inst_node = try es_helpers.makeNumericLiteral(self, instruction);
 
             const arr_items = if (!value.isNone())
                 try self.new_ast.addNodeList(&.{ inst_node, value })
@@ -1217,40 +1076,15 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
         /// _state.sent() 호출 생성.
         fn buildSentCall(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
-            const state_ref = try buildStateRef(self, span);
-            const sent_span = try self.new_ast.addString("sent");
-            const sent_prop = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = sent_span,
-                .data = .{ .string_ref = sent_span },
-            });
-            const member_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(state_ref), @intFromEnum(sent_prop), 0,
-            });
-            const sent_member = try self.new_ast.addNode(.{
-                .tag = .static_member_expression,
-                .span = span,
-                .data = .{ .extra = member_extra },
-            });
-            const call_args = try self.new_ast.addNodeList(&.{});
-            const call_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(sent_member), call_args.start, call_args.len, 0,
-            });
-            return self.new_ast.addNode(.{
-                .tag = .call_expression,
-                .span = span,
-                .data = .{ .extra = call_extra },
-            });
+            const state_ref = try es_helpers.makeIdentifierRef(self, "_state");
+            const sent_prop = try es_helpers.makeIdentifierRef(self, "sent");
+            const sent_member = try es_helpers.makeStaticMember(self, state_ref, sent_prop, span);
+            return es_helpers.makeCallExpr(self, sent_member, &.{}, span);
         }
 
         /// _state identifier reference 생성.
         fn buildStateRef(self: *Transformer, _: Span) Transformer.Error!NodeIndex {
-            const state_span = try self.new_ast.addString("_state");
-            return self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = state_span,
-                .data = .{ .string_ref = state_span },
-            });
+            return es_helpers.makeIdentifierRef(self, "_state");
         }
 
         /// __generator(function(_state) { switch_body }) 호출 생성.
@@ -1259,11 +1093,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             // _state 파라미터
             const state_span = try self.new_ast.addString("_state");
-            const state_param = try self.new_ast.addNode(.{
-                .tag = .binding_identifier,
-                .span = state_span,
-                .data = .{ .string_ref = state_span },
-            });
+            const state_param = try self.new_ast.addNode(.{ .tag = .binding_identifier, .span = state_span, .data = .{ .string_ref = state_span } });
 
             // function body: switch_body를 block으로 감싸기
             const body_list = try self.new_ast.addNodeList(&.{switch_body});
@@ -1291,21 +1121,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             });
 
             // __generator(func)
-            const gen_span = try self.new_ast.addString("__generator");
-            const gen_ref = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = gen_span,
-                .data = .{ .string_ref = gen_span },
-            });
-            const call_args = try self.new_ast.addNodeList(&.{func_expr});
-            const call_extra = try self.new_ast.addExtras(&.{
-                @intFromEnum(gen_ref), call_args.start, call_args.len, 0,
-            });
-            return self.new_ast.addNode(.{
-                .tag = .call_expression,
-                .span = span,
-                .data = .{ .extra = call_extra },
-            });
+            const gen_ref = try es_helpers.makeIdentifierRef(self, "__generator");
+            return es_helpers.makeCallExpr(self, gen_ref, &.{func_expr}, span);
         }
     };
 }
