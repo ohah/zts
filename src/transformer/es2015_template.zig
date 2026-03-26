@@ -137,25 +137,25 @@ fn getTemplateElementText(source: []const u8, span: Span) []const u8 {
 fn buildStringLiteral(self: anytype, text: []const u8) !NodeIndex {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(self.allocator);
-    try buf.append(self.allocator,'"');
+    try buf.append(self.allocator, '"');
 
     var j: usize = 0;
     while (j < text.len) : (j += 1) {
         const c = text[j];
         if (c == '"') {
             // " → \"
-            try buf.append(self.allocator,'\\');
-            try buf.append(self.allocator,'"');
+            try buf.append(self.allocator, '\\');
+            try buf.append(self.allocator, '"');
         } else if (c == '\\' and j + 1 < text.len and text[j + 1] == '`') {
             // \` → ` (backtick escape는 string literal에서 불필요)
-            try buf.append(self.allocator,'`');
+            try buf.append(self.allocator, '`');
             j += 1;
         } else {
-            try buf.append(self.allocator,c);
+            try buf.append(self.allocator, c);
         }
     }
 
-    try buf.append(self.allocator,'"');
+    try buf.append(self.allocator, '"');
 
     const str_span = try self.new_ast.addString(buf.items);
     return self.new_ast.addNode(.{
