@@ -3902,3 +3902,27 @@ test "ES2015: arrow no transform on esnext" {
     defer r.deinit();
     try std.testing.expectEqualStrings("var f=()=>42;", r.output);
 }
+
+// --- ES2015: for-of ---
+
+test "ES2015: for-of with const" {
+    var r = try e2eTarget(std.testing.allocator, "for(const x of arr){f(x);}", .es5);
+    defer r.deinit();
+    // _a=index, _b=array
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_b.length") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var x=_b[_a]") != null);
+}
+
+test "ES2015: for-of with expression left" {
+    var r = try e2eTarget(std.testing.allocator, "for(x of arr){}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "x=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "for(") != null);
+}
+
+test "ES2015: for-of no transform on esnext" {
+    var r = try e2eTarget(std.testing.allocator, "for(const x of arr){}", .esnext);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("for(const x of arr){}", r.output);
+}
