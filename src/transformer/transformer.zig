@@ -30,6 +30,7 @@ const es2019 = @import("es2019.zig");
 const es2020 = @import("es2020.zig");
 const es2021 = @import("es2021.zig");
 const es2022 = @import("es2022.zig");
+const es2015_template = @import("es2015_template.zig");
 const es_helpers = @import("es_helpers.zig");
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 
@@ -342,11 +343,17 @@ pub const Transformer = struct {
             .sequence_expression,
             .class_body,
             .formal_parameters,
-            .template_literal,
             // JSX — fragment는 .list, element/opening_element는 .extra
             .jsx_fragment,
             .function_body,
             => self.visitListNode(node),
+
+            .template_literal => {
+                if (self.options.target.needsES2015()) {
+                    return es2015_template.ES2015Template(Transformer).lowerTemplateLiteral(self, node);
+                }
+                return self.visitListNode(node);
+            },
 
             // object_expression: spread가 있으면 ES2018 다운레벨링 대상
             .object_expression => {
