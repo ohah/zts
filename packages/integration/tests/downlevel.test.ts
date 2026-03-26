@@ -688,8 +688,7 @@ describe("ES 다운레벨링 런타임 테스트", () => {
     test("template literal with multiple substitutions", async () => {
       const result = await bundleAndRun(
         {
-          "index.ts":
-            "const name = 'world'; const n = 42; console.log(`hello ${name}, num=${n}`);",
+          "index.ts": "const name = 'world'; const n = 42; console.log(`hello ${name}, num=${n}`);",
         },
         "index.ts",
         ["--target=es5"],
