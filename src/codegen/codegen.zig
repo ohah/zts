@@ -4125,3 +4125,19 @@ test "ES2015: generator var hoisting without yield" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var a") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "return [4,a]") != null);
 }
+
+test "ES2015: generator yield*" {
+    var r = try e2eTarget(std.testing.allocator, "function* gen(){yield* [1,2];}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [5,[1,2]]") != null);
+}
+
+test "ES2015: generator do-while with yield" {
+    var r = try e2eTarget(std.testing.allocator, "function* gen(){var i=0;do{yield i;i++;}while(i<3);}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [4,i]") != null);
+    // do-while: body 먼저, 조건으로 점프
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "i<3") != null or
+        std.mem.indexOf(u8, r.output, "i < 3") != null);
+}
