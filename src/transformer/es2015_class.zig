@@ -90,11 +90,16 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     const flags = extras[pe + 2];
                     const is_static = (flags & 0x01) != 0;
 
-                    if (is_static) {
+                    if (is_static and !init_val.isNone()) {
                         try static_fields.append(self.allocator, .{ .key = key, .init = init_val });
-                    } else if (!init_val.isNone()) {
+                    } else if (!is_static and !init_val.isNone()) {
                         // this.key = init → constructor body에 삽입
-                        const field_stmt = try buildThisFieldAssign(self, key, init_val, span);
+                        const this_node = try self.new_ast.addNode(.{
+                            .tag = .this_expression,
+                            .span = span,
+                            .data = .{ .none = 0 },
+                        });
+                        const field_stmt = try buildFieldAssign(self, this_node, key, init_val, span);
                         try instance_fields.append(self.allocator, field_stmt);
                     }
                 }
@@ -122,7 +127,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // --- static fields → ClassName.field = value ---
             for (static_fields.items) |field| {
-                const static_assign = try buildStaticFieldAssign(self, field, name_span, span);
+                const class_ref = try self.new_ast.addNode(.{
+                    .tag = .identifier_reference,
+                    .span = name_span,
+                    .data = .{ .string_ref = name_span },
+                });
+                const static_assign = try buildFieldAssign(self, class_ref, field.key, field.init, span);
                 try self.pending_nodes.append(self.allocator, static_assign);
             }
 
@@ -140,48 +150,17 @@ pub fn ES2015Class(comptime Transformer: type) type {
             init: NodeIndex,
         };
 
-        /// this.key = init expression_statement 생성
-        fn buildThisFieldAssign(self: *Transformer, key_idx: NodeIndex, init_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const this_node = try self.new_ast.addNode(.{
-                .tag = .this_expression,
-                .span = span,
-                .data = .{ .none = 0 },
-            });
+        /// obj.key = init expression_statement 생성.
+        /// instance field: obj = this, static field: obj = ClassName identifier.
+        fn buildFieldAssign(self: *Transformer, obj: NodeIndex, key_idx: NodeIndex, init_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const new_key = try self.visitNode(key_idx);
-            const me = try self.new_ast.addExtras(&.{ @intFromEnum(this_node), @intFromEnum(new_key), 0 });
+            const me = try self.new_ast.addExtras(&.{ @intFromEnum(obj), @intFromEnum(new_key), 0 });
             const member = try self.new_ast.addNode(.{
                 .tag = .static_member_expression,
                 .span = span,
                 .data = .{ .extra = me },
             });
             const new_init = try self.visitNode(init_idx);
-            const assign = try self.new_ast.addNode(.{
-                .tag = .assignment_expression,
-                .span = span,
-                .data = .{ .binary = .{ .left = member, .right = new_init, .flags = 0 } },
-            });
-            return self.new_ast.addNode(.{
-                .tag = .expression_statement,
-                .span = span,
-                .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
-            });
-        }
-
-        /// ClassName.key = init expression_statement 생성
-        fn buildStaticFieldAssign(self: *Transformer, field: FieldInfo, class_name_span: Span, span: Span) Transformer.Error!NodeIndex {
-            const class_ref = try self.new_ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = class_name_span,
-                .data = .{ .string_ref = class_name_span },
-            });
-            const new_key = try self.visitNode(field.key);
-            const me = try self.new_ast.addExtras(&.{ @intFromEnum(class_ref), @intFromEnum(new_key), 0 });
-            const member = try self.new_ast.addNode(.{
-                .tag = .static_member_expression,
-                .span = span,
-                .data = .{ .extra = me },
-            });
-            const new_init = try self.visitNode(field.init);
             const assign = try self.new_ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
