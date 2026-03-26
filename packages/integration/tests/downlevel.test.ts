@@ -792,8 +792,72 @@ describe("ES 다운레벨링 런타임 테스트", () => {
   });
 
   // ===== ES2017 (target=es2016) =====
-  // TODO: async/await → generator 변환 후 번들러의 __async 헬퍼 주입 문제 해결 필요
-  // describe("ES2017 → es2016", () => { ... });
+
+  describe("ES2017 → es2016", () => {
+    test("async function", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": "async function foo() { return 42; } foo().then(v => console.log(v));" },
+        "index.ts",
+        ["--target=es2016"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42");
+    });
+
+    test("async with await", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            async function add(a: number, b: number) {
+              const x = await Promise.resolve(a);
+              const y = await Promise.resolve(b);
+              return x + y;
+            }
+            add(10, 32).then(v => console.log(v));
+          `,
+        },
+        "index.ts",
+        ["--target=es2016"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42");
+    });
+
+    test("async arrow function", async () => {
+      const result = await bundleAndRun(
+        { "index.ts": "const double = async (x: number) => x * 2; double(21).then(v => console.log(v));" },
+        "index.ts",
+        ["--target=es2016"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42");
+    });
+
+    test("async error handling", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            async function safe() {
+              try {
+                throw new Error("oops");
+              } catch (e: any) {
+                return e.message;
+              }
+            }
+            safe().then(v => console.log(v));
+          `,
+        },
+        "index.ts",
+        ["--target=es2016"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("oops");
+    });
+  });
 
   // ===== ES2018 (target=es2017) =====
 

@@ -3596,19 +3596,19 @@ test "ES2022: static block with methods preserved" {
 test "ES2017: async function declaration" {
     var r = try e2eFull(std.testing.allocator, "export async function foo() { return await bar(); }", .{ .target = .es2016 }, .{ .minify = true }, ".mts");
     defer r.deinit();
-    try std.testing.expectEqualStrings("export function foo(){return __async(function*(){return (yield bar());});}", r.output);
+    try std.testing.expectEqualStrings("export function foo(){return __async(function*(){return (yield bar());})();}", r.output);
 }
 
 test "ES2017: async arrow block body" {
     var r = try e2eFull(std.testing.allocator, "export const f = async () => { await x; };", .{ .target = .es2016 }, .{ .minify = true }, ".mts");
     defer r.deinit();
-    try std.testing.expectEqualStrings("export const f=()=>__async(function*(){(yield x);});", r.output);
+    try std.testing.expectEqualStrings("export const f=()=>__async(function*(){(yield x);})();", r.output);
 }
 
 test "ES2017: async arrow expression body" {
     var r = try e2eFull(std.testing.allocator, "export const f = async () => await x;", .{ .target = .es2016 }, .{ .minify = true }, ".mts");
     defer r.deinit();
-    try std.testing.expectEqualStrings("export const f=()=>__async(function*(){return (yield x);});", r.output);
+    try std.testing.expectEqualStrings("export const f=()=>__async(function*(){return (yield x);})();", r.output);
 }
 
 test "ES2017: no transform on es2017" {
