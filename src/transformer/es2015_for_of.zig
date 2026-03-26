@@ -41,7 +41,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
 
             // --- init: var _a = 0, _b = arr ---
             // _a = 0
-            const idx_binding = try makeBinding(self, idx_span, span);
+            const idx_binding = try makeBinding(self, idx_span);
             const zero_span = try self.new_ast.addString("0");
             const zero = try self.new_ast.addNode(.{
                 .tag = .numeric_literal,
@@ -58,7 +58,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             });
 
             // _b = arr
-            const arr_binding = try makeBinding(self, arr_span, span);
+            const arr_binding = try makeBinding(self, arr_span);
             const arr_decl_extra = try self.new_ast.addExtras(&.{
                 @intFromEnum(arr_binding), @intFromEnum(NodeIndex.none), @intFromEnum(new_right),
             });
@@ -110,7 +110,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 @intFromEnum(token_mod.Kind.plus2) | (ast_mod.UnaryFlags.postfix),
             });
             const update_expr = try self.new_ast.addNode(.{
-                .tag = .unary_expression,
+                .tag = .update_expression,
                 .span = span,
                 .data = .{ .extra = update_extra },
             });
@@ -154,7 +154,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
         }
 
         /// binding_identifier 노드 생성
-        fn makeBinding(self: *Transformer, name_span: Span, _: Span) Transformer.Error!NodeIndex {
+        fn makeBinding(self: *Transformer, name_span: Span) Transformer.Error!NodeIndex {
             return self.new_ast.addNode(.{
                 .tag = .binding_identifier,
                 .span = name_span,

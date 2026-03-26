@@ -294,9 +294,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             });
             // _ref.key 다시 생성 (access는 이미 eq_check에서 소비)
             const ref2 = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
-            const key_node = self.old_ast.getNode(key_idx);
             const new_key = try self.visitNode(key_idx);
-            _ = key_node;
             const me = try self.new_ast.addExtras(&.{ @intFromEnum(ref2), @intFromEnum(new_key), 0 });
             const access2 = try self.new_ast.addNode(.{
                 .tag = .static_member_expression,

@@ -3908,10 +3908,12 @@ test "ES2015: arrow no transform on esnext" {
 test "ES2015: for-of with const" {
     var r = try e2eTarget(std.testing.allocator, "for(const x of arr){f(x);}", .es5);
     defer r.deinit();
-    // _a=index, _b=array
+    // _a=index, _b=array, postfix increment
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var _a") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_b.length") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var x=_b[_a]") != null);
+    // postfix _a++ (not prefix ++_a)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_a++") != null);
 }
 
 test "ES2015: for-of with expression left" {
