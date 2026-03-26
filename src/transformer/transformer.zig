@@ -31,6 +31,7 @@ const es2020 = @import("es2020.zig");
 const es2021 = @import("es2021.zig");
 const es2022 = @import("es2022.zig");
 const es2015_template = @import("es2015_template.zig");
+const es2015_shorthand = @import("es2015_shorthand.zig");
 const es_helpers = @import("es_helpers.zig");
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 
@@ -2394,6 +2395,10 @@ pub const Transformer = struct {
 
     /// object_property: binary = { left=key, right=value, flags }
     fn visitObjectProperty(self: *Transformer, node: Node) Error!NodeIndex {
+        // ES2015: shorthand property 확장 ({ x } → { x: x })
+        if (self.options.target.needsES2015() and node.data.binary.right.isNone()) {
+            return es2015_shorthand.ES2015Shorthand(Transformer).expandShorthand(self, node);
+        }
         const new_key = try self.visitNode(node.data.binary.left);
         const new_value = try self.visitNode(node.data.binary.right);
         return self.new_ast.addNode(.{

@@ -3766,3 +3766,23 @@ test "ES2015: template no transform on esnext" {
     defer r.deinit();
     try std.testing.expectEqualStrings("const x=`hello`;", r.output);
 }
+
+// --- ES2015: shorthand property ---
+
+test "ES2015: shorthand property expansion" {
+    var r = try e2eTarget(std.testing.allocator, "var o={x,y};", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var o={x:x,y:y};", r.output);
+}
+
+test "ES2015: mixed shorthand and full property" {
+    var r = try e2eTarget(std.testing.allocator, "var o={x:1,y};", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var o={x:1,y:y};", r.output);
+}
+
+test "ES2015: shorthand no transform on esnext" {
+    var r = try e2eTarget(std.testing.allocator, "var o={x,y};", .esnext);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var o={x,y};", r.output);
+}
