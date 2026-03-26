@@ -253,10 +253,8 @@ fn hasSideEffects(ast: *const Ast, node: Node) bool {
             return true;
         },
         .export_default_declaration => {
-            const inner_idx = node.data.unary.operand;
-            if (!inner_idx.isNone() and @intFromEnum(inner_idx) < ast.nodes.items.len) {
-                return hasSideEffects(ast, ast.nodes.items[@intFromEnum(inner_idx)]);
-            }
+            // linker가 export default → var _default = X 변환하므로
+            // rename된 이름이 다른 모듈에서 참조될 수 있음 → 항상 보존
             return true;
         },
         // import/export 문은 linker skip_nodes와 충돌 방지를 위해 건드리지 않음
@@ -330,13 +328,17 @@ fn collectReferences(
     if (stmts.len == 0) return;
 
     for (ast.nodes.items) |node| {
-        if (node.tag != .identifier_reference) continue;
+        // identifier_reference + assignment_target_identifier 모두 추적
+        // (++x, x = ..., [x] = ... 등에서 x는 assignment_target_identifier)
+        const is_ref = switch (node.tag) {
+            .identifier_reference, .assignment_target_identifier => true,
+            else => false,
+        };
+        if (!is_ref) continue;
 
         const name = ast.getText(node.span);
-        // top-level 이름이 아니면 무시
         if (!name_to_stmt.contains(name)) continue;
 
-        // span containment로 소속 statement 찾기 (binary search)
         const containing_idx = findContainingStmt(stmts, node.span.start) orelse continue;
 
         try stmt_refs[containing_idx].put(allocator, name, {});
