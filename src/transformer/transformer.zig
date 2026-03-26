@@ -222,6 +222,10 @@ pub const Transformer = struct {
     /// collectForOperations에서 update nop 추가 직전에 설정.
     generator_for_update_label: ?u32 = null,
 
+    /// ES2015 class private fields: "#name" → "_name" 매핑.
+    /// class body 방문 중 설정되어, this.#x → _x.get(this), this.#x = v → _x.set(this, v) 변환에 사용.
+    current_private_fields: []const PrivateFieldMapping = &.{},
+
     /// 현재 함수 스코프에서 arrow body가 this를 사용하여 var _this = this 삽입이 필요한지.
     needs_this_var: bool = false,
 
@@ -242,9 +246,14 @@ pub const Transformer = struct {
     refresh_signatures: std.ArrayList(RefreshSignature) = .empty,
 
     pub const GeneratorLabelEntry = struct {
-        name: []const u8, // label 이름 (소스에서 추출)
-        break_label: u32, // break시 이동할 state label
-        continue_label: ?u32, // continue시 이동할 state label (loop만)
+        name: []const u8,
+        break_label: u32,
+        continue_label: ?u32,
+    };
+
+    pub const PrivateFieldMapping = struct {
+        original_name: []const u8, // "#x"
+        var_name: []const u8, // "_x"
     };
 
     const RefreshRegistration = struct {
@@ -506,6 +515,18 @@ pub const Transformer = struct {
                         return es2021.ES2021(Transformer).lowerLogicalAssignment(self, node, .amp2);
                     }
                 }
+                // ES2015: this.#x = v → _x.set(this, v)
+                if (self.options.target.needsES2015() and self.current_private_fields.len > 0) {
+                    const left_idx = node.data.binary.left;
+                    if (!left_idx.isNone()) {
+                        const left_node = self.old_ast.getNode(left_idx);
+                        if (left_node.tag == .private_field_expression) {
+                            if (es2015_class.ES2015Class(Transformer).lowerPrivateFieldSet(self, node)) |result| {
+                                return result;
+                            }
+                        }
+                    }
+                }
                 // ES2015: assignment destructuring → sequence expression
                 if (self.options.target.needsES2015()) {
                     const left_idx = node.data.binary.left;
@@ -544,9 +565,22 @@ pub const Transformer = struct {
                 }
                 return self.visitMemberExpression(node);
             },
-            .computed_member_expression,
-            .private_field_expression,
-            => {
+            .private_field_expression => {
+                // ES2015: this.#x → _x.get(this)
+                if (self.options.target.needsES2015() and self.current_private_fields.len > 0) {
+                    if (es2015_class.ES2015Class(Transformer).lowerPrivateFieldGet(self, node)) |result| {
+                        return result;
+                    }
+                }
+                // ES 다운레벨링: ?. → ternary (target < es2020)
+                if (self.options.target.needsOptionalChaining()) {
+                    if (es2020.ES2020(Transformer).findOptionalChainBase(self, node)) |base_idx| {
+                        return es2020.ES2020(Transformer).lowerOptionalChain(self, node, base_idx);
+                    }
+                }
+                return self.visitMemberExpression(node);
+            },
+            .computed_member_expression => {
                 // ES 다운레벨링: ?. → ternary (target < es2020)
                 if (self.options.target.needsOptionalChaining()) {
                     if (es2020.ES2020(Transformer).findOptionalChainBase(self, node)) |base_idx| {
@@ -1498,7 +1532,7 @@ pub const Transformer = struct {
     }
 
     /// var <name> = <init_value>; 문 생성 (범용 헬퍼).
-    fn buildVarDecl(self: *Transformer, name: []const u8, init_value: NodeIndex, span: Span) Error!NodeIndex {
+    pub fn buildVarDecl(self: *Transformer, name: []const u8, init_value: NodeIndex, span: Span) Error!NodeIndex {
         const name_span = try self.new_ast.addString(name);
         const binding = try self.new_ast.addNode(.{
             .tag = .binding_identifier,
