@@ -228,9 +228,88 @@ fn extractVarDeclNames(
         const name_ni = @intFromEnum(name_idx);
         if (name_ni >= ast.nodes.items.len) continue;
         const name_node = ast.nodes.items[name_ni];
-        const name = ast.getText(name_node.span);
-        if (name.len > 0) {
-            try name_to_stmt.put(allocator, name, stmt_idx);
+        switch (name_node.tag) {
+            .object_pattern => try extractObjectPatternNames(ast, name_node, stmt_idx, name_to_stmt, allocator),
+            .array_pattern => try extractArrayPatternNames(ast, name_node, stmt_idx, name_to_stmt, allocator),
+            else => {
+                const name = ast.getText(name_node.span);
+                if (name.len > 0) {
+                    try name_to_stmt.put(allocator, name, stmt_idx);
+                }
+            },
+        }
+    }
+}
+
+/// object pattern ({ a, b: c, ...rest }) 에서 바인딩 이름을 추출.
+fn extractObjectPatternNames(
+    ast: *const Ast,
+    pattern: Node,
+    stmt_idx: u32,
+    name_to_stmt: *std.StringHashMapUnmanaged(u32),
+    allocator: std.mem.Allocator,
+) std.mem.Allocator.Error!void {
+    const list = pattern.data.list;
+    if (list.len == 0) return;
+    if (list.start + list.len > ast.extra_data.items.len) return;
+    const indices = ast.extra_data.items[list.start .. list.start + list.len];
+    for (indices) |raw_idx| {
+        const prop_idx: NodeIndex = @enumFromInt(raw_idx);
+        if (prop_idx.isNone() or @intFromEnum(prop_idx) >= ast.nodes.items.len) continue;
+        const prop = ast.nodes.items[@intFromEnum(prop_idx)];
+        if (prop.tag == .binding_property) {
+            // shorthand { X } → left == right, rename { X: Y } → right=value
+            const val_idx = prop.data.binary.right;
+            if (!val_idx.isNone() and @intFromEnum(val_idx) < ast.nodes.items.len) {
+                const val = ast.nodes.items[@intFromEnum(val_idx)];
+                if (val.tag == .object_pattern) {
+                    try extractObjectPatternNames(ast, val, stmt_idx, name_to_stmt, allocator);
+                } else if (val.tag == .array_pattern) {
+                    try extractArrayPatternNames(ast, val, stmt_idx, name_to_stmt, allocator);
+                } else {
+                    const name = ast.getText(val.span);
+                    if (name.len > 0) try name_to_stmt.put(allocator, name, stmt_idx);
+                }
+            }
+        } else if (prop.tag == .rest_element) {
+            const arg = prop.data.unary.operand;
+            if (!arg.isNone() and @intFromEnum(arg) < ast.nodes.items.len) {
+                const name = ast.getText(ast.nodes.items[@intFromEnum(arg)].span);
+                if (name.len > 0) try name_to_stmt.put(allocator, name, stmt_idx);
+            }
+        }
+    }
+}
+
+/// array pattern ([a, b, ...rest]) 에서 바인딩 이름을 추출.
+fn extractArrayPatternNames(
+    ast: *const Ast,
+    pattern: Node,
+    stmt_idx: u32,
+    name_to_stmt: *std.StringHashMapUnmanaged(u32),
+    allocator: std.mem.Allocator,
+) std.mem.Allocator.Error!void {
+    const list = pattern.data.list;
+    if (list.len == 0) return;
+    if (list.start + list.len > ast.extra_data.items.len) return;
+    const indices = ast.extra_data.items[list.start .. list.start + list.len];
+    for (indices) |raw_idx| {
+        const elem_idx: NodeIndex = @enumFromInt(raw_idx);
+        if (elem_idx.isNone() or @intFromEnum(elem_idx) >= ast.nodes.items.len) continue;
+        const elem = ast.nodes.items[@intFromEnum(elem_idx)];
+        if (elem.tag == .object_pattern) {
+            try extractObjectPatternNames(ast, elem, stmt_idx, name_to_stmt, allocator);
+        } else if (elem.tag == .array_pattern) {
+            try extractArrayPatternNames(ast, elem, stmt_idx, name_to_stmt, allocator);
+        } else if (elem.tag == .rest_element) {
+            const arg = elem.data.unary.operand;
+            if (!arg.isNone() and @intFromEnum(arg) < ast.nodes.items.len) {
+                const name = ast.getText(ast.nodes.items[@intFromEnum(arg)].span);
+                if (name.len > 0) try name_to_stmt.put(allocator, name, stmt_idx);
+            }
+        } else {
+            const name = ast.getText(elem.span);
+            if (name.len > 0) try name_to_stmt.put(allocator, name, stmt_idx);
         }
     }
 }
