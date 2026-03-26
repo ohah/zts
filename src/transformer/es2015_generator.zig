@@ -86,10 +86,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const new_params = try self.visitExtraList(params_start, params_len);
 
             // generator body를 상태 머신으로 변환
-            const state_machine_body = try buildStateMachine(self, body_idx, span);
+            const sm_result = try buildStateMachine(self, body_idx, span);
 
             // __generator(function(_state) { switch ... }) 호출 생성
-            const gen_call = try buildGeneratorHelperCall(self, state_machine_body, span);
+            const gen_call = try buildGeneratorHelperCall(self, sm_result.body, span);
 
             // return __generator(...) 문
             const ret_stmt = try self.new_ast.addNode(.{
@@ -97,12 +97,23 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .unary = .{ .operand = gen_call, .flags = 0 } },
             });
-            const body_list = try self.new_ast.addNodeList(&.{ret_stmt});
-            const new_body = try self.new_ast.addNode(.{
-                .tag = .block_statement,
-                .span = span,
-                .data = .{ .list = body_list },
-            });
+
+            // var 선언을 __generator 밖에 배치 (함수 스코프에서 한 번만 선언)
+            const new_body = if (sm_result.var_decl.isNone()) blk: {
+                const body_list = try self.new_ast.addNodeList(&.{ret_stmt});
+                break :blk try self.new_ast.addNode(.{
+                    .tag = .block_statement,
+                    .span = span,
+                    .data = .{ .list = body_list },
+                });
+            } else blk: {
+                const body_list = try self.new_ast.addNodeList(&.{ sm_result.var_decl, ret_stmt });
+                break :blk try self.new_ast.addNode(.{
+                    .tag = .block_statement,
+                    .span = span,
+                    .data = .{ .list = body_list },
+                });
+            };
 
             // 일반 function으로 변환 (generator 플래그 제거)
             const new_flags = flags & ~@as(u32, ast_mod.FunctionFlags.is_generator);
@@ -122,12 +133,17 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             });
         }
 
+        const StateMachineResult = struct {
+            body: NodeIndex, // switch 문 (또는 switch를 포함하는 block)
+            var_decl: NodeIndex, // 호이스팅된 var 선언 (없으면 .none)
+        };
+
         /// generator body를 switch 문 기반 상태 머신으로 변환.
-        fn buildStateMachine(self: *Transformer, body_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            if (body_idx.isNone()) return NodeIndex.none;
+        fn buildStateMachine(self: *Transformer, body_idx: NodeIndex, span: Span) Transformer.Error!StateMachineResult {
+            if (body_idx.isNone()) return .{ .body = .none, .var_decl = .none };
 
             const body = self.old_ast.getNode(body_idx);
-            if (body.tag != .block_statement and body.tag != .function_body) return NodeIndex.none;
+            if (body.tag != .block_statement and body.tag != .function_body) return .{ .body = .none, .var_decl = .none };
 
             const stmts = self.old_ast.extra_data.items[body.data.list.start .. body.data.list.start + body.data.list.len];
 
@@ -155,17 +171,18 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // Phase 2: 연산을 switch case로 변환
             const switch_node = try buildSwitchFromOps(self, ops.items, span);
 
-            // 호이스팅된 변수가 있으면 switch 앞에 var 선언 삽입
+            // var 선언을 __generator 콜백 밖으로 분리하여 함수 스코프에 배치.
+            // 콜백 안에 두면 매 호출마다 var가 재선언되어 상태가 리셋됨.
+            var var_decl_node: NodeIndex = .none;
             if (hoisted_vars.items.len > 0) {
                 const scratch_top2 = self.scratch.items.len;
                 defer self.scratch.shrinkRetainingCapacity(scratch_top2);
 
-                // var x, y, z; (초기화 없는 선언)
                 for (hoisted_vars.items) |binding| {
                     const decl_extra = try self.new_ast.addExtras(&.{
                         @intFromEnum(binding),
                         @intFromEnum(NodeIndex.none),
-                        @intFromEnum(NodeIndex.none), // init 없음
+                        @intFromEnum(NodeIndex.none),
                     });
                     const declarator = try self.new_ast.addNode(.{
                         .tag = .variable_declarator,
@@ -175,23 +192,15 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     try self.scratch.append(self.allocator, declarator);
                 }
                 const decl_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top2..]);
-                const var_decl_extra = try self.new_ast.addExtras(&.{ 0, decl_list.start, decl_list.len }); // 0 = var
-                const var_decl = try self.new_ast.addNode(.{
+                const var_decl_extra = try self.new_ast.addExtras(&.{ 0, decl_list.start, decl_list.len });
+                var_decl_node = try self.new_ast.addNode(.{
                     .tag = .variable_declaration,
                     .span = span,
                     .data = .{ .extra = var_decl_extra },
                 });
-
-                // [var_decl, switch_node] → block
-                const block_list = try self.new_ast.addNodeList(&.{ var_decl, switch_node });
-                return self.new_ast.addNode(.{
-                    .tag = .block_statement,
-                    .span = span,
-                    .data = .{ .list = block_list },
-                });
             }
 
-            return switch_node;
+            return .{ .body = switch_node, .var_decl = var_decl_node };
         }
 
         /// AST 문을 순회하며 연산을 수집.
@@ -474,25 +483,30 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             const cond_label = next_label.*;
             next_label.* += 1;
-            const end_label = next_label.*;
-            next_label.* += 1;
 
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } }); // mark cond_label
 
+            // end_label을 sentinel로 설정 (body 처리 후 실제 값으로 fixup)
+            const cond_false_idx = ops.items.len;
             const new_cond = try self.visitNode(condition);
             try ops.append(self.allocator, .{
                 .code = .break_when_false,
-                .arg = .{ .label_and_node = .{ .label = end_label, .node = new_cond } },
+                .arg = .{ .label_and_node = .{ .label = 0, .node = new_cond } }, // placeholder
             });
 
-            // body
+            // body (yield가 nop를 생성하여 next_label이 증가할 수 있음)
             try collectBodyOperations(self, body_idx, ops, next_label);
 
             // goto cond_label
             try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = cond_label } });
 
-            // mark end_label
-            try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+            // end_label을 body 처리 후에 할당 (yield로 인한 label 증가 반영)
+            const end_label = next_label.*;
+            next_label.* += 1;
+            try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } }); // mark end_label
+
+            // break_when_false의 label을 실제 end_label로 fixup
+            ops.items[cond_false_idx].arg = .{ .label_and_node = .{ .label = end_label, .node = new_cond } };
         }
 
         const LABEL_SENTINEL_BASE = std.math.maxInt(u32);
@@ -1106,7 +1120,17 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             for (ops) |op| {
                 switch (op.code) {
                     .nop => {
-                        // 이전 case 마무리. 빈 case도 생성하여 label 번호와 case 번호 일치 보장.
+                        // fall-through 방지: case 끝에 return이 없으면 명시적 jump 삽입.
+                        // __generator는 label로 case를 추적하므로 fall-through 시
+                        // label과 실제 실행 위치가 불일치하여 무한루프 발생.
+                        if (current_case_stmts.items.len > 0) {
+                            const next_case = case_num + 1;
+                            const last_node = self.new_ast.getNode(current_case_stmts.items[current_case_stmts.items.len - 1]);
+                            if (last_node.tag != .return_statement) {
+                                const jump = try buildInstructionReturn(self, 3, try es_helpers.makeNumericLiteral(self, next_case), span);
+                                try current_case_stmts.append(self.allocator, jump);
+                            }
+                        }
                         const case_node = try buildSwitchCase(self, case_num, current_case_stmts.items, span);
                         try self.scratch.append(self.allocator, case_node);
                         current_case_stmts.clearRetainingCapacity();
