@@ -486,13 +486,50 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                             try hoisted.append(self.allocator, new_binding);
                         }
                     }
-                } else if (node.tag == .block_statement or node.tag == .if_statement) {
-                    // 중첩 block/if 안의 var도 호이스팅 대상
-                    if (node.tag == .block_statement) {
-                        const inner = self.old_ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
-                        try collectHoistedVars(self, inner, hoisted);
+                } else if (node.tag == .block_statement or node.tag == .function_body) {
+                    const inner = self.old_ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+                    try collectHoistedVars(self, inner, hoisted);
+                } else if (node.tag == .if_statement) {
+                    // then/else body 재귀
+                    try collectHoistedVarFromNode(self, node.data.ternary.b, hoisted);
+                    try collectHoistedVarFromNode(self, node.data.ternary.c, hoisted);
+                } else if (node.tag == .for_statement) {
+                    const extras = self.old_ast.extra_data.items;
+                    const e = node.data.extra;
+                    // init (variable_declaration일 수 있음)
+                    try collectHoistedVarFromNode(self, @enumFromInt(extras[e]), hoisted);
+                    // body
+                    try collectHoistedVarFromNode(self, @enumFromInt(extras[e + 3]), hoisted);
+                } else if (node.tag == .while_statement or node.tag == .do_while_statement) {
+                    try collectHoistedVarFromNode(self, node.data.binary.right, hoisted);
+                } else if (node.tag == .for_in_statement or node.tag == .for_of_statement) {
+                    try collectHoistedVarFromNode(self, node.data.ternary.c, hoisted);
+                }
+            }
+        }
+
+        /// 단일 노드에서 호이스팅할 var를 수집 (block이면 재귀).
+        fn collectHoistedVarFromNode(self: *Transformer, idx: NodeIndex, hoisted: *std.ArrayList(NodeIndex)) Transformer.Error!void {
+            if (idx.isNone()) return;
+            const node = self.old_ast.getNode(idx);
+            if (node.tag == .block_statement or node.tag == .function_body) {
+                const inner = self.old_ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+                try collectHoistedVars(self, inner, hoisted);
+            } else if (node.tag == .variable_declaration) {
+                // for-in/for-of의 left가 variable_declaration인 경우
+                const extras = self.old_ast.extra_data.items;
+                const e = node.data.extra;
+                const list_start = extras[e + 1];
+                const list_len = extras[e + 2];
+                const decls = extras[list_start .. list_start + list_len];
+                for (decls) |decl_raw| {
+                    const decl = self.old_ast.getNode(@enumFromInt(decl_raw));
+                    if (decl.tag != .variable_declarator) continue;
+                    const binding: NodeIndex = @enumFromInt(extras[decl.data.extra]);
+                    if (!binding.isNone()) {
+                        const new_binding = try self.visitNode(binding);
+                        try hoisted.append(self.allocator, new_binding);
                     }
-                    // if문은 then/else body를 재귀 순회해야 하지만 간소화: 스킵
                 }
             }
         }
