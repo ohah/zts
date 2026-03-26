@@ -6923,9 +6923,8 @@ test "TreeShaking: only used exports from dependency" {
     try std.testing.expect(!result.hasErrors());
     // used는 출력에 존재
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"yes\"") != null);
-    // unused도 같은 모듈이라 출력에 존재 (모듈 수준 tree-shaking이므로)
-    // 1단계에서는 모듈 전체를 포함/제거. export 수준 제거는 2단계.
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"no\"") != null);
+    // unused는 statement-level tree-shaking으로 제거됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"no\"") == null);
 }
 
 test "TreeShaking: re-export chain dependency included" {
