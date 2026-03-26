@@ -44,13 +44,10 @@ pub fn ES2015Template(comptime Transformer: type) type {
         pub fn lowerTemplateLiteral(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const span = node.span;
 
-            // no-substitution template (`text`) vs substitution template (`a${b}c`)
-            // 파서는 no-substitution을 data.none=0, substitution을 data.list로 만든다.
-            // Data는 extern union이므로 none=0일 때 list 필드는 미초기화.
-            // 소스 텍스트의 첫 문자 뒤에 ${가 있는지로 판별한다.
+            // Data는 extern union이므로 data.none=0 시 data.list는 미초기화.
+            // 소스를 스캔하여 ${가 있는지로 substitution 여부를 판별한다.
             const source = self.old_ast.source;
             const is_substitution = blk: {
-                // span.start는 ` 위치. 소스를 순회하여 ${가 있는지 확인.
                 var pos = span.start + 1;
                 while (pos < span.end) {
                     if (source[pos] == '\\') {
@@ -66,41 +63,33 @@ pub fn ES2015Template(comptime Transformer: type) type {
             };
 
             if (!is_substitution) {
-                // no-substitution template: `text` → "text"
                 const text = getTemplateElementText(source, span);
                 return buildStringLiteral(self, text);
             }
 
-            // substitution template: list = [element, expr, element, ...]
             const members = self.old_ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
             if (members.len == 0) return NodeIndex.none;
 
-            // 첫 번째 element (head)
             const first_elem = self.old_ast.getNode(@enumFromInt(members[0]));
             const head_text = getTemplateElementText(self.old_ast.source, first_elem.span);
 
-            // element만 1개 (no-substitution과 같음)
             if (members.len == 1) {
                 return buildStringLiteral(self, head_text);
             }
 
-            // head string_literal로 시작
-            // 빈 head라도 "" + expr 형태로 만들어야 toString 보장
+            // 빈 head라도 "" + expr 로 시작해야 toString 보장
             var result = try buildStringLiteral(self, head_text);
 
-            // 나머지 [expr, element, expr, element, ...] 순회
             var i: usize = 1;
             while (i < members.len) : (i += 1) {
                 const member = self.old_ast.getNode(@enumFromInt(members[i]));
                 if (member.tag == .template_element) {
-                    // template_element → string_literal (비어있으면 스킵)
                     const text = getTemplateElementText(self.old_ast.source, member.span);
                     if (text.len > 0) {
                         const str_node = try buildStringLiteral(self, text);
                         result = try buildBinaryPlus(self, result, str_node, span);
                     }
                 } else {
-                    // expression → 방문 후 + 연결
                     const visited = try self.visitNode(@enumFromInt(members[i]));
                     if (!visited.isNone()) {
                         result = try buildBinaryPlus(self, result, visited, span);
@@ -132,30 +121,31 @@ fn getTemplateElementText(source: []const u8, span: Span) []const u8 {
     return source[start..end];
 }
 
-/// 문자열 리터럴 노드를 생성한다.
-/// template 텍스트에서 backtick escape(\`)를 제거하고 quote escape(\")를 추가한다.
+/// template 텍스트를 string_literal 노드로 변환한다.
+/// \` → ` (backtick escape 제거), " → \" (quote escape 추가).
 fn buildStringLiteral(self: anytype, text: []const u8) !NodeIndex {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(self.allocator);
-    try buf.append(self.allocator, '"');
+
+    // 최악: 모든 문자가 이스케이프 확장 (2배) + 양쪽 따옴표
+    try buf.ensureUnusedCapacity(self.allocator, text.len * 2 + 2);
+    buf.appendAssumeCapacity('"');
 
     var j: usize = 0;
     while (j < text.len) : (j += 1) {
         const c = text[j];
         if (c == '"') {
-            // " → \"
-            try buf.append(self.allocator, '\\');
-            try buf.append(self.allocator, '"');
+            buf.appendAssumeCapacity('\\');
+            buf.appendAssumeCapacity('"');
         } else if (c == '\\' and j + 1 < text.len and text[j + 1] == '`') {
-            // \` → ` (backtick escape는 string literal에서 불필요)
-            try buf.append(self.allocator, '`');
+            buf.appendAssumeCapacity('`');
             j += 1;
         } else {
-            try buf.append(self.allocator, c);
+            buf.appendAssumeCapacity(c);
         }
     }
 
-    try buf.append(self.allocator, '"');
+    buf.appendAssumeCapacity('"');
 
     const str_span = try self.new_ast.addString(buf.items);
     return self.new_ast.addNode(.{
