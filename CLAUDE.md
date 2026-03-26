@@ -40,13 +40,28 @@ src/
     checker.zig             #   검증 (~700줄, 엄격 모드, 예약어, 중복)
     scope.zig               #   스코프 체인 (플랫 배열 + 부모 인덱스)
     symbol.zig              #   심볼 테이블 (이름, 종류, 플래그, 참조 수)
-  transformer/              # Phase 3: 트랜스포머 ✅ + ES 다운레벨링 ⏳
+  transformer/              # Phase 3: 트랜스포머 ✅ + ES 다운레벨링 ✅
     mod.zig                 #   트랜스포머 엔트리 + re-export
     transformer.zig         #   Visitor 기반 순회 + AST 변환
-    es2022.zig              #   ES2022 다운레벨링 (class static block)
+    es2022.zig              #   ES2022 다운레벨링 (class static block, this 치환)
     es2021.zig              #   ES2021 다운레벨링 (??=, ||=, &&=)
     es2020.zig              #   ES2020 다운레벨링 (??, ?.)
+    es2019.zig              #   ES2019 다운레벨링 (optional catch binding)
+    es2018.zig              #   ES2018 다운레벨링 (object spread)
+    es2017.zig              #   ES2017 다운레벨링 (async/await → generator)
     es2016.zig              #   ES2016 다운레벨링 (**)
+    es2015.zig              #   ES2015 엔트리 (기능별 모듈 re-export)
+    es2015_template.zig     #   template literal → string concat
+    es2015_shorthand.zig    #   shorthand property → full form
+    es2015_computed.zig     #   computed property → sequence expression
+    es2015_params.zig       #   default/rest params → body 삽입
+    es2015_spread.zig       #   spread → .apply() / [].concat()
+    es2015_arrow.zig        #   arrow function → function expression
+    es2015_for_of.zig       #   for-of → index-based for loop
+    es2015_destructuring.zig #  destructuring → 개별 변수/assignment
+    es2015_block_scoping.zig #  let/const → var
+    es2015_class.zig        #   class → function + prototype
+    es2015_generator.zig    #   generator → 상태 머신 (__generator)
     es_helpers.zig          #   다운레벨링 헬퍼 유틸
   codegen/                  # Phase 4: 코드 생성 ✅
     mod.zig                 #   코드젠 엔트리 + re-export
@@ -200,8 +215,8 @@ Per-File Arena (단일 할당자, 파일 처리 후 한 번에 해제)
 | Test262 | 50,504건 100% 통과 | ✅ |
 
 ### ⏳ 진행 중 / 미완료
-- **ES 다운레벨링**: ES2022~ES2016 ✅, ES2019 ⏳, ES2018/ES2017/ES2015/ES5 ⬜
-  - 참고: oxc `crates/oxc_transformer/src/es20XX/`, Babel, esbuild `pkg/js_parser/js_parser_lower.go`
+- **ES 다운레벨링**: ES2022~ES2015 ✅ (--target=es5 지원)
+  - ES2015 generator: try/catch/finally 안의 yield는 추후 구현 (_state.trys 스택 필요)
 - **.d.ts 생성** (isolatedDeclarations) — 후순위, 당분간 tsc에 위임
 - **프로파일링 → SIMD → 미니파이어** — 번들러 완료 후
 - **WASM 공개 AST API** — AST 안정화 후
