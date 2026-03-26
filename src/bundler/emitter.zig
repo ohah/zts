@@ -322,10 +322,21 @@ pub fn emitWithTreeShaking(
         const used_names: ?[]const []const u8 = if (shaker) |s| blk: {
             const mod_idx: u32 = @intFromEnum(m.index);
             if (s.isExportUsed(mod_idx, "*")) break :blk null;
+            // used export + cross-module import로 참조되는 모든 export
             for (m.export_bindings) |eb| {
                 if (eb.kind == .re_export_all) continue;
                 if (s.isExportUsed(mod_idx, eb.exported_name)) {
                     names_buf.append(allocator, eb.local_name) catch break :blk null;
+                }
+            }
+            // 다른 모듈의 import binding이 이 모듈을 참조하면 해당 이름도 포함
+            for (graph.modules.items) |*other| {
+                for (other.import_bindings) |ib| {
+                    if (ib.import_record_index >= other.import_records.len) continue;
+                    const rec = other.import_records[ib.import_record_index];
+                    if (rec.resolved == m.index and ib.kind == .named) {
+                        names_buf.append(allocator, ib.imported_name) catch break :blk null;
+                    }
                 }
             }
             break :blk names_buf.items;
@@ -1179,9 +1190,9 @@ pub fn emitModule(
             md.symbol_ids = syms;
         }
         // statement-level tree-shaking: 미사용 top-level statement 제거
-        // statement-level tree-shaking: 미사용 top-level statement 제거
+        // entry, CJS 모듈은 제외 (entry는 모든 코드 실행, CJS는 동적 export)
         if (used_export_names) |names| {
-            if (!is_entry) {
+            if (!is_entry and module.wrap_kind != .cjs) {
                 statement_shaker.markUnusedStatements(
                     arena_alloc,
                     &transformer.new_ast,
