@@ -108,6 +108,117 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             });
         }
 
+        /// new Foo(...args) → new (Foo.bind.apply(Foo, [null].concat(args)))()
+        pub fn lowerSpreadNew(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            const extras = self.old_ast.extra_data.items;
+            const e = node.data.extra;
+            const span = node.span;
+
+            const callee_idx: NodeIndex = @enumFromInt(extras[e]);
+            const args_start = extras[e + 1];
+            const args_len = extras[e + 2];
+            const old_args = extras[args_start .. args_start + args_len];
+
+            const new_callee = try self.visitNode(callee_idx);
+
+            // [null].concat(args) — null을 첫 인자로 추가 (bind의 this)
+            const null_span = try self.new_ast.addString("null");
+            const null_node = try self.new_ast.addNode(.{
+                .tag = .null_literal,
+                .span = null_span,
+                .data = .{ .none = 0 },
+            });
+            const null_arr_list = try self.new_ast.addNodeList(&.{null_node});
+            const null_arr = try self.new_ast.addNode(.{
+                .tag = .array_expression,
+                .span = span,
+                .data = .{ .list = null_arr_list },
+            });
+
+            // args 조합
+            const combined_args = try buildSpreadArgs(self, old_args, span);
+
+            // [null].concat(combined_args)
+            const concat_span = try self.new_ast.addString("concat");
+            const concat_prop = try self.new_ast.addNode(.{
+                .tag = .identifier_reference,
+                .span = concat_span,
+                .data = .{ .string_ref = concat_span },
+            });
+            const concat_me = try self.new_ast.addExtras(&.{
+                @intFromEnum(null_arr), @intFromEnum(concat_prop), 0,
+            });
+            const concat_member = try self.new_ast.addNode(.{
+                .tag = .static_member_expression,
+                .span = span,
+                .data = .{ .extra = concat_me },
+            });
+            const concat_call_args = try self.new_ast.addNodeList(&.{combined_args});
+            const concat_call_extra = try self.new_ast.addExtras(&.{
+                @intFromEnum(concat_member), concat_call_args.start, concat_call_args.len, 0,
+            });
+            const null_concat = try self.new_ast.addNode(.{
+                .tag = .call_expression,
+                .span = span,
+                .data = .{ .extra = concat_call_extra },
+            });
+
+            // Foo.bind
+            const bind_span = try self.new_ast.addString("bind");
+            const bind_prop = try self.new_ast.addNode(.{
+                .tag = .identifier_reference,
+                .span = bind_span,
+                .data = .{ .string_ref = bind_span },
+            });
+            const bind_me = try self.new_ast.addExtras(&.{
+                @intFromEnum(new_callee), @intFromEnum(bind_prop), 0,
+            });
+            const bind_member = try self.new_ast.addNode(.{
+                .tag = .static_member_expression,
+                .span = span,
+                .data = .{ .extra = bind_me },
+            });
+
+            // Foo.bind.apply
+            const apply_span = try self.new_ast.addString("apply");
+            const apply_prop = try self.new_ast.addNode(.{
+                .tag = .identifier_reference,
+                .span = apply_span,
+                .data = .{ .string_ref = apply_span },
+            });
+            const apply_me = try self.new_ast.addExtras(&.{
+                @intFromEnum(bind_member), @intFromEnum(apply_prop), 0,
+            });
+            const apply_member = try self.new_ast.addNode(.{
+                .tag = .static_member_expression,
+                .span = span,
+                .data = .{ .extra = apply_me },
+            });
+
+            // Foo.bind.apply(Foo, [null].concat(args))
+            const callee_ref2 = try self.visitNode(callee_idx);
+            const apply_args = try self.new_ast.addNodeList(&.{ callee_ref2, null_concat });
+            const apply_extra = try self.new_ast.addExtras(&.{
+                @intFromEnum(apply_member), apply_args.start, apply_args.len, 0,
+            });
+            const bind_apply_call = try self.new_ast.addNode(.{
+                .tag = .call_expression,
+                .span = span,
+                .data = .{ .extra = apply_extra },
+            });
+
+            // new (Foo.bind.apply(Foo, [null].concat(args)))()
+            const empty_new_args = try self.new_ast.addNodeList(&.{});
+            const new_extra = try self.new_ast.addExtras(&.{
+                @intFromEnum(bind_apply_call), empty_new_args.start, empty_new_args.len, 0,
+            });
+            return self.new_ast.addNode(.{
+                .tag = .new_expression,
+                .span = span,
+                .data = .{ .extra = new_extra },
+            });
+        }
+
         /// array_expression에 spread가 있는지 확인.
         pub fn hasSpreadInArray(self: *const Transformer, node: Node) bool {
             const members = self.old_ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];

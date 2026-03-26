@@ -3865,6 +3865,12 @@ test "ES2015: spread no transform on esnext" {
     try std.testing.expectEqualStrings("f(...arr);", r.output);
 }
 
+test "ES2015: spread in new expression" {
+    var r = try e2eTarget(std.testing.allocator, "new Foo(...args);", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Foo.bind.apply") != null);
+}
+
 // --- ES2015: arrow function ---
 
 test "ES2015: arrow expression body" {
@@ -3959,6 +3965,22 @@ test "ES2015: destructuring no transform on esnext" {
     var r = try e2eTarget(std.testing.allocator, "var {a,b}=obj;", .esnext);
     defer r.deinit();
     try std.testing.expectEqualStrings("var {a:a,b:b}=obj;", r.output);
+}
+
+test "ES2015: assignment object destructuring" {
+    var r = try e2eTarget(std.testing.allocator, "({a,b}=obj);", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_a=obj") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "a=_a.a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "b=_a.b") != null);
+}
+
+test "ES2015: assignment array destructuring" {
+    var r = try e2eTarget(std.testing.allocator, "([x,y]=arr);", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_a=arr") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "x=_a[0]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "y=_a[1]") != null);
 }
 
 // --- ES2015: let/const → var ---

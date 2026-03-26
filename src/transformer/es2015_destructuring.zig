@@ -108,6 +108,128 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             });
         }
 
+        /// assignment destructuring을 sequence expression으로 변환.
+        /// ({a, b} = obj) → (_ref = obj, a = _ref.a, b = _ref.b, _ref)
+        pub fn lowerDestructuringAssignment(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            const span = node.span;
+            const left_idx = node.data.binary.left;
+            const right_idx = node.data.binary.right;
+
+            const left_node = self.old_ast.getNode(left_idx);
+            const new_right = try self.visitNode(right_idx);
+            const temp_span = try es_helpers.makeTempVarSpan(self);
+
+            const scratch_top = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+            // _ref = obj
+            const temp_ref = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
+            const init_assign = try self.new_ast.addNode(.{
+                .tag = .assignment_expression,
+                .span = span,
+                .data = .{ .binary = .{ .left = temp_ref, .right = new_right, .flags = 0 } },
+            });
+            try self.scratch.append(self.allocator, init_assign);
+
+            // 각 property/element를 assignment로 변환
+            if (left_node.tag == .object_assignment_target) {
+                try emitObjectAssignments(self, left_node, temp_span, span);
+            } else if (left_node.tag == .array_assignment_target) {
+                try emitArrayAssignments(self, left_node, temp_span, span);
+            }
+
+            // 마지막에 _ref 반환
+            try self.scratch.append(self.allocator, try es_helpers.makeTempVarRef(self, temp_span, temp_span));
+
+            // sequence expression
+            const seq_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top..]);
+            return self.new_ast.addNode(.{
+                .tag = .sequence_expression,
+                .span = span,
+                .data = .{ .list = seq_list },
+            });
+        }
+
+        /// object_assignment_target의 각 property를 assignment로 변환.
+        fn emitObjectAssignments(self: *Transformer, target: Node, ref_span: Span, span: Span) Transformer.Error!void {
+            const members = self.old_ast.extra_data.items[target.data.list.start .. target.data.list.start + target.data.list.len];
+            for (members) |raw_idx| {
+                const prop = self.old_ast.getNode(@enumFromInt(raw_idx));
+
+                if (prop.tag == .assignment_target_rest) continue; // rest 미지원
+
+                const key_idx = prop.data.binary.left;
+                if (key_idx.isNone()) continue;
+
+                // _ref.key
+                const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
+                const new_key = try self.visitNode(key_idx);
+                const me = try self.new_ast.addExtras(&.{ @intFromEnum(ref), @intFromEnum(new_key), 0 });
+                const access = try self.new_ast.addNode(.{
+                    .tag = .static_member_expression,
+                    .span = span,
+                    .data = .{ .extra = me },
+                });
+
+                // target = _ref.key
+                const target_node = if (prop.tag == .assignment_target_property_identifier) blk: {
+                    // shorthand {a} → a = _ref.a
+                    const key_node = self.old_ast.getNode(key_idx);
+                    break :blk try self.new_ast.addNode(.{
+                        .tag = .identifier_reference,
+                        .span = key_node.span,
+                        .data = .{ .string_ref = key_node.data.string_ref },
+                    });
+                } else blk: {
+                    // long-form {a: b} → b = _ref.a
+                    break :blk try self.visitNode(prop.data.binary.right);
+                };
+
+                const assign = try self.new_ast.addNode(.{
+                    .tag = .assignment_expression,
+                    .span = span,
+                    .data = .{ .binary = .{ .left = target_node, .right = access, .flags = 0 } },
+                });
+                try self.scratch.append(self.allocator, assign);
+            }
+        }
+
+        /// array_assignment_target의 각 element를 assignment로 변환.
+        fn emitArrayAssignments(self: *Transformer, target: Node, ref_span: Span, span: Span) Transformer.Error!void {
+            const members = self.old_ast.extra_data.items[target.data.list.start .. target.data.list.start + target.data.list.len];
+            for (members, 0..) |raw_idx, idx| {
+                const elem = self.old_ast.getNode(@enumFromInt(raw_idx));
+                if (elem.tag == .elision) continue;
+                if (elem.tag == .assignment_target_rest) continue;
+
+                // _ref[idx]
+                const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
+                var idx_buf: [16]u8 = undefined;
+                const idx_str = std.fmt.bufPrint(&idx_buf, "{d}", .{idx}) catch "0";
+                const idx_span = try self.new_ast.addString(idx_str);
+                const idx_node = try self.new_ast.addNode(.{
+                    .tag = .numeric_literal,
+                    .span = idx_span,
+                    .data = .{ .none = 0 },
+                });
+                const access_extra = try self.new_ast.addExtras(&.{ @intFromEnum(ref), @intFromEnum(idx_node), 0 });
+                const access = try self.new_ast.addNode(.{
+                    .tag = .computed_member_expression,
+                    .span = span,
+                    .data = .{ .extra = access_extra },
+                });
+
+                // target = _ref[idx]
+                const target_node = try self.visitNode(@enumFromInt(raw_idx));
+                const assign = try self.new_ast.addNode(.{
+                    .tag = .assignment_expression,
+                    .span = span,
+                    .data = .{ .binary = .{ .left = target_node, .right = access, .flags = 0 } },
+                });
+                try self.scratch.append(self.allocator, assign);
+            }
+        }
+
         /// object_pattern 또는 array_pattern을 개별 declarator로 분해.
         /// ref_span은 임시 변수의 span (_ref).
         fn emitPatternDeclarators(self: *Transformer, pattern: Node, ref_span: Span, span: Span) Transformer.Error!void {

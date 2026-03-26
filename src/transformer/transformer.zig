@@ -473,6 +473,16 @@ pub const Transformer = struct {
                         return es2021.ES2021(Transformer).lowerLogicalAssignment(self, node, .amp2);
                     }
                 }
+                // ES2015: assignment destructuring → sequence expression
+                if (self.options.target.needsES2015()) {
+                    const left_idx = node.data.binary.left;
+                    if (!left_idx.isNone()) {
+                        const left_node = self.old_ast.getNode(left_idx);
+                        if (left_node.tag == .object_assignment_target or left_node.tag == .array_assignment_target) {
+                            return es2015_destructuring.ES2015Destructuring(Transformer).lowerDestructuringAssignment(self, node);
+                        }
+                    }
+                }
                 return self.visitBinaryNode(node);
             },
             .while_statement,
@@ -575,7 +585,14 @@ pub const Transformer = struct {
                 }
                 return self.visitCallExpression(node);
             },
-            .new_expression => self.visitNewExpression(node),
+            .new_expression => {
+                if (self.options.target.needsES2015()) {
+                    if (es2015_spread.ES2015Spread(Transformer).hasSpreadArg(self, node)) {
+                        return es2015_spread.ES2015Spread(Transformer).lowerSpreadNew(self, node);
+                    }
+                }
+                return self.visitNewExpression(node);
+            },
             .tagged_template_expression => self.visitTaggedTemplate(node),
             .method_definition => self.visitMethodDefinition(node),
             .property_definition => self.visitPropertyDefinition(node),
