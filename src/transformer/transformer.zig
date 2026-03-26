@@ -313,7 +313,7 @@ pub const Transformer = struct {
 
         // 파서는 parse() 끝에 program 노드를 추가하므로 마지막 노드가 루트
         const root_idx: NodeIndex = @enumFromInt(@as(u32, @intCast(self.old_ast.nodes.items.len - 1)));
-        const saved_temp_counter: u32 = 0;
+        const saved_temp_counter = self.temp_var_counter;
         var root = try self.visitNode(root_idx);
 
         // top-level 임시 변수 호이스팅: var _a, _b, ... 선언을 program 앞에 삽입
@@ -1575,13 +1575,8 @@ pub const Transformer = struct {
 
         var i: u32 = saved_counter;
         while (i < self.temp_var_counter) : (i += 1) {
-            const letter: u8 = 'a' + @as(u8, @intCast(i % 26));
-            const cycle = i / 26;
             var buf: [16]u8 = undefined;
-            const name = if (cycle == 0)
-                std.fmt.bufPrint(&buf, "_{c}", .{letter}) catch "0"
-            else
-                std.fmt.bufPrint(&buf, "_{c}{d}", .{ letter, cycle + 1 }) catch "0";
+            const name = es_helpers.tempVarName(i, &buf);
             const name_span = try self.new_ast.addString(name);
             const binding = try self.new_ast.addNode(.{
                 .tag = .binding_identifier,

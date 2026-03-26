@@ -13,17 +13,23 @@ const NodeIndex = ast_mod.NodeIndex;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 
+/// 인덱스로부터 임시 변수명 생성: _a, _b, _c, ..., _a2, _b2, ...
+/// makeTempVarSpan과 hoistTempVars에서 공용.
+pub fn tempVarName(idx: u32, buf: *[16]u8) []const u8 {
+    const letter: u8 = 'a' + @as(u8, @intCast(idx % 26));
+    const cycle = idx / 26;
+    return if (cycle == 0)
+        std.fmt.bufPrint(buf, "_{c}", .{letter}) catch "_"
+    else
+        std.fmt.bufPrint(buf, "_{c}{d}", .{ letter, cycle + 1 }) catch "_";
+}
+
 /// 임시 변수명 생성: _a, _b, _c, ..., _a2, _b2, ...
 pub fn makeTempVarSpan(self: anytype) !Span {
     const idx = self.temp_var_counter;
     self.temp_var_counter += 1;
     var buf: [16]u8 = undefined;
-    const letter: u8 = 'a' + @as(u8, @intCast(idx % 26));
-    const cycle = idx / 26;
-    const name = if (cycle == 0)
-        std.fmt.bufPrint(&buf, "_{c}", .{letter}) catch return error.OutOfMemory
-    else
-        std.fmt.bufPrint(&buf, "_{c}{d}", .{ letter, cycle + 1 }) catch return error.OutOfMemory;
+    const name = tempVarName(idx, &buf);
     return self.new_ast.addString(name);
 }
 
