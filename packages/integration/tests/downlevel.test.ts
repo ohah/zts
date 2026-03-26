@@ -827,7 +827,10 @@ describe("ES 다운레벨링 런타임 테스트", () => {
 
     test("async arrow function", async () => {
       const result = await bundleAndRun(
-        { "index.ts": "const double = async (x: number) => x * 2; double(21).then(v => console.log(v));" },
+        {
+          "index.ts":
+            "const double = async (x: number) => x * 2; double(21).then(v => console.log(v));",
+        },
         "index.ts",
         ["--target=es2016"],
       );
