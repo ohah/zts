@@ -85,10 +85,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const new_name = try self.visitNode(name_idx);
             const new_params = try self.visitExtraList(params_start, params_len);
 
-            // generator body를 상태 머신으로 변환
             const sm_result = try buildStateMachine(self, body_idx, span);
+            if (sm_result.body.isNone()) return .none;
 
-            // __generator(function(_state) { switch ... }) 호출 생성
             const gen_call = try buildGeneratorHelperCall(self, sm_result.body, span);
 
             // return __generator(...) 문
@@ -1120,9 +1119,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             for (ops) |op| {
                 switch (op.code) {
                     .nop => {
-                        // fall-through 방지: case 끝에 return이 없으면 명시적 jump 삽입.
-                        // __generator는 label로 case를 추적하므로 fall-through 시
-                        // label과 실제 실행 위치가 불일치하여 무한루프 발생.
+                        // fall-through 방지: __generator는 label로 case를 추적하므로
+                        // fall-through 시 label과 실행 위치가 불일치하여 무한루프.
+                        // .return_statement 하나만 체크해도 충분: yield_op, return_op,
+                        // break_op 모두 buildInstructionReturn을 거쳐 return_statement 생성.
                         if (current_case_stmts.items.len > 0) {
                             const next_case = case_num + 1;
                             const last_node = self.new_ast.getNode(current_case_stmts.items[current_case_stmts.items.len - 1]);
