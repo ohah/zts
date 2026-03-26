@@ -1062,16 +1062,20 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const obj_str_span = try self.new_ast.addString("Object");
             const dp_str_span = try self.new_ast.addString("defineProperty");
 
-            // 같은 property 이름의 getter/setter를 묶어 하나의 Object.defineProperty로 emit
-            var i: usize = 0;
-            while (i < items.len) {
-                const info = items[i];
+            // 처리 완료된 accessor 추적 (비인접 getter/setter 쌍 지원)
+            var used = try self.allocator.alloc(bool, items.len);
+            defer self.allocator.free(used);
+            @memset(used, false);
+
+            for (items, 0..) |info, i| {
+                if (used[i]) continue;
+                used[i] = true;
+
                 const member = self.old_ast.getNode(info.member_idx);
                 const method_extras = self.old_ast.extra_data.items;
                 const me = member.data.extra;
                 const key_idx: NodeIndex = @enumFromInt(method_extras[me]);
 
-                // 현재 accessor의 function expression 생성
                 const func_expr = try buildAccessorFunc(self, info.member_idx, span);
                 const accessor_key = try es_helpers.makeIdentifierRef(self, if (info.is_getter) "get" else "set");
                 const prop1 = try self.new_ast.addNode(.{
@@ -1080,16 +1084,17 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     .data = .{ .binary = .{ .left = accessor_key, .right = func_expr, .flags = 0 } },
                 });
 
-                // 다음 accessor가 같은 property의 짝(getter↔setter)인지 확인
+                // 전체 리스트에서 같은 key의 짝(getter↔setter) 찾기
                 var paired_prop: ?NodeIndex = null;
-                if (i + 1 < items.len) {
-                    const next = items[i + 1];
+                for (items[i + 1 ..], i + 1..) |next, j| {
+                    if (used[j]) continue;
                     const next_member = self.old_ast.getNode(next.member_idx);
                     const next_me = next_member.data.extra;
                     const next_key: NodeIndex = @enumFromInt(method_extras[next_me]);
                     if (info.is_static == next.is_static and info.is_getter != next.is_getter and
                         keysMatch(self, key_idx, next_key))
                     {
+                        used[j] = true;
                         const pair_func = try buildAccessorFunc(self, next.member_idx, span);
                         const pair_key = try es_helpers.makeIdentifierRef(self, if (next.is_getter) "get" else "set");
                         paired_prop = try self.new_ast.addNode(.{
@@ -1097,26 +1102,20 @@ pub fn ES2015Class(comptime Transformer: type) type {
                             .span = span,
                             .data = .{ .binary = .{ .left = pair_key, .right = pair_func, .flags = 0 } },
                         });
-                        i += 1; // 짝을 소비
+                        break;
                     }
                 }
 
                 // descriptor object: { get: fn, set: fn } 또는 { get: fn }
-                const desc_obj = if (paired_prop) |pp| blk: {
-                    const obj_list = try self.new_ast.addNodeList(&.{ prop1, pp });
-                    break :blk try self.new_ast.addNode(.{
-                        .tag = .object_expression,
-                        .span = span,
-                        .data = .{ .list = obj_list },
-                    });
-                } else blk: {
-                    const obj_list = try self.new_ast.addNodeList(&.{prop1});
-                    break :blk try self.new_ast.addNode(.{
-                        .tag = .object_expression,
-                        .span = span,
-                        .data = .{ .list = obj_list },
-                    });
-                };
+                const obj_list = if (paired_prop) |pp|
+                    try self.new_ast.addNodeList(&.{ prop1, pp })
+                else
+                    try self.new_ast.addNodeList(&.{prop1});
+                const desc_obj = try self.new_ast.addNode(.{
+                    .tag = .object_expression,
+                    .span = span,
+                    .data = .{ .list = obj_list },
+                });
 
                 // target
                 const target = if (info.is_static)
@@ -1149,8 +1148,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     .data = .{ .unary = .{ .operand = call, .flags = 0 } },
                 });
                 try self.pending_nodes.append(self.allocator, stmt);
-
-                i += 1;
             }
         }
     };
