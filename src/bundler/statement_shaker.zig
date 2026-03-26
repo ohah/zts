@@ -483,6 +483,213 @@ test "statement shaker: empty used_exports skips nothing with side effects" {
     try std.testing.expectEqual(@as(u32, 0), skipped);
 }
 
+// --- 디버깅 중 발견된 엣지 케이스 ---
+
+test "statement shaker: let without initializer is side-effect-free" {
+    // nanostores 패턴: let store; (초기값 없는 변수 선언)
+    const alloc = std.testing.allocator;
+    var r = try parseAndGetRoot(alloc,
+        \\let store;
+        \\function used() { store = 1; return store; }
+        \\function unused() { return 2; }
+    );
+    defer r.arena.deinit();
+
+    var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
+    defer skip.deinit();
+
+    const names: [1][]const u8 = .{"used"};
+    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip);
+
+    // "let store"는 side-effect-free지만 "used"가 참조 → 보존
+    // "unused"만 제거
+    var skipped: u32 = 0;
+    var it = skip.iterator(.{});
+    while (it.next()) |_| skipped += 1;
+    try std.testing.expectEqual(@as(u32, 1), skipped);
+}
+
+test "statement shaker: const with literal initializer is side-effect-free" {
+    // valibot 패턴: const REGEX = /pattern/;
+    const alloc = std.testing.allocator;
+    var r = try parseAndGetRoot(alloc,
+        \\const REGEX = /test/;
+        \\function used() { return 1; }
+        \\function unused() { return REGEX; }
+    );
+    defer r.arena.deinit();
+
+    var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
+    defer skip.deinit();
+
+    const names: [1][]const u8 = .{"used"};
+    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip);
+
+    // REGEX: 미참조 → 제거, unused: 미참조 → 제거
+    var skipped: u32 = 0;
+    var it = skip.iterator(.{});
+    while (it.next()) |_| skipped += 1;
+    try std.testing.expect(skipped >= 2);
+}
+
+test "statement shaker: assignment_target_identifier tracked (++x pattern)" {
+    // minimatch 패턴: let ID = 0; class AST { id = ++ID; }
+    const alloc = std.testing.allocator;
+    var r = try parseAndGetRoot(alloc,
+        \\let ID = 0;
+        \\function make() { return ++ID; }
+        \\function unused() { return 99; }
+    );
+    defer r.arena.deinit();
+
+    var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
+    defer skip.deinit();
+
+    const names: [1][]const u8 = .{"make"};
+    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip);
+
+    // make → ++ID → ID 보존. unused만 제거.
+    var skipped: u32 = 0;
+    var it = skip.iterator(.{});
+    while (it.next()) |_| skipped += 1;
+    try std.testing.expectEqual(@as(u32, 1), skipped);
+}
+
+test "statement shaker: export default always preserved" {
+    // zod 패턴: export default function 은 linker rename 때문에 항상 보존
+    const alloc = std.testing.allocator;
+    var r = try parseAndGetRoot(alloc,
+        \\export default function config() { return {}; }
+        \\function unused() { return 2; }
+    );
+    defer r.arena.deinit();
+
+    var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
+    defer skip.deinit();
+
+    // used_exports가 비어있어도 export default는 보존
+    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
+
+    // export default → side-effectful (항상 보존)
+    // unused만 제거
+    var skipped: u32 = 0;
+    var it = skip.iterator(.{});
+    while (it.next()) |_| skipped += 1;
+    try std.testing.expectEqual(@as(u32, 1), skipped);
+}
+
+test "statement shaker: export specifier-only is side-effect-free" {
+    // valibot 패턴: 함수 선언 후 마지막에 export { ... }
+    const alloc = std.testing.allocator;
+    var r = try parseAndGetRoot(alloc,
+        \\function object() { return 1; }
+        \\function unused() { return 2; }
+        \\export { object, unused };
+    );
+    defer r.arena.deinit();
+
+    var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
+    defer skip.deinit();
+
+    const names: [1][]const u8 = .{"object"};
+    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip);
+
+    // export { ... } → side-effect-free (linker가 skip_nodes로 처리)
+    // unused → 미참조 → 제거
+    // export 문 자체도 제거 가능
+    var skipped: u32 = 0;
+    var it = skip.iterator(.{});
+    while (it.next()) |_| skipped += 1;
+    try std.testing.expect(skipped >= 1); // unused + export 문
+}
+
+test "statement shaker: class with side effects always included" {
+    // class extends/decorators/computed properties → side-effectful
+    const alloc = std.testing.allocator;
+    var r = try parseAndGetRoot(alloc,
+        \\class Base {}
+        \\class Derived extends Base {}
+        \\function unused() { return 1; }
+    );
+    defer r.arena.deinit();
+
+    var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
+    defer skip.deinit();
+
+    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
+
+    // class 선언 → side-effectful → 항상 보존
+    // unused만 제거
+    var skipped: u32 = 0;
+    var it = skip.iterator(.{});
+    while (it.next()) |_| skipped += 1;
+    try std.testing.expectEqual(@as(u32, 1), skipped);
+}
+
+test "statement shaker: var with call initializer is side-effectful" {
+    // var x = someFunction(); → side-effectful (함수 호출)
+    const alloc = std.testing.allocator;
+    var r = try parseAndGetRoot(alloc,
+        \\var x = init();
+        \\function unused() { return 1; }
+    );
+    defer r.arena.deinit();
+
+    var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
+    defer skip.deinit();
+
+    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
+
+    // var x = init() → side-effectful → 보존
+    // unused만 제거
+    var skipped: u32 = 0;
+    var it = skip.iterator(.{});
+    while (it.next()) |_| skipped += 1;
+    try std.testing.expectEqual(@as(u32, 1), skipped);
+}
+
+test "statement shaker: export function declaration" {
+    // export function foo() {} → inner function은 side-effect-free
+    const alloc = std.testing.allocator;
+    var r = try parseAndGetRoot(alloc,
+        \\export function used() { return 1; }
+        \\export function unused() { return 2; }
+    );
+    defer r.arena.deinit();
+
+    var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
+    defer skip.deinit();
+
+    const names: [1][]const u8 = .{"used"};
+    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip);
+
+    // export function unused → 미사용 → 제거
+    var skipped: u32 = 0;
+    var it = skip.iterator(.{});
+    while (it.next()) |_| skipped += 1;
+    try std.testing.expect(skipped >= 1);
+}
+
+test "statement shaker: no removable statements → early return" {
+    // 모든 statement가 side-effectful → skip 없음
+    const alloc = std.testing.allocator;
+    var r = try parseAndGetRoot(alloc,
+        \\console.log("a");
+        \\console.log("b");
+    );
+    defer r.arena.deinit();
+
+    var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
+    defer skip.deinit();
+
+    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
+
+    var skipped: u32 = 0;
+    var it = skip.iterator(.{});
+    while (it.next()) |_| skipped += 1;
+    try std.testing.expectEqual(@as(u32, 0), skipped);
+}
+
 test "statement shaker module compiles" {
     _ = @import("statement_shaker.zig");
 }
