@@ -218,6 +218,10 @@ pub const Transformer = struct {
     /// labeled_statement 진입 시 push, 퇴장 시 pop.
     generator_label_stack: std.ArrayList(GeneratorLabelEntry) = .empty,
 
+    /// ES2015 generator: for loop의 update label (labeled continue 대상).
+    /// collectForOperations에서 update nop 추가 직전에 설정.
+    generator_for_update_label: ?u32 = null,
+
     /// 현재 함수 스코프에서 arrow body가 this를 사용하여 var _this = this 삽입이 필요한지.
     needs_this_var: bool = false,
 
