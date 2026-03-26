@@ -3838,3 +3838,29 @@ test "ES2015: params no transform on esnext" {
     defer r.deinit();
     try std.testing.expectEqualStrings("function f(x=1,...rest){}", r.output);
 }
+
+// --- ES2015: spread ---
+
+test "ES2015: spread in call" {
+    var r = try e2eTarget(std.testing.allocator, "f(...arr);", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("f.apply(void 0,arr);", r.output);
+}
+
+test "ES2015: spread in call with args" {
+    var r = try e2eTarget(std.testing.allocator, "f(a,...arr);", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("f.apply(void 0,[].concat([a],arr));", r.output);
+}
+
+test "ES2015: spread in array" {
+    var r = try e2eTarget(std.testing.allocator, "var x=[...arr,1];", .es5);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var x=[].concat(arr,[1]);", r.output);
+}
+
+test "ES2015: spread no transform on esnext" {
+    var r = try e2eTarget(std.testing.allocator, "f(...arr);", .esnext);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("f(...arr);", r.output);
+}
