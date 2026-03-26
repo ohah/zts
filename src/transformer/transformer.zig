@@ -611,6 +611,13 @@ pub const Transformer = struct {
         return self.new_ast.addNode(node);
     }
 
+    /// 클래스 이름 노드에서 Span 추출. 익명 클래스(none)면 null 반환.
+    /// ES2022 static block의 this → 클래스 이름 치환에 사용.
+    fn getClassNameSpan(self: *Transformer, name_idx: NodeIndex) ?Span {
+        if (name_idx.isNone()) return null;
+        return self.new_ast.getNode(name_idx).data.string_ref;
+    }
+
     /// 원본 → 새 노드의 symbol_id 전파.
     fn propagateSymbolId(self: *Transformer, old_idx: NodeIndex, new_idx: NodeIndex) void {
         if (self.old_symbol_ids.len == 0) return; // 전파 비활성
@@ -1045,8 +1052,9 @@ pub const Transformer = struct {
 
         // 일반 함수는 자체 this 바인딩을 가지므로 depth 증가.
         // static block 안에서 function() { this.x } 의 this는 치환하면 안 됨.
-        if (self.static_block_class_name != null) self.this_depth += 1;
-        defer if (self.static_block_class_name != null) {
+        const in_static_block = self.static_block_class_name != null;
+        if (in_static_block) self.this_depth += 1;
+        defer if (in_static_block) {
             self.this_depth -= 1;
         };
 
@@ -1220,10 +1228,7 @@ pub const Transformer = struct {
                 defer static_block_iifes.deinit(self.allocator);
 
                 // 클래스 이름 추출 → static block 안의 this 치환에 사용.
-                const class_name_span: ?Span = if (!new_name.isNone()) blk: {
-                    const name_node = self.new_ast.getNode(new_name);
-                    break :blk name_node.data.string_ref;
-                } else null;
+                const class_name_span = self.getClassNameSpan(new_name);
 
                 const had_static_blocks = try es2022.ES2022(Transformer).lowerStaticBlocks(
                     self,
@@ -1316,9 +1321,8 @@ pub const Transformer = struct {
         };
 
         // ES2022 static block this 치환을 위한 클래스 이름 추출
-        if (self.options.target.needsClassStaticBlock() and !new_name.isNone()) {
-            const name_node = self.new_ast.getNode(new_name);
-            ctx.class_name_span = name_node.data.string_ref;
+        if (self.options.target.needsClassStaticBlock()) {
+            ctx.class_name_span = self.getClassNameSpan(new_name);
         }
 
         for (body_members) |raw_idx| {
