@@ -1253,8 +1253,13 @@ pub const Transformer = struct {
     /// variable_declaration: extra_data = [kind_flags, list.start, list.len]
     fn visitVariableDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
         // ES2015: destructuring pattern → 개별 declarator로 분해
+        // ES2018: object rest (...rest) → __rest 호출 (target < es2018)
         if (self.options.target.needsES2015()) {
             if (es2015_destructuring.ES2015Destructuring(Transformer).hasDestructuring(self, node)) {
+                return es2015_destructuring.ES2015Destructuring(Transformer).lowerDestructuringDeclaration(self, node);
+            }
+        } else if (self.options.target.needsObjectSpread()) {
+            if (es2015_destructuring.ES2015Destructuring(Transformer).hasObjectRest(self, node)) {
                 return es2015_destructuring.ES2015Destructuring(Transformer).lowerDestructuringDeclaration(self, node);
             }
         }
