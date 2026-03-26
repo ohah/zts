@@ -907,6 +907,19 @@ pub const Transformer = struct {
         const e = node.data.extra;
         const extras = self.old_ast.extra_data.items;
         if (e + 1 >= extras.len) return NodeIndex.none;
+
+        // private field update: this.#x++ → _x.set(this, _x.get(this) + 1)
+        if (node.tag == .update_expression and self.options.target.needsES2015()) {
+            const operand_idx: NodeIndex = @enumFromInt(extras[e]);
+            const operand = self.old_ast.getNode(operand_idx);
+            if (operand.tag == .private_field_expression) {
+                const op_flags = extras[e + 1];
+                if (es2015_class.ES2015Class(Transformer).lowerPrivateFieldUpdate(self, operand, op_flags, node.span)) |result| {
+                    return try result;
+                }
+            }
+        }
+
         const new_operand = try self.visitNode(@enumFromInt(extras[e]));
         const new_extra = try self.new_ast.addExtras(&.{ @intFromEnum(new_operand), extras[e + 1] });
         return self.new_ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
