@@ -4141,3 +4141,19 @@ test "ES2015: generator do-while with yield" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "i<3") != null or
         std.mem.indexOf(u8, r.output, "i < 3") != null);
 }
+
+test "ES2015: generator try/catch with yield" {
+    var r = try e2eTarget(std.testing.allocator, "function* gen(){try{yield 1;}catch(e){yield e;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_state.trys.push") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [4,1]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_state.sent()") != null);
+}
+
+test "ES2015: generator try/catch/finally with yield" {
+    var r = try e2eTarget(std.testing.allocator, "function* gen(){try{yield 1;}catch(e){f(e);}finally{cleanup();}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_state.trys.push") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [7]") != null); // endfinally
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "cleanup()") != null);
+}
