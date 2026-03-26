@@ -137,6 +137,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             var next_label: u32 = 1; // label 0은 시작
 
+            // 변수 호이스팅: generator body의 모든 var 선언을 수집.
+            // JS의 var는 function-scoped이므로 switch case 안에 두면 안 됨.
+            var hoisted_vars: std.ArrayList(NodeIndex) = .empty;
+            defer hoisted_vars.deinit(self.allocator);
+            try collectHoistedVars(self, stmts, &hoisted_vars);
+
             for (stmts) |raw_idx| {
                 try collectOperations(self, @enumFromInt(raw_idx), &ops, &next_label);
             }
@@ -147,7 +153,45 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             }
 
             // Phase 2: 연산을 switch case로 변환
-            return buildSwitchFromOps(self, ops.items, span);
+            const switch_node = try buildSwitchFromOps(self, ops.items, span);
+
+            // 호이스팅된 변수가 있으면 switch 앞에 var 선언 삽입
+            if (hoisted_vars.items.len > 0) {
+                const scratch_top2 = self.scratch.items.len;
+                defer self.scratch.shrinkRetainingCapacity(scratch_top2);
+
+                // var x, y, z; (초기화 없는 선언)
+                for (hoisted_vars.items) |binding| {
+                    const decl_extra = try self.new_ast.addExtras(&.{
+                        @intFromEnum(binding),
+                        @intFromEnum(NodeIndex.none),
+                        @intFromEnum(NodeIndex.none), // init 없음
+                    });
+                    const declarator = try self.new_ast.addNode(.{
+                        .tag = .variable_declarator,
+                        .span = span,
+                        .data = .{ .extra = decl_extra },
+                    });
+                    try self.scratch.append(self.allocator, declarator);
+                }
+                const decl_list = try self.new_ast.addNodeList(self.scratch.items[scratch_top2..]);
+                const var_decl_extra = try self.new_ast.addExtras(&.{ 0, decl_list.start, decl_list.len }); // 0 = var
+                const var_decl = try self.new_ast.addNode(.{
+                    .tag = .variable_declaration,
+                    .span = span,
+                    .data = .{ .extra = var_decl_extra },
+                });
+
+                // [var_decl, switch_node] → block
+                const block_list = try self.new_ast.addNodeList(&.{ var_decl, switch_node });
+                return self.new_ast.addNode(.{
+                    .tag = .block_statement,
+                    .span = span,
+                    .data = .{ .list = block_list },
+                });
+            }
+
+            return switch_node;
         }
 
         /// AST 문을 순회하며 연산을 수집.
@@ -209,12 +253,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     try ops.append(self.allocator, .{ .code = .return_op, .arg = .{ .node = new_value } });
                 },
                 .variable_declaration => {
-                    // variable_declaration 안에서 yield가 있는지 확인
-                    // 간소화: 통째로 visit
-                    const new_stmt = try self.visitNode(stmt_idx);
-                    if (!new_stmt.isNone()) {
-                        try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_stmt } });
-                    }
+                    // 모든 var는 호이스팅됨. init를 assignment로 변환.
+                    try collectVarDeclWithYield(self, stmt, ops, next_label);
                 },
                 .if_statement => {
                     try collectIfOperations(self, stmt_idx, stmt, ops, next_label);
@@ -424,6 +464,98 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             // mark end_label
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+        }
+
+        /// generator body에서 모든 var 선언의 binding name을 수집 (호이스팅).
+        /// let/const는 block-scoped이므로 호이스팅하지 않음 (ES2015 변환에서 var로 바뀌므로 포함).
+        fn collectHoistedVars(self: *Transformer, stmts: []const u32, hoisted: *std.ArrayList(NodeIndex)) Transformer.Error!void {
+            for (stmts) |raw_idx| {
+                const node = self.old_ast.getNode(@enumFromInt(raw_idx));
+                if (node.tag == .variable_declaration) {
+                    const extras = self.old_ast.extra_data.items;
+                    const e = node.data.extra;
+                    const list_start = extras[e + 1];
+                    const list_len = extras[e + 2];
+                    const decls = extras[list_start .. list_start + list_len];
+                    for (decls) |decl_raw| {
+                        const decl = self.old_ast.getNode(@enumFromInt(decl_raw));
+                        if (decl.tag != .variable_declarator) continue;
+                        const binding: NodeIndex = @enumFromInt(extras[decl.data.extra]);
+                        if (!binding.isNone()) {
+                            const new_binding = try self.visitNode(binding);
+                            try hoisted.append(self.allocator, new_binding);
+                        }
+                    }
+                } else if (node.tag == .block_statement or node.tag == .if_statement) {
+                    // 중첩 block/if 안의 var도 호이스팅 대상
+                    if (node.tag == .block_statement) {
+                        const inner = self.old_ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+                        try collectHoistedVars(self, inner, hoisted);
+                    }
+                    // if문은 then/else body를 재귀 순회해야 하지만 간소화: 스킵
+                }
+            }
+        }
+
+        /// yield가 있는 variable_declaration의 각 declarator를 개별 연산으로 변환.
+        /// var x = yield 1 → yield 1 (op) + x = _state.sent() (op)
+        /// var x = expr (no yield) → x = expr (statement op)
+        fn collectVarDeclWithYield(self: *Transformer, stmt: Node, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
+            const extras = self.old_ast.extra_data.items;
+            const e = stmt.data.extra;
+            const list_start = extras[e + 1];
+            const list_len = extras[e + 2];
+            const decls = extras[list_start .. list_start + list_len];
+
+            for (decls) |decl_raw| {
+                const decl = self.old_ast.getNode(@enumFromInt(decl_raw));
+                if (decl.tag != .variable_declarator) continue;
+
+                const binding: NodeIndex = @enumFromInt(extras[decl.data.extra]);
+                const init_idx: NodeIndex = @enumFromInt(extras[decl.data.extra + 2]);
+
+                if (init_idx.isNone()) continue;
+
+                const init_node = self.old_ast.getNode(init_idx);
+                if (init_node.tag == .yield_expression) {
+                    // var x = yield value → yield value + x = _state.sent()
+                    const yield_val = init_node.data.unary.operand;
+                    const new_val = if (!yield_val.isNone()) try self.visitNode(yield_val) else NodeIndex.none;
+                    try ops.append(self.allocator, .{ .code = .yield_op, .arg = .{ .node = new_val } });
+                    next_label.* += 1;
+                    try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+
+                    // x = _state.sent()
+                    const new_binding = try self.visitNode(binding);
+                    const sent_call = try buildSentCall(self, stmt.span);
+                    const assign = try self.new_ast.addNode(.{
+                        .tag = .assignment_expression,
+                        .span = stmt.span,
+                        .data = .{ .binary = .{ .left = new_binding, .right = sent_call, .flags = 0 } },
+                    });
+                    const assign_stmt = try self.new_ast.addNode(.{
+                        .tag = .expression_statement,
+                        .span = stmt.span,
+                        .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
+                    });
+                    try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
+                } else {
+                    // var x = expr (no yield) → x = expr
+                    const new_binding = try self.visitNode(binding);
+                    const new_init = try self.visitNode(init_idx);
+                    const assign = try self.new_ast.addNode(.{
+                        .tag = .assignment_expression,
+                        .span = stmt.span,
+                        .data = .{ .binary = .{ .left = new_binding, .right = new_init, .flags = 0 } },
+                    });
+                    const assign_stmt = try self.new_ast.addNode(.{
+                        .tag = .expression_statement,
+                        .span = stmt.span,
+                        .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
+                    });
+                    try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
+                }
+            }
         }
 
         /// AST 서브트리에 yield_expression이 있는지 빠른 체크.
