@@ -553,6 +553,40 @@ pub fn ES2015Class(comptime Transformer: type) type {
             return null;
         }
 
+        /// accessor method_definition에서 function expression 생성.
+        fn buildAccessorFunc(self: *Transformer, member_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const member = self.old_ast.getNode(member_idx);
+            const method_extras = self.old_ast.extra_data.items;
+            const me = member.data.extra;
+            const params_start = method_extras[me + 1];
+            const params_len = method_extras[me + 2];
+            const body_idx: NodeIndex = @enumFromInt(method_extras[me + 3]);
+
+            const new_params = try self.visitExtraList(params_start, params_len);
+            const new_body = try visitMethodBody(self, body_idx, span);
+
+            const none = @intFromEnum(NodeIndex.none);
+            const func_extra = try self.new_ast.addExtras(&.{
+                none,                   new_params.start, new_params.len,
+                @intFromEnum(new_body), 0,                none,
+            });
+            return self.new_ast.addNode(.{
+                .tag = .function_expression,
+                .span = span,
+                .data = .{ .extra = func_extra },
+            });
+        }
+
+        /// 두 key 노드의 소스 텍스트가 같은지 확인.
+        fn keysMatch(self: *const Transformer, a: NodeIndex, b: NodeIndex) bool {
+            if (a.isNone() or b.isNone()) return false;
+            const na = self.old_ast.getNode(a);
+            const nb = self.old_ast.getNode(b);
+            const ta = self.old_ast.source[na.span.start..na.span.end];
+            const tb = self.old_ast.source[nb.span.start..nb.span.end];
+            return std.mem.eql(u8, ta, tb);
+        }
+
         /// ClassName.prototype static_member_expression 생성.
         fn buildPrototypeRef(self: *Transformer, class_name_span: Span, span: Span) Transformer.Error!NodeIndex {
             const class_ref = try es_helpers.makeIdentifierRefFromSpan(self, class_name_span);
@@ -790,7 +824,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const body_idx: NodeIndex = @enumFromInt(ctor_extras[me + 3]);
 
             const new_params = try self.visitExtraList(params_start, params_len);
-            const new_body = try self.visitNode(body_idx);
+            const new_body = try visitMethodBody(self, body_idx, span);
 
             const none = @intFromEnum(NodeIndex.none);
             const func_extra = try self.new_ast.addExtras(&.{
@@ -909,6 +943,56 @@ pub fn ES2015Class(comptime Transformer: type) type {
             });
         }
 
+        /// 메서드 body를 방문하면서 arrow this/arguments 캡처를 관리.
+        /// visitFunction과 동일한 save/restore/prepend 로직.
+        fn visitMethodBody(self: *Transformer, body_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            // arrow this state save/restore (일반 함수는 자체 this 바인딩)
+            const saved_arrow_depth = self.arrow_this_depth;
+            const saved_needs_this = self.needs_this_var;
+            const saved_needs_args = self.needs_arguments_var;
+            self.arrow_this_depth = 0;
+            self.needs_this_var = false;
+            self.needs_arguments_var = false;
+
+            var new_body = try self.visitNode(body_idx);
+
+            // arrow가 this/arguments를 사용했으면 var _this = this; 등 삽입
+            if (self.options.target.needsES2015() and !new_body.isNone() and
+                (self.needs_this_var or self.needs_arguments_var))
+            {
+                var capture_stmts: [2]NodeIndex = undefined;
+                var capture_count: usize = 0;
+
+                if (self.needs_this_var) {
+                    const this_init = try self.new_ast.addNode(.{
+                        .tag = .this_expression,
+                        .span = span,
+                        .data = .{ .none = 0 },
+                    });
+                    capture_stmts[capture_count] = try self.buildVarDecl("_this", this_init, span);
+                    capture_count += 1;
+                }
+                if (self.needs_arguments_var) {
+                    const args_span = try self.new_ast.addString("arguments");
+                    const args_init = try self.new_ast.addNode(.{
+                        .tag = .identifier_reference,
+                        .span = args_span,
+                        .data = .{ .string_ref = args_span },
+                    });
+                    capture_stmts[capture_count] = try self.buildVarDecl("_arguments", args_init, span);
+                    capture_count += 1;
+                }
+
+                new_body = try self.prependStatementsToBody(new_body, capture_stmts[0..capture_count]);
+            }
+
+            self.arrow_this_depth = saved_arrow_depth;
+            self.needs_this_var = saved_needs_this;
+            self.needs_arguments_var = saved_needs_args;
+
+            return new_body;
+        }
+
         /// method → ClassName.prototype.method = function() {} (expression_statement)
         /// static method → ClassName.method = function() {}
         fn buildPrototypeAssignment(self: *Transformer, info: MethodInfo, class_name_span: Span, span: Span) Transformer.Error!NodeIndex {
@@ -924,7 +1008,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // function expression 생성
             const new_params = try self.visitExtraList(params_start, params_len);
-            const new_body = try self.visitNode(body_idx);
+            const new_body = try visitMethodBody(self, body_idx, span);
 
             const func_flags: u32 = blk: {
                 var f: u32 = 0;
@@ -975,60 +1059,72 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
         /// getter/setter → Object.defineProperty(target, "prop", { get/set: function() {} })
         fn emitAccessors(self: *Transformer, items: []const AccessorInfo, class_name_span: Span, span: Span) Transformer.Error!void {
-            // 공통 문자열을 루프 밖에서 한 번만 할당
             const obj_str_span = try self.new_ast.addString("Object");
             const dp_str_span = try self.new_ast.addString("defineProperty");
 
-            for (items) |info| {
+            // 같은 property 이름의 getter/setter를 묶어 하나의 Object.defineProperty로 emit
+            var i: usize = 0;
+            while (i < items.len) {
+                const info = items[i];
                 const member = self.old_ast.getNode(info.member_idx);
                 const method_extras = self.old_ast.extra_data.items;
                 const me = member.data.extra;
-
                 const key_idx: NodeIndex = @enumFromInt(method_extras[me]);
-                const params_start = method_extras[me + 1];
-                const params_len = method_extras[me + 2];
-                const body_idx: NodeIndex = @enumFromInt(method_extras[me + 3]);
 
-                // function expression
-                const new_params = try self.visitExtraList(params_start, params_len);
-                const new_body = try self.visitNode(body_idx);
-
-                const none = @intFromEnum(NodeIndex.none);
-                const func_extra = try self.new_ast.addExtras(&.{
-                    none,                   new_params.start, new_params.len,
-                    @intFromEnum(new_body), 0,                none,
-                });
-                const func_expr = try self.new_ast.addNode(.{
-                    .tag = .function_expression,
-                    .span = span,
-                    .data = .{ .extra = func_extra },
-                });
-
-                // property name: "get" or "set"
-                const accessor_name = if (info.is_getter) "get" else "set";
-                const accessor_key = try es_helpers.makeIdentifierRef(self, accessor_name);
-
-                // { get: function() {} } or { set: function(v) {} }
-                const prop = try self.new_ast.addNode(.{
+                // 현재 accessor의 function expression 생성
+                const func_expr = try buildAccessorFunc(self, info.member_idx, span);
+                const accessor_key = try es_helpers.makeIdentifierRef(self, if (info.is_getter) "get" else "set");
+                const prop1 = try self.new_ast.addNode(.{
                     .tag = .object_property,
                     .span = span,
                     .data = .{ .binary = .{ .left = accessor_key, .right = func_expr, .flags = 0 } },
                 });
-                const obj_list = try self.new_ast.addNodeList(&.{prop});
-                const desc_obj = try self.new_ast.addNode(.{
-                    .tag = .object_expression,
-                    .span = span,
-                    .data = .{ .list = obj_list },
-                });
 
-                // target: ClassName.prototype 또는 ClassName
+                // 다음 accessor가 같은 property의 짝(getter↔setter)인지 확인
+                var paired_prop: ?NodeIndex = null;
+                if (i + 1 < items.len) {
+                    const next = items[i + 1];
+                    const next_member = self.old_ast.getNode(next.member_idx);
+                    const next_me = next_member.data.extra;
+                    const next_key: NodeIndex = @enumFromInt(method_extras[next_me]);
+                    if (info.is_static == next.is_static and info.is_getter != next.is_getter and
+                        keysMatch(self, key_idx, next_key))
+                    {
+                        const pair_func = try buildAccessorFunc(self, next.member_idx, span);
+                        const pair_key = try es_helpers.makeIdentifierRef(self, if (next.is_getter) "get" else "set");
+                        paired_prop = try self.new_ast.addNode(.{
+                            .tag = .object_property,
+                            .span = span,
+                            .data = .{ .binary = .{ .left = pair_key, .right = pair_func, .flags = 0 } },
+                        });
+                        i += 1; // 짝을 소비
+                    }
+                }
+
+                // descriptor object: { get: fn, set: fn } 또는 { get: fn }
+                const desc_obj = if (paired_prop) |pp| blk: {
+                    const obj_list = try self.new_ast.addNodeList(&.{ prop1, pp });
+                    break :blk try self.new_ast.addNode(.{
+                        .tag = .object_expression,
+                        .span = span,
+                        .data = .{ .list = obj_list },
+                    });
+                } else blk: {
+                    const obj_list = try self.new_ast.addNodeList(&.{prop1});
+                    break :blk try self.new_ast.addNode(.{
+                        .tag = .object_expression,
+                        .span = span,
+                        .data = .{ .list = obj_list },
+                    });
+                };
+
+                // target
                 const target = if (info.is_static)
                     try es_helpers.makeIdentifierRefFromSpan(self, class_name_span)
                 else
                     try buildPrototypeRef(self, class_name_span, span);
 
-                // key를 string literal로 변환 (원본 소스에서 이름 추출)
-                // string_literal은 codegen에서 따옴표를 포함한 텍스트를 기대하므로 감싸서 저장
+                // key string literal
                 const old_key_node = self.old_ast.getNode(key_idx);
                 const key_text = self.old_ast.source[old_key_node.span.start..old_key_node.span.end];
                 var quoted_buf: [256]u8 = undefined;
@@ -1046,7 +1142,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 const obj_ref = try es_helpers.makeIdentifierRefFromSpan(self, obj_str_span);
                 const dp_prop = try es_helpers.makeIdentifierRefFromSpan(self, dp_str_span);
                 const dp_callee = try es_helpers.makeStaticMember(self, obj_ref, dp_prop, span);
-
                 const call = try es_helpers.makeCallExpr(self, dp_callee, &.{ target, key_str, desc_obj }, span);
                 const stmt = try self.new_ast.addNode(.{
                     .tag = .expression_statement,
@@ -1054,6 +1149,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     .data = .{ .unary = .{ .operand = call, .flags = 0 } },
                 });
                 try self.pending_nodes.append(self.allocator, stmt);
+
+                i += 1;
             }
         }
     };
