@@ -4565,3 +4565,48 @@ test "ES2022: static block to IIFE (target=es2021)" {
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "F.v=1") != null);
 }
+
+// --- useDefineForClassFields=false ---
+
+test "useDefineForClassFields=false: instance to constructor" {
+    var r = try e2eFull(std.testing.allocator, "class Foo{x=1;}", .{ .use_define_for_class_fields = false }, .{ .minify = true }, ".ts");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "this.x=1") != null);
+    // x=1 은 class body에 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "class Foo{x=1") == null);
+}
+
+test "useDefineForClassFields=false: static field outside class" {
+    var r = try e2eFull(std.testing.allocator, "class Foo{static z=2;}", .{ .use_define_for_class_fields = false }, .{ .minify = true }, ".ts");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Foo.z=2") != null);
+    // static z=2 는 class body에 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "static") == null);
+}
+
+test "useDefineForClassFields=false: multiple static assignments ordered" {
+    var r = try e2eFull(std.testing.allocator, "class Foo{static a=1;static b=2;}", .{ .use_define_for_class_fields = false }, .{ .minify = true }, ".ts");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Foo.a=1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Foo.b=2") != null);
+    // a가 b보다 먼저
+    const a_pos = std.mem.indexOf(u8, r.output, "Foo.a=1").?;
+    const b_pos = std.mem.indexOf(u8, r.output, "Foo.b=2").?;
+    try std.testing.expect(a_pos < b_pos);
+}
+
+test "useDefineForClassFields=false: method preserved" {
+    var r = try e2eFull(std.testing.allocator, "class Foo{x=1;method(){return this.x;}}", .{ .use_define_for_class_fields = false }, .{ .minify = true }, ".ts");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "method()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "this.x=1") != null);
+}
+
+test "useDefineForClassFields=false: no-init fields removed" {
+    var r = try e2eFull(std.testing.allocator, "class Foo{y;static w;method(){}}", .{ .use_define_for_class_fields = false }, .{ .minify = true }, ".ts");
+    defer r.deinit();
+    // y, w 모두 제거되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "method") != null);
+    // class body에 y, w가 없어야 함 (method만 있음)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ";y") == null);
+}

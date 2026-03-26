@@ -113,6 +113,7 @@ references/                 # 레퍼런스 프로젝트 (.gitignore, 로컬만)
   rolldown/                 #   Rust — Rollup 호환 번들러/Vite 통합 참고
   vite/                     #   JS — 개발 서버/HMR/플러그인 API 참고
   babel/                    #   JS — 플러그인 시스템/스펙 추종 참고
+  typescript/               #   TS — 공식 컴파일러, 다운레벨링/decorator 테스트케이스 참고
 ```
 
 ## Pipeline Architecture
@@ -371,5 +372,6 @@ main ← feature/lexer-token-enum
 - esbuild: github.com/evanw/esbuild
 - Hermes: github.com/facebook/hermes (Flow 파서)
 - Metro: github.com/facebook/metro (RN 번들러)
+- TypeScript: github.com/microsoft/TypeScript (다운레벨링/decorator 테스트케이스)
 - Test262: github.com/tc39/test262
 - ECMAScript Spec: tc39.es/ecma262

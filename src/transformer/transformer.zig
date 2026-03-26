@@ -273,10 +273,16 @@ pub const Transformer = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator, old_ast: *const Ast, options: TransformOptions) Transformer {
+        // experimentalDecorators → useDefineForClassFields=false 강제
+        // TypeScript/esbuild 동일: decorator가 class field의 setter를 인터셉트하려면
+        // assign semantics (this.x = v)가 필요. define semantics는 setter를 무시.
+        var opts = options;
+        if (opts.experimental_decorators) opts.use_define_for_class_fields = false;
+
         return .{
             .old_ast = old_ast,
             .new_ast = Ast.init(allocator, old_ast.source),
-            .options = options,
+            .options = opts,
             .allocator = allocator,
             .scratch = .empty,
             .pending_nodes = .empty,
@@ -1732,6 +1738,9 @@ pub const Transformer = struct {
         var static_block_iifes: std.ArrayList(NodeIndex) = .empty;
         defer static_block_iifes.deinit(self.allocator);
 
+        var static_field_assignments: std.ArrayList(FieldAssignment) = .empty;
+        defer static_field_assignments.deinit(self.allocator);
+
         var ctx = ClassMemberContext{
             .class_members = &class_members,
             .field_assignments = &field_assignments,
@@ -1739,6 +1748,7 @@ pub const Transformer = struct {
             .existing_constructor = &existing_constructor,
             .existing_constructor_pos = &existing_constructor_pos,
             .static_block_iifes = if (self.options.target.needsClassStaticBlock()) &static_block_iifes else null,
+            .static_field_assignments = if (!self.options.use_define_for_class_fields) &static_field_assignments else null,
         };
 
         // ES2022 static block this 치환을 위한 클래스 이름 추출
@@ -1855,6 +1865,7 @@ pub const Transformer = struct {
                     old_deco_len,
                     member_decorators.items,
                     static_block_iifes.items,
+                    static_field_assignments.items,
                 );
             }
         }
@@ -1867,14 +1878,22 @@ pub const Transformer = struct {
 
         const none = @intFromEnum(NodeIndex.none);
 
-        // ES2022: static block이 있으면 class를 pending에 넣고 IIFE를 뒤에 추가
-        if (static_block_iifes.items.len > 0) {
+        // static field / static block이 있으면 class 뒤에 할당문 추가
+        const has_static_fields = static_field_assignments.items.len > 0;
+        const has_static_blocks = static_block_iifes.items.len > 0;
+
+        if (has_static_fields or has_static_blocks) {
             const class_result = try self.addExtraNode(node.tag, node.span, &.{
                 @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
                 none,                   0,                       0,
                 new_decos.start,        new_decos.len,
             });
             try self.pending_nodes.append(self.allocator, class_result);
+            // static field: Foo.z = 2;
+            for (static_field_assignments.items) |field| {
+                const stmt = try self.buildStaticFieldAssignment(new_name, field);
+                try self.pending_nodes.append(self.allocator, stmt);
+            }
             for (static_block_iifes.items) |iife| {
                 try self.pending_nodes.append(self.allocator, iife);
             }
@@ -1885,6 +1904,43 @@ pub const Transformer = struct {
             @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
             none,                   0,                       0,
             new_decos.start,        new_decos.len,
+        });
+    }
+
+    /// ClassName.key = value; 할당문을 생성한다.
+    fn buildStaticFieldAssignment(self: *Transformer, class_name: NodeIndex, field: FieldAssignment) Error!NodeIndex {
+        // ClassName
+        const name_node = self.new_ast.getNode(class_name);
+        const cls_ref = try self.new_ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = name_node.span,
+            .data = .{ .string_ref = name_node.span },
+        });
+        const member = if (field.is_computed) blk: {
+            // computed: ClassName[key]
+            const me_extra = try self.new_ast.addExtras(&.{
+                @intFromEnum(cls_ref),
+                @intFromEnum(field.key),
+                0,
+            });
+            break :blk try self.new_ast.addNode(.{
+                .tag = .computed_member_expression,
+                .span = field.span,
+                .data = .{ .extra = me_extra },
+            });
+        } else blk: {
+            break :blk try es_helpers.makeStaticMember(self, cls_ref, field.key, field.span);
+        };
+        // ClassName.key = value
+        const assign = try self.new_ast.addNode(.{
+            .tag = .assignment_expression,
+            .span = field.span,
+            .data = .{ .binary = .{ .left = member, .right = field.value, .flags = 0 } },
+        });
+        return self.new_ast.addNode(.{
+            .tag = .expression_statement,
+            .span = field.span,
+            .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
         });
     }
 
@@ -1904,6 +1960,8 @@ pub const Transformer = struct {
         static_block_iifes: ?*std.ArrayList(NodeIndex) = null,
         /// ES2022 static block 안의 this → 클래스 이름 치환에 사용
         class_name_span: ?Span = null,
+        /// useDefineForClassFields=false: static field → class 밖 할당문
+        static_field_assignments: ?*std.ArrayList(FieldAssignment) = null,
     };
 
     fn classifyClassMember(
@@ -1915,7 +1973,7 @@ pub const Transformer = struct {
 
         // property_definition: extra = [key, init_val, flags, deco_start, deco_len]
         if (member.tag == .property_definition) {
-            try self.classifyPropertyDefinition(raw_idx, member, ctx.class_members, ctx.field_assignments, ctx.member_decorators);
+            try self.classifyPropertyDefinition(raw_idx, member, ctx);
             return;
         }
 
@@ -1948,10 +2006,11 @@ pub const Transformer = struct {
         self: *Transformer,
         raw_idx: u32,
         member: Node,
-        class_members: *std.ArrayList(NodeIndex),
-        field_assignments: *std.ArrayList(FieldAssignment),
-        member_decorators: *std.ArrayList(MemberDecoratorInfo),
+        ctx: *ClassMemberContext,
     ) Error!void {
+        const class_members = ctx.class_members;
+        const field_assignments = ctx.field_assignments;
+        const member_decorators = ctx.member_decorators;
         const me = member.data.extra;
         const flags = self.readU32(me, 2);
         const is_static = (flags & 0x01) != 0;
@@ -1992,9 +2051,25 @@ pub const Transformer = struct {
             return;
         }
 
-        // useDefineForClassFields=false + static + 초기값 없음 → 제거 (타입 선언만)
-        if (!self.options.use_define_for_class_fields and is_static and self.readNodeIdx(me, 1).isNone()) {
-            return;
+        // useDefineForClassFields=false + static field
+        if (!self.options.use_define_for_class_fields and is_static) {
+            const key_idx = self.readNodeIdx(me, 0);
+            const init_idx = self.readNodeIdx(me, 1);
+            if (init_idx.isNone()) return; // 초기값 없음 → 타입 선언만, 제거
+            // 초기값 있음 → class 밖 할당문으로 이동 (Foo.z = 2)
+            if (ctx.static_field_assignments) |sfa| {
+                const new_key = try self.visitNode(key_idx);
+                const new_init = try self.visitNode(init_idx);
+                const key_node = self.old_ast.getNode(key_idx);
+                try sfa.append(self.allocator, .{
+                    .key = new_key,
+                    .value = new_init,
+                    .is_computed = (key_node.tag == .computed_property_key),
+                    .span = member.span,
+                });
+                return;
+            }
+            // static_field_assignments가 없으면 (use_define_for_class_fields=true) 그대로 유지
         }
 
         // 그 외: 그대로 방문
@@ -2044,6 +2119,7 @@ pub const Transformer = struct {
         }
 
         // 일반 메서드: experimentalDecorators의 member decorator 수집
+        // NOTE: parameter decorator는 파서에서 수집되지 않으므로 현재 미지원 (#437)
         if (self.options.experimental_decorators) {
             const deco_start = self.readU32(me, 5);
             const deco_len = self.readU32(me, 6);
@@ -2366,6 +2442,7 @@ pub const Transformer = struct {
         old_deco_len: u32,
         member_decos: []const MemberDecoratorInfo,
         static_block_iifes: []const NodeIndex,
+        static_field_assigns: []const FieldAssignment,
     ) Error!NodeIndex {
         const none = @intFromEnum(NodeIndex.none);
         const decorate_span = try self.new_ast.addString("__decorateClass");
@@ -2417,12 +2494,16 @@ pub const Transformer = struct {
             const class_deco_stmt = try self.buildDecorateClassCall(decorate_span, name_span, old_deco_start, old_deco_len);
             try self.pending_nodes.append(self.allocator, class_deco_stmt);
 
-            // ES2022: static block IIFE를 decorator 호출 뒤에 추가
+            // static field: Foo.x = value (decorator 호출 뒤에 배치)
+            for (static_field_assigns) |field| {
+                const stmt = try self.buildStaticFieldAssignment(new_name, field);
+                try self.pending_nodes.append(self.allocator, stmt);
+            }
+
             for (static_block_iifes) |iife| {
                 try self.pending_nodes.append(self.allocator, iife);
             }
 
-            // visitClass의 반환값은 .none (let 선언 + decorator 호출이 pending_nodes에 있음)
             return .none;
         }
 
@@ -2440,13 +2521,16 @@ pub const Transformer = struct {
             });
             try self.pending_nodes.append(self.allocator, class_result);
 
-            // member decorator 호출을 pending에 추가 (class 뒤)
             for (member_decos) |md| {
                 const call_stmt = try self.buildDecorateClassMemberCall(decorate_span, name_span, md);
                 try self.pending_nodes.append(self.allocator, call_stmt);
             }
 
-            // ES2022: static block IIFE를 decorator 호출 뒤에 추가
+            for (static_field_assigns) |field| {
+                const stmt = try self.buildStaticFieldAssignment(new_name, field);
+                try self.pending_nodes.append(self.allocator, stmt);
+            }
+
             for (static_block_iifes) |iife| {
                 try self.pending_nodes.append(self.allocator, iife);
             }
@@ -3802,15 +3886,16 @@ test "useDefineForClassFields=false: instance field moved to constructor" {
     try std.testing.expectEqual(@as(u32, 1), r.statementCount());
 }
 
-test "useDefineForClassFields=false: static field preserved" {
-    // class Foo { static bar = 1; foo = 2 } → static bar는 유지, foo는 constructor로
+test "useDefineForClassFields=false: static field moved outside class" {
+    // class Foo { static bar = 1; foo = 2 } → class + Foo.bar = 1;
     var r = try parseAndTransformWithOptions(
         std.testing.allocator,
         "class Foo { static bar = 1; foo = 2 }",
         .{ .use_define_for_class_fields = false },
     );
     defer r.deinit();
-    try std.testing.expectEqual(@as(u32, 1), r.statementCount());
+    // class declaration + static field assignment = 2 statements
+    try std.testing.expectEqual(@as(u32, 2), r.statementCount());
 }
 
 test "useDefineForClassFields=false: with existing constructor" {
@@ -3831,6 +3916,61 @@ test "useDefineForClassFields=false: with super class" {
     );
     defer r.deinit();
     try std.testing.expectEqual(@as(u32, 1), r.statementCount());
+}
+
+test "useDefineForClassFields=false: multiple static fields" {
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class Foo { static a = 1; static b = 2; static c = 3; }",
+        .{ .use_define_for_class_fields = false },
+    );
+    defer r.deinit();
+    // class + 3 static assignments
+    try std.testing.expectEqual(@as(u32, 4), r.statementCount());
+}
+
+test "useDefineForClassFields=false: static without initializer removed" {
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class Foo { static w; }",
+        .{ .use_define_for_class_fields = false },
+    );
+    defer r.deinit();
+    // static w; (no init) → 제거, class만 남음
+    try std.testing.expectEqual(@as(u32, 1), r.statementCount());
+}
+
+test "useDefineForClassFields=false: instance field without initializer removed" {
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class Foo { y; }",
+        .{ .use_define_for_class_fields = false },
+    );
+    defer r.deinit();
+    // y; (no init) → 제거
+    try std.testing.expectEqual(@as(u32, 1), r.statementCount());
+}
+
+test "useDefineForClassFields=false: mixed fields and methods" {
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class Foo { x = 1; method() {} static y = 2; }",
+        .{ .use_define_for_class_fields = false },
+    );
+    defer r.deinit();
+    // class (with constructor + method) + Foo.y = 2
+    try std.testing.expectEqual(@as(u32, 2), r.statementCount());
+}
+
+test "useDefineForClassFields=false: extends with instance and static" {
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        "class Base { a = 1; } class Child extends Base { b = 2; static c = 3; }",
+        .{ .use_define_for_class_fields = false },
+    );
+    defer r.deinit();
+    // Base class + Child class + Child.c = 3
+    try std.testing.expectEqual(@as(u32, 3), r.statementCount());
 }
 
 test "useDefineForClassFields=true: default behavior preserves fields" {

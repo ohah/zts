@@ -1111,4 +1111,272 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("42");
     });
   });
+
+  // ===== useDefineForClassFields=false =====
+
+  describe("useDefineForClassFields=false", () => {
+    test("instance field to constructor", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Foo { x = 1; y = 'hello'; }
+            const f = new Foo();
+            console.log(f.x, f.y);
+          `,
+        },
+        "index.ts",
+        ["--use-define-for-class-fields=false"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1 hello");
+    });
+
+    test("static field outside class", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Foo { static x = 42; static y = 'hi'; }
+            console.log(Foo.x, Foo.y);
+          `,
+        },
+        "index.ts",
+        ["--use-define-for-class-fields=false"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42 hi");
+    });
+
+    test("mixed instance + static + method", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Counter {
+              count = 0;
+              static instances = 0;
+              constructor() { Counter.instances++; }
+              inc() { this.count++; }
+            }
+            const c = new Counter();
+            c.inc(); c.inc();
+            console.log(c.count, Counter.instances);
+          `,
+        },
+        "index.ts",
+        ["--use-define-for-class-fields=false"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("2 1");
+    });
+
+    test("extends with field", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Base { a = 1; }
+            class Child extends Base { b = 2; }
+            const c = new Child();
+            console.log(c.a, c.b);
+          `,
+        },
+        "index.ts",
+        ["--use-define-for-class-fields=false"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1 2");
+    });
+  });
+
+  // ===== experimentalDecorators =====
+
+  describe("experimentalDecorators", () => {
+    test("class decorator", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function sealed(ctor: any) { Object.seal(ctor); return ctor; }
+            @sealed class Foo { x = 1; }
+            console.log(new Foo().x, Object.isSealed(Foo));
+          `,
+        },
+        "index.ts",
+        ["--experimental-decorators"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1 true");
+    });
+
+    test("method decorator", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const calls: string[] = [];
+            function log(target: any, key: string, desc: PropertyDescriptor) {
+              const orig = desc.value;
+              desc.value = function(this: any, ...args: any[]) {
+                calls.push(key);
+                return orig.apply(this, args);
+              };
+            }
+            class Calc {
+              @log add(a: number, b: number) { return a + b; }
+              @log mul(a: number, b: number) { return a * b; }
+            }
+            const c = new Calc();
+            console.log(c.add(1, 2), c.mul(3, 4), calls.join(','));
+          `,
+        },
+        "index.ts",
+        ["--experimental-decorators"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("3 12 add,mul");
+    });
+
+    test("property decorator (metadata)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const meta: Record<string, string[]> = {};
+            function Column(target: any, key: string) {
+              const name = target.constructor.name;
+              if (!meta[name]) meta[name] = [];
+              meta[name].push(key);
+            }
+            class User {
+              @Column id: number = 0;
+              @Column name: string = "";
+              @Column email: string = "";
+            }
+            console.log(meta["User"]?.sort().join(','));
+          `,
+        },
+        "index.ts",
+        ["--experimental-decorators"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("email,id,name");
+    });
+
+    test("property decorator with setter intercept", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const log: string[] = [];
+            function observable(target: any, key: string) {
+              let val = target[key];
+              Object.defineProperty(target, key, {
+                get() { return val; },
+                set(v) { val = v; log.push(key + '=' + v); },
+                enumerable: true, configurable: true,
+              });
+            }
+            class Store {
+              @observable count = 0;
+            }
+            const s = new Store();
+            s.count = 42;
+            console.log(s.count, log.join(','));
+          `,
+        },
+        "index.ts",
+        ["--experimental-decorators"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42 count=0,count=42");
+    });
+
+    test("decorator factory", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function tag(name: string) {
+              return function(ctor: any) { ctor._tag = name; return ctor; };
+            }
+            @tag("users") class User {}
+            @tag("posts") class Post {}
+            console.log((User as any)._tag, (Post as any)._tag);
+          `,
+        },
+        "index.ts",
+        ["--experimental-decorators"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("users posts");
+    });
+
+    test("multiple decorators (reverse order)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const order: string[] = [];
+            function a(ctor: any) { order.push('a'); return ctor; }
+            function b(ctor: any) { order.push('b'); return ctor; }
+            function c(ctor: any) { order.push('c'); return ctor; }
+            @a @b @c class Foo {}
+            console.log(order.join(','));
+          `,
+        },
+        "index.ts",
+        ["--experimental-decorators"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      // decorators applied inner-to-outer (c → b → a)
+      expect(result.runOutput).toBe("c,b,a");
+    });
+
+    test("decorator on class with extends", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function wrap(ctor: any) { ctor._wrapped = true; return ctor; }
+            class Base { x = 1; }
+            @wrap class Child extends Base { y = 2; }
+            const c = new Child();
+            console.log(c.x, c.y, (Child as any)._wrapped);
+          `,
+        },
+        "index.ts",
+        ["--experimental-decorators"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1 2 true");
+    });
+
+    test("class + method + property combined", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const log: string[] = [];
+            function entity(ctor: any) { ctor._entity = true; return ctor; }
+            function col(target: any, key: string) { log.push('col:' + key); }
+            function meth(target: any, key: string, desc: PropertyDescriptor) { log.push('meth:' + key); }
+            @entity class User {
+              @col id: number = 0;
+              @col name: string = "";
+              @meth greet() { return this.name; }
+            }
+            const u = new User();
+            u.name = "Alice";
+            console.log(u.greet(), (User as any)._entity, log.sort().join(','));
+          `,
+        },
+        "index.ts",
+        ["--experimental-decorators"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("Alice true col:id,col:name,meth:greet");
+    });
+  });
 });
