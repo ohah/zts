@@ -160,4 +160,46 @@ describe("번들 스모크 테스트", () => {
     // 미사용 모듈은 번들에 포함되지 않아야 함
     expect(output).not.toContain("unused.ts");
   });
+
+  test("서브패스 package.json resolve (디렉토리 내 main/module 필드)", async () => {
+    // fp-ts 패턴: fp-ts/function → fp-ts/function/package.json → { "module": "../es6/function.js" }
+    const result = await bundleAndRun({
+      "index.ts": `import { add } from "./mylib/math"; console.log(add(1, 2));`,
+      "mylib/math/package.json": `{ "main": "../src/math.js", "module": "../src/math.mjs" }`,
+      "mylib/src/math.mjs": `export function add(a, b) { return a + b; }`,
+      "mylib/src/math.js": `module.exports.add = function(a, b) { return a + b; };`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("3");
+  });
+
+  test("module 필드 resolve 시 .js를 ESM으로 파싱", async () => {
+    // package.json "module" 필드가 가리키는 .js는 ESM이어야 함
+    const result = await bundleAndRun({
+      "index.ts": `import { greet } from "./pkg"; console.log(greet("world"));`,
+      "pkg/package.json": `{ "main": "../lib/index.js", "module": "../esm/index.js" }`,
+      "esm/index.js": `export function greet(name) { return "hello " + name; }`,
+      "lib/index.js": `module.exports.greet = function(name) { return "hello " + name; };`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("hello world");
+  });
+
+  test("module 필드 ESM 전이 전파 (상대 import)", async () => {
+    // module 필드 모듈에서 상대 경로로 import하는 .js도 ESM으로 파싱
+    const result = await bundleAndRun({
+      "index.ts": `import { double } from "./pkg"; console.log(double(21));`,
+      "pkg/package.json": `{ "module": "../esm/index.js" }`,
+      "esm/index.js": `import { multiply } from "./utils.js"; export function double(n) { return multiply(n, 2); }`,
+      "esm/utils.js": `export function multiply(a, b) { return a * b; }`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("42");
+  });
 });
