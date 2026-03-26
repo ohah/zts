@@ -48,6 +48,42 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             return false;
         }
 
+        /// variable_declaration 안에 object rest (...rest)가 있는지 체크.
+        /// ES2018 object rest는 target < es2018에서 __rest로 변환 필요.
+        pub fn hasObjectRest(self: *const Transformer, node: Node) bool {
+            const extras = self.old_ast.extra_data.items;
+            const e = node.data.extra;
+            if (e + 2 >= extras.len) return false;
+            const list_start = extras[e + 1];
+            const list_len = extras[e + 2];
+            const decls = extras[list_start .. list_start + list_len];
+            for (decls) |raw_idx| {
+                const decl = self.old_ast.getNode(@enumFromInt(raw_idx));
+                if (decl.tag != .variable_declarator) continue;
+                const name: NodeIndex = @enumFromInt(extras[decl.data.extra]);
+                if (name.isNone()) continue;
+                const name_node = self.old_ast.getNode(name);
+                if (name_node.tag == .object_pattern) {
+                    if (objectPatternHasRest(self, name_node)) return true;
+                }
+            }
+            return false;
+        }
+
+        fn objectPatternHasRest(self: *const Transformer, pattern: Node) bool {
+            const list = pattern.data.list;
+            if (list.len == 0) return false;
+            if (list.start + list.len > self.old_ast.extra_data.items.len) return false;
+            const indices = self.old_ast.extra_data.items[list.start .. list.start + list.len];
+            for (indices) |raw_idx| {
+                const prop_idx: NodeIndex = @enumFromInt(raw_idx);
+                if (prop_idx.isNone()) continue;
+                const prop = self.old_ast.getNode(prop_idx);
+                if (prop.tag == .rest_element) return true;
+            }
+            return false;
+        }
+
         /// destructuring이 있는 variable_declaration을 분해한다.
         /// 각 destructuring declarator를 여러 개의 단순 declarator로 풀어서 반환.
         pub fn lowerDestructuringDeclaration(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
