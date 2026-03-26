@@ -2139,9 +2139,14 @@ pub const Transformer = struct {
             if (deco_len > 0 or params_len > 0) {
                 const new_key = try self.visitNode(self.readNodeIdx(me, 0));
                 try self.collectMemberDecorators(
-                    member_decorators, deco_start, deco_len,
-                    params_start, params_len,
-                    new_key, is_static, 1,
+                    member_decorators,
+                    deco_start,
+                    deco_len,
+                    params_start,
+                    params_len,
+                    new_key,
+                    is_static,
+                    1,
                 );
             }
         }
@@ -3009,7 +3014,7 @@ pub const Transformer = struct {
         const new_decos = try self.visitExtraList(self.readU32(e, 4), self.readU32(e, 5));
         const none = @intFromEnum(NodeIndex.none);
         return self.addExtraNode(.formal_parameter, node.span, &.{
-            @intFromEnum(new_pattern), none,          @intFromEnum(new_default), // type_ann 제거
+            @intFromEnum(new_pattern), none,            @intFromEnum(new_default), // type_ann 제거
             0,                         new_decos.start, new_decos.len,
         });
     }
