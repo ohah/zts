@@ -316,16 +316,21 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 return;
             }
 
-            // init
+            // init: variable_declaration은 그대로, expression은 expression_statement로 감싸기
             if (!init_idx.isNone()) {
+                const init_node = self.old_ast.getNode(init_idx);
                 const new_init = try self.visitNode(init_idx);
                 if (!new_init.isNone()) {
-                    const init_stmt = try self.new_ast.addNode(.{
-                        .tag = .expression_statement,
-                        .span = stmt.span,
-                        .data = .{ .unary = .{ .operand = new_init, .flags = 0 } },
-                    });
-                    try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = init_stmt } });
+                    if (init_node.tag == .variable_declaration) {
+                        try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = new_init } });
+                    } else {
+                        const init_stmt = try self.new_ast.addNode(.{
+                            .tag = .expression_statement,
+                            .span = stmt.span,
+                            .data = .{ .unary = .{ .operand = new_init, .flags = 0 } },
+                        });
+                        try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = init_stmt } });
+                    }
                 }
             }
 
@@ -497,28 +502,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-            // case별 statements 수집
-            var case_stmts: std.ArrayList(NodeIndex) = .empty;
-            defer case_stmts.deinit(self.allocator);
-
             var case_num: u32 = 0;
-            // label → case_num 매핑 (nop마다 case_num 증가)
-            var label_to_case: std.ArrayList(u32) = .empty;
-            defer label_to_case.deinit(self.allocator);
-
-            // Phase 1: label 매핑 생성
-            var nop_count: u32 = 0;
-            for (ops) |op| {
-                if (op.code == .nop) {
-                    try label_to_case.append(self.allocator, nop_count);
-                    nop_count += 1;
-                }
-            }
-            // break_op의 label이 nop의 인덱스를 참조
-            // label N → case_num = label_to_case[N] (사실 nop 순서대로 번호 매김)
-            // 간소화: label = case number 직접 사용
-
-            // Phase 2: case 생성
+            // label = case number 직접 사용 (nop 순서대로 번호 매김)
             var current_case_stmts: std.ArrayList(NodeIndex) = .empty;
             defer current_case_stmts.deinit(self.allocator);
 
