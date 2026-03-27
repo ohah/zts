@@ -218,8 +218,8 @@ pub const TreeShaker = struct {
         }
 
         // 2차: 심볼 기반 도달성 분석 (rolldown 방식)
-        // fixpoint 수렴 후, 각 모듈의 StmtInfo를 구축하여 import binding liveness를 정밀 판정.
-        // 이로써 dead import가 참조하는 export를 used_exports에서 제거 → statement_shaker가 코드 제거.
+        // StmtInfo 구축 → reachable_stmts 계산 → used_exports 재계산을 수렴할 때까지 반복.
+        // 순환 의존에서 dead import가 순환 경로로 used로 마킹되는 문제를 해결.
         var module_stmt_infos = try self.allocator.alloc(?StmtInfos, self.modules.len);
         for (module_stmt_infos) |*si| si.* = null;
         self.module_stmt_infos = module_stmt_infos;
@@ -228,7 +228,7 @@ pub const TreeShaker = struct {
         for (reachable_stmts) |*rs| rs.* = null;
         self.reachable_stmts = reachable_stmts;
 
-        // StmtInfo 구축 (semantic data가 있는 모듈만)
+        // StmtInfo 구축 (한 번만 — AST 기반이라 변하지 않음)
         for (self.modules, 0..) |m, i| {
             if (!self.included.isSet(i)) continue;
             if (self.entry_set.isSet(i) or m.wrap_kind == .cjs) continue;
@@ -242,44 +242,119 @@ pub const TreeShaker = struct {
             ) catch null;
         }
 
-        // 도달성 계산: used exports의 심볼 인덱스를 seed로 BFS
-        for (self.modules, 0..) |m, i| {
-            const infos = module_stmt_infos[i] orelse continue;
-            const sem = m.semantic orelse continue;
-            if (sem.scope_maps.len == 0) continue;
-            const top_scope = sem.scope_maps[0];
-
-            // used export의 local_name → symbol_index 수집
-            var used_sym_buf: std.ArrayListUnmanaged(u32) = .empty;
-            defer used_sym_buf.deinit(self.allocator);
-            const mod_idx: u32 = @intCast(i);
-
-            if (self.isExportUsed(mod_idx, "*")) {
-                // 모든 export 사용 → 모든 심볼 seed
+        // 수렴 루프 시작: fixpoint의 used_exports를 entry 직접 import만으로 교체
+        // 이후 reachable_stmts ↔ used_exports를 상호 정제하며 수렴.
+        {
+            self.clearUsedExports();
+            for (self.modules, 0..) |_, i| {
+                if (self.entry_set.isSet(i)) try self.markAllExportsUsed(@intCast(i));
+            }
+            // entry의 직접 import만 처리 (fixpoint 없이)
+            for (self.modules, 0..) |m, i| {
+                if (!self.entry_set.isSet(i)) continue;
+                // entry는 StmtInfo가 없으므로 모든 import binding을 live로 처리
+                try self.processModuleImportsLive(m, @intCast(i));
+            }
+            // entry의 re-export source 처리
+            for (self.modules, 0..) |m, i| {
+                if (!self.entry_set.isSet(i)) continue;
                 for (m.export_bindings) |eb| {
-                    if (eb.kind == .re_export_all) continue;
-                    if (top_scope.get(eb.local_name)) |sym_idx| {
-                        used_sym_buf.append(self.allocator, @intCast(sym_idx)) catch continue;
+                    if (eb.kind != .re_export and eb.kind != .re_export_all) continue;
+                    if (eb.import_record_index) |rec_idx| {
+                        if (rec_idx < m.import_records.len) {
+                            const src = @intFromEnum(m.import_records[rec_idx].resolved);
+                            if (src < self.modules.len) {
+                                self.included.set(src);
+                                try self.markAllExportsUsed(@intCast(src));
+                            }
+                        }
                     }
                 }
-            } else {
-                for (m.export_bindings) |eb| {
-                    if (eb.kind == .re_export_all) continue;
-                    if (self.isExportUsed(mod_idx, eb.exported_name)) {
+            }
+        }
+
+        var refine_iter: u32 = 0;
+        while (refine_iter < 10) : (refine_iter += 1) {
+            // (A) reachable_stmts 계산: 현재 used_exports 기반
+            for (self.modules, 0..) |m, i| {
+                const infos = module_stmt_infos[i] orelse continue;
+                const sem = m.semantic orelse continue;
+                if (sem.scope_maps.len == 0) continue;
+                const top_scope = sem.scope_maps[0];
+
+                var used_sym_buf: std.ArrayListUnmanaged(u32) = .empty;
+                defer used_sym_buf.deinit(self.allocator);
+                const mod_idx: u32 = @intCast(i);
+
+                if (self.isExportUsed(mod_idx, "*")) {
+                    for (m.export_bindings) |eb| {
+                        if (eb.kind == .re_export_all) continue;
                         if (top_scope.get(eb.local_name)) |sym_idx| {
                             used_sym_buf.append(self.allocator, @intCast(sym_idx)) catch continue;
+                        }
+                    }
+                } else {
+                    for (m.export_bindings) |eb| {
+                        if (eb.kind == .re_export_all) continue;
+                        if (self.isExportUsed(mod_idx, eb.exported_name)) {
+                            if (top_scope.get(eb.local_name)) |sym_idx| {
+                                used_sym_buf.append(self.allocator, @intCast(sym_idx)) catch continue;
+                            }
+                        }
+                    }
+                }
+
+                // 이전 reachable 해제
+                if (reachable_stmts[i]) |*rs| rs.deinit();
+                reachable_stmts[i] = infos.computeReachable(
+                    self.allocator,
+                    used_sym_buf.items,
+                ) catch null;
+            }
+
+            // (B) used_exports 재계산: reachable_stmts 기반 live import만 추적
+            const prev_count = self.used_exports.count();
+            self.clearUsedExports();
+
+            for (self.modules, 0..) |_, i| {
+                if (self.entry_set.isSet(i)) try self.markAllExportsUsed(@intCast(i));
+            }
+            for (self.modules, 0..) |m, i| {
+                if (!self.included.isSet(i)) continue;
+                try self.processModuleImportsLive(m, @intCast(i));
+            }
+            // re-export source inclusion
+            for (self.modules, 0..) |m, i| {
+                if (!self.included.isSet(i)) continue;
+                for (m.export_bindings) |eb| {
+                    if (eb.kind != .re_export and eb.kind != .re_export_all) continue;
+                    if (!self.isExportUsed(@intCast(i), eb.exported_name)) continue;
+                    if (eb.import_record_index) |rec_idx| {
+                        if (rec_idx < m.import_records.len) {
+                            const src = @intFromEnum(m.import_records[rec_idx].resolved);
+                            if (src < self.modules.len) {
+                                self.included.set(src);
+                                if (eb.kind == .re_export_all and !std.mem.eql(u8, eb.exported_name, "*")) {
+                                    try self.markAllExportsUsed(@intCast(src));
+                                }
+                            }
                         }
                     }
                 }
             }
 
-            reachable_stmts[i] = infos.computeReachable(
-                self.allocator,
-                used_sym_buf.items,
-            ) catch null;
+            // 수렴 판정: used_exports 크기가 변하지 않으면 종료
+            if (self.used_exports.count() == prev_count and refine_iter > 0) break;
         }
 
-        // 도달성 데이터는 emitter의 StmtInfo 기반 statement shaking + cross-module 필터에서 사용.
+        // 미사용 sideEffects=false 모듈 제거
+        for (self.modules, 0..) |m, i| {
+            if (!self.included.isSet(i)) continue;
+            if (self.entry_set.isSet(i) or m.side_effects or m.wrap_kind == .cjs) continue;
+            if (!self.hasAnyUsedExport(@intCast(i)) and !self.hasAnyUsedExportDirect(@intCast(i))) {
+                self.included.unset(i);
+            }
+        }
     }
 
     pub fn isIncluded(self: *const TreeShaker, module_index: u32) bool {
@@ -291,6 +366,15 @@ pub const TreeShaker = struct {
         var key_buf: [4096]u8 = undefined;
         const key = types.makeModuleKeyBuf(&key_buf, module_index, export_name);
         return self.used_exports.contains(key);
+    }
+
+    /// used_exports에서 특정 모듈+이름 엔트리를 제거한다.
+    fn removeUsedExport(self: *TreeShaker, module_index: u32, export_name: []const u8) void {
+        var key_buf: [4096]u8 = undefined;
+        const key = types.makeModuleKeyBuf(&key_buf, module_index, export_name);
+        if (self.used_exports.fetchRemove(key)) |kv| {
+            self.allocator.free(kv.key);
+        }
     }
 
     /// import binding의 심볼이 해당 모듈에서 reachable statement에서 참조되는지 확인.
@@ -451,6 +535,53 @@ pub const TreeShaker = struct {
         return newly_included;
     }
 
+    /// processModuleImports의 live 버전: isImportBindingUsed + isImportLiveInModule 조합.
+    /// 1차: reference_count 기반 필터 (미사용 import 빠르게 제거)
+    /// 2차: StmtInfo 도달성 기반 필터 (dead code에서만 참조된 import 추가 제거)
+    fn processModuleImportsLive(self: *TreeShaker, m: Module, mod_idx: u32) !void {
+        for (m.import_bindings) |ib| {
+            if (ib.import_record_index >= m.import_records.len) continue;
+            const rec = m.import_records[ib.import_record_index];
+            if (rec.resolved.isNone()) continue;
+            const target_mod = @intFromEnum(rec.resolved);
+            if (target_mod >= self.modules.len) continue;
+
+            // 1차: semantic reference_count 기반 (기존 fixpoint 로직)
+            if (!self.isImportBindingUsed(m, ib)) continue;
+            // 2차: StmtInfo 도달성 기반 (dead code 내 참조 제거)
+            if (!self.isImportLiveInModule(mod_idx, ib.local_name)) continue;
+
+            const canonical = self.linker.resolveExportChain(rec.resolved, ib.imported_name, 0);
+            if (canonical) |c| {
+                const canon_idx = @intFromEnum(c.module_index);
+                if (canon_idx < self.modules.len) {
+                    try self.markExportUsed(@intCast(canon_idx), c.export_name);
+                    self.included.set(canon_idx);
+                }
+                if (canon_idx != target_mod) {
+                    try self.markExportUsed(@intCast(target_mod), ib.imported_name);
+                    self.included.set(target_mod);
+                }
+            } else if (ib.kind == .namespace) {
+                if (ib.namespace_used_properties) |props| {
+                    for (props) |prop_name| {
+                        if (self.linker.resolveExportChain(rec.resolved, prop_name, 0)) |c| {
+                            const canon_idx = @intFromEnum(c.module_index);
+                            if (canon_idx < self.modules.len) {
+                                try self.markExportUsed(@intCast(canon_idx), c.export_name);
+                                self.included.set(canon_idx);
+                            }
+                        }
+                        try self.markExportUsed(@intCast(target_mod), prop_name);
+                    }
+                } else {
+                    try self.markAllExportsUsed(@intCast(target_mod));
+                }
+                self.included.set(target_mod);
+            }
+        }
+    }
+
     fn isImportBindingUsed(self: *const TreeShaker, m: Module, ib: ImportBinding) bool {
         if (m.semantic) |sem| {
             if (sem.scope_maps.len > 0) {
@@ -531,6 +662,20 @@ pub const TreeShaker = struct {
             if (eb.kind == .re_export_all) continue;
             if (std.mem.eql(u8, eb.exported_name, "*")) continue;
             if (self.isExportUsed(module_index, eb.exported_name)) return true;
+        }
+        return false;
+    }
+
+    /// used_exports 맵에서 이 모듈의 엔트리가 하나라도 있는지 확인.
+    /// hasAnyUsedExport와 달리 export_bindings를 순회하지 않고 맵 키 prefix로 직접 검사.
+    /// re_export_all만 있는 barrel 모듈도 canonical resolution으로 마킹된 경우 보호한다.
+    fn hasAnyUsedExportDirect(self: *const TreeShaker, module_index: u32) bool {
+        // used_exports 키 형식: 4바이트 module_index (LE) + 0x00 + name (makeModuleKeyBuf)
+        const idx_bytes = std.mem.asBytes(&module_index);
+        var kit = self.used_exports.keyIterator();
+        while (kit.next()) |key| {
+            if (key.len >= 5 and std.mem.eql(u8, key.*[0..4], idx_bytes) and key.*[4] == 0)
+                return true;
         }
         return false;
     }
