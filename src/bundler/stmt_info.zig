@@ -338,3 +338,84 @@ test "stmt_info: unused import not reachable" {
     try std.testing.expect(!reachable.isSet(1)); // import y (unused)
     try std.testing.expect(reachable.isSet(2)); // used
 }
+
+test "stmt_info: arrow function body references tracked" {
+    // arktype flatMorph 패턴: import 심볼이 arrow function body에서 참조됨
+    const alloc = std.testing.allocator;
+    var r = try buildTestInfos(alloc,
+        \\import { x } from './mod';
+        \\export const fn1 = (a) => x + a;
+        \\export const fn2 = () => 1;
+    );
+    defer r.infos.deinit();
+    defer r.arena.deinit();
+
+    // fn1은 x를 참조해야 함
+    const fn1_stmt = r.infos.stmts[1];
+    var has_x_ref = false;
+    for (fn1_stmt.referenced_symbols) |sym| {
+        // x의 심볼 인덱스와 매칭되는지
+        if (r.infos.stmts[0].declared_symbols.len > 0) {
+            if (sym == r.infos.stmts[0].declared_symbols[0]) {
+                has_x_ref = true;
+            }
+        }
+    }
+    try std.testing.expect(has_x_ref); // fn1은 x를 참조
+
+    // fn1을 seed로 BFS → import x도 reachable
+    const fn1_sym = fn1_stmt.declared_symbols[0];
+    var reachable = try r.infos.computeReachable(alloc, &.{fn1_sym});
+    defer reachable.deinit();
+
+    try std.testing.expect(reachable.isSet(0)); // import x (fn1이 참조)
+    try std.testing.expect(reachable.isSet(1)); // fn1 (seed)
+    try std.testing.expect(!reachable.isSet(2)); // fn2 (미도달)
+}
+
+test "stmt_info: multi-statement module with arrow closures (arktype pattern)" {
+    // arktype records.js 패턴: 22개 statement, import가 arrow body에서 참조
+    const alloc = std.testing.allocator;
+    var r = try buildTestInfos(alloc,
+        \\import { noSuggest } from './errors';
+        \\import { flatMorph } from './flatMorph';
+        \\export const entriesOf = Object.entries;
+        \\export const fromEntries = (entries) => Object.fromEntries(entries);
+        \\export const keysOf = (o) => Object.keys(o);
+        \\export const isKeyOf = (k, o) => k in o;
+        \\export const hasKey = (o, k) => k in o;
+        \\export const hasDefinedKey = (o, k) => o[k] !== undefined;
+        \\export const splitByKeys = (o, leftKeys) => {
+        \\    const l = {};
+        \\    const r = {};
+        \\    let k;
+        \\    for (k in o) {
+        \\        if (k in leftKeys) l[k] = o[k];
+        \\        else r[k] = o[k];
+        \\    }
+        \\    return [l, r];
+        \\};
+        \\export const invert = (t) => flatMorph(t, (k, v) => [v, k]);
+    );
+    defer r.infos.deinit();
+    defer r.arena.deinit();
+
+    // "invert" statement가 flatMorph를 참조하는지 확인
+    // flatMorph는 stmt 1 (import)에서 선언
+    const flatMorph_sym = r.infos.stmts[1].declared_symbols[0];
+
+    // invert는 마지막 statement
+    const last_stmt = r.infos.stmts[r.infos.stmts.len - 1];
+    var has_ref = false;
+    for (last_stmt.referenced_symbols) |sym| {
+        if (sym == flatMorph_sym) has_ref = true;
+    }
+    try std.testing.expect(has_ref); // invert는 flatMorph를 참조해야 함
+
+    // invert를 seed로 BFS → flatMorph import도 reachable
+    if (last_stmt.declared_symbols.len > 0) {
+        var reachable = try r.infos.computeReachable(alloc, &.{last_stmt.declared_symbols[0]});
+        defer reachable.deinit();
+        try std.testing.expect(reachable.isSet(1)); // flatMorph import reachable
+    }
+}
