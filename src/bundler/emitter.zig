@@ -164,6 +164,7 @@ const Linker = @import("linker.zig").Linker;
 const LinkingMetadata = @import("linker.zig").LinkingMetadata;
 const TreeShaker = @import("tree_shaker.zig").TreeShaker;
 const statement_shaker = @import("statement_shaker.zig");
+const stmt_info_mod = @import("stmt_info.zig");
 const ExportBinding = @import("binding_scanner.zig").ExportBinding;
 
 pub const EmitOptions = struct {
@@ -325,16 +326,18 @@ pub fn emitWithTreeShaking(
             // used export + cross-module import로 참조되는 모든 export
             for (m.export_bindings) |eb| {
                 if (eb.kind == .re_export_all) continue;
-                if (s.isExportUsed(mod_idx, eb.exported_name)) {
-                    names_buf.append(allocator, eb.local_name) catch break :blk null;
-                    // exported_name도 추가: statement_shaker가 export default를
-                    // "default"로 등록하므로 local_name(_default 등)과 매칭되지 않을 수 있음
-                    if (!std.mem.eql(u8, eb.exported_name, eb.local_name)) {
-                        names_buf.append(allocator, eb.exported_name) catch break :blk null;
-                    }
+                if (!s.isExportUsed(mod_idx, eb.exported_name)) continue;
+
+                // StmtInfo 도달성: 이 export를 import하는 모든 모듈에서 dead이면 제외.
+                // local export만 (re-export는 tree_shaker가 직접 추적).
+
+                names_buf.append(allocator, eb.local_name) catch break :blk null;
+                if (!std.mem.eql(u8, eb.exported_name, eb.local_name)) {
+                    names_buf.append(allocator, eb.exported_name) catch break :blk null;
                 }
             }
             // cross-module: 이 모듈을 import하는 모듈의 named binding도 포함
+            // StmtInfo 도달성으로 dead import는 제외
             for (m.importers.items) |importer_idx| {
                 const imp_i = @intFromEnum(importer_idx);
                 if (imp_i >= graph.modules.items.len) continue;
@@ -343,6 +346,10 @@ pub fn emitWithTreeShaking(
                     if (ib.kind != .named) continue;
                     if (ib.import_record_index >= importer.import_records.len) continue;
                     if (importer.import_records[ib.import_record_index].resolved == m.index) {
+                        // importer에서 이 import binding이 reachable한지 확인
+                        if (shaker) |sk| {
+                            if (!sk.isImportLiveInModule(@intCast(imp_i), ib.local_name)) continue;
+                        }
                         names_buf.append(allocator, ib.imported_name) catch break :blk null;
                     }
                 }
@@ -1197,17 +1204,64 @@ pub fn emitModule(
         if (override_syms) |syms| {
             md.symbol_ids = syms;
         }
-        // statement-level tree-shaking: 미사용 top-level statement 제거
-        // entry, CJS 모듈은 제외 (entry는 모든 코드 실행, CJS는 동적 export)
+        // statement-level tree-shaking: StmtInfo 기반 도달성 분석으로 미사용 statement 제거.
+        // rolldown 방식: 심볼 인덱스로 추적하여 linker rename 후에도 정확한 판정.
         if (used_export_names) |names| {
             if (!is_entry and module.wrap_kind != .cjs) {
-                statement_shaker.markUnusedStatements(
-                    arena_alloc,
-                    &transformer.new_ast,
-                    root,
-                    names,
-                    &md.skip_nodes,
-                ) catch {};
+                stmt_shake: {
+                    const sem = module.semantic orelse {
+                        statement_shaker.markUnusedStatements(
+                            arena_alloc,
+                            &transformer.new_ast,
+                            root,
+                            names,
+                            &md.skip_nodes,
+                        ) catch {};
+                        break :stmt_shake;
+                    };
+                    const sym_ids: []const ?u32 = if (transformer.new_symbol_ids.items.len > 0)
+                        transformer.new_symbol_ids.items
+                    else
+                        sem.symbol_ids;
+
+                    if (stmt_info_mod.build(arena_alloc, &transformer.new_ast, sem.symbols, sym_ids)) |maybe_infos| {
+                        if (maybe_infos) |infos| {
+                            // used export names → symbol indices 변환
+                            var used_sym_buf: std.ArrayListUnmanaged(u32) = .empty;
+                            defer used_sym_buf.deinit(arena_alloc);
+                            if (sem.scope_maps.len > 0) {
+                                var all_resolved = true;
+                                for (names) |name| {
+                                    if (sem.scope_maps[0].get(name)) |sym_idx| {
+                                        used_sym_buf.append(arena_alloc, @intCast(sym_idx)) catch continue;
+                                    } else {
+                                        // "default" → "_default" 등 변환된 이름 시도
+                                        // scope_maps에 없으면 StmtInfo 분석 불가 → span 기반 폴백
+                                        all_resolved = false;
+                                    }
+                                }
+                                if (!all_resolved) {
+                                    // 일부 이름을 resolve 못함 → 기존 span 기반 폴백
+                                    statement_shaker.markUnusedStatements(
+                                        arena_alloc,
+                                        &transformer.new_ast,
+                                        root,
+                                        names,
+                                        &md.skip_nodes,
+                                    ) catch {};
+                                    break :stmt_shake;
+                                }
+                            }
+                            if (infos.computeReachable(arena_alloc, used_sym_buf.items)) |reachable| {
+                                for (infos.stmts, 0..) |stmt, si| {
+                                    if (!reachable.isSet(si) and stmt.node_idx < md.skip_nodes.capacity()) {
+                                        md.skip_nodes.set(stmt.node_idx);
+                                    }
+                                }
+                            } else |_| {}
+                        }
+                    } else |_| {}
+                }
             }
         }
 
