@@ -329,8 +329,7 @@ pub fn emitWithTreeShaking(
                 if (!s.isExportUsed(mod_idx, eb.exported_name)) continue;
 
                 // StmtInfo 도달성: 모든 importer에서 이 export의 import가 dead이면 제외.
-                // TODO: isImportLiveInModule false negative 해결 후 활성화 (arktype flatMorph 등)
-                if (false and eb.kind == .local and m.importers.items.len > 0 and
+                if (eb.kind == .local and m.importers.items.len > 0 and
                     !std.mem.eql(u8, eb.exported_name, "default"))
                 {
                     const is_dead = is_dead: {
@@ -339,6 +338,16 @@ pub fn emitWithTreeShaking(
                             const imp_i = @intFromEnum(importer_idx);
                             if (imp_i >= graph.modules.items.len) break :is_dead false;
                             const importer = &graph.modules.items[imp_i];
+                            // export * re-export 경유 모듈은 보수적으로 live
+                            for (importer.export_bindings) |ieb| {
+                                if (ieb.kind == .re_export_all) {
+                                    if (ieb.import_record_index) |rec_idx| {
+                                        if (rec_idx < importer.import_records.len and
+                                            importer.import_records[rec_idx].resolved == m.index)
+                                            break :is_dead false;
+                                    }
+                                }
+                            }
                             for (importer.import_bindings) |ib| {
                                 if (ib.import_record_index >= importer.import_records.len) continue;
                                 if (importer.import_records[ib.import_record_index].resolved != m.index) continue;
