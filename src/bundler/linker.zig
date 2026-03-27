@@ -778,6 +778,14 @@ pub const Linker = struct {
 
         if (sem.scope_maps.len > 0) {
             const module_scope = sem.scope_maps[0];
+
+            // export된 local name을 미리 수집 — namespace import가 re-export되는지 O(1) 확인용
+            var exported_locals = std.StringHashMap(void).init(self.allocator);
+            defer exported_locals.deinit();
+            for (m.export_bindings) |eb| {
+                if (eb.kind == .local) try exported_locals.put(eb.local_name, {});
+            }
+
             // import 바인딩 → canonical 이름
             for (m.import_bindings) |ib| {
                 if (ib.import_record_index >= m.import_records.len) continue;
@@ -821,7 +829,7 @@ pub const Linker = struct {
                     // esbuild 방식: ns.prop → 직접 치환, ns 값 사용 → 변수 선언 + 참조.
                     // export { ns } 패턴도 값 사용 — namespace 객체를 preamble 변수로 생성 필요.
                     const need_inline = isNamespaceUsedAsValue(self.allocator, new_ast, effective_syms, @intCast(ns_sym_id)) or
-                        self.isNamespaceExported(m, ib.local_name);
+                        exported_locals.contains(ib.local_name);
                     try self.registerNamespaceRewrites(
                         &ns_rewrite_list,
                         if (need_inline) &ns_inline_list else null,
@@ -1519,18 +1527,6 @@ pub const Linker = struct {
         return null;
     }
 
-    /// SymbolRef를 scope hoisting 후 최종 로컬 이름으로 해결.
-    /// resolveExportChain → getExportLocalName → getCanonicalName 3단계를 캡슐화.
-    /// namespace import가 `export { ns }` 패턴으로 re-export되는지 확인.
-    /// export binding에서 .local kind로 namespace import의 local_name을 참조하면 true.
-    fn isNamespaceExported(self: *const Linker, m: Module, ns_local_name: []const u8) bool {
-        _ = self;
-        for (m.export_bindings) |eb| {
-            if (eb.kind == .local and std.mem.eql(u8, eb.local_name, ns_local_name)) return true;
-        }
-        return false;
-    }
-
     /// namespace 식별자가 member access 이외의 위치에서 사용되는지 판별.
     /// `ns.prop`만 사용되면 false (직접 치환 가능), `console.log(ns)` 등이면 true (객체 필요).
     fn isNamespaceUsedAsValue(allocator: std.mem.Allocator, new_ast: *const Ast, symbol_ids: []const ?u32, ns_sym_id: u32) bool {
@@ -1568,16 +1564,22 @@ pub const Linker = struct {
         return false;
     }
 
+    /// SymbolRef를 scope hoisting 후 최종 로컬 이름으로 해결.
+    /// resolveExportChain → getExportLocalName → getCanonicalName 3단계를 캡슐화.
     pub fn resolveToLocalName(self: *const Linker, ref: SymbolRef) []const u8 {
         const cmod: u32 = @intCast(@intFromEnum(ref.module_index));
         const local = self.getExportLocalName(cmod, ref.export_name) orelse ref.export_name;
         const canonical = self.getCanonicalName(cmod, local) orelse local;
-        // "default"는 JS 예약어 — 식별자로 사용 불가.
-        // codegen이 생성하는 합성 변수명(_default)의 canonical name으로 대체.
-        if (std.mem.eql(u8, canonical, "default")) {
-            return self.getCanonicalName(cmod, "_default") orelse "_default";
+        return self.safeIdentifierName(canonical, cmod);
+    }
+
+    /// "default"는 JS 예약어 — 값 위치에 식별자로 사용 불가.
+    /// codegen 합성 변수명(_default)의 canonical name으로 대체.
+    fn safeIdentifierName(self: *const Linker, name: []const u8, module_index: u32) []const u8 {
+        if (std.mem.eql(u8, name, "default")) {
+            return self.getCanonicalName(module_index, "_default") orelse "_default";
         }
-        return canonical;
+        return name;
     }
 
     /// ESM namespace import를 위한 namespace 객체 preamble 생성.
@@ -1723,6 +1725,15 @@ pub const Linker = struct {
         try visited.put(mod_i, {});
         const m = self.modules[mod_i];
 
+        // namespace import를 O(1) 조회용 맵으로 수집 (local_name → import_record_index)
+        var ns_imports = std.StringHashMap(u32).init(self.allocator);
+        defer ns_imports.deinit();
+        for (m.import_bindings) |mib| {
+            if (mib.kind == .namespace) {
+                try ns_imports.put(mib.local_name, mib.import_record_index);
+            }
+        }
+
         for (m.export_bindings) |eb| {
             // 일반 export * from (exported_name == "*") → 재귀로 처리 (skip)
             // export * as ns (exported_name != "*") → named export로 포함
@@ -1768,30 +1779,24 @@ pub const Linker = struct {
             } else blk: {
                 // .local export: namespace import를 re-export하는 경우 인라인 객체 생성
                 // 예: import * as X from './Module'; export { X }
-                for (m.import_bindings) |mib| {
-                    if (mib.kind == .namespace and std.mem.eql(u8, mib.local_name, eb.local_name)) {
-                        if (mib.import_record_index < m.import_records.len) {
-                            const src = m.import_records[mib.import_record_index].resolved;
-                            if (!src.isNone()) {
-                                break :blk try self.buildInlineObjectStr(@intFromEnum(src), depth + 1);
-                            }
+                if (ns_imports.get(eb.local_name)) |rec_idx| {
+                    if (rec_idx < m.import_records.len) {
+                        const src = m.import_records[rec_idx].resolved;
+                        if (!src.isNone()) {
+                            break :blk try self.buildInlineObjectStr(@intFromEnum(src), depth + 1);
                         }
-                        break;
                     }
                 }
                 break :blk self.getCanonicalName(@intCast(mod_i), eb.local_name) orelse eb.local_name;
             };
 
-            // "default"는 JS 예약어 — 값 위치에 식별자로 사용 불가.
-            // codegen이 생성하는 합성 변수명(_default)의 canonical name으로 대체.
-            const safe_local = if (std.mem.eql(u8, actual_local, "default"))
-                self.getCanonicalName(@intCast(mod_i), "_default") orelse "_default"
-            else
-                actual_local;
+            const safe_local = self.safeIdentifierName(actual_local, @intCast(mod_i));
 
             try exports.append(self.allocator, .{
                 .exported = eb.exported_name,
                 .local = safe_local,
+                // actual_local로 체크: "{"이면 buildInlineObjectStr이 할당한 문자열.
+                // safeIdentifierName은 소유권을 변경하지 않음 (canonical 참조 반환).
                 .owned = actual_local.len > 0 and actual_local[0] == '{',
             });
         }
