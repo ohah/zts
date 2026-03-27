@@ -338,13 +338,22 @@ pub fn emitWithTreeShaking(
                             const imp_i = @intFromEnum(importer_idx);
                             if (imp_i >= graph.modules.items.len) break :is_dead false;
                             const importer = &graph.modules.items[imp_i];
-                            // export * re-export 경유 모듈은 보수적으로 live
+                            // re-export 경유 모듈은 보수적으로 live
+                            // export * from './mod' 또는 export { x } from './mod'
                             for (importer.export_bindings) |ieb| {
-                                if (ieb.kind == .re_export_all) {
+                                if (ieb.kind == .re_export_all or ieb.kind == .re_export) {
                                     if (ieb.import_record_index) |rec_idx| {
                                         if (rec_idx < importer.import_records.len and
                                             importer.import_records[rec_idx].resolved == m.index)
-                                            break :is_dead false;
+                                        {
+                                            // named re-export: 해당 이름이 매칭되는지 확인
+                                            if (ieb.kind == .re_export) {
+                                                if (std.mem.eql(u8, ieb.local_name, eb.exported_name))
+                                                    break :is_dead false;
+                                            } else {
+                                                break :is_dead false;
+                                            }
+                                        }
                                     }
                                 }
                             }
