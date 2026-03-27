@@ -394,4 +394,43 @@ describe("번들 스모크 테스트", () => {
     expect(result.exitCode).toBe(0);
     expect(result.runOutput).toBe("src");
   });
+
+  test("scope hoisting 내부 함수 shadowing 충돌 방지 (#450)", async () => {
+    // d3 패턴: import {cubehelix as colorCubehelix} + 내부 function cubehelix
+    const result = await bundleAndRun({
+      "index.ts": `import { result } from "./interp"; console.log(result);`,
+      "color.ts": `export function cubehelix(h: number) { return h * 2; }`,
+      "interp.ts": `
+        import { cubehelix as colorCubehelix } from "./color";
+        function outer() {
+          function cubehelix(start: number, end: number) {
+            return colorCubehelix(start) + colorCubehelix(end);
+          }
+          return cubehelix;
+        }
+        export const result = outer()(1, 2);
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("6");
+  });
+
+  test("삼항 + 화살표 expression body 파싱 (#446)", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `
+        function cumsum(values: number[], valueof?: (v: number, i: number) => number) {
+          var sum = 0, index = 0;
+          return Float64Array.from(values, valueof === undefined
+            ? v => (sum += +v || 0)
+            : v => (sum += +valueof(v, index++) || 0));
+        }
+        const r = cumsum([1, 2, 3]);
+        console.log(Array.from(r).join(","));
+      `,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("1,3,6");
+  });
 });
