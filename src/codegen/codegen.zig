@@ -523,9 +523,9 @@ pub const Codegen = struct {
                     const node_i = @intFromEnum(idx);
                     if (node_i < meta.symbol_ids.len) {
                         if (meta.symbol_ids[node_i]) |sym_id| {
-                            // namespace 인라인 객체: ns를 값으로 사용 → {a: a, b: b}
-                            if (meta.ns_inline_objects.get(sym_id)) |obj_literal| {
-                                try self.write(obj_literal);
+                            // namespace 변수 참조: ns를 값으로 사용 → 변수명으로 치환
+                            if (meta.ns_inline_objects.get(sym_id)) |entry| {
+                                try self.write(entry.var_name);
                                 return;
                             }
                             if (meta.renames.get(sym_id)) |new_name| {
