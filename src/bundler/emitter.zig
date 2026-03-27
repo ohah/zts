@@ -328,8 +328,30 @@ pub fn emitWithTreeShaking(
                 if (eb.kind == .re_export_all) continue;
                 if (!s.isExportUsed(mod_idx, eb.exported_name)) continue;
 
-                // StmtInfo 도달성: 이 export를 import하는 모든 모듈에서 dead이면 제외.
-                // local export만 (re-export는 tree_shaker가 직접 추적).
+                // StmtInfo 도달성: 모든 importer에서 이 export의 import가 dead이면 제외.
+                // TODO: export_bindings 필터 — cheerio/arktype regression 해결 후 활성화
+                if (false and eb.kind == .local and m.importers.items.len > 0 and
+                    !std.mem.eql(u8, eb.exported_name, "default"))
+                {
+                    const is_dead = is_dead: {
+                        var found_any = false;
+                        for (m.importers.items) |importer_idx| {
+                            const imp_i = @intFromEnum(importer_idx);
+                            if (imp_i >= graph.modules.items.len) break :is_dead false;
+                            const importer = &graph.modules.items[imp_i];
+                            for (importer.import_bindings) |ib| {
+                                if (ib.import_record_index >= importer.import_records.len) continue;
+                                if (importer.import_records[ib.import_record_index].resolved != m.index) continue;
+                                if (!std.mem.eql(u8, ib.imported_name, eb.exported_name)) continue;
+                                found_any = true;
+                                if (s.isImportLiveInModule(@intCast(imp_i), ib.local_name))
+                                    break :is_dead false;
+                            }
+                        }
+                        break :is_dead found_any;
+                    };
+                    if (is_dead) continue;
+                }
 
                 names_buf.append(allocator, eb.local_name) catch break :blk null;
                 if (!std.mem.eql(u8, eb.exported_name, eb.local_name)) {
@@ -346,9 +368,26 @@ pub fn emitWithTreeShaking(
                     if (ib.kind != .named) continue;
                     if (ib.import_record_index >= importer.import_records.len) continue;
                     if (importer.import_records[ib.import_record_index].resolved == m.index) {
-                        // importer에서 이 import binding이 reachable한지 확인
+                        // StmtInfo 도달성으로 dead import 필터링.
+                        // reference_count > 0인데 도달 불가이면 StmtInfo 분석 오류 가능 → 보수적으로 live.
                         if (shaker) |sk| {
-                            if (!sk.isImportLiveInModule(@intCast(imp_i), ib.local_name)) continue;
+                            if (!sk.isImportLiveInModule(@intCast(imp_i), ib.local_name)) {
+                                // reference_count 폴백: semantic에서 참조가 있으면 live 유지
+                                const imp_sem = graph.modules.items[imp_i].semantic;
+                                if (imp_sem) |isem| {
+                                    if (isem.scope_maps.len > 0) {
+                                        if (isem.scope_maps[0].get(ib.local_name)) |sym_idx| {
+                                            if (sym_idx < isem.symbols.len and isem.symbols[sym_idx].reference_count > 0) {
+                                                // reference_count > 0 but StmtInfo says dead → 보수적으로 live
+                                            } else {
+                                                continue; // 진짜 dead
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    continue; // semantic 없으면 StmtInfo 판정 신뢰
+                                }
+                            }
                         }
                         names_buf.append(allocator, ib.imported_name) catch break :blk null;
                     }
@@ -1230,26 +1269,46 @@ pub fn emitModule(
                             var used_sym_buf: std.ArrayListUnmanaged(u32) = .empty;
                             defer used_sym_buf.deinit(arena_alloc);
                             if (sem.scope_maps.len > 0) {
-                                var all_resolved = true;
                                 for (names) |name| {
                                     if (sem.scope_maps[0].get(name)) |sym_idx| {
                                         used_sym_buf.append(arena_alloc, @intCast(sym_idx)) catch continue;
                                     } else {
-                                        // "default" → "_default" 등 변환된 이름 시도
-                                        // scope_maps에 없으면 StmtInfo 분석 불가 → span 기반 폴백
-                                        all_resolved = false;
+                                        // export_bindings에서 local_name으로 재시도
+                                        var found = false;
+                                        for (module.export_bindings) |eb| {
+                                            if (std.mem.eql(u8, eb.exported_name, name)) {
+                                                if (sem.scope_maps[0].get(eb.local_name)) |sym_idx| {
+                                                    used_sym_buf.append(arena_alloc, @intCast(sym_idx)) catch {};
+                                                    found = true;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        // "default" 등 semantic에 직접 없는 export:
+                                        // export_bindings의 local_name으로 scope_maps 재시도
+                                        if (!found) {
+                                            for (module.export_bindings) |eb| {
+                                                if (!std.mem.eql(u8, eb.exported_name, name)) continue;
+                                                if (sem.scope_maps[0].get(eb.local_name)) |sym_idx| {
+                                                    used_sym_buf.append(arena_alloc, @intCast(sym_idx)) catch {};
+                                                    found = true;
+                                                }
+                                                break;
+                                            }
+                                        }
+                                        // 그래도 못 찾으면 해당 statement를 side-effectful로 강제
+                                        if (!found) {
+                                            for (infos.stmts) |*stmt| {
+                                                if (stmt.node_idx < transformer.new_ast.nodes.items.len) {
+                                                    const tag = transformer.new_ast.nodes.items[stmt.node_idx].tag;
+                                                    if (tag == .export_default_declaration) {
+                                                        stmt.has_side_effects = true;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
-                                }
-                                if (!all_resolved) {
-                                    // 일부 이름을 resolve 못함 → 기존 span 기반 폴백
-                                    statement_shaker.markUnusedStatements(
-                                        arena_alloc,
-                                        &transformer.new_ast,
-                                        root,
-                                        names,
-                                        &md.skip_nodes,
-                                    ) catch {};
-                                    break :stmt_shake;
                                 }
                             }
                             if (infos.computeReachable(arena_alloc, used_sym_buf.items)) |reachable| {
