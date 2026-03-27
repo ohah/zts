@@ -818,8 +818,10 @@ pub const Linker = struct {
                     const ns_sym_id = module_scope.get(ib.local_name) orelse continue;
                     const effective_syms = override_symbol_ids orelse sem.symbol_ids;
 
-                    // esbuild 방식: ns.prop → 직접 치환, ns 값 사용 → 변수 선언 + 참조
-                    const need_inline = isNamespaceUsedAsValue(self.allocator, new_ast, effective_syms, @intCast(ns_sym_id));
+                    // esbuild 방식: ns.prop → 직접 치환, ns 값 사용 → 변수 선언 + 참조.
+                    // export { ns } 패턴도 값 사용 — namespace 객체를 preamble 변수로 생성 필요.
+                    const need_inline = isNamespaceUsedAsValue(self.allocator, new_ast, effective_syms, @intCast(ns_sym_id)) or
+                        self.isNamespaceExported(m, ib.local_name);
                     try self.registerNamespaceRewrites(
                         &ns_rewrite_list,
                         if (need_inline) &ns_inline_list else null,
@@ -1519,6 +1521,16 @@ pub const Linker = struct {
 
     /// SymbolRef를 scope hoisting 후 최종 로컬 이름으로 해결.
     /// resolveExportChain → getExportLocalName → getCanonicalName 3단계를 캡슐화.
+    /// namespace import가 `export { ns }` 패턴으로 re-export되는지 확인.
+    /// export binding에서 .local kind로 namespace import의 local_name을 참조하면 true.
+    fn isNamespaceExported(self: *const Linker, m: Module, ns_local_name: []const u8) bool {
+        _ = self;
+        for (m.export_bindings) |eb| {
+            if (eb.kind == .local and std.mem.eql(u8, eb.local_name, ns_local_name)) return true;
+        }
+        return false;
+    }
+
     /// namespace 식별자가 member access 이외의 위치에서 사용되는지 판별.
     /// `ns.prop`만 사용되면 false (직접 치환 가능), `console.log(ns)` 등이면 true (객체 필요).
     fn isNamespaceUsedAsValue(allocator: std.mem.Allocator, new_ast: *const Ast, symbol_ids: []const ?u32, ns_sym_id: u32) bool {
@@ -1753,7 +1765,22 @@ pub const Linker = struct {
                     break :blk self.resolveToLocalName(canonical);
                 }
                 break :blk eb.local_name;
-            } else self.getCanonicalName(@intCast(mod_i), eb.local_name) orelse eb.local_name;
+            } else blk: {
+                // .local export: namespace import를 re-export하는 경우 인라인 객체 생성
+                // 예: import * as X from './Module'; export { X }
+                for (m.import_bindings) |mib| {
+                    if (mib.kind == .namespace and std.mem.eql(u8, mib.local_name, eb.local_name)) {
+                        if (mib.import_record_index < m.import_records.len) {
+                            const src = m.import_records[mib.import_record_index].resolved;
+                            if (!src.isNone()) {
+                                break :blk try self.buildInlineObjectStr(@intFromEnum(src), depth + 1);
+                            }
+                        }
+                        break;
+                    }
+                }
+                break :blk self.getCanonicalName(@intCast(mod_i), eb.local_name) orelse eb.local_name;
+            };
 
             // "default"는 JS 예약어 — 값 위치에 식별자로 사용 불가.
             // codegen이 생성하는 합성 변수명(_default)의 canonical name으로 대체.
