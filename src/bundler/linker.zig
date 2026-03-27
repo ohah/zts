@@ -1803,7 +1803,11 @@ pub const Linker = struct {
             });
         }
 
-        // export * 재귀 — export * as ns는 이미 첫 루프에서 인라인 객체로 처리됨
+        // export * 재귀 — export * as ns는 이미 첫 루프에서 인라인 객체로 처리됨.
+        // ESM 스펙: export *는 "default"를 제외 (ECMAScript 15.2.3.5).
+        // seen에 "default"를 추가하여 하위 모듈의 default export가 수집되지 않도록 함.
+        // 직접 선언된 export { default }는 위 첫 루프에서 이미 수집됨.
+        try seen.put("default", {});
         for (m.export_bindings) |eb| {
             if (eb.kind != .re_export_all) continue;
             if (!std.mem.eql(u8, eb.exported_name, "*")) continue; // export * as ns는 skip
