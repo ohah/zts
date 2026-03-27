@@ -9998,3 +9998,65 @@ test "Interop: .mjs importer uses Node mode, .ts uses Babel mode" {
     // .mjs importer → Node 모드 (isNodeMode=1)
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_lib(), 1)") != null);
 }
+
+test "TreeShaking: export-level DCE — tslib pattern (export default object)" {
+    // tslib 패턴: 33개 named export + export default { ... } 객체
+    // __awaiter만 import하면 나머지 + default 객체 모두 제거
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { __awaiter } from './tslib';
+        \\console.log(__awaiter);
+    );
+    try writeFile(tmp.dir, "tslib.ts",
+        \\export function __extends() { return 1; }
+        \\export function __awaiter() { return 2; }
+        \\export function __rest() { return 3; }
+        \\export function __decorate() { return 4; }
+        \\export default { __extends, __awaiter, __rest, __decorate };
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // __awaiter 포함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__awaiter") != null);
+    // 미사용 함수 제거 (함수 body가 출력에 없어야 함)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function __extends") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function __rest") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function __decorate") == null);
+}
+
+test "TreeShaking: export-level DCE — var with ternary init removed" {
+    // tslib 패턴: var __createBinding = Object.create ? fn1 : fn2
+    // 미사용 시 제거
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { used } from './lib';
+        \\console.log(used());
+    );
+    try writeFile(tmp.dir, "lib.ts",
+        \\export var ternaryVar = Object.create ? function() { return 1; } : function() { return 2; };
+        \\export function used() { return 42; }
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function used") != null);
+    // ternary 초기화 변수 제거
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "ternaryVar") == null);
+}

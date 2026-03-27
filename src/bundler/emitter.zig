@@ -327,6 +327,11 @@ pub fn emitWithTreeShaking(
                 if (eb.kind == .re_export_all) continue;
                 if (s.isExportUsed(mod_idx, eb.exported_name)) {
                     names_buf.append(allocator, eb.local_name) catch break :blk null;
+                    // exported_name도 추가: statement_shaker가 export default를
+                    // "default"로 등록하므로 local_name(_default 등)과 매칭되지 않을 수 있음
+                    if (!std.mem.eql(u8, eb.exported_name, eb.local_name)) {
+                        names_buf.append(allocator, eb.exported_name) catch break :blk null;
+                    }
                 }
             }
             // cross-module: 이 모듈을 import하는 모듈의 named binding도 포함

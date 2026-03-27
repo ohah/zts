@@ -26,6 +26,7 @@ pub const binding_scanner = @import("binding_scanner.zig");
 pub const linker = @import("linker.zig");
 pub const tree_shaker = @import("tree_shaker.zig");
 pub const statement_shaker = @import("statement_shaker.zig");
+pub const purity = @import("purity.zig");
 pub const chunk = @import("chunk.zig");
 pub const bundler_core = @import("bundler.zig");
 
@@ -66,6 +67,7 @@ test {
     _ = binding_scanner;
     _ = linker;
     _ = tree_shaker;
+    _ = purity;
     _ = chunk;
     _ = bundler_core;
 }

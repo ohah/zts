@@ -13,6 +13,7 @@ const Ast = @import("../parser/ast.zig").Ast;
 const Node = @import("../parser/ast.zig").Node;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const Span = @import("../lexer/token.zig").Span;
+const purity = @import("purity.zig");
 
 const StmtInfo = struct {
     node_idx: u32,
@@ -334,8 +335,8 @@ fn extractArrayPatternNames(
 fn hasSideEffects(ast: *const Ast, node: Node) bool {
     switch (node.tag) {
         .function_declaration => return false,
-        .class_declaration => return classHasSideEffects(ast, node),
-        .variable_declaration => return varDeclHasSideEffects(ast, node),
+        .class_declaration => return purity.classHasSideEffects(ast, node),
+        .variable_declaration => return !purity.isVarDeclPure(ast, node),
         .export_named_declaration => {
             const e = node.data.extra;
             if (e + 3 < ast.extra_data.items.len) {
@@ -343,92 +344,26 @@ fn hasSideEffects(ast: *const Ast, node: Node) bool {
                 if (!decl_idx.isNone() and @intFromEnum(decl_idx) < ast.nodes.items.len) {
                     return hasSideEffects(ast, ast.nodes.items[@intFromEnum(decl_idx)]);
                 }
-                // inner declaration이 없는 export { ... } → linker가 skip_nodes로 처리
                 return false;
             }
             return true;
         },
         .export_default_declaration => {
-            // linker가 export default → var _default = X 변환하므로
-            // rename된 이름이 다른 모듈에서 참조될 수 있음 → 항상 보존
-            return true;
+            // "default"는 extractDeclaredNames에서 등록됨.
+            // used_export_names에 "default"가 없으면 seed 안 됨 → 자동 제거.
+            const inner_idx = node.data.unary.operand;
+            if (inner_idx.isNone() or @intFromEnum(inner_idx) >= ast.nodes.items.len) return true;
+            const inner = ast.nodes.items[@intFromEnum(inner_idx)];
+            return switch (inner.tag) {
+                .function_declaration => false,
+                .class_declaration => purity.classHasSideEffects(ast, inner),
+                else => !purity.isNodePure(ast, inner),
+            };
         },
         // import/export 문은 linker skip_nodes와 충돌 방지를 위해 건드리지 않음
         .import_declaration, .export_all_declaration => return true,
         else => return true,
     }
-}
-
-/// variable declaration의 side effects 판정.
-/// 초기값이 없거나 리터럴이면 side-effect-free.
-fn varDeclHasSideEffects(ast: *const Ast, node: Node) bool {
-    const e = node.data.extra;
-    if (e + 2 >= ast.extra_data.items.len) return true;
-    const list_start = ast.extra_data.items[e + 1];
-    const list_len = ast.extra_data.items[e + 2];
-    if (list_len == 0) return false;
-
-    var i: u32 = 0;
-    while (i < list_len) : (i += 1) {
-        const idx = list_start + i;
-        if (idx >= ast.extra_data.items.len) return true;
-        const decl_idx: NodeIndex = @enumFromInt(ast.extra_data.items[idx]);
-        if (decl_idx.isNone()) continue;
-        const decl_ni = @intFromEnum(decl_idx);
-        if (decl_ni >= ast.nodes.items.len) return true;
-        const decl_node = ast.nodes.items[decl_ni];
-        if (decl_node.tag != .variable_declarator) return true;
-
-        // variable_declarator: extra [name, type_ann, init_expr]
-        const de = decl_node.data.extra;
-        if (de + 2 >= ast.extra_data.items.len) return true;
-        const init_idx: NodeIndex = @enumFromInt(ast.extra_data.items[de + 2]);
-        if (init_idx.isNone()) continue; // 초기값 없음 → safe
-
-        const init_ni = @intFromEnum(init_idx);
-        if (init_ni >= ast.nodes.items.len) return true;
-        const init_node = ast.nodes.items[init_ni];
-        if (!isExprSideEffectFree(ast, init_node)) return true;
-    }
-    return false;
-}
-
-/// 초기값 표현식이 side-effect-free인지 판정.
-/// 리터럴, 함수 표현식, @__PURE__ 호출이 safe.
-fn isExprSideEffectFree(ast: *const Ast, node: Node) bool {
-    return switch (node.tag) {
-        .numeric_literal,
-        .string_literal,
-        .boolean_literal,
-        .null_literal,
-        .bigint_literal,
-        .regexp_literal,
-        .function_expression,
-        .arrow_function_expression,
-        .identifier_reference,
-        => true,
-        // @__PURE__ 어노테이션이 있는 호출은 side-effect-free
-        .call_expression, .new_expression => {
-            const e = node.data.extra;
-            if (ast.hasExtra(e, 3)) {
-                const flags = ast.readExtra(e, 3);
-                return (flags & 0x01) != 0; // CallFlags.is_pure
-            }
-            return false;
-        },
-        else => false,
-    };
-}
-
-/// class declaration의 side effects 판정.
-/// extends 절이 없으면 side-effect-free (순수 프로토타입 정의).
-fn classHasSideEffects(ast: *const Ast, node: Node) bool {
-    // extra = [name, super_class, body, ...]
-    const e = node.data.extra;
-    if (e + 1 >= ast.extra_data.items.len) return true;
-    const super_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e + 1]);
-    // extends 절이 있으면 side-effectful (super 표현식 평가)
-    return !super_idx.isNone();
 }
 
 /// 모든 AST 노드를 순회하면서 identifier_reference를 찾고,
@@ -670,8 +605,8 @@ test "statement shaker: assignment_target_identifier tracked (++x pattern)" {
     try std.testing.expectEqual(@as(u32, 1), skipped);
 }
 
-test "statement shaker: export default always preserved" {
-    // zod 패턴: export default function 은 linker rename 때문에 항상 보존
+test "statement shaker: export default function removed when unused" {
+    // export default function은 side-effect-free → "default" 미사용 시 제거
     const alloc = std.testing.allocator;
     var r = try parseAndGetRoot(alloc,
         \\export default function config() { return {}; }
@@ -682,11 +617,31 @@ test "statement shaker: export default always preserved" {
     var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
     defer skip.deinit();
 
-    // used_exports가 비어있어도 export default는 보존
+    // used_exports 비어있음 → export default + unused 모두 제거
     try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
 
-    // export default → side-effectful (항상 보존)
-    // unused만 제거
+    var skipped: u32 = 0;
+    var it = skip.iterator(.{});
+    while (it.next()) |_| skipped += 1;
+    try std.testing.expectEqual(@as(u32, 2), skipped);
+}
+
+test "statement shaker: export default preserved when used" {
+    // "default"가 used_exports에 있으면 보존
+    const alloc = std.testing.allocator;
+    var r = try parseAndGetRoot(alloc,
+        \\export default function config() { return {}; }
+        \\function unused() { return 2; }
+    );
+    defer r.arena.deinit();
+
+    var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
+    defer skip.deinit();
+
+    const names: [1][]const u8 = .{"default"};
+    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip);
+
+    // export default config → 보존, unused만 제거
     var skipped: u32 = 0;
     var it = skip.iterator(.{});
     while (it.next()) |_| skipped += 1;
@@ -843,6 +798,98 @@ test "statement shaker: identifier_reference initializer is side-effect-free" {
     var it = skip.iterator(.{});
     while (it.next()) |_| skipped += 1;
     try std.testing.expect(skipped >= 2);
+}
+
+test "statement shaker: tslib pattern — export default object removes unused" {
+    // tslib 핵심 패턴: export default { __extends, __awaiter, ... }
+    // "default" 미사용 시 export default 객체 제거 → 미참조 함수도 제거
+    const alloc = std.testing.allocator;
+    var r = try parseAndGetRoot(alloc,
+        \\function __extends() { return 1; }
+        \\function __awaiter() { return 2; }
+        \\function __rest() { return 3; }
+        \\export default { __extends, __awaiter, __rest };
+    );
+    defer r.arena.deinit();
+
+    var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
+    defer skip.deinit();
+
+    // __awaiter만 사용 → __extends, __rest, export default 제거
+    const names: [1][]const u8 = .{"__awaiter"};
+    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip);
+
+    var skipped: u32 = 0;
+    var it = skip.iterator(.{});
+    while (it.next()) |_| skipped += 1;
+    // __extends(1) + __rest(1) + export default(1) = 3개 제거
+    try std.testing.expectEqual(@as(u32, 3), skipped);
+}
+
+test "statement shaker: conditional init is side-effect-free" {
+    // tslib 패턴: var __createBinding = Object.create ? (function(){}) : (function(){})
+    const alloc = std.testing.allocator;
+    var r = try parseAndGetRoot(alloc,
+        \\var __createBinding = Object.create ? function(o) {} : function(o) {};
+        \\function used() { return 1; }
+    );
+    defer r.arena.deinit();
+
+    var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
+    defer skip.deinit();
+
+    const names: [1][]const u8 = .{"used"};
+    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip);
+
+    // __createBinding: ternary(member, fn, fn) → side-effect-free → 미사용 → 제거
+    var skipped: u32 = 0;
+    var it = skip.iterator(.{});
+    while (it.next()) |_| skipped += 1;
+    try std.testing.expectEqual(@as(u32, 1), skipped);
+}
+
+test "statement shaker: typeof binary is side-effect-free" {
+    // tslib 패턴: var _Sup = typeof SuppressedError === "function" ? SuppressedError : function() {}
+    const alloc = std.testing.allocator;
+    var r = try parseAndGetRoot(alloc,
+        \\var _Sup = typeof SuppressedError === "function" ? SuppressedError : function() {};
+        \\function used() { return 1; }
+    );
+    defer r.arena.deinit();
+
+    var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
+    defer skip.deinit();
+
+    const names: [1][]const u8 = .{"used"};
+    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip);
+
+    // typeof ... === "function" ? ... : ... → side-effect-free → 미사용 → 제거
+    var skipped: u32 = 0;
+    var it = skip.iterator(.{});
+    while (it.next()) |_| skipped += 1;
+    try std.testing.expectEqual(@as(u32, 1), skipped);
+}
+
+test "statement shaker: export default class extends is side-effectful" {
+    // extends 절 있는 class expression → side-effectful → 항상 보존
+    const alloc = std.testing.allocator;
+    var r = try parseAndGetRoot(alloc,
+        \\export default class extends Base {}
+        \\function unused() { return 1; }
+    );
+    defer r.arena.deinit();
+
+    var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
+    defer skip.deinit();
+
+    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
+
+    // export default class extends Base → side-effectful → 보존
+    // unused만 제거
+    var skipped: u32 = 0;
+    var it = skip.iterator(.{});
+    while (it.next()) |_| skipped += 1;
+    try std.testing.expectEqual(@as(u32, 1), skipped);
 }
 
 test "statement shaker module compiles" {
