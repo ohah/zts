@@ -329,7 +329,8 @@ pub fn emitWithTreeShaking(
                 if (!s.isExportUsed(mod_idx, eb.exported_name)) continue;
 
                 // StmtInfo 도달성: 모든 importer에서 이 export의 import가 dead이면 제외.
-                if (eb.kind == .local and m.importers.items.len > 0 and
+                // TODO: isImportLiveInModule false negative 해결 후 활성화 (arktype flatMorph 등)
+                if (false and eb.kind == .local and m.importers.items.len > 0 and
                     !std.mem.eql(u8, eb.exported_name, "default"))
                 {
                     const is_dead = is_dead: {
