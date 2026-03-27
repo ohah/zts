@@ -155,6 +155,8 @@ pub const Linker = struct {
     /// 이름 충돌 해결 결과: (module_index, export_name) → canonical_name.
     /// 충돌 없으면 원본 이름 유지 (엔트리 없음).
     canonical_names: std.StringHashMap([]const u8),
+    /// canonical_names 값의 역방향 조회용. 리네임 후보가 기존 할당과 충돌하는지 O(1) 확인.
+    canonical_names_used: std.StringHashMap(void),
 
     /// 자동 수집된 예약 글로벌 이름. 모든 모듈의 unresolved references를 합친 것.
     /// scope hoisting 시 모듈 top-level 변수가 이 이름을 shadowing하면 리네임.
@@ -191,6 +193,7 @@ pub const Linker = struct {
             .resolved_bindings = std.AutoHashMap(BindingKey, ResolvedBinding).init(allocator),
             .diagnostics = .empty,
             .canonical_names = std.StringHashMap([]const u8).init(allocator),
+            .canonical_names_used = std.StringHashMap(void).init(allocator),
             .reserved_globals = std.StringHashMap(void).init(allocator),
         };
     }
@@ -209,6 +212,7 @@ pub const Linker = struct {
             self.allocator.free(entry.value_ptr.*);
         }
         self.canonical_names.deinit();
+        self.canonical_names_used.deinit();
         self.reserved_globals.deinit();
         self.diagnostics.deinit(self.allocator);
     }
@@ -295,6 +299,10 @@ pub const Linker = struct {
         if (self.isReservedOrGlobal(candidate)) return false;
         if (name_to_owners.contains(candidate)) return false;
         if (self.hasNestedBinding(module_index, candidate)) return false;
+        // canonical_names에 이미 이 이름으로 리네임된 다른 모듈이 있으면 충돌.
+        // resolveNestedShadowConflicts에서 target을 리네임할 때,
+        // calculateRenames가 이미 할당한 이름과 겹치지 않도록 확인.
+        if (self.isCanonicalNameTaken(candidate)) return false;
         return true;
     }
 
@@ -339,11 +347,7 @@ pub const Linker = struct {
                     var suffix: u32 = 1;
                     const candidate = try self.findAvailableCandidate(name, owner.module_index, &suffix, name_to_owners);
                     const key = try makeExportKey(self.allocator, owner.module_index, name);
-                    if (self.canonical_names.fetchRemove(key)) |old| {
-                        self.allocator.free(old.key);
-                        self.allocator.free(old.value);
-                    }
-                    try self.canonical_names.put(key, candidate);
+                    try self.putCanonicalName(key, candidate);
                 }
                 continue;
             }
@@ -369,12 +373,7 @@ pub const Linker = struct {
                 const candidate = try self.findAvailableCandidate(name, owner.module_index, &suffix, name_to_owners);
 
                 const key = try makeExportKey(self.allocator, owner.module_index, name);
-                // M4 수정: 중복 키 시 이전 키/값 해제
-                if (self.canonical_names.fetchRemove(key)) |old| {
-                    self.allocator.free(old.key);
-                    self.allocator.free(old.value);
-                }
-                try self.canonical_names.put(key, candidate);
+                try self.putCanonicalName(key, candidate);
                 suffix += 1;
             }
         }
@@ -441,11 +440,7 @@ pub const Linker = struct {
                     // 새 이름: target_name$N (기존 이름 충돌 없는 것)
                     var suffix: u32 = 1;
                     const candidate = try self.findAvailableCandidate(target_name, cmod, &suffix, name_to_owners);
-                    if (self.canonical_names.fetchRemove(key)) |old| {
-                        self.allocator.free(old.key);
-                        self.allocator.free(old.value);
-                    }
-                    try self.canonical_names.put(key, candidate);
+                    try self.putCanonicalName(key, candidate);
                 }
             }
         }
@@ -569,6 +564,22 @@ pub const Linker = struct {
                 }
             }
         }
+    }
+
+    /// 다른 모듈의 리네임 대상으로 이미 할당된 이름인지 O(1) 확인.
+    fn isCanonicalNameTaken(self: *const Linker, name: []const u8) bool {
+        return self.canonical_names_used.contains(name);
+    }
+
+    /// canonical_names에 put하면서 역방향 맵도 동기화.
+    fn putCanonicalName(self: *Linker, key: []const u8, value: []const u8) !void {
+        if (self.canonical_names.fetchRemove(key)) |old| {
+            _ = self.canonical_names_used.fetchRemove(old.value);
+            self.allocator.free(old.key);
+            self.allocator.free(old.value);
+        }
+        try self.canonical_names.put(key, value);
+        try self.canonical_names_used.put(value, {});
     }
 
     /// 모듈의 중첩 스코프(비-모듈 스코프)에 해당 이름이 존재하는지 확인.
@@ -1799,6 +1810,7 @@ pub const Linker = struct {
             self.allocator.free(entry.value_ptr.*);
         }
         self.canonical_names.clearRetainingCapacity();
+        self.canonical_names_used.clearRetainingCapacity();
     }
 
     /// 특정 모듈들만 대상으로 이름 충돌을 감지하고 리네임을 계산한다.

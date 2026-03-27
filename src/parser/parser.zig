@@ -247,16 +247,24 @@ pub const Parser = struct {
     /// - .mts/.mjs → 확정적 Module (is_module=true)
     /// - .ts/.tsx → Unambiguous (is_module=true 낙관적 파싱 + 에러 지연)
     /// - .js/.jsx/.cts/.cjs → Script (is_module=false)
+    /// CLI용: .ts/.tsx는 Unambiguous 모드 (import/export 유무로 module/script 파싱 후 확정)
     pub fn configureFromExtension(self: *Parser, ext: []const u8) void {
+        self.applyExtension(ext, true);
+    }
+
+    /// 번들러용: .ts/.tsx를 확정 module로 파싱 (await 키워드, strict mode 항상 적용)
+    pub fn configureForBundler(self: *Parser, ext: []const u8) void {
+        self.applyExtension(ext, false);
+    }
+
+    fn applyExtension(self: *Parser, ext: []const u8, ts_unambiguous: bool) void {
         if (std.mem.eql(u8, ext, ".mts") or std.mem.eql(u8, ext, ".mjs")) {
-            // 확정적 Module — import/export 없어도 module
             self.is_module = true;
             self.scanner.is_module = true;
         } else if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx")) {
-            // Unambiguous — 낙관적으로 module로 파싱, 파싱 후 확정
             self.is_module = true;
             self.scanner.is_module = true;
-            self.is_unambiguous = true;
+            self.is_unambiguous = ts_unambiguous;
         }
         if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx") or
             std.mem.eql(u8, ext, ".mts") or std.mem.eql(u8, ext, ".cts"))
