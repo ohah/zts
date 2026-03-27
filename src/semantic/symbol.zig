@@ -193,6 +193,31 @@ pub const DeclFlags = packed struct(u16) {
     }
 };
 
+/// 컴파일 타임 상수 값. 번들러에서 크로스-모듈 인라인에 사용.
+/// `const x = false` → ConstValue{ .kind = .false_ }
+pub const ConstValue = struct {
+    kind: Kind = .none,
+    /// 숫자 값 (kind == .number)
+    number: f64 = 0,
+
+    pub const Kind = enum(u8) {
+        none,
+        true_,
+        false_,
+        null_,
+        undefined_,
+        number,
+    };
+
+    /// boolean/null/undefined만 인라인 — DCE 활성화가 목적.
+    pub fn isSafeToInline(self: *const ConstValue) bool {
+        return switch (self.kind) {
+            .true_, .false_, .null_, .undefined_ => true,
+            else => false,
+        };
+    }
+};
+
 /// 심볼 하나의 데이터.
 /// symbols[symbol_id]로 접근.
 pub const Symbol = struct {
@@ -219,6 +244,10 @@ pub const Symbol = struct {
     /// 이 심볼이 참조된 횟수 (tree-shaking: 0이면 미사용 심볼).
     /// read/write/read_write 모두 카운트에 포함.
     reference_count: u32 = 0,
+
+    /// 컴파일 타임 상수 값 (번들러 크로스-모듈 인라인용).
+    /// const/let 선언의 초기화 값이 리터럴이면 설정.
+    const_value: ConstValue = .{},
 
     /// 이 심볼의 이름을 소스에서 읽는다.
     pub fn nameText(self: *const Symbol, source: []const u8) []const u8 {

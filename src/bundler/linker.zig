@@ -51,6 +51,9 @@ pub const LinkingMetadata = struct {
     /// require specifier 문자열 → require_xxx() 함수명.
     /// codegen이 require('path') 호출을 만나면 이 맵으로 치환.
     require_rewrites: std.StringHashMapUnmanaged([]const u8) = .{},
+    /// symbol_id → ConstValue. 크로스-모듈 상수 인라인용.
+    /// import symbol이 canonical export의 const_value를 가지면 codegen이 리터럴로 대체.
+    const_values: std.AutoHashMapUnmanaged(u32, @import("../semantic/symbol.zig").ConstValue) = .{},
     allocator: std.mem.Allocator,
 
     pub const NsMemberRewrites = struct {
@@ -94,6 +97,7 @@ pub const LinkingMetadata = struct {
         self.renames.deinit();
         if (self.final_exports) |fe| self.allocator.free(fe);
         if (self.cjs_import_preamble) |p| self.allocator.free(p);
+        self.const_values.deinit(self.allocator);
         // require_rewrites 해제 (keys는 import record 소유, values만 해제)
         {
             var vit = self.require_rewrites.valueIterator();
@@ -1012,6 +1016,38 @@ pub const Linker = struct {
             break :blk combined;
         } else cjs_import_preamble;
 
+        // 크로스-모듈 상수 인라인: import binding의 canonical export가 상수이면 매핑
+        var const_values: std.AutoHashMapUnmanaged(u32, @import("../semantic/symbol.zig").ConstValue) = .{};
+        for (m.import_bindings) |ib| {
+            if (ib.import_record_index >= m.import_records.len) continue;
+            const rec = m.import_records[ib.import_record_index];
+            if (rec.resolved.isNone()) continue;
+            const canon = self.resolveExportChain(rec.resolved, ib.imported_name, 0) orelse continue;
+            const canon_mod_idx = @intFromEnum(canon.module_index);
+            if (canon_mod_idx >= self.modules.len) continue;
+            const target_module = self.modules[canon_mod_idx];
+            const target_sem = target_module.semantic orelse continue;
+            if (target_sem.scope_maps.len == 0) continue;
+            // export_name → local_name 매핑
+            var local_name = canon.export_name;
+            for (target_module.export_bindings) |eb| {
+                if (std.mem.eql(u8, eb.exported_name, canon.export_name)) {
+                    local_name = eb.local_name;
+                    break;
+                }
+            }
+            const target_sym_idx = target_sem.scope_maps[0].get(local_name) orelse continue;
+            if (target_sym_idx >= target_sem.symbols.len) continue;
+            const cv = target_sem.symbols[target_sym_idx].const_value;
+            if (cv.kind == .none or !cv.isSafeToInline()) continue;
+            // import binding의 local symbol에 매핑
+            if (sem.scope_maps.len > 0) {
+                if (sem.scope_maps[0].get(ib.local_name)) |local_sym| {
+                    try const_values.put(self.allocator, @intCast(local_sym), cv);
+                }
+            }
+        }
+
         return .{
             .skip_nodes = skip_nodes,
             .renames = renames,
@@ -1021,6 +1057,7 @@ pub const Linker = struct {
             .default_export_name = default_export_name,
             .ns_member_rewrites = ns_rewrites,
             .ns_inline_objects = ns_inlines,
+            .const_values = const_values,
             .allocator = self.allocator,
         };
     }
@@ -2002,7 +2039,7 @@ fn buildAndLink(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_na
     const entry = try std.fs.path.resolve(allocator, &.{ dp, entry_name });
     defer allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(allocator, .browser, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(allocator, .browser, &.{}, &.{});
     var graph = ModuleGraph.init(allocator, &cache);
     try graph.build(&.{entry});
 
@@ -2155,7 +2192,7 @@ test "linker: resolveExportChain on CJS module returns null for named exports" {
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
@@ -2201,7 +2238,7 @@ test "linker: external import not resolved (no binding)" {
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{"react"});
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{"react"}, &.{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
@@ -2515,7 +2552,7 @@ test "computeRenamesForModules: 지정된 모듈만 대상으로 충돌 감지" 
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
@@ -2554,7 +2591,7 @@ test "clearCanonicalNames: 초기화 후 비어있음" {
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();

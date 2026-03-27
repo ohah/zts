@@ -341,6 +341,8 @@ pub fn main() !void {
     var experimental_decorators: ?bool = null; // null = CLI에서 미지정 → tsconfig 따름
     const Target = lib.transformer.TransformOptions.Target;
     var target: Target = .esnext;
+    var conditions_list: std.ArrayList([]const u8) = .empty;
+    defer conditions_list.deinit(allocator);
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -430,6 +432,13 @@ pub fn main() !void {
             if (i + 1 < args.len) {
                 i += 1;
                 try external_list.append(allocator, args[i]);
+            }
+        } else if (std.mem.startsWith(u8, arg, "--conditions=")) {
+            const val = arg["--conditions=".len..];
+            // 쉼표로 분리된 조건 목록 (esbuild 호환: --conditions=production,development)
+            var it = std.mem.splitScalar(u8, val, ',');
+            while (it.next()) |cond| {
+                if (cond.len > 0) try conditions_list.append(allocator, cond);
             }
         } else if (std.mem.eql(u8, arg, "--platform=node")) {
             platform = .node;
@@ -588,6 +597,7 @@ pub fn main() !void {
             .experimental_decorators = experimental_decorators orelse false,
             .use_define_for_class_fields = use_define_for_class_fields orelse true,
             .target = target,
+            .conditions = conditions_list.items,
         });
         defer bundler.deinit();
 
@@ -1050,6 +1060,7 @@ fn printUsage(writer: anytype) !void {
         \\  --bundle                         Enable bundle mode
         \\  --splitting                      Enable code splitting (requires --outdir)
         \\  --external <pkg>                 Exclude package (repeatable)
+        \\  --conditions=<cond,...>          Custom export conditions (e.g. production)
         \\  --platform=browser|node|neutral  Target platform (default: browser)
         \\
         \\TypeScript options:

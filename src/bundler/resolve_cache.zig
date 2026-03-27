@@ -50,23 +50,23 @@ pub const ResolveCache = struct {
     /// 패키지 디렉토리별 browser 필드 disabled 파일 캐시.
     /// pkg_dir_path → disabled 상대 경로 집합 (null이면 browser 필드 없음).
     browser_disabled_cache: std.StringHashMap(?BrowserDisabledSet),
+    /// 커스텀 조건이 병합된 조건 배열 (import용, require용).
+    conditions_import: []const []const u8 = &.{},
+    conditions_require: []const []const u8 = &.{},
+    conditions_allocated: bool = false,
 
     /// browser 필드에서 false로 매핑된 상대 경로 집합.
-    /// 키: 확장자 있는 형태("util.inspect.js")와 없는 형태("util.inspect") 모두 저장.
     const BrowserDisabledSet = std.StringHashMap(void);
 
     const CachedResult = union(enum) {
         resolved: ResolveResult,
         external,
         not_found,
-        /// package.json "browser" 필드에서 false로 매핑 — 빈 모듈로 대체
         disabled: ResolveResult,
     };
 
-    /// 플랫폼 + import kind에 따른 package.json exports 조건 세트.
-    /// node: "node" 포함, "browser" 제외 (react-dom/server 등이 올바른 엔트리 선택)
-    /// browser: "browser" 포함, "node" 제외
-    fn conditionsFor(platform: Platform, kind: ImportKind) []const []const u8 {
+    /// 플랫폼 + import kind에 따른 기본 조건 세트.
+    fn baseConditionsFor(platform: Platform, kind: ImportKind) []const []const u8 {
         return switch (kind) {
             .require => switch (platform) {
                 .node => &.{ "require", "node", "default" },
@@ -81,9 +81,40 @@ pub const ResolveCache = struct {
         };
     }
 
-    pub fn init(allocator: std.mem.Allocator, platform: Platform, external_patterns: []const []const u8) ResolveCache {
+    /// 기본 조건에 커스텀 조건을 병합한 배열을 생성한다.
+    /// 커스텀 조건은 "default" 앞에 삽입 (esbuild 동작: 커스텀 조건이 default보다 우선).
+    fn buildConditions(allocator: std.mem.Allocator, base: []const []const u8, custom: []const []const u8) ![]const []const u8 {
+        if (custom.len == 0) return base;
+        var result = try std.ArrayList([]const u8).initCapacity(allocator, base.len + custom.len);
+        // "default" 앞에 커스텀 조건 삽입
+        for (base) |cond| {
+            if (std.mem.eql(u8, cond, "default")) {
+                for (custom) |c| result.appendAssumeCapacity(c);
+            }
+            result.appendAssumeCapacity(cond);
+        }
+        return result.toOwnedSlice(allocator);
+    }
+
+    fn conditionsFor(self: *const ResolveCache, kind: ImportKind) []const []const u8 {
+        return switch (kind) {
+            .require => self.conditions_require,
+            else => self.conditions_import,
+        };
+    }
+
+    pub fn init(allocator: std.mem.Allocator, platform: Platform, external_patterns: []const []const u8, custom_conditions: []const []const u8) ResolveCache {
         var r = Resolver.init(allocator);
-        r.conditions = conditionsFor(platform, .static_import);
+        const has_custom = custom_conditions.len > 0;
+        const cond_import = if (has_custom)
+            buildConditions(allocator, baseConditionsFor(platform, .static_import), custom_conditions) catch baseConditionsFor(platform, .static_import)
+        else
+            baseConditionsFor(platform, .static_import);
+        const cond_require = if (has_custom)
+            buildConditions(allocator, baseConditionsFor(platform, .require), custom_conditions) catch baseConditionsFor(platform, .require)
+        else
+            baseConditionsFor(platform, .require);
+        r.conditions = cond_import;
         return .{
             .allocator = allocator,
             .resolver = r,
@@ -91,6 +122,9 @@ pub const ResolveCache = struct {
             .external_patterns = external_patterns,
             .platform = platform,
             .browser_disabled_cache = std.StringHashMap(?BrowserDisabledSet).init(allocator),
+            .conditions_import = cond_import,
+            .conditions_require = cond_require,
+            .conditions_allocated = has_custom,
         };
     }
 
@@ -118,6 +152,10 @@ pub const ResolveCache = struct {
             }
         }
         self.browser_disabled_cache.deinit();
+        if (self.conditions_allocated) {
+            self.allocator.free(self.conditions_import);
+            self.allocator.free(self.conditions_require);
+        }
     }
 
     /// specifier를 해석한다. 캐시 히트 시 캐시에서 반환.
@@ -156,7 +194,7 @@ pub const ResolveCache = struct {
         //    require() → "require" 조건, 그 외 → "import" 조건
         //    예: is-promise의 exports { "import": "./esm.mjs", "require": "./cjs.js" }
         const saved_conditions = self.resolver.conditions;
-        self.resolver.conditions = conditionsFor(self.platform, kind);
+        self.resolver.conditions = self.conditionsFor(kind);
         defer self.resolver.conditions = saved_conditions;
 
         const result = self.resolver.resolve(source_dir, specifier) catch |err| switch (err) {
@@ -406,7 +444,7 @@ test "matchGlob: node: prefix" {
 }
 
 test "isExternal: node: prefix always external" {
-    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{});
+    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{});
     defer cache.deinit();
 
     try std.testing.expect(cache.isExternal("node:fs"));
@@ -415,7 +453,7 @@ test "isExternal: node: prefix always external" {
 }
 
 test "isExternal: node builtins when platform=node" {
-    var cache = ResolveCache.init(std.testing.allocator, .node, &.{});
+    var cache = ResolveCache.init(std.testing.allocator, .node, &.{}, &.{});
     defer cache.deinit();
 
     try std.testing.expect(cache.isExternal("fs"));
@@ -438,7 +476,7 @@ test "isNodeBuiltin" {
 }
 
 test "isExternal: node builtins NOT external when platform=browser" {
-    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{});
+    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{});
     defer cache.deinit();
 
     try std.testing.expect(!cache.isExternal("fs"));
@@ -446,7 +484,7 @@ test "isExternal: node builtins NOT external when platform=browser" {
 }
 
 test "isExternal: user patterns" {
-    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{ "react", "@mui/*" });
+    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{ "react", "@mui/*" }, &.{});
     defer cache.deinit();
 
     try std.testing.expect(cache.isExternal("react"));
@@ -455,7 +493,7 @@ test "isExternal: user patterns" {
 }
 
 test "resolve: external returns null" {
-    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{"react"});
+    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{"react"}, &.{});
     defer cache.deinit();
 
     const result = try cache.resolve("/some/dir", "react", .static_import);
@@ -473,7 +511,7 @@ test "resolve: cache hit" {
     const file = try tmp.dir.createFile("foo.ts", .{});
     file.close();
 
-    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{});
+    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{});
     defer cache.deinit();
 
     // 첫 번째 호출 (캐시 미스) — caller 소유
@@ -500,7 +538,7 @@ test "resolve: not found cached" {
     const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(dir_path);
 
-    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{});
+    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{});
     defer cache.deinit();
 
     // 존재하지 않는 파일
