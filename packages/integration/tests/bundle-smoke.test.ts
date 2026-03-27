@@ -320,4 +320,17 @@ describe("번들 스모크 테스트", () => {
     expect(result.exitCode).toBe(0);
     expect(result.runOutput).toBe("1 2");
   });
+
+  // #445: shorthand property에서 rename된 식별자가 원래 이름으로 남는 버그
+  test.failing("shorthand property에서 rename된 식별자 (#445)", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `import { defer } from './b'; import obj from './c'; console.log(obj.defer(), defer);`,
+      "a.ts": `export default function defer() { return 'ok'; }`,
+      "b.ts": `const defer = 'other'; export { defer };`,
+      "c.ts": `import defer from './a'; export default { defer };`,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("ok other");
+  });
 });
