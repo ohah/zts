@@ -9860,3 +9860,141 @@ test "Scope hoisting: forward reference in same module — const before use" {
     // 최소한 helper가 리네임되었는지만 확인
     try std.testing.expect(std.mem.indexOf(u8, result.output, "helper$") != null);
 }
+
+// ============================================================
+// Regression tests (2026-03-27 세션)
+// ============================================================
+
+test "scope hoisting: canonical name collision prevention (vue computed pattern)" {
+    // 3개 모듈에서 같은 이름 + 중첩 스코프 shadowing → 리네임 충돌 방지.
+    // vue의 computed$1 중복 선언 버그 (#447) regression 방지.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { compute as c1 } from './a';\nimport { compute as c2 } from './b';\nconsole.log(c1(5), c2(5));");
+    try writeFile(tmp.dir, "a.ts", "export function compute(x: number) { return x * 2; }");
+    // b.ts: import alias compute$1 + 자체 compute + 중첩 스코프에 compute 변수
+    try writeFile(tmp.dir, "b.ts", "import { compute as compute$1 } from './a';\nfunction inner() { var compute = 1; return compute; }\nexport const compute = (x: number) => compute$1(x + 1);");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // compute가 3개의 다른 이름으로 리네임됨 (중복 선언 없음)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "compute$1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "compute$2") != null);
+}
+
+test "namespace object: bare default keyword prevention (eventemitter3 pattern)" {
+    // CJS → ESM 래핑 후 namespace 객체에서 "default"가 bare 키워드로 출력되면 안 됨.
+    // #454 regression 방지.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import * as lib from './lib.cjs';\nconsole.log(Object.keys(lib));");
+    try writeFile(tmp.dir, "lib.cjs", "function Foo() {}\nFoo.prototype.hello = function() { return 'hi'; };\nmodule.exports = Foo;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // "default" bare 키워드가 값 위치에 나타나면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ": default,") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ": default}") == null);
+}
+
+test "namespace barrel re-export: import * as X; export { X } (fp-ts pattern)" {
+    // namespace import를 barrel re-export할 때 인라인 객체가 생성되어야 함.
+    // #455 regression 방지.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import * as pkg from './barrel';\nconsole.log(pkg.sub.x, pkg.sub.y);");
+    try writeFile(tmp.dir, "barrel.ts", "import * as sub from './sub';\nexport { sub };");
+    try writeFile(tmp.dir, "sub.ts", "export const x = 1;\nexport const y = 2;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // sub가 인라인 객체로 생성됨 (undefined가 아님)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "x:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "y:") != null);
+}
+
+test "export *: excludes default (ESM spec 15.2.3.5)" {
+    // export *는 "default"를 제외해야 함. 명시적 re-export는 유지.
+    // #457 regression 방지.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import * as pkg from './barrel';\nconsole.log(Object.keys(pkg).sort().join(','));");
+    try writeFile(tmp.dir, "barrel.ts", "export * from './mod';");
+    try writeFile(tmp.dir, "mod.ts", "export function foo() { return 1; }\nexport default function bar() { return 2; }");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // export *에 의해 foo만 포함, default는 제외
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "foo") != null);
+}
+
+test "export * + explicit default re-export coexistence" {
+    // export *로 default 제외 + export { default }로 명시적 포함이 공존.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import * as pkg from './barrel';\nconsole.log('default' in pkg, 'foo' in pkg);");
+    try writeFile(tmp.dir, "barrel.ts", "export * from './mod';\nexport { default } from './mod';");
+    try writeFile(tmp.dir, "mod.ts", "export function foo() { return 1; }\nexport default function bar() { return 2; }");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 명시적 export { default }에 의해 default 포함, export *에 의해 foo 포함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"default\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "foo") != null);
+}
+
+test "Interop: .mjs importer uses Node mode, .ts uses Babel mode" {
+    // .mjs → __toESM(req(), 1), .ts → __toESM(req())
+    // #456 regression 방지.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "import lib from './lib.cjs';\nconsole.log(lib);");
+    try writeFile(tmp.dir, "lib.cjs", "module.exports = { value: 42 };");
+
+    const entry = try absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // .mjs importer → Node 모드 (isNodeMode=1)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_lib(), 1)") != null);
+}
