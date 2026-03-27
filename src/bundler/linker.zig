@@ -857,10 +857,10 @@ pub const Linker = struct {
                     break :blk ib.imported_name;
                 };
 
-                // JS 예약어 (default 등)를 rename target으로 사용 불가
-                if (!std.mem.eql(u8, ib.local_name, target_name) and
-                    !isReservedName(target_name))
-                {
+                // import binding → target module의 canonical name으로 rename.
+                // scope hoisting 후 import가 제거되므로, 같은 이름이라도
+                // 항상 renames에 등록하여 codegen이 target 변수를 참조하도록 함.
+                if (!isReservedName(target_name)) {
                     if (module_scope.get(ib.local_name)) |sym_idx| {
                         try renames.put(@intCast(sym_idx), target_name);
                     }

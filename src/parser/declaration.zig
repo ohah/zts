@@ -188,10 +188,11 @@ fn parseFunctionDeclarationWithFlagsOptionalName(self: *Parser, extra_flags: u32
     const is_async = (flags & FunctionFlags.is_async) != 0;
     const is_generator = (flags & FunctionFlags.is_generator) != 0;
 
-    // 이름은 선택적: identifier가 있으면 외부 context에서 파싱
+    // 이름은 선택적: identifier 또는 contextual keyword(defer, of, set 등)가 있으면 파싱
     const name = if (self.current() == .identifier or
         self.current() == .kw_yield or self.current() == .kw_await or
-        self.current() == .escaped_keyword or self.current() == .escaped_strict_reserved)
+        self.current() == .escaped_keyword or self.current() == .escaped_strict_reserved or
+        (self.current().isKeyword() and !self.current().isReservedKeyword()))
         try self.parseBindingIdentifier()
     else
         NodeIndex.none;
