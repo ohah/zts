@@ -1548,7 +1548,7 @@ pub const Linker = struct {
             try list.append(self.allocator, .{
                 .symbol_id = symbol_id,
                 .object_literal = obj_str,
-                .var_name = try self.allocator.dupe(u8, var_name),
+                .var_name = try std.mem.concat(self.allocator, u8, &.{ var_name, "_ns" }),
             });
         }
     }
