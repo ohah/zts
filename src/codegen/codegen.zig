@@ -4616,3 +4616,43 @@ test "useDefineForClassFields=false: no-init fields removed" {
     // class body에 y, w가 없어야 함 (method만 있음)
     try std.testing.expect(std.mem.indexOf(u8, r.output, ";y") == null);
 }
+
+// ============================================================
+// 삼항 연산자 + 화살표 함수 (#446)
+// ============================================================
+
+test "ternary with arrow function body containing parens" {
+    // d3-array cumsum 패턴: ? v => (expr) : v => (expr)
+    // 파서가 에러 없이 파싱해야 함
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var scanner = try Scanner.init(allocator, "const f = true ? v => (v + 1) : v => (v - 1);");
+    var parser = Parser.init(allocator, &scanner);
+    parser.is_module = true;
+    scanner.is_module = true;
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+}
+
+test "ternary with arrow function — d3 cumsum pattern" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const source =
+        \\function cumsum(values, valueof) {
+        \\  var sum = 0, index = 0;
+        \\  return Float64Array.from(values, valueof === undefined
+        \\    ? v => (sum += +v || 0)
+        \\    : v => (sum += +valueof(v, index++, values) || 0));
+        \\}
+    ;
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.is_module = true;
+    scanner.is_module = true;
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+}

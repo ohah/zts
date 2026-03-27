@@ -196,8 +196,14 @@ pub fn parseArrowBody(self: *Parser, is_async: bool, param_idx: NodeIndex) Parse
     self.has_simple_params = self.isSimpleArrowParams(param_idx);
     const body = if (self.current() == .l_curly)
         try self.parseFunctionBodyExpr()
-    else
-        try parseAssignmentExpression(self);
+    else blk: {
+        // expression body에서는 외부 ternary context를 유지해야 함.
+        // enterFunctionContext가 in_ternary_consequent를 false로 리셋하지만,
+        // 화살표 expression body에서 `:` 를 만나면 외부 삼항의 separator일 수 있음.
+        // `a ? v => (expr) : v => (expr2)` — `:` 는 외부 삼항의 separator.
+        self.in_ternary_consequent = saved_ctx.in_ternary_consequent;
+        break :blk try parseAssignmentExpression(self);
+    };
     self.restoreFunctionContext(saved_ctx);
     return body;
 }
