@@ -689,19 +689,23 @@ pub const SemanticAnalyzer = struct {
     /// assignment_expression, update_expression 등에서 공통 사용.
     /// 식별자가 아니면 false를 반환하여 호출자가 일반 순회를 수행하도록 한다.
     /// 현재 스코프에서 이름으로 symbol을 찾아 no_side_effects 플래그를 설정.
-    fn markSymbolNoSideEffects(self: *SemanticAnalyzer, name_span: Span) void {
+    /// 현재 스코프에서 이름으로 심볼 인덱스를 찾는다.
+    fn findSymbolInCurrentScope(self: *const SemanticAnalyzer, name_span: Span) ?usize {
         const name = self.ast.source[name_span.start..name_span.end];
         const scope_idx = self.current_scope.toIndex();
-        if (scope_idx >= self.scope_maps.items.len) return;
-        const sym_idx = self.scope_maps.items[scope_idx].get(name) orelse return;
-        if (sym_idx < self.symbols.items.len) {
-            self.symbols.items[sym_idx].decl_flags.no_side_effects = true;
-        }
+        if (scope_idx >= self.scope_maps.items.len) return null;
+        const sym_idx = self.scope_maps.items[scope_idx].get(name) orelse return null;
+        if (sym_idx >= self.symbols.items.len) return null;
+        return sym_idx;
+    }
+
+    fn markSymbolNoSideEffects(self: *SemanticAnalyzer, name_span: Span) void {
+        const sym_idx = self.findSymbolInCurrentScope(name_span) orelse return;
+        self.symbols.items[sym_idx].decl_flags.no_side_effects = true;
     }
 
     const ConstValue = @import("symbol.zig").ConstValue;
 
-    /// AST 노드에서 컴파일 타임 상수 값을 추출한다.
     fn extractConstValue(self: *const SemanticAnalyzer, node: Node) ConstValue {
         return switch (node.tag) {
             .boolean_literal => blk: {
@@ -709,18 +713,12 @@ pub const SemanticAnalyzer = struct {
                 break :blk .{ .kind = if (std.mem.eql(u8, text, "true")) .true_ else .false_ };
             },
             .null_literal => .{ .kind = .null_ },
-            .numeric_literal => blk: {
-                const text = self.ast.source[node.span.start..node.span.end];
-                const n = std.fmt.parseFloat(f64, text) catch break :blk ConstValue{};
-                break :blk .{ .kind = .number, .number = n };
-            },
             .identifier_reference => blk: {
                 const text = self.ast.source[node.span.start..node.span.end];
                 if (std.mem.eql(u8, text, "undefined")) break :blk ConstValue{ .kind = .undefined_ };
                 break :blk ConstValue{};
             },
             .unary_expression => blk: {
-                // void 0 → undefined
                 const text = self.ast.source[node.span.start..node.span.end];
                 if (std.mem.eql(u8, text, "void 0")) break :blk ConstValue{ .kind = .undefined_ };
                 break :blk ConstValue{};
@@ -729,15 +727,9 @@ pub const SemanticAnalyzer = struct {
         };
     }
 
-    /// 심볼에 const_value를 설정한다.
     fn setSymbolConstValue(self: *SemanticAnalyzer, name_span: Span, cv: ConstValue) void {
-        const name = self.ast.source[name_span.start..name_span.end];
-        const scope_idx = self.current_scope.toIndex();
-        if (scope_idx >= self.scope_maps.items.len) return;
-        const sym_idx = self.scope_maps.items[scope_idx].get(name) orelse return;
-        if (sym_idx < self.symbols.items.len) {
-            self.symbols.items[sym_idx].const_value = cv;
-        }
+        const sym_idx = self.findSymbolInCurrentScope(name_span) orelse return;
+        self.symbols.items[sym_idx].const_value = cv;
     }
 
     /// 노드가 @__NO_SIDE_EFFECTS__ 함수/arrow인지 확인.

@@ -197,8 +197,6 @@ pub const DeclFlags = packed struct(u16) {
 /// `const x = false` → ConstValue{ .kind = .false_ }
 pub const ConstValue = struct {
     kind: Kind = .none,
-    /// 숫자 값 (kind == .number)
-    number: f64 = 0,
 
     pub const Kind = enum(u8) {
         none,
@@ -206,15 +204,10 @@ pub const ConstValue = struct {
         false_,
         null_,
         undefined_,
-        number,
     };
 
-    /// boolean/null/undefined만 인라인 — DCE 활성화가 목적.
     pub fn isSafeToInline(self: *const ConstValue) bool {
-        return switch (self.kind) {
-            .true_, .false_, .null_, .undefined_ => true,
-            else => false,
-        };
+        return self.kind != .none;
     }
 };
 
