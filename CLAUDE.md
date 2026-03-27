@@ -225,6 +225,9 @@ Per-File Arena (단일 할당자, 파일 처리 후 한 번에 해제)
 | 6b. Dev server | HTTP+WS, Live Reload, HMR, React Fast Refresh, CSS 핫 리로드 | ✅ |
 | Test262 | 50,504건 100% 통과 | ✅ |
 
+### 🔜 다음 우선순위
+- **Tree-shaker 2단계** (#458): export 수준 DCE — tslib 16KB→1KB, 대형 라이브러리 최적화
+
 ### ⏳ 진행 중 / 미완료
 - **ES 다운레벨링**: ES2022~ES2015 ✅ (--target=es5 지원)
   - ES2015 generator: try/catch/finally 안의 yield는 추후 구현 (_state.trys 스택 필요)
