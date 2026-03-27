@@ -321,8 +321,8 @@ describe("번들 스모크 테스트", () => {
     expect(result.runOutput).toBe("1 2");
   });
 
-  // #445: shorthand property에서 rename된 식별자가 원래 이름으로 남는 버그
-  test.failing("shorthand property에서 rename된 식별자 (#445)", async () => {
+  // #445: shorthand property에서 rename된 식별자 (수정됨)
+  test("shorthand property에서 rename된 식별자 (#445)", async () => {
     const result = await bundleAndRun({
       "index.ts": `import { defer } from './b'; import obj from './c'; console.log(obj.defer(), defer);`,
       "a.ts": `export default function defer() { return 'ok'; }`,
@@ -332,5 +332,66 @@ describe("번들 스모크 테스트", () => {
     cleanup = result.cleanup;
     expect(result.exitCode).toBe(0);
     expect(result.runOutput).toBe("ok other");
+  });
+
+  test("import defer from — default import (not phase modifier)", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `import defer from "./a"; console.log(defer);`,
+      "a.ts": `export default 42;`,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("42");
+  });
+
+  test("import source from — default import (not phase modifier)", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `import source from "./a"; console.log(source);`,
+      "a.ts": `export default 42;`,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("42");
+  });
+
+  test("import defer, { x } from — defer as default + named import", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `import defer, { x } from "./a"; console.log(defer, x);`,
+      "a.ts": `export default 10; export const x = 20;`,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("10 20");
+  });
+
+  test("shorthand rename — 여러 모듈에서 같은 이름 충돌", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `import { x } from "./b"; import obj from "./c"; console.log(obj.x(), x());`,
+      "a.ts": `export default function x() { return "a"; }`,
+      "b.ts": `export function x() { return "b"; }`,
+      "c.ts": `import x from "./a"; export default { x };`,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("a b");
+  });
+
+  test("shorthand 중첩 scope — 내부 변수 shadowing 정확성", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `const x = 'outer'; function inner() { const x = 'inner'; return { x }; } console.log(inner().x);`,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("inner");
+  });
+
+  test("function source() — contextual keyword as function name", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `import source from "./a"; console.log(source());`,
+      "a.ts": `export default function source() { return "src"; }`,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("src");
   });
 });

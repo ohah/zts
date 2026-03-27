@@ -90,10 +90,16 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
 
     // import defer / import source — Stage 3 proposals
     // defer/source를 스킵하고 나머지는 일반 import로 처리
+    // 주의: `import defer from "..."` 는 default import (defer가 로컬 이름)
+    // `import defer "..."` 또는 `import defer * as ns from "..."` 가 phase modifier
     var has_phase_modifier = false;
     if (self.current() == .kw_defer or self.current() == .kw_source) {
-        has_phase_modifier = true;
-        try self.advance(); // skip defer/source
+        const next = try self.peekNextKind();
+        // defer/source 뒤에 from 또는 , 가 오면 default import (defer가 binding name)
+        if (next != .kw_from and next != .comma) {
+            has_phase_modifier = true;
+            try self.advance(); // skip defer/source
+        }
     }
 
     // import "module" — side-effect import

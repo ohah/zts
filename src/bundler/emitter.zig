@@ -641,7 +641,6 @@ pub fn emitDevModule(
         .sourcemap = options.sourcemap,
         .linking_metadata = if (metadata) |*md| md else null,
         .platform = options.platform,
-        .module_scope = if (module.semantic) |sem| if (sem.scope_maps.len > 0) &sem.scope_maps[0] else null else null,
     });
     // 소스맵용: line_offsets와 소스 파일 등록
     if (options.sourcemap) {
@@ -1233,7 +1232,6 @@ pub fn emitModule(
         // Node.js는 import.meta를 보면 ESM으로 재파싱하려 해서 에러 발생
         .replace_import_meta = options.format != .esm,
         .platform = options.platform,
-        .module_scope = if (module.semantic) |sem| if (sem.scope_maps.len > 0) &sem.scope_maps[0] else null else null,
     });
     const code = try cg.generate(root);
 
