@@ -225,10 +225,18 @@ fn resolveConditions(value: std.json.Value, conditions: []const []const u8) ?[]c
     switch (value) {
         .string => |s| return s,
         .object => |obj| {
-            // JSON 소스 순서를 유지하므로 conditions 순서로 탐색
-            for (conditions) |cond| {
-                if (obj.get(cond)) |v| {
-                    return resolveConditions(v, conditions);
+            // Node.js 스펙: exports 객체의 key 순서로 탐색하고,
+            // 각 key가 conditions set에 포함되는지 확인한다.
+            // (이전: conditions 배열 순서로 탐색 → tslib import.node 오매칭)
+            for (obj.keys()) |key| {
+                if (std.mem.eql(u8, key, "default")) continue; // default는 마지막
+                for (conditions) |cond| {
+                    if (std.mem.eql(u8, key, cond)) {
+                        if (resolveConditions(obj.get(key).?, conditions)) |result| {
+                            return result;
+                        }
+                        break;
+                    }
                 }
             }
             // "default"는 항상 마지막 폴백 (Node.js 스펙)
