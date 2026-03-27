@@ -73,12 +73,12 @@ src/
     bundler.zig             #   번들러 메인 로직
     resolver.zig            #   모듈 경로 해석 (node_modules, package.json, tsconfig)
     graph.zig               #   모듈 그래프 (DFS, exec_index, 순환 감지)
-    module.zig              #   모듈 데이터 (AST, import/export, 심볼)
-    linker.zig              #   스코프 호이스팅 + 이름 충돌 해결
+    module.zig              #   모듈 데이터 (AST, import/export, 심볼, def_format, interop)
+    linker.zig              #   스코프 호이스팅 + 이름 충돌 해결 + CJS→ESM Interop
     tree_shaker.zig         #   Tree-shaking (export 추적, @__PURE__, sideEffects)
     chunk.zig               #   Code splitting (BitSet, 공통 청크, cross-chunk)
     emitter.zig             #   출력 생성 (exec_index 순서, ESM/CJS/IIFE)
-    types.zig               #   번들러 자료 구조
+    types.zig               #   번들러 자료 구조 (Interop, ModuleDefFormat, ExportsKind 등)
     package_json.zig        #   package.json 읽기 (exports, browser, sideEffects)
     resolve_cache.zig       #   해석 결과 캐싱 (import kind별)
     import_scanner.zig      #   import/export 문 추출
@@ -195,6 +195,16 @@ Per-File Arena (단일 할당자, 파일 처리 후 한 번에 해제)
 - `\n` 정규화 + CRLF 옵션. 크로스 플랫폼 지원
 - 소스맵 VLQ 자체 구현 (~30줄). 외부 의존성 없음
 - 번들러 소스맵: AST span으로 원본→최종 직접 매핑 (esbuild 방식, 체이닝 불필요)
+
+### Bundler Scope Hoisting & Interop
+- **이름 충돌 해결**: canonical_names + canonical_names_used 역방향 맵으로 O(1) 충돌 확인
+- **CJS→ESM Interop**: Rolldown 방식 — Interop enum (babel/node) + ModuleDefFormat enum
+  - ESM importer (.mjs/.mts/type:module) → `__toESM(req(), 1)` (Node 모드)
+  - 기타 importer → `__toESM(req())` (Babel 모드, __esModule 존중)
+- **export * default 제외**: ESM 스펙 15.2.3.5 준수 — `export *`는 default를 포함하지 않음
+- **namespace barrel re-export**: `import * as X; export { X }` 패턴 → 인라인 객체 생성
+- **.js Unambiguous 파싱**: oxc 방식 — import/export 유무로 module/script 자동 결정
+- **Parser API**: `configureFromExtension()` (CLI) / `configureForBundler()` (번들러) 분리
 
 ### Semantic Analysis Design (D051-D055)
 - 파서에서 구문 컨텍스트 추적, Semantic 패스에서 스코프/심볼

@@ -735,5 +735,22 @@
 - **inline 유지 노드**: identifier_reference, string_literal (분석 단계 플래그만 필요 → tree-shaker 자체 구조에서 관리), array/object_expression (포맷팅 힌트는 span에서 유추), binary/assignment_expression (연산자 종류만, 확장 불필요)
 - **규칙**: "파싱 시 설정되는 플래그가 있는 노드 → extra_data. 분석 시 플래그만 필요한 노드 → 해당 분석 단계의 자체 구조. 플래그 불필요/유추 가능 → inline 유지"
 
+### D090: CJS→ESM Interop — Rolldown 방식 (2026-03-27)
+- **결정**: Rolldown의 `Interop` enum (`babel`/`node`) + `ModuleDefFormat` enum 도입
+- **이유**: esbuild의 암묵적 인자(isNodeMode 유무)보다 타입으로 의도 표현이 유지보수에 유리. ZTS가 하드코딩 `1`로 버그가 발생했던 사례.
+- **설계**: importer의 def_format(확장자/package.json)으로 interop 모드 결정. ESM importer → Node 모드, 기타 → Babel 모드.
+- **참고**: Rolldown `normal_module.rs:interop()`, esbuild는 `isNodeMode` 인자 생략으로 Babel 모드
+
+### D091: 번들러 .js 파싱 — Unambiguous 모드 (2026-03-27)
+- **결정**: 번들러에서 .js/.jsx를 Unambiguous 모드로 파싱 (oxc 방식). .ts/.tsx는 확정 module.
+- **이유**: .js 파일이 import/export 없이도 번들에 포함될 수 있으므로, script/module 자동 판별 필요.
+- **설계**: `configureForBundler()` API 분리. .ts/.tsx는 `is_unambiguous=false` (확정 module), .js/.jsx는 `is_unambiguous=true` (자동 판별).
+- **참고**: oxc `ModuleKind::Unambiguous`, esbuild는 package.json "type" 기반
+
+### D092: export * default 제외 — ESM 스펙 준수 (2026-03-27)
+- **결정**: `collectExportsRecursive`에서 `export *` 재귀 전에 seen에 "default" 추가
+- **이유**: ECMAScript 15.2.3.5 — `export *`는 `default`를 제외해야 함. date-fns에서 불필요한 default 추가 발견.
+- **참고**: esbuild, rolldown 모두 동일하게 default 제외
+
 ### Phase 6 (Advanced) 미결정 사항
 - 개발 서버 고급 기능 (증분 재빌드, 프레임워크 통합)
