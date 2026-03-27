@@ -25,6 +25,8 @@ const Ast = @import("../parser/ast.zig").Ast;
 const Node = @import("../parser/ast.zig").Node;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const purity = @import("purity.zig");
+const stmt_info_mod = @import("stmt_info.zig");
+const StmtInfos = stmt_info_mod.ModuleStmtInfos;
 
 pub const TreeShaker = struct {
     allocator: std.mem.Allocator,
@@ -36,6 +38,10 @@ pub const TreeShaker = struct {
     /// 모듈별 local re-export name set. isImportBindingUsed의 O(E) 스캔을 O(1)로 최적화.
     /// analyze()에서 사전 구축, null이면 해당 모듈에 local re-export 없음.
     re_export_sets: []?std.StringHashMap(void) = &.{},
+    /// 모듈별 StmtInfo (심볼 기반 도달성 분석). analyze()에서 구축.
+    module_stmt_infos: []?StmtInfos = &.{},
+    /// 모듈별 도달성 bitset 캐시. fixpoint 수렴 후 계산.
+    reachable_stmts: []?std.DynamicBitSet = &.{},
 
     const max_fixpoint_iterations: u32 = 100;
 
@@ -61,6 +67,18 @@ pub const TreeShaker = struct {
         self.used_exports.deinit();
         self.included.deinit();
         self.entry_set.deinit();
+        if (self.module_stmt_infos.len > 0) {
+            for (self.module_stmt_infos) |*si| {
+                if (si.*) |*infos| infos.deinit();
+            }
+            self.allocator.free(self.module_stmt_infos);
+        }
+        if (self.reachable_stmts.len > 0) {
+            for (self.reachable_stmts) |*rs| {
+                if (rs.*) |*bs| bs.deinit();
+            }
+            self.allocator.free(self.reachable_stmts);
+        }
     }
 
     /// Tree-shaking 분석 (fixpoint 방식).
@@ -198,6 +216,70 @@ pub const TreeShaker = struct {
 
             if (!changed) break;
         }
+
+        // 2차: 심볼 기반 도달성 분석 (rolldown 방식)
+        // fixpoint 수렴 후, 각 모듈의 StmtInfo를 구축하여 import binding liveness를 정밀 판정.
+        // 이로써 dead import가 참조하는 export를 used_exports에서 제거 → statement_shaker가 코드 제거.
+        var module_stmt_infos = try self.allocator.alloc(?StmtInfos, self.modules.len);
+        for (module_stmt_infos) |*si| si.* = null;
+        self.module_stmt_infos = module_stmt_infos;
+
+        var reachable_stmts = try self.allocator.alloc(?std.DynamicBitSet, self.modules.len);
+        for (reachable_stmts) |*rs| rs.* = null;
+        self.reachable_stmts = reachable_stmts;
+
+        // StmtInfo 구축 (semantic data가 있는 모듈만)
+        for (self.modules, 0..) |m, i| {
+            if (!self.included.isSet(i)) continue;
+            if (self.entry_set.isSet(i) or m.wrap_kind == .cjs) continue;
+            const sem = m.semantic orelse continue;
+            const ast = &(m.ast orelse continue);
+            module_stmt_infos[i] = stmt_info_mod.build(
+                self.allocator,
+                ast,
+                sem.symbols,
+                sem.symbol_ids,
+            ) catch null;
+        }
+
+        // 도달성 계산: used exports의 심볼 인덱스를 seed로 BFS
+        for (self.modules, 0..) |m, i| {
+            const infos = module_stmt_infos[i] orelse continue;
+            const sem = m.semantic orelse continue;
+            if (sem.scope_maps.len == 0) continue;
+            const top_scope = sem.scope_maps[0];
+
+            // used export의 local_name → symbol_index 수집
+            var used_sym_buf: std.ArrayListUnmanaged(u32) = .empty;
+            defer used_sym_buf.deinit(self.allocator);
+            const mod_idx: u32 = @intCast(i);
+
+            if (self.isExportUsed(mod_idx, "*")) {
+                // 모든 export 사용 → 모든 심볼 seed
+                for (m.export_bindings) |eb| {
+                    if (eb.kind == .re_export_all) continue;
+                    if (top_scope.get(eb.local_name)) |sym_idx| {
+                        used_sym_buf.append(self.allocator, @intCast(sym_idx)) catch continue;
+                    }
+                }
+            } else {
+                for (m.export_bindings) |eb| {
+                    if (eb.kind == .re_export_all) continue;
+                    if (self.isExportUsed(mod_idx, eb.exported_name)) {
+                        if (top_scope.get(eb.local_name)) |sym_idx| {
+                            used_sym_buf.append(self.allocator, @intCast(sym_idx)) catch continue;
+                        }
+                    }
+                }
+            }
+
+            reachable_stmts[i] = infos.computeReachable(
+                self.allocator,
+                used_sym_buf.items,
+            ) catch null;
+        }
+
+        // 도달성 데이터는 emitter의 StmtInfo 기반 statement shaking에서 사용.
     }
 
     pub fn isIncluded(self: *const TreeShaker, module_index: u32) bool {
@@ -209,6 +291,63 @@ pub const TreeShaker = struct {
         var key_buf: [4096]u8 = undefined;
         const key = types.makeModuleKeyBuf(&key_buf, module_index, export_name);
         return self.used_exports.contains(key);
+    }
+
+    /// export의 심볼이 다른 reachable statement에서 참조되는지 확인.
+    /// 자기 자신의 선언은 제외 — "이 export 없이도 참조되는가?"를 판정.
+    pub fn isExportReachableInModule(self: *const TreeShaker, module_index: u32, local_name: []const u8) bool {
+        if (module_index >= self.reachable_stmts.len) return true;
+        const reachable = self.reachable_stmts[module_index] orelse return true;
+        const infos = if (module_index < self.module_stmt_infos.len)
+            (self.module_stmt_infos[module_index] orelse return true)
+        else
+            return true;
+        const m = self.modules[module_index];
+        const sem = m.semantic orelse return true;
+        if (sem.scope_maps.len == 0) return true;
+        const sym_idx = sem.scope_maps[0].get(local_name) orelse return true;
+
+        // 이 심볼을 선언하는 statement 자체가 side-effectful이면 reachable
+        if (infos.declaredStmtBySymbol(@intCast(sym_idx))) |decl_stmt| {
+            if (infos.stmts[decl_stmt].has_side_effects) return true;
+        }
+
+        // 다른 reachable statement에서 이 심볼을 참조하는지 확인
+        for (infos.stmts, 0..) |stmt, si| {
+            if (!reachable.isSet(si)) continue;
+            // 자기 자신의 선언 statement는 제외
+            if (infos.declaredStmtBySymbol(@intCast(sym_idx))) |decl_stmt| {
+                if (si == decl_stmt) continue;
+            }
+            for (stmt.referenced_symbols) |ref_sym| {
+                if (ref_sym == sym_idx) return true;
+            }
+        }
+        return false;
+    }
+
+    /// import binding의 심볼이 해당 모듈에서 reachable statement에서 참조되는지 확인.
+    /// emitter가 export_bindings 필터링에 사용.
+    pub fn isImportLiveInModule(self: *const TreeShaker, module_index: u32, local_name: []const u8) bool {
+        if (module_index >= self.reachable_stmts.len) return true;
+        const reachable = self.reachable_stmts[module_index] orelse return true;
+        const infos = if (module_index < self.module_stmt_infos.len)
+            (self.module_stmt_infos[module_index] orelse return true)
+        else
+            return true;
+        const m = self.modules[module_index];
+        const sem = m.semantic orelse return true;
+        if (sem.scope_maps.len == 0) return true;
+        const sym_idx = sem.scope_maps[0].get(local_name) orelse return true;
+
+        // reachable statement에서 이 심볼을 참조하는지 확인
+        for (infos.stmts, 0..) |stmt, si| {
+            if (!reachable.isSet(si)) continue;
+            for (stmt.referenced_symbols) |ref_sym| {
+                if (ref_sym == sym_idx) return true;
+            }
+        }
+        return false;
     }
 
     /// 모듈의 top-level 문장이 모두 순수한지 판별.
@@ -348,6 +487,93 @@ pub const TreeShaker = struct {
     /// import binding이 실제로 사용되는지 판별.
     /// reference_count > 0이거나, export { x }로 re-export되면 "사용됨".
     /// semantic data 없으면 보수적으로 true.
+    /// processModuleImports의 도달성 기반 버전. module inclusion을 변경하지 않음.
+    fn processModuleImportsWithReachability(self: *TreeShaker, m: Module) !bool {
+        const mod_idx = @intFromEnum(m.index);
+        // 도달성 데이터 필요
+        const reachable = if (mod_idx < self.reachable_stmts.len)
+            (self.reachable_stmts[mod_idx] orelse return try self.processModuleImports(m))
+        else
+            return try self.processModuleImports(m);
+        const infos = if (mod_idx < self.module_stmt_infos.len)
+            (self.module_stmt_infos[mod_idx] orelse return try self.processModuleImports(m))
+        else
+            return try self.processModuleImports(m);
+        const sem = m.semantic orelse return try self.processModuleImports(m);
+        if (sem.scope_maps.len == 0) return try self.processModuleImports(m);
+
+        for (m.import_bindings) |ib| {
+            if (ib.import_record_index >= m.import_records.len) continue;
+            const rec = m.import_records[ib.import_record_index];
+            if (rec.resolved.isNone()) continue;
+            const target_mod = @intFromEnum(rec.resolved);
+            if (target_mod >= self.modules.len) continue;
+
+            // StmtInfo 도달성 기반 import binding liveness 판정
+            const sym_idx = sem.scope_maps[0].get(ib.local_name) orelse {
+                // 심볼 resolve 실패 → 보수적으로 live
+                if (!self.isImportBindingUsed(m, ib)) continue;
+                // 이하 기존 로직
+                const canonical = self.linker.resolveExportChain(rec.resolved, ib.imported_name, 0);
+                if (canonical) |c| {
+                    const canon_idx = @intFromEnum(c.module_index);
+                    if (canon_idx < self.modules.len) try self.markExportUsed(@intCast(canon_idx), c.export_name);
+                    if (canon_idx != target_mod) try self.markExportUsed(@intCast(target_mod), ib.imported_name);
+                }
+                continue;
+            };
+
+            // reachable statement에서 이 심볼을 참조하는지 확인
+            var is_live = false;
+            for (infos.stmts, 0..) |stmt, si| {
+                if (!reachable.isSet(si)) continue;
+                for (stmt.referenced_symbols) |ref_sym| {
+                    if (ref_sym == sym_idx) {
+                        is_live = true;
+                        break;
+                    }
+                }
+                if (is_live) break;
+            }
+            // re-export set 확인
+            if (!is_live) {
+                if (mod_idx < self.re_export_sets.len) {
+                    if (self.re_export_sets[mod_idx]) |set| {
+                        if (set.contains(ib.local_name)) is_live = true;
+                    }
+                }
+            }
+            if (!is_live) continue;
+
+            // 기존 canonical resolution + export 마킹 (module inclusion 변경 안 함)
+            const canonical = self.linker.resolveExportChain(rec.resolved, ib.imported_name, 0);
+            if (canonical) |c| {
+                const canon_idx = @intFromEnum(c.module_index);
+                if (canon_idx < self.modules.len) {
+                    try self.markExportUsed(@intCast(canon_idx), c.export_name);
+                }
+                if (canon_idx != target_mod) {
+                    try self.markExportUsed(@intCast(target_mod), ib.imported_name);
+                }
+            } else if (ib.kind == .namespace) {
+                if (ib.namespace_used_properties) |props| {
+                    for (props) |prop_name| {
+                        if (self.linker.resolveExportChain(rec.resolved, prop_name, 0)) |c| {
+                            const canon_idx = @intFromEnum(c.module_index);
+                            if (canon_idx < self.modules.len) {
+                                try self.markExportUsed(@intCast(canon_idx), c.export_name);
+                            }
+                        }
+                        try self.markExportUsed(@intCast(target_mod), prop_name);
+                    }
+                } else {
+                    try self.markAllExportsUsed(@intCast(target_mod));
+                }
+            }
+        }
+        return false;
+    }
+
     fn isImportBindingUsed(self: *const TreeShaker, m: Module, ib: ImportBinding) bool {
         if (m.semantic) |sem| {
             if (sem.scope_maps.len > 0) {
@@ -357,7 +583,6 @@ pub const TreeShaker = struct {
             }
         } else return true;
 
-        // export { x }는 reference_count에 반영되지 않으므로 사전 구축된 set으로 O(1) 확인
         const mod_idx = @intFromEnum(m.index);
         if (mod_idx < self.re_export_sets.len) {
             if (self.re_export_sets[mod_idx]) |set| {
