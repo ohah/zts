@@ -74,6 +74,9 @@ pub const CodegenOptions = struct {
     ///         import.meta.dirname → __dirname, import.meta.filename → __filename
     /// - browser/neutral: import.meta.url → "", import.meta.dirname → "", import.meta.filename → ""
     platform: Platform = .browser,
+    /// 모듈 최상위 scope (name → symbol_index).
+    /// symbol_id가 전파되지 않은 identifier를 이름으로 직접 조회하는 fallback.
+    module_scope: ?*const std.StringHashMap(usize) = null,
 };
 
 // import.meta polyfill 상수 (emitMetaProperty + emitStaticMember에서 공유)
@@ -520,18 +523,16 @@ pub const Codegen = struct {
             .assignment_target_identifier,
             => {
                 if (self.options.linking_metadata) |meta| {
-                    const node_i = @intFromEnum(idx);
-                    if (node_i < meta.symbol_ids.len) {
-                        if (meta.symbol_ids[node_i]) |sym_id| {
-                            // namespace 변수 참조: ns를 값으로 사용 → 변수명으로 치환
-                            if (meta.ns_inline_objects.get(sym_id)) |entry| {
-                                try self.write(entry.var_name);
-                                return;
-                            }
-                            if (meta.renames.get(sym_id)) |new_name| {
-                                try self.write(new_name);
-                                return;
-                            }
+                    const sym_id = self.resolveSymbolId(idx, meta);
+                    if (sym_id) |sid| {
+                        // namespace 변수 참조: ns를 값으로 사용 → 변수명으로 치환
+                        if (meta.ns_inline_objects.get(sid)) |entry| {
+                            try self.write(entry.var_name);
+                            return;
+                        }
+                        if (meta.renames.get(sid)) |new_name| {
+                            try self.write(new_name);
+                            return;
                         }
                     }
                 }
@@ -1127,11 +1128,8 @@ pub const Codegen = struct {
         const key_node = self.ast.getNode(idx);
         // linking_metadata renames 확인
         if (self.options.linking_metadata) |meta| {
-            const node_i = @intFromEnum(idx);
-            if (node_i < meta.symbol_ids.len) {
-                if (meta.symbol_ids[node_i]) |sym_id| {
-                    if (meta.renames.get(sym_id) != null) return true;
-                }
+            if (self.resolveSymbolId(idx, meta)) |sym_id| {
+                if (meta.renames.get(sym_id) != null) return true;
             }
         }
         // ns_prefix 치환 확인
@@ -1144,6 +1142,28 @@ pub const Codegen = struct {
             }
         }
         return false;
+    }
+
+    /// identifier 노드의 symbol_id를 해결.
+    /// 1차: symbol_ids[node_i] (트랜스포머에서 전파된 값)
+    /// 2차: module_scope에서 이름으로 직접 조회 (전파 누락 fallback)
+    fn resolveSymbolId(self: *Codegen, idx: NodeIndex, meta: *const LinkingMetadata) ?u32 {
+        const node_i = @intFromEnum(idx);
+        // 1차: symbol_ids에서 직접 조회
+        if (node_i < meta.symbol_ids.len) {
+            if (meta.symbol_ids[node_i]) |sym_id| return sym_id;
+        }
+        // 2차: module_scope에서 이름으로 조회
+        if (self.options.module_scope) |scope| {
+            const node = self.ast.getNode(idx);
+            if (node.tag == .identifier_reference or node.tag == .binding_identifier or
+                node.tag == .assignment_target_identifier)
+            {
+                const name = self.ast.getText(node.data.string_ref);
+                if (scope.get(name)) |sym_idx| return @intCast(sym_idx);
+            }
+        }
+        return null;
     }
 
     fn emitComputedKey(self: *Codegen, node: Node) !void {
