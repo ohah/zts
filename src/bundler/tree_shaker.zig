@@ -24,7 +24,7 @@ const Linker = @import("linker.zig").Linker;
 const Ast = @import("../parser/ast.zig").Ast;
 const Node = @import("../parser/ast.zig").Node;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
-const CallFlags = @import("../parser/ast.zig").CallFlags;
+const purity = @import("purity.zig");
 
 pub const TreeShaker = struct {
     allocator: std.mem.Allocator,
@@ -235,128 +235,46 @@ pub const TreeShaker = struct {
 
     fn isStatementPure(ast: *const Ast, stmt: Node) bool {
         return switch (stmt.tag) {
-            // import/export 선언 — side effect 없음 (import 대상 모듈의 side effect는 별도 추적)
             .import_declaration,
             .export_all_declaration,
             => true,
 
-            // export named — 내부에 declaration이 있으면 그것도 검사
             .export_named_declaration => {
-                // extra: [declaration, specifiers_start, specifiers_len, source]
                 if (!ast.hasExtra(stmt.data.extra, 0)) return true;
                 const decl_idx = ast.readExtraNode(stmt.data.extra, 0);
-                if (decl_idx.isNone()) return true; // export { x } 또는 re-export
+                if (decl_idx.isNone()) return true;
                 if (@intFromEnum(decl_idx) >= ast.nodes.items.len) return true;
                 const decl = ast.nodes.items[@intFromEnum(decl_idx)];
                 return isStatementPure(ast, decl);
             },
 
-            // export default — 내부 expression/declaration 검사
             .export_default_declaration => {
-                // unary: operand = declaration 또는 expression
-                return isExpressionPure(ast, stmt.data.unary.operand);
+                const inner_idx = stmt.data.unary.operand;
+                if (inner_idx.isNone() or @intFromEnum(inner_idx) >= ast.nodes.items.len) return false;
+                const inner = ast.nodes.items[@intFromEnum(inner_idx)];
+                return switch (inner.tag) {
+                    .function_declaration => true,
+                    .class_declaration => !purity.classHasSideEffects(ast, inner),
+                    else => purity.isExprPure(ast, inner_idx),
+                };
             },
 
-            // 함수 선언 — 선언만, 호출 아님
             .function_declaration => true,
+            .class_declaration => !purity.classHasSideEffects(ast, stmt),
 
-            // class 선언 — extends나 static 초기화에 side effect 가능 → 보수적으로 불순
-            .class_declaration => false,
-
-            // TS 타입 선언 — 런타임에 존재하지 않음
             .ts_interface_declaration,
             .ts_type_alias_declaration,
             => true,
 
-            // TS enum/namespace — 런타임에 IIFE로 변환됨 → 불순
             .ts_enum_declaration,
             .ts_module_declaration,
             => false,
 
-            // 변수 선언 — 초기값에 따라 다름
-            .variable_declaration => isVarDeclPure(ast, stmt),
-
-            // expression statement — 내부 expression이 순수하면 OK
-            .expression_statement => isExpressionPure(ast, stmt.data.unary.operand),
+            .variable_declaration => purity.isVarDeclPure(ast, stmt),
+            .expression_statement => purity.isExprPure(ast, stmt.data.unary.operand),
 
             .empty_statement => true,
 
-            else => false,
-        };
-    }
-
-    fn isVarDeclPure(ast: *const Ast, stmt: Node) bool {
-        // variable_declaration: extra = [kind_flags, list.start, list.len]
-        const e = stmt.data.extra;
-        if (!ast.hasExtra(e, 2)) return false;
-        const list_start = ast.readExtra(e, 1);
-        const list_len = ast.readExtra(e, 2);
-        if (list_len == 0) return true;
-        if (list_start + list_len > ast.extra_data.items.len) return false;
-        const decls = ast.extra_data.items[list_start .. list_start + list_len];
-        for (decls) |raw| {
-            const idx: NodeIndex = @enumFromInt(raw);
-            if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) continue;
-            const decl = ast.nodes.items[@intFromEnum(idx)];
-            if (decl.tag != .variable_declarator) return false;
-            // variable_declarator: extra = [name, type_ann, init_expr]
-            const init_val = ast.readExtraNode(decl.data.extra, 2);
-            if (init_val.isNone()) continue;
-            if (!isExpressionPure(ast, init_val)) return false;
-        }
-        return true;
-    }
-
-    fn isExpressionPure(ast: *const Ast, idx: NodeIndex) bool {
-        if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return true;
-        const node = ast.nodes.items[@intFromEnum(idx)];
-        return switch (node.tag) {
-            // 리터럴 — 항상 순수
-            .boolean_literal,
-            .null_literal,
-            .numeric_literal,
-            .string_literal,
-            .bigint_literal,
-            .regexp_literal,
-            => true,
-
-            // template literal — 표현식 포함 가능 → 보수적으로 불순
-            .template_literal => false,
-
-            // 식별자 참조 — 읽기만, side effect 없음
-            .identifier_reference => true,
-
-            // 함수/arrow expression — 선언만, 호출 아님
-            .function_expression,
-            .arrow_function_expression,
-            => true,
-
-            // class expression — extends/static 초기화에 side effect 가능 → 보수적으로 불순
-            .class_expression => false,
-
-            // 배열/객체 리터럴 — 원소에 call 등 side effect 가능 → 보수적으로 불순
-            .array_expression, .object_expression => false,
-
-            // @__PURE__ call — 순수
-            .call_expression => {
-                if (ast.hasExtra(node.data.extra, 3)) {
-                    return (ast.readExtra(node.data.extra, 3) & CallFlags.is_pure) != 0;
-                }
-                return false;
-            },
-
-            // @__PURE__ new — 순수
-            .new_expression => {
-                if (ast.hasExtra(node.data.extra, 3)) {
-                    return (ast.readExtra(node.data.extra, 3) & CallFlags.is_pure) != 0;
-                }
-                return false;
-            },
-
-            // 괄호 expression — 내부가 순수하면 OK
-            .parenthesized_expression => isExpressionPure(ast, node.data.unary.operand),
-
-            // 나머지 — 보수적으로 불순
             else => false,
         };
     }
