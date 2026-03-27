@@ -75,7 +75,10 @@ src/
     graph.zig               #   모듈 그래프 (DFS, exec_index, 순환 감지)
     module.zig              #   모듈 데이터 (AST, import/export, 심볼, def_format, interop)
     linker.zig              #   스코프 호이스팅 + 이름 충돌 해결 + CJS→ESM Interop
-    tree_shaker.zig         #   Tree-shaking (export 추적, @__PURE__, sideEffects)
+    tree_shaker.zig         #   Tree-shaking (export 추적, @__PURE__, sideEffects, 도달성)
+    stmt_info.zig           #   StmtInfo (rolldown 방식 심볼 기반 statement 도달성 분석)
+    statement_shaker.zig    #   Statement-level DCE (span 기반 폴백)
+    purity.zig              #   순수성 분석 (expression/statement/varDecl/class 공유)
     chunk.zig               #   Code splitting (BitSet, 공통 청크, cross-chunk)
     emitter.zig             #   출력 생성 (exec_index 순서, ESM/CJS/IIFE)
     types.zig               #   번들러 자료 구조 (Interop, ModuleDefFormat, ExportsKind 등)
@@ -135,9 +138,9 @@ Entry Points
   → Resolver (경로 → 파일, node_modules, package.json exports)
   → Module Graph (BFS 파싱, DFS exec_index, 순환 감지)
   → Linker (스코프 호이스팅, 심볼 바인딩, 이름 충돌 해결)
-  → Tree Shaker (export 추적, @__PURE__, sideEffects, fixpoint)
+  → Tree Shaker (export 추적, @__PURE__, sideEffects, fixpoint, StmtInfo 도달성)
   → Chunker (BitSet 도달 가능성, 공통 청크 추출)
-  → Emitter (모듈별 transform+codegen, ESM/CJS/IIFE 출력)
+  → Emitter (모듈별 transform+codegen, StmtInfo DCE, ESM/CJS/IIFE 출력)
   → Output (bundle.js + chunks + .map)
 ```
 
@@ -206,6 +209,17 @@ Per-File Arena (단일 할당자, 파일 처리 후 한 번에 해제)
 - **.js Unambiguous 파싱**: oxc 방식 — import/export 유무로 module/script 자동 결정
 - **Parser API**: `configureFromExtension()` (CLI) / `configureForBundler()` (번들러) 분리
 
+### Tree-shaking Design (#458, #460)
+- **1단계 (모듈 수준)**: fixpoint 방식 export 사용 추적 + sideEffects + 자동 순수 판별
+- **2단계 (export 수준)**: purity.zig로 expression 순수성 분석 확장 (object/array/conditional/binary/unary/member)
+  - export_default_declaration 순수성 검사 → 미사용 `export default { ... }` 제거 (tslib 패턴)
+  - 재귀 깊이 128 제한 (stack overflow 방지)
+- **StmtInfo (rolldown 방식)**: stmt_info.zig — 심볼 인덱스 기반 statement 도달성 분석
+  - semantic analyzer의 `symbol_ids[node_index]` 재활용 → span 기반 이름 매칭 대체
+  - import 문을 side-effect-free로 처리 → 미사용 import가 다른 코드를 reachable로 만들지 않음
+  - emitter에서 new_ast + `transformer.new_symbol_ids`로 StmtInfo 구축 → linker rename 후에도 정확
+  - cross-module import 필터: importer의 도달성으로 dead import binding 스킵
+
 ### Semantic Analysis Design (D051-D055)
 - 파서에서 구문 컨텍스트 추적, Semantic 패스에서 스코프/심볼
 - 스코프: 플랫 배열 + 부모 인덱스. 심볼: 최소 모델 (name/scope/kind/flags/span)
@@ -226,7 +240,8 @@ Per-File Arena (단일 할당자, 파일 처리 후 한 번에 해제)
 | Test262 | 50,504건 100% 통과 | ✅ |
 
 ### 🔜 다음 우선순위
-- **Tree-shaker 2단계** (#458): export 수준 DCE — tslib 16KB→1KB, 대형 라이브러리 최적화
+- **Tree-shaker 3단계**: 2차 fixpoint refinement로 더 공격적인 DCE (pathe --platform=node 등)
+- **resolver module 필드 우선 해석**: platform=node에서 ESM module 필드 우선 (tslib, pathe)
 
 ### ⏳ 진행 중 / 미완료
 - **ES 다운레벨링**: ES2022~ES2015 ✅ (--target=es5 지원)

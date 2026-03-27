@@ -752,5 +752,18 @@
 - **이유**: ECMAScript 15.2.3.5 — `export *`는 `default`를 제외해야 함. date-fns에서 불필요한 default 추가 발견.
 - **참고**: esbuild, rolldown 모두 동일하게 default 제외
 
+### D093: Tree-shaker 2단계 — export 수준 DCE (2026-03-27)
+- **결정**: purity.zig 공유 모듈로 expression 순수성 분석 확장 + export_default_declaration 순수성 검사
+- **이유**: tslib `export default { ... }` 패턴에서 33개 함수가 모두 살아남음 (15.9KB vs esbuild 847B)
+- **설계**: object/array/conditional/binary/unary/member expression 순수성 판정. 재귀 깊이 128 제한.
+- **결과**: tslib 15.9KB → 793B (95% 감소)
+
+### D094: StmtInfo 기반 statement-level tree-shaking — rolldown 방식 (2026-03-27)
+- **결정**: rolldown의 StmtInfo 방식 도입 — 심볼 인덱스 기반 도달성 분석
+- **이유**: 기존 span 기반 이름 매칭은 linker rename 후 불일치 발생. import binding 추적 불가.
+- **설계**: semantic analyzer의 `symbol_ids[node_index]` 재활용. import를 side-effect-free로 처리. emitter에서 `transformer.new_symbol_ids`로 new_ast 기반 StmtInfo 구축.
+- **결과**: pathe 13.8KB → 3.2KB (ESM), fp-ts 11.3KB → 5.0KB, smoke ❌ 4→2개
+- **참고**: rolldown `StmtInfo` + `declared_stmts_by_symbol`, esbuild `Part` 시스템
+
 ### Phase 6 (Advanced) 미결정 사항
 - 개발 서버 고급 기능 (증분 재빌드, 프레임워크 통합)
