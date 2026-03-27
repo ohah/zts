@@ -241,11 +241,10 @@ Per-File Arena (단일 할당자, 파일 처리 후 한 번에 해제)
 | 6a-ex | exports 조건 해석 Node.js 스펙 준수 (tslib CJS→ESM 해결) | ✅ |
 | 6b. Dev server | HTTP+WS, Live Reload, HMR, React Fast Refresh, CSS 핫 리로드 | ✅ |
 | Test262 | 50,504건 100% 통과 | ✅ |
-| Smoke | 125개 패키지, avg 0.91x, ❌ 3개 (svelte/pathe/three) | ✅ |
+| Smoke | 125개 패키지, avg 0.87x, ❌ 2개 (svelte/three) | ✅ |
 
 ### 🔜 다음 우선순위
-- **Tree-shaker 3단계**: 2차 fixpoint refinement로 더 공격적인 DCE (pathe --platform=node 3.79x)
-- **smoke ❌ 개선**: svelte(15.69x), three(1.92x)
+- **smoke ❌ 개선**: svelte(14.74x), three(1.90x)
 
 ### ⏳ 진행 중 / 미완료
 - **ES 다운레벨링**: ES2022~ES2015 ✅ (--target=es5 지원)
