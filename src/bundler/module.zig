@@ -71,6 +71,8 @@ pub const Module = struct {
     exports_kind: types.ExportsKind = .none,
     /// 모듈 래핑 방식 (CJS → __commonJS 팩토리 함수)
     wrap_kind: types.WrapKind = .none,
+    /// 모듈 정의 형식 (확장자/package.json 기반, Rolldown ModuleDefFormat)
+    def_format: types.ModuleDefFormat = .unknown,
     /// Top-Level Await 사용 여부. TLA 모듈을 static import하는 모듈도 전이적으로 true.
     uses_top_level_await: bool = false,
     side_effects: bool,
@@ -97,6 +99,13 @@ pub const Module = struct {
         /// import 추출 완료, 사용 가능
         ready,
     };
+
+    /// CJS importee에 대한 interop 모드 결정 (Rolldown 방식).
+    /// importer(self)가 ESM 정의 형식이면 Node 모드, 아니면 Babel 모드.
+    pub fn interop(self: *const Module, importee: *const Module) ?types.Interop {
+        if (importee.exports_kind != .commonjs) return null;
+        return if (self.def_format.isEsm()) .node else .babel;
+    }
 
     pub fn init(index: ModuleIndex, path: []const u8) Module {
         return .{
