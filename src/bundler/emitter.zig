@@ -329,8 +329,7 @@ pub fn emitWithTreeShaking(
                 if (!s.isExportUsed(mod_idx, eb.exported_name)) continue;
 
                 // StmtInfo 도달성: 모든 importer에서 이 export의 import가 dead이면 제외.
-                if (eb.kind == .local and m.importers.items.len > 0)
-                {
+                if (eb.kind == .local and m.importers.items.len > 0) {
                     const is_dead = is_dead: {
                         var found_any = false;
                         for (m.importers.items) |importer_idx| {
