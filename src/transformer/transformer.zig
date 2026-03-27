@@ -869,7 +869,12 @@ pub const Transformer = struct {
         }
 
         if (old_i < self.old_symbol_ids.len) {
-            self.new_symbol_ids.items[new_i] = self.old_symbol_ids[old_i];
+            // ts_as_expression 등 wrapper 노드가 내부 노드와 같은 new_idx를 반환하면
+            // wrapper의 null symbol_id가 내부 노드의 유효한 symbol_id를 덮어쓸 수 있음.
+            // 이미 유효한 symbol_id가 설정되어 있으면 null로 덮어쓰지 않음.
+            if (self.old_symbol_ids[old_i] != null or self.new_symbol_ids.items[new_i] == null) {
+                self.new_symbol_ids.items[new_i] = self.old_symbol_ids[old_i];
+            }
         }
     }
 
