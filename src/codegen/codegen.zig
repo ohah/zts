@@ -309,18 +309,6 @@ pub const Codegen = struct {
             .false_ => try self.write("false"),
             .null_ => try self.write("null"),
             .undefined_ => try self.write("void 0"),
-            .number => {
-                var buf: [32]u8 = undefined;
-                const n = cv.number;
-                if (n == @trunc(n) and n >= -999 and n <= 999999) {
-                    const int: i64 = @intFromFloat(n);
-                    const s = std.fmt.bufPrint(&buf, "{d}", .{int}) catch return;
-                    try self.write(s);
-                } else {
-                    const s = std.fmt.bufPrint(&buf, "{d}", .{n}) catch return;
-                    try self.write(s);
-                }
-            },
             .none => {},
         }
     }
@@ -802,12 +790,9 @@ pub const Codegen = struct {
             // false && ... → false, true || ... → true
             .logical_expression => {
                 const left = self.evalBooleanCondition(cond.data.binary.left) orelse return null;
-                const op_text = self.ast.getText(cond.span);
-                if (std.mem.indexOf(u8, op_text, "&&") != null) {
-                    if (!left) return false; // false && ... → false
-                } else if (std.mem.indexOf(u8, op_text, "||") != null) {
-                    if (left) return true; // true || ... → true
-                }
+                const log_op: Kind = @enumFromInt(cond.data.binary.flags);
+                if (log_op == .amp2 and !left) return false;
+                if (log_op == .pipe2 and left) return true;
                 return null;
             },
             // !false → true, !true → false
