@@ -413,6 +413,42 @@ pub const Linker = struct {
 
         // 2. 충돌하는 이름에 대해 리네임 계산
         try self.calculateRenames(&name_to_owners, false);
+
+        // 3. import binding의 canonical name이 해당 모듈의 중첩 스코프와 충돌하는지 확인.
+        // 충돌하면 target module의 canonical name을 한 단계 더 rename.
+        // 예: d3-color의 cubehelix와 d3-interpolate 내부의 function cubehelix 충돌.
+        try self.resolveNestedShadowConflicts(&name_to_owners);
+    }
+
+    /// import binding의 canonical name이 importer 모듈의 중첩 스코프에 같은 이름이
+    /// 있으면, target module의 이름을 한 단계 더 rename하여 shadowing 충돌 방지.
+    fn resolveNestedShadowConflicts(self: *Linker, name_to_owners: *const NameToOwnersMap) !void {
+        for (self.modules, 0..) |m, mod_i| {
+            for (m.import_bindings) |ib| {
+                if (ib.kind == .namespace) continue;
+                const resolved = self.getResolvedBinding(@intCast(mod_i), ib.local_span) orelse continue;
+                const target_name = self.resolveToLocalName(resolved.canonical);
+
+                // target_name이 이 모듈의 중첩 스코프에 있고, local_name과 다르면 충돌
+                if (!std.mem.eql(u8, ib.local_name, target_name) and
+                    self.hasNestedBinding(@intCast(mod_i), target_name))
+                {
+                    // target module의 canonical name을 한 단계 더 rename
+                    const cmod: u32 = @intCast(@intFromEnum(resolved.canonical.module_index));
+                    const export_local = self.getExportLocalName(cmod, resolved.canonical.export_name) orelse resolved.canonical.export_name;
+                    const key = try makeExportKey(self.allocator, cmod, export_local);
+
+                    // 새 이름: target_name$N (기존 이름 충돌 없는 것)
+                    var suffix: u32 = 1;
+                    const candidate = try self.findAvailableCandidate(target_name, cmod, &suffix, name_to_owners);
+                    if (self.canonical_names.fetchRemove(key)) |old| {
+                        self.allocator.free(old.key);
+                        self.allocator.free(old.value);
+                    }
+                    try self.canonical_names.put(key, candidate);
+                }
+            }
+        }
     }
 
     /// minify 활성화 시, scope hoisting 후 모든 top-level 이름을 짧은 이름으로 교체.
@@ -860,6 +896,7 @@ pub const Linker = struct {
                 // import binding → target module의 canonical name으로 rename.
                 // scope hoisting 후 import가 제거되므로, 같은 이름이라도
                 // 항상 renames에 등록하여 codegen이 target 변수를 참조하도록 함.
+                // 중첩 스코프 충돌은 resolveNestedShadowConflicts에서 이미 처리됨.
                 if (!isReservedName(target_name)) {
                     if (module_scope.get(ib.local_name)) |sym_idx| {
                         try renames.put(@intCast(sym_idx), target_name);
