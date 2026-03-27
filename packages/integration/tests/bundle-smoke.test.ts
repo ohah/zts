@@ -202,4 +202,50 @@ describe("번들 스모크 테스트", () => {
     expect(result.exitCode).toBe(0);
     expect(result.runOutput).toBe("42");
   });
+
+  test("namespace import 동적 접근 (import * as + obj[key])", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `import * as lib from "./lib"; const k = "bar"; console.log(lib.foo(), lib[k]());`,
+      "lib.ts": `export function foo() { return "foo"; } export function bar() { return "bar"; }`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("foo bar");
+  });
+
+  test("namespace import Object.keys (import * as)", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `import * as lib from "./lib"; console.log(Object.keys(lib).sort().join(","));`,
+      "lib.ts": `export const a = 1; export const b = 2; export const c = 3;`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("a,b,c");
+  });
+
+  test("namespace import + for loop 동적 접근", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `import * as lib from "./lib"; const out: string[] = []; for (const k of Object.keys(lib)) { out.push(typeof (lib as any)[k]); } console.log(out.join(","));`,
+      "lib.ts": `export function foo() {} export function bar() {} export const val = 42;`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("function,function,number");
+  });
+
+  test("namespace import 변수명 충돌 방지 (_ns suffix)", async () => {
+    // z라는 이름이 내부에서 namespace import로 사용되고 re-export되는 패턴
+    const result = await bundleAndRun({
+      "index.ts": `import { z } from "./pkg"; console.log(z.foo());`,
+      "pkg.ts": `import * as z from "./inner"; export { z };`,
+      "inner.ts": `export function foo() { return "ok"; }`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("ok");
+  });
 });
