@@ -1257,22 +1257,10 @@ pub fn emitModule(
                                     if (sem.scope_maps[0].get(name)) |sym_idx| {
                                         used_sym_buf.append(arena_alloc, @intCast(sym_idx)) catch continue;
                                     } else {
-                                        // export_bindings에서 local_name으로 재시도
+                                        // export_bindings에서 local_name으로 scope_maps 재시도
                                         var found = false;
                                         for (module.export_bindings) |eb| {
                                             if (std.mem.eql(u8, eb.exported_name, name)) {
-                                                if (sem.scope_maps[0].get(eb.local_name)) |sym_idx| {
-                                                    used_sym_buf.append(arena_alloc, @intCast(sym_idx)) catch {};
-                                                    found = true;
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                        // "default" 등 semantic에 직접 없는 export:
-                                        // export_bindings의 local_name으로 scope_maps 재시도
-                                        if (!found) {
-                                            for (module.export_bindings) |eb| {
-                                                if (!std.mem.eql(u8, eb.exported_name, name)) continue;
                                                 if (sem.scope_maps[0].get(eb.local_name)) |sym_idx| {
                                                     used_sym_buf.append(arena_alloc, @intCast(sym_idx)) catch {};
                                                     found = true;
@@ -1280,7 +1268,7 @@ pub fn emitModule(
                                                 break;
                                             }
                                         }
-                                        // 그래도 못 찾으면 해당 statement를 side-effectful로 강제
+                                        // 못 찾으면 export_default_declaration을 side-effectful로 강제
                                         if (!found) {
                                             for (infos.stmts) |*stmt| {
                                                 if (stmt.node_idx < transformer.new_ast.nodes.items.len) {
