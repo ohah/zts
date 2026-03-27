@@ -77,11 +77,13 @@ pub const LinkingMetadata = struct {
         pub const Entry = struct {
             symbol_id: u32,
             object_literal: []const u8,
+            /// namespace 변수명 (동적 접근 시 변수 참조용)
+            var_name: []const u8,
         };
 
-        pub fn get(self: *const NsInlineObjects, sym_id: u32) ?[]const u8 {
-            for (self.entries) |e| {
-                if (e.symbol_id == sym_id) return e.object_literal;
+        pub fn get(self: *const NsInlineObjects, sym_id: u32) ?*const Entry {
+            for (self.entries) |*e| {
+                if (e.symbol_id == sym_id) return e;
             }
             return null;
         }
@@ -115,6 +117,7 @@ pub const LinkingMetadata = struct {
         if (self.ns_inline_objects.entries.len > 0) {
             for (self.ns_inline_objects.entries) |e| {
                 self.allocator.free(e.object_literal);
+                self.allocator.free(e.var_name);
             }
             self.allocator.free(self.ns_inline_objects.entries);
         }
@@ -765,13 +768,14 @@ pub const Linker = struct {
                     const ns_sym_id = module_scope.get(ib.local_name) orelse continue;
                     const effective_syms = override_symbol_ids orelse sem.symbol_ids;
 
-                    // esbuild 방식: ns.prop → 직접 치환, ns 값 사용 → 인라인 객체
+                    // esbuild 방식: ns.prop → 직접 치환, ns 값 사용 → 변수 선언 + 참조
                     const need_inline = isNamespaceUsedAsValue(self.allocator, new_ast, effective_syms, @intCast(ns_sym_id));
                     try self.registerNamespaceRewrites(
                         &ns_rewrite_list,
                         if (need_inline) &ns_inline_list else null,
                         @intCast(ns_sym_id),
                         @intCast(canonical_mod),
+                        ib.local_name,
                     );
                     continue;
                 }
@@ -813,6 +817,7 @@ pub const Linker = struct {
                                                     &ns_inline_list,
                                                     @intCast(import_sym_id),
                                                     @intFromEnum(src),
+                                                    ib.local_name,
                                                 );
                                                 break :blk ib.local_name;
                                             }
@@ -838,6 +843,7 @@ pub const Linker = struct {
                                         &ns_inline_list,
                                         @intCast(imp_sym),
                                         @intCast(ns_target_mod),
+                                        ib.local_name,
                                     );
                                     break :blk ib.local_name;
                                 }
@@ -923,12 +929,32 @@ pub const Linker = struct {
         } else .{};
         ns_inline_list.deinit(self.allocator);
 
+        // namespace 변수 선언을 preamble에 추가: var gql = {parse: parse, ...};
+        var ns_preamble_buf: std.ArrayList(u8) = .empty;
+        defer ns_preamble_buf.deinit(self.allocator);
+        for (ns_inlines.entries) |entry| {
+            try ns_preamble_buf.appendSlice(self.allocator, "var ");
+            try ns_preamble_buf.appendSlice(self.allocator, entry.var_name);
+            try ns_preamble_buf.appendSlice(self.allocator, " = ");
+            try ns_preamble_buf.appendSlice(self.allocator, entry.object_literal);
+            try ns_preamble_buf.appendSlice(self.allocator, ";\n");
+        }
+        const combined_preamble: ?[]const u8 = if (ns_preamble_buf.items.len > 0) blk: {
+            // ns preamble이 있으면 cjs preamble과 합침
+            const combined = try std.mem.concat(self.allocator, u8, &.{
+                cjs_import_preamble orelse "",
+                ns_preamble_buf.items,
+            });
+            if (cjs_import_preamble) |p| self.allocator.free(p);
+            break :blk combined;
+        } else cjs_import_preamble;
+
         return .{
             .skip_nodes = skip_nodes,
             .renames = renames,
             .final_exports = final_exports,
             .symbol_ids = sem.symbol_ids,
-            .cjs_import_preamble = cjs_import_preamble,
+            .cjs_import_preamble = combined_preamble,
             .default_export_name = default_export_name,
             .ns_member_rewrites = ns_rewrites,
             .ns_inline_objects = ns_inlines,
@@ -1494,6 +1520,7 @@ pub const Linker = struct {
         ns_inline_list: ?*std.ArrayList(LinkingMetadata.NsInlineObjects.Entry),
         symbol_id: u32,
         target_mod_idx: u32,
+        var_name: []const u8,
     ) std.mem.Allocator.Error!void {
         var exports: std.ArrayList(NsExportPair) = .empty;
         // owned 문자열은 inner_map으로 소유권 이동 — 여기서 free하지 않음
@@ -1518,6 +1545,7 @@ pub const Linker = struct {
             try list.append(self.allocator, .{
                 .symbol_id = symbol_id,
                 .object_literal = obj_str,
+                .var_name = try self.allocator.dupe(u8, var_name),
             });
         }
     }
