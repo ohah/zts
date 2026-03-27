@@ -143,7 +143,8 @@ pub fn build(
         const node = ast.nodes.items[ni];
 
         // side-effects 판정: import는 side-effect-free (도달성 분석 핵심)
-        const side_effects = if (node.tag == .import_declaration) false else hasSideEffects(ast, node);
+        // import は side-effect-free (도달성 분석의 핵심: 미사용 import가 seed되지 않음)
+        const side_effects = if (node.tag == .import_declaration) false else purity.stmtHasSideEffects(ast, node);
 
         // 심볼 수집: 이 statement의 span 안에 있는 모든 노드의 symbol_ids
         var declared_buf: std.ArrayListUnmanaged(u32) = .empty;
@@ -214,41 +215,6 @@ pub fn build(
         .symbol_to_stmt = sym_to_stmt,
         .allocator = allocator,
     };
-}
-
-/// statement가 side effects를 가지는지 판정 (purity.zig 활용).
-fn hasSideEffects(ast: *const Ast, node: Node) bool {
-    switch (node.tag) {
-        .function_declaration => return false,
-        .class_declaration => return purity.classHasSideEffects(ast, node),
-        .variable_declaration => return !purity.isVarDeclPure(ast, node),
-        .export_named_declaration => {
-            const e = node.data.extra;
-            if (e + 3 < ast.extra_data.items.len) {
-                const decl_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
-                if (!decl_idx.isNone() and @intFromEnum(decl_idx) < ast.nodes.items.len) {
-                    return hasSideEffects(ast, ast.nodes.items[@intFromEnum(decl_idx)]);
-                }
-                return false;
-            }
-            return true;
-        },
-        .export_default_declaration => {
-            const inner_idx = node.data.unary.operand;
-            if (inner_idx.isNone() or @intFromEnum(inner_idx) >= ast.nodes.items.len) return true;
-            const inner = ast.nodes.items[@intFromEnum(inner_idx)];
-            return switch (inner.tag) {
-                .function_declaration => false,
-                .class_declaration => purity.classHasSideEffects(ast, inner),
-                else => !purity.isNodePure(ast, inner),
-            };
-        },
-        // import 문은 이 함수에서 호출되지 않음 (build에서 별도 처리)
-        .import_declaration => return false,
-        .export_all_declaration => return true,
-        .empty_statement => return false,
-        else => return true,
-    }
 }
 
 // ============================================================

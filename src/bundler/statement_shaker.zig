@@ -332,38 +332,11 @@ fn extractArrayPatternNames(
 }
 
 /// statement가 side effects를 가지는지 보수적으로 판정한다.
+/// import/export 문은 linker skip_nodes와 충돌 방지를 위해 항상 side-effectful로 처리.
 fn hasSideEffects(ast: *const Ast, node: Node) bool {
-    switch (node.tag) {
-        .function_declaration => return false,
-        .class_declaration => return purity.classHasSideEffects(ast, node),
-        .variable_declaration => return !purity.isVarDeclPure(ast, node),
-        .export_named_declaration => {
-            const e = node.data.extra;
-            if (e + 3 < ast.extra_data.items.len) {
-                const decl_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
-                if (!decl_idx.isNone() and @intFromEnum(decl_idx) < ast.nodes.items.len) {
-                    return hasSideEffects(ast, ast.nodes.items[@intFromEnum(decl_idx)]);
-                }
-                return false;
-            }
-            return true;
-        },
-        .export_default_declaration => {
-            // "default"는 extractDeclaredNames에서 등록됨.
-            // used_export_names에 "default"가 없으면 seed 안 됨 → 자동 제거.
-            const inner_idx = node.data.unary.operand;
-            if (inner_idx.isNone() or @intFromEnum(inner_idx) >= ast.nodes.items.len) return true;
-            const inner = ast.nodes.items[@intFromEnum(inner_idx)];
-            return switch (inner.tag) {
-                .function_declaration => false,
-                .class_declaration => purity.classHasSideEffects(ast, inner),
-                else => !purity.isNodePure(ast, inner),
-            };
-        },
-        // import/export 문은 linker skip_nodes와 충돌 방지를 위해 건드리지 않음
-        .import_declaration, .export_all_declaration => return true,
-        else => return true,
-    }
+    // import는 linker가 skip_nodes로 관리하므로 side-effectful 유지
+    if (node.tag == .import_declaration) return true;
+    return purity.stmtHasSideEffects(ast, node);
 }
 
 /// 모든 AST 노드를 순회하면서 identifier_reference를 찾고,

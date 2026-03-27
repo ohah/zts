@@ -293,39 +293,6 @@ pub const TreeShaker = struct {
         return self.used_exports.contains(key);
     }
 
-    /// export의 심볼이 다른 reachable statement에서 참조되는지 확인.
-    /// 자기 자신의 선언은 제외 — "이 export 없이도 참조되는가?"를 판정.
-    pub fn isExportReachableInModule(self: *const TreeShaker, module_index: u32, local_name: []const u8) bool {
-        if (module_index >= self.reachable_stmts.len) return true;
-        const reachable = self.reachable_stmts[module_index] orelse return true;
-        const infos = if (module_index < self.module_stmt_infos.len)
-            (self.module_stmt_infos[module_index] orelse return true)
-        else
-            return true;
-        const m = self.modules[module_index];
-        const sem = m.semantic orelse return true;
-        if (sem.scope_maps.len == 0) return true;
-        const sym_idx = sem.scope_maps[0].get(local_name) orelse return true;
-
-        // 이 심볼을 선언하는 statement 자체가 side-effectful이면 reachable
-        if (infos.declaredStmtBySymbol(@intCast(sym_idx))) |decl_stmt| {
-            if (infos.stmts[decl_stmt].has_side_effects) return true;
-        }
-
-        // 다른 reachable statement에서 이 심볼을 참조하는지 확인
-        for (infos.stmts, 0..) |stmt, si| {
-            if (!reachable.isSet(si)) continue;
-            // 자기 자신의 선언 statement는 제외
-            if (infos.declaredStmtBySymbol(@intCast(sym_idx))) |decl_stmt| {
-                if (si == decl_stmt) continue;
-            }
-            for (stmt.referenced_symbols) |ref_sym| {
-                if (ref_sym == sym_idx) return true;
-            }
-        }
-        return false;
-    }
-
     /// import binding의 심볼이 해당 모듈에서 reachable statement에서 참조되는지 확인.
     /// emitter가 export_bindings 필터링에 사용.
     pub fn isImportLiveInModule(self: *const TreeShaker, module_index: u32, local_name: []const u8) bool {
@@ -482,96 +449,6 @@ pub const TreeShaker = struct {
             }
         }
         return newly_included;
-    }
-
-    /// import binding이 실제로 사용되는지 판별.
-    /// reference_count > 0이거나, export { x }로 re-export되면 "사용됨".
-    /// semantic data 없으면 보수적으로 true.
-    /// processModuleImports의 도달성 기반 버전. module inclusion을 변경하지 않음.
-    fn processModuleImportsWithReachability(self: *TreeShaker, m: Module) !bool {
-        const mod_idx = @intFromEnum(m.index);
-        // 도달성 데이터 필요
-        const reachable = if (mod_idx < self.reachable_stmts.len)
-            (self.reachable_stmts[mod_idx] orelse return try self.processModuleImports(m))
-        else
-            return try self.processModuleImports(m);
-        const infos = if (mod_idx < self.module_stmt_infos.len)
-            (self.module_stmt_infos[mod_idx] orelse return try self.processModuleImports(m))
-        else
-            return try self.processModuleImports(m);
-        const sem = m.semantic orelse return try self.processModuleImports(m);
-        if (sem.scope_maps.len == 0) return try self.processModuleImports(m);
-
-        for (m.import_bindings) |ib| {
-            if (ib.import_record_index >= m.import_records.len) continue;
-            const rec = m.import_records[ib.import_record_index];
-            if (rec.resolved.isNone()) continue;
-            const target_mod = @intFromEnum(rec.resolved);
-            if (target_mod >= self.modules.len) continue;
-
-            // StmtInfo 도달성 기반 import binding liveness 판정
-            const sym_idx = sem.scope_maps[0].get(ib.local_name) orelse {
-                // 심볼 resolve 실패 → 보수적으로 live
-                if (!self.isImportBindingUsed(m, ib)) continue;
-                // 이하 기존 로직
-                const canonical = self.linker.resolveExportChain(rec.resolved, ib.imported_name, 0);
-                if (canonical) |c| {
-                    const canon_idx = @intFromEnum(c.module_index);
-                    if (canon_idx < self.modules.len) try self.markExportUsed(@intCast(canon_idx), c.export_name);
-                    if (canon_idx != target_mod) try self.markExportUsed(@intCast(target_mod), ib.imported_name);
-                }
-                continue;
-            };
-
-            // reachable statement에서 이 심볼을 참조하는지 확인
-            var is_live = false;
-            for (infos.stmts, 0..) |stmt, si| {
-                if (!reachable.isSet(si)) continue;
-                for (stmt.referenced_symbols) |ref_sym| {
-                    if (ref_sym == sym_idx) {
-                        is_live = true;
-                        break;
-                    }
-                }
-                if (is_live) break;
-            }
-            // re-export set 확인
-            if (!is_live) {
-                if (mod_idx < self.re_export_sets.len) {
-                    if (self.re_export_sets[mod_idx]) |set| {
-                        if (set.contains(ib.local_name)) is_live = true;
-                    }
-                }
-            }
-            if (!is_live) continue;
-
-            // 기존 canonical resolution + export 마킹 (module inclusion 변경 안 함)
-            const canonical = self.linker.resolveExportChain(rec.resolved, ib.imported_name, 0);
-            if (canonical) |c| {
-                const canon_idx = @intFromEnum(c.module_index);
-                if (canon_idx < self.modules.len) {
-                    try self.markExportUsed(@intCast(canon_idx), c.export_name);
-                }
-                if (canon_idx != target_mod) {
-                    try self.markExportUsed(@intCast(target_mod), ib.imported_name);
-                }
-            } else if (ib.kind == .namespace) {
-                if (ib.namespace_used_properties) |props| {
-                    for (props) |prop_name| {
-                        if (self.linker.resolveExportChain(rec.resolved, prop_name, 0)) |c| {
-                            const canon_idx = @intFromEnum(c.module_index);
-                            if (canon_idx < self.modules.len) {
-                                try self.markExportUsed(@intCast(canon_idx), c.export_name);
-                            }
-                        }
-                        try self.markExportUsed(@intCast(target_mod), prop_name);
-                    }
-                } else {
-                    try self.markAllExportsUsed(@intCast(target_mod));
-                }
-            }
-        }
-        return false;
     }
 
     fn isImportBindingUsed(self: *const TreeShaker, m: Module, ib: ImportBinding) bool {
