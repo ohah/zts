@@ -699,6 +699,47 @@ pub const SemanticAnalyzer = struct {
         }
     }
 
+    const ConstValue = @import("symbol.zig").ConstValue;
+
+    /// AST 노드에서 컴파일 타임 상수 값을 추출한다.
+    fn extractConstValue(self: *const SemanticAnalyzer, node: Node) ConstValue {
+        return switch (node.tag) {
+            .boolean_literal => blk: {
+                const text = self.ast.source[node.span.start..node.span.end];
+                break :blk .{ .kind = if (std.mem.eql(u8, text, "true")) .true_ else .false_ };
+            },
+            .null_literal => .{ .kind = .null_ },
+            .numeric_literal => blk: {
+                const text = self.ast.source[node.span.start..node.span.end];
+                const n = std.fmt.parseFloat(f64, text) catch break :blk ConstValue{};
+                break :blk .{ .kind = .number, .number = n };
+            },
+            .identifier_reference => blk: {
+                const text = self.ast.source[node.span.start..node.span.end];
+                if (std.mem.eql(u8, text, "undefined")) break :blk ConstValue{ .kind = .undefined_ };
+                break :blk ConstValue{};
+            },
+            .unary_expression => blk: {
+                // void 0 → undefined
+                const text = self.ast.source[node.span.start..node.span.end];
+                if (std.mem.eql(u8, text, "void 0")) break :blk ConstValue{ .kind = .undefined_ };
+                break :blk ConstValue{};
+            },
+            else => .{},
+        };
+    }
+
+    /// 심볼에 const_value를 설정한다.
+    fn setSymbolConstValue(self: *SemanticAnalyzer, name_span: Span, cv: ConstValue) void {
+        const name = self.ast.source[name_span.start..name_span.end];
+        const scope_idx = self.current_scope.toIndex();
+        if (scope_idx >= self.scope_maps.items.len) return;
+        const sym_idx = self.scope_maps.items[scope_idx].get(name) orelse return;
+        if (sym_idx < self.symbols.items.len) {
+            self.symbols.items[sym_idx].const_value = cv;
+        }
+    }
+
     /// 노드가 @__NO_SIDE_EFFECTS__ 함수/arrow인지 확인.
     fn isFunctionWithNoSideEffects(self: *const SemanticAnalyzer, node: Node) bool {
         const e = node.data.extra;
@@ -1929,14 +1970,23 @@ pub const SemanticAnalyzer = struct {
                 // init 표현식도 순회 (내부에 함수 표현식 등이 있을 수 있음)
                 try self.visitNode(init_idx);
 
-                // @__NO_SIDE_EFFECTS__ 전파: init가 function/arrow이고 no_side_effects이면
-                // 변수 symbol에도 마킹 → 이 변수를 호출하면 자동 pure
                 if (!init_idx.isNone() and @intFromEnum(init_idx) < self.ast.nodes.items.len) {
                     const init_node = self.ast.getNode(init_idx);
+                    // @__NO_SIDE_EFFECTS__ 전파
                     if (self.isFunctionWithNoSideEffects(init_node)) {
                         if (!binding_idx.isNone() and @intFromEnum(binding_idx) < self.ast.nodes.items.len) {
                             const binding_node = self.ast.getNode(binding_idx);
                             self.markSymbolNoSideEffects(binding_node.span);
+                        }
+                    }
+                    // const/let 리터럴 → const_value 설정 (번들러 상수 인라인용)
+                    if (sym_kind == .variable_const or sym_kind == .variable_let) {
+                        const cv = self.extractConstValue(init_node);
+                        if (cv.kind != .none) {
+                            if (!binding_idx.isNone() and @intFromEnum(binding_idx) < self.ast.nodes.items.len) {
+                                const binding_node = self.ast.getNode(binding_idx);
+                                self.setSymbolConstValue(binding_node.span, cv);
+                            }
                         }
                     }
                 }
@@ -2099,6 +2149,13 @@ pub const SemanticAnalyzer = struct {
                 }
                 // scope_maps[0]에 "_default" 등록 — emitter/StmtInfo가 찾을 수 있도록
                 try self.scope_maps.items[module_scope.toIndex()].put("_default", sym_index);
+                // export default <literal> → facade 심볼에 const_value 설정
+                if (!inner_idx.isNone() and @intFromEnum(inner_idx) < self.ast.nodes.items.len) {
+                    const cv = self.extractConstValue(self.ast.getNode(inner_idx));
+                    if (cv.kind != .none) {
+                        self.symbols.items[sym_index].const_value = cv;
+                    }
+                }
             }
         }
 

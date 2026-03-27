@@ -782,7 +782,7 @@ test "graph: single module, no imports" {
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
@@ -805,7 +805,7 @@ test "graph: A imports B — correct exec order" {
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
@@ -832,7 +832,7 @@ test "graph: chain A → B → C — correct exec order" {
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
@@ -862,7 +862,7 @@ test "graph: diamond A→B,C; B→D; C→D — no duplicate" {
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
@@ -895,7 +895,7 @@ test "graph: circular dependency — warning emitted" {
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
@@ -922,7 +922,7 @@ test "graph: external module — not in graph" {
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{"react"});
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{"react"}, &.{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
@@ -943,7 +943,7 @@ test "graph: unresolved import — error diagnostic" {
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
@@ -969,7 +969,7 @@ test "graph: bidirectional edges (D078)" {
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
@@ -993,7 +993,7 @@ test "graph: re-export adds dependency" {
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
@@ -1017,7 +1017,7 @@ test "graph: multiple entry points" {
     const e2 = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry2.ts" });
     defer std.testing.allocator.free(e2);
 
-    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
@@ -1041,7 +1041,7 @@ test "graph: dynamic import stored in dynamic_imports" {
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
@@ -1065,7 +1065,7 @@ test "graph: JSON module — no AST, in graph" {
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
@@ -1089,7 +1089,7 @@ test "graph: semantic data preserved after build" {
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
@@ -1120,7 +1120,7 @@ test "graph: semantic data null for non-JS modules" {
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
@@ -1143,7 +1143,7 @@ test "graph: semantic exported_names tracks default export" {
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
@@ -1165,7 +1165,7 @@ test "graph: import/export bindings preserved after build" {
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{});
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();

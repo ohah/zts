@@ -300,6 +300,31 @@ pub const Codegen = struct {
 
     /// span 범위의 텍스트를 출력한다.
     /// source 또는 string_table에서 투명하게 읽는다 (getText 사용).
+    const ConstValue = @import("../semantic/symbol.zig").ConstValue;
+
+    /// ConstValue를 리터럴 문자열로 출력한다.
+    fn writeConstValue(self: *Codegen, cv: ConstValue) !void {
+        switch (cv.kind) {
+            .true_ => try self.write("true"),
+            .false_ => try self.write("false"),
+            .null_ => try self.write("null"),
+            .undefined_ => try self.write("void 0"),
+            .number => {
+                var buf: [32]u8 = undefined;
+                const n = cv.number;
+                if (n == @trunc(n) and n >= -999 and n <= 999999) {
+                    const int: i64 = @intFromFloat(n);
+                    const s = std.fmt.bufPrint(&buf, "{d}", .{int}) catch return;
+                    try self.write(s);
+                } else {
+                    const s = std.fmt.bufPrint(&buf, "{d}", .{n}) catch return;
+                    try self.write(s);
+                }
+            },
+            .none => {},
+        }
+    }
+
     fn writeSpan(self: *Codegen, span: Span) !void {
         const text = self.ast.getText(span);
         if (self.options.ascii_only) {
@@ -522,6 +547,13 @@ pub const Codegen = struct {
                 if (self.options.linking_metadata) |meta| {
                     const sym_id = self.resolveSymbolId(idx, meta);
                     if (sym_id) |sid| {
+                        // 상수 인라인: import symbol이 상수이면 리터럴로 대체
+                        if (node.tag == .identifier_reference) {
+                            if (meta.const_values.get(sid)) |cv| {
+                                try self.writeConstValue(cv);
+                                return;
+                            }
+                        }
                         // namespace 변수 참조: ns를 값으로 사용 → 변수명으로 치환
                         if (meta.ns_inline_objects.get(sid)) |entry| {
                             try self.write(entry.var_name);
@@ -707,15 +739,28 @@ pub const Codegen = struct {
 
     fn emitIf(self: *Codegen, node: Node) !void {
         const t = node.data.ternary;
+        // 상수 조건 DCE: if (false) → else만 출력, if (true) → then만 출력
+        if (self.options.linking_metadata != null) {
+            if (self.evalBooleanCondition(t.a)) |known| {
+                if (!known) {
+                    // if (false) { ... } else { alt } → alt만 출력
+                    if (!t.c.isNone()) {
+                        try self.emitNode(t.c);
+                    }
+                    return;
+                } else {
+                    // if (true) { ... } → then만 출력
+                    try self.emitNode(t.b);
+                    return;
+                }
+            }
+        }
         if (self.options.minify) try self.write("if(") else try self.write("if (");
         try self.emitNode(t.a);
         try self.writeByte(')');
         try self.emitNode(t.b);
         if (!t.c.isNone()) {
-            // minify: }else — 다음이 block이면 공백 불필요, if면 필수
-            // non-minify: } else  — emitBracedList가 { 앞 공백을 관리
             if (self.options.minify) {
-                // else 뒤에 if가 오면 공백 필수 (elseif 방지), block이면 불필요
                 const next_node = self.ast.getNode(t.c);
                 if (next_node.tag == .block_statement) {
                     try self.write("else");
@@ -727,6 +772,57 @@ pub const Codegen = struct {
             }
             try self.emitNode(t.c);
         }
+    }
+
+    /// 조건 노드가 컴파일 타임 boolean으로 확정되면 값을 반환한다.
+    fn evalBooleanCondition(self: *Codegen, cond_idx: NodeIndex) ?bool {
+        if (cond_idx.isNone() or @intFromEnum(cond_idx) >= self.ast.nodes.items.len) return null;
+        const cond = self.ast.getNode(cond_idx);
+        return switch (cond.tag) {
+            .boolean_literal => {
+                const text = self.ast.getText(cond.span);
+                return std.mem.eql(u8, text, "true");
+            },
+            .identifier_reference => {
+                const meta = self.options.linking_metadata orelse return null;
+                const sym_id = self.resolveSymbolId(cond_idx, meta) orelse return null;
+                const cv = meta.const_values.get(sym_id) orelse return null;
+                return switch (cv.kind) {
+                    .true_ => true,
+                    .false_ => false,
+                    else => null,
+                };
+            },
+            .null_literal => false,
+            .numeric_literal => {
+                const text = self.ast.getText(cond.span);
+                const n = std.fmt.parseFloat(f64, text) catch return null;
+                return n != 0;
+            },
+            // false && ... → false, true || ... → true
+            .logical_expression => {
+                const left = self.evalBooleanCondition(cond.data.binary.left) orelse return null;
+                const op_text = self.ast.getText(cond.span);
+                if (std.mem.indexOf(u8, op_text, "&&") != null) {
+                    if (!left) return false; // false && ... → false
+                } else if (std.mem.indexOf(u8, op_text, "||") != null) {
+                    if (left) return true; // true || ... → true
+                }
+                return null;
+            },
+            // !false → true, !true → false
+            .unary_expression => {
+                const operand_idx = cond.data.unary.operand;
+                if (!operand_idx.isNone() and @intFromEnum(operand_idx) < self.ast.nodes.items.len) {
+                    const op_text = self.ast.source[cond.span.start..cond.span.end];
+                    if (op_text.len > 0 and op_text[0] == '!') {
+                        if (self.evalBooleanCondition(operand_idx)) |v| return !v;
+                    }
+                }
+                return null;
+            },
+            else => null,
+        };
     }
 
     fn emitWhile(self: *Codegen, node: Node) !void {
@@ -972,6 +1068,13 @@ pub const Codegen = struct {
         if (e + 1 >= extras.len) return;
         const operand: NodeIndex = @enumFromInt(extras[e]);
         const op: Kind = @enumFromInt(@as(u8, @truncate(extras[e + 1])));
+        // !false → true, !true → false
+        if (op == .bang and self.options.linking_metadata != null) {
+            if (self.evalBooleanCondition(operand)) |v| {
+                try self.write(if (!v) "true" else "false");
+                return;
+            }
+        }
         try self.write(op.symbol());
         if (op == .kw_typeof or op == .kw_void or op == .kw_delete) try self.writeByte(' ');
         try self.emitNode(operand);
@@ -991,8 +1094,22 @@ pub const Codegen = struct {
     }
 
     fn emitBinary(self: *Codegen, node: Node) !void {
-        try self.emitNode(node.data.binary.left);
         const op: Kind = @enumFromInt(node.data.binary.flags);
+        // false && ... → false, true || ... → true (short-circuit 폴딩)
+        if (self.options.linking_metadata != null and node.tag == .logical_expression) {
+            if (self.evalBooleanCondition(node.data.binary.left)) |left_val| {
+                if ((op == .amp2 and !left_val) or
+                    (op == .pipe2 and left_val))
+                {
+                    try self.write(if (left_val) "true" else "false");
+                    return;
+                }
+                // true && expr → expr, false || expr → expr
+                try self.emitNode(node.data.binary.right);
+                return;
+            }
+        }
+        try self.emitNode(node.data.binary.left);
         // 키워드 연산자(in, instanceof)와 +/- 는 minify에서도 공백 필수
         // in/instanceof: 공백 없으면 식별자와 붙음 (xinstanceofy)
         // +/-: 공백 없으면 ++/-- 와 혼동 (a+ +b → a++b)
@@ -1025,6 +1142,13 @@ pub const Codegen = struct {
 
     fn emitConditional(self: *Codegen, node: Node) !void {
         const t = node.data.ternary;
+        // false ? x : y → y, true ? x : y → x
+        if (self.options.linking_metadata != null) {
+            if (self.evalBooleanCondition(t.a)) |cond| {
+                try self.emitNode(if (cond) t.b else t.c);
+                return;
+            }
+        }
         try self.emitNode(t.a);
         try self.writeSpace();
         try self.writeByte('?');

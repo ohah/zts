@@ -52,6 +52,8 @@ pub const BundleOptions = struct {
     use_define_for_class_fields: bool = true,
     /// ES 타겟 레벨
     target: @import("../transformer/transformer.zig").TransformOptions.Target = .esnext,
+    /// package.json exports 커스텀 조건 (--conditions, esbuild 호환)
+    conditions: []const []const u8 = &.{},
 };
 
 pub const BundleResult = struct {
@@ -146,7 +148,7 @@ pub const Bundler = struct {
         return .{
             .allocator = allocator,
             .options = options,
-            .resolve_cache = ResolveCache.init(allocator, options.platform, options.external),
+            .resolve_cache = ResolveCache.init(allocator, options.platform, options.external, options.conditions),
         };
     }
 
@@ -8000,7 +8002,7 @@ test "CJS: ExportsKind promotion — .js required becomes CJS" {
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{});
+    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
@@ -8098,7 +8100,7 @@ test "CJS: require overrides ESM promotion (both import and require same module)
     const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
     defer std.testing.allocator.free(entry);
 
-    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{});
+    var cache = ResolveCache.init(std.testing.allocator, .browser, &.{}, &.{});
     defer cache.deinit();
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
