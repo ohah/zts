@@ -329,8 +329,7 @@ pub fn emitWithTreeShaking(
                 if (!s.isExportUsed(mod_idx, eb.exported_name)) continue;
 
                 // StmtInfo 도달성: 모든 importer에서 이 export의 import가 dead이면 제외.
-                // TODO: export_bindings 필터 — cheerio/arktype regression 해결 후 활성화
-                if (false and eb.kind == .local and m.importers.items.len > 0 and
+                if (eb.kind == .local and m.importers.items.len > 0 and
                     !std.mem.eql(u8, eb.exported_name, "default"))
                 {
                     const is_dead = is_dead: {
@@ -369,24 +368,9 @@ pub fn emitWithTreeShaking(
                     if (ib.import_record_index >= importer.import_records.len) continue;
                     if (importer.import_records[ib.import_record_index].resolved == m.index) {
                         // StmtInfo 도달성으로 dead import 필터링.
-                        // reference_count > 0인데 도달 불가이면 StmtInfo 분석 오류 가능 → 보수적으로 live.
                         if (shaker) |sk| {
                             if (!sk.isImportLiveInModule(@intCast(imp_i), ib.local_name)) {
-                                // reference_count 폴백: semantic에서 참조가 있으면 live 유지
-                                const imp_sem = graph.modules.items[imp_i].semantic;
-                                if (imp_sem) |isem| {
-                                    if (isem.scope_maps.len > 0) {
-                                        if (isem.scope_maps[0].get(ib.local_name)) |sym_idx| {
-                                            if (sym_idx < isem.symbols.len and isem.symbols[sym_idx].reference_count > 0) {
-                                                // reference_count > 0 but StmtInfo says dead → 보수적으로 live
-                                            } else {
-                                                continue; // 진짜 dead
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    continue; // semantic 없으면 StmtInfo 판정 신뢰
-                                }
+                                continue;
                             }
                         }
                         names_buf.append(allocator, ib.imported_name) catch break :blk null;
