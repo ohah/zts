@@ -248,4 +248,76 @@ describe("번들 스모크 테스트", () => {
     expect(result.exitCode).toBe(0);
     expect(result.runOutput).toBe("ok");
   });
+
+  test("namespace 변수명 progressive 충돌 방지 (z_ns export 존재 시 z_ns2)", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `import * as z from "./lib"; console.log(z.foo(), z.z_ns, Object.keys(z).sort().join(","));`,
+      "lib.ts": `export function foo() { return "ok"; } export const z_ns = 42;`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("ok 42 foo,z_ns");
+  });
+
+  test("namespace 변수명 이중 충돌 (z_ns + z_ns2 export 존재 시 z_ns3)", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `import * as z from "./lib"; console.log(z.foo(), z.z_ns, z.z_ns2, Object.keys(z).sort().join(","));`,
+      "lib.ts": `export function foo() { return "ok"; } export const z_ns = 1; export const z_ns2 = 2;`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("ok 1 2 foo,z_ns,z_ns2");
+  });
+
+  test("namespace import 빈 모듈", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `import * as empty from "./lib"; console.log(Object.keys(empty).length);`,
+      "lib.ts": `// empty`,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("0");
+  });
+
+  test("namespace import를 함수 인자로 전달", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `import * as lib from "./lib"; function inspect(obj: any) { return Object.keys(obj).join(","); } console.log(inspect(lib));`,
+      "lib.ts": `export const a = 1; export const b = 2;`,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("a,b");
+  });
+
+  test("namespace를 변수에 대입", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `import * as lib from "./lib"; const ref = lib; console.log(ref.foo());`,
+      "lib.ts": `export function foo() { return "ok"; }`,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("ok");
+  });
+
+  test("namespace를 typeof로 사용", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `import * as lib from "./lib"; console.log(typeof lib);`,
+      "lib.ts": `export const a = 1;`,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("object");
+  });
+
+  test("namespace를 spread로 사용", async () => {
+    const result = await bundleAndRun({
+      "index.ts": `import * as lib from "./lib"; const copy = { ...lib }; console.log(copy.a, copy.b);`,
+      "lib.ts": `export const a = 1; export const b = 2;`,
+    });
+    cleanup = result.cleanup;
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("1 2");
+  });
 });

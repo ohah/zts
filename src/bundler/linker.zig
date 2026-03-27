@@ -1545,11 +1545,33 @@ pub const Linker = struct {
 
         if (ns_inline_list) |list| {
             const obj_str = try self.buildInlineObjectStr(target_mod_idx, 0);
+            // 충돌 방지: export 이름과 겹치지 않는 변수명 생성
+            const ns_var_name = try self.makeUniqueNsVarName(var_name, &seen);
             try list.append(self.allocator, .{
                 .symbol_id = symbol_id,
                 .object_literal = obj_str,
-                .var_name = try std.mem.concat(self.allocator, u8, &.{ var_name, "_ns" }),
+                .var_name = ns_var_name,
             });
+        }
+    }
+
+    /// namespace preamble 변수명을 export 이름과 충돌하지 않도록 생성.
+    /// "z" → "z_ns", 충돌 시 "z_ns2", "z_ns3", ...
+    fn makeUniqueNsVarName(self: *const Linker, base: []const u8, exports: *const std.StringHashMap(void)) std.mem.Allocator.Error![]const u8 {
+        // 첫 시도: base_ns
+        const first = try std.mem.concat(self.allocator, u8, &.{ base, "_ns" });
+        if (!exports.contains(first)) return first;
+        self.allocator.free(first);
+
+        // 충돌 시 progressive suffix: base_ns2, base_ns3, ...
+        // export 수가 유한하므로 반드시 종료
+        var suffix: u32 = 2;
+        while (true) : (suffix += 1) {
+            var buf: [16]u8 = undefined;
+            const num_str = std.fmt.bufPrint(&buf, "{d}", .{suffix}) catch unreachable;
+            const candidate = try std.mem.concat(self.allocator, u8, &.{ base, "_ns", num_str });
+            if (!exports.contains(candidate)) return candidate;
+            self.allocator.free(candidate);
         }
     }
 
