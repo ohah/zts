@@ -714,7 +714,10 @@ pub const Linker = struct {
         // namespace 인라인 객체 수집 (값 사용 시)
         var ns_inline_list: std.ArrayList(LinkingMetadata.NsInlineObjects.Entry) = .empty;
         errdefer {
-            for (ns_inline_list.items) |e| self.allocator.free(e.object_literal);
+            for (ns_inline_list.items) |e| {
+                self.allocator.free(e.object_literal);
+                self.allocator.free(e.var_name);
+            }
             ns_inline_list.deinit(self.allocator);
         }
 
