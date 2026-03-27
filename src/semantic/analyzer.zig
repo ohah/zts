@@ -803,7 +803,7 @@ pub const SemanticAnalyzer = struct {
             .switch_case => try self.visitSwitchCase(node),
             .try_statement => try self.visitTryStatement(node),
             .export_named_declaration => try self.visitExportNamedDeclaration(node),
-            .export_default_declaration => try self.visitExportDefaultDeclaration(node),
+            .export_default_declaration => try self.visitExportDefaultDeclaration(node, idx),
             .export_all_declaration => try self.visitExportAllDeclaration(node),
 
             // ---- private name 참조 ----
@@ -2056,10 +2056,54 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// export default 시 "default" 이름을 등록한다.
-    fn visitExportDefaultDeclaration(self: *SemanticAnalyzer, node: Node) AllocError!void {
+    /// inner가 named function/class/identifier가 아니면 `_default` facade 심볼을 생성하여
+    /// scope_maps[0]에 등록 — StmtInfo가 심볼 기반으로 도달성을 추적할 수 있게 한다.
+    fn visitExportDefaultDeclaration(self: *SemanticAnalyzer, node: Node, node_idx: NodeIndex) AllocError!void {
         try self.registerExportedName("default", node.span);
+
+        // inner 노드 확인: named function/class/identifier이면 이미 심볼이 존재
+        const inner_idx = node.data.unary.operand;
+        var needs_facade = true;
+        if (!inner_idx.isNone() and @intFromEnum(inner_idx) < self.ast.nodes.items.len) {
+            const inner = self.ast.getNode(inner_idx);
+            if (inner.tag == .function_declaration or inner.tag == .class_declaration) {
+                // named function/class인지 확인 (이름이 있으면 predeclare에서 이미 심볼 생성됨)
+                const e = inner.data.extra;
+                if (e < self.ast.extra_data.items.len) {
+                    const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+                    if (!name_idx.isNone()) needs_facade = false;
+                }
+            } else if (inner.tag == .identifier_reference) {
+                // export default someVar → 기존 심볼 참조, facade 불필요
+                needs_facade = false;
+            }
+        }
+
+        if (needs_facade) {
+            // _default facade 심볼 생성 — declareSymbolWithNode 우회 (재선언 검증 불필요)
+            const module_scope = self.findVarScope();
+            if (!module_scope.isNone()) {
+                const sym_index = self.symbols.items.len;
+                try self.symbols.append(self.allocator, .{
+                    .name = node.span, // export default 문 전체 span
+                    .scope_id = module_scope,
+                    .kind = .variable_const,
+                    .decl_flags = .{ .block_scoped = true, .is_const = true },
+                    .declaration_span = node.span,
+                    .origin_scope = module_scope,
+                });
+                // symbol_ids에 export_default_declaration 노드 자체를 기록
+                const ni = @intFromEnum(node_idx);
+                if (ni < self.symbol_ids.items.len) {
+                    self.symbol_ids.items[ni] = @intCast(sym_index);
+                }
+                // scope_maps[0]에 "_default" 등록 — emitter/StmtInfo가 찾을 수 있도록
+                try self.scope_maps.items[module_scope.toIndex()].put("_default", sym_index);
+            }
+        }
+
         // 내부 선언 순회
-        try self.visitNode(node.data.unary.operand);
+        try self.visitNode(inner_idx);
     }
 
     /// export * as name — name을 등록한다.

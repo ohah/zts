@@ -329,8 +329,7 @@ pub fn emitWithTreeShaking(
                 if (!s.isExportUsed(mod_idx, eb.exported_name)) continue;
 
                 // StmtInfo 도달성: 모든 importer에서 이 export의 import가 dead이면 제외.
-                if (eb.kind == .local and m.importers.items.len > 0 and
-                    !std.mem.eql(u8, eb.exported_name, "default"))
+                if (eb.kind == .local and m.importers.items.len > 0)
                 {
                     const is_dead = is_dead: {
                         var found_any = false;
@@ -1277,26 +1276,14 @@ pub fn emitModule(
                                         used_sym_buf.append(arena_alloc, @intCast(sym_idx)) catch continue;
                                     } else {
                                         // export_bindings에서 local_name으로 scope_maps 재시도
-                                        var found = false;
+                                        // (facade 심볼 _default가 scope_maps[0]에 등록되어 있어
+                                        //  export default의 local_name으로 찾을 수 있다)
                                         for (module.export_bindings) |eb| {
                                             if (std.mem.eql(u8, eb.exported_name, name)) {
                                                 if (sem.scope_maps[0].get(eb.local_name)) |sym_idx| {
                                                     used_sym_buf.append(arena_alloc, @intCast(sym_idx)) catch {};
-                                                    found = true;
                                                 }
                                                 break;
-                                            }
-                                        }
-                                        // 못 찾으면 export_default_declaration을 side-effectful로 강제
-                                        if (!found) {
-                                            for (infos.stmts) |*stmt| {
-                                                if (stmt.node_idx < transformer.new_ast.nodes.items.len) {
-                                                    const tag = transformer.new_ast.nodes.items[stmt.node_idx].tag;
-                                                    if (tag == .export_default_declaration) {
-                                                        stmt.has_side_effects = true;
-                                                        break;
-                                                    }
-                                                }
                                             }
                                         }
                                     }
