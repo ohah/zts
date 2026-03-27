@@ -2664,10 +2664,10 @@ test "re-export alias: export { default as groupBy } — function declaration" {
     try std.testing.expectEqualStrings("hello", local);
 }
 
-test "re-export alias: export { default as X } — expression defaults to _default" {
+test "re-export alias: export { default as X } — identifier reuses original name" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    // export default <expression> → binding_scanner가 _default 폴백
+    // export default <identifier> → rolldown 방식: identifier 이름 재사용
     try writeFile(tmp.dir, "entry.ts", "import { groupBy } from './barrel';");
     try writeFile(tmp.dir, "barrel.ts", "export { default as groupBy } from './groupBy';");
     try writeFile(tmp.dir, "groupBy.ts", "function groupBy(arr: any) { return arr; }\nexport default groupBy;");
@@ -2680,19 +2680,19 @@ test "re-export alias: export { default as X } — expression defaults to _defau
     const entry = r.graph.modules.items[0];
     const binding = r.linker.getResolvedBinding(0, entry.import_bindings[0].local_span);
     try std.testing.expect(binding != null);
-    // export default <identifier> → local_name = "_default" (expression 폴백)
+    // export default groupBy → local_name = "groupBy" (identifier 이름 재사용)
     const local = r.linker.resolveToLocalName(binding.?.canonical);
-    try std.testing.expectEqualStrings("_default", local);
+    try std.testing.expectEqualStrings("groupBy", local);
 }
 
 // ============================================================
 // Issue #284: _default 이름 충돌 해결
 // ============================================================
 
-test "rename: multiple export default expressions get unique _default names" {
+test "rename: multiple export default identifiers use original names — no collision" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    // 여러 모듈이 export default <expression> → 모두 _default로 변환 → 충돌
+    // rolldown 방식: export default identifier → 각각 x, y, z로 별도 이름 → 충돌 없음
     try writeFile(tmp.dir, "entry.ts", "import './a';\nimport './b';\nimport './c';");
     try writeFile(tmp.dir, "a.ts", "const x = 1;\nexport default x;");
     try writeFile(tmp.dir, "b.ts", "const y = 2;\nexport default y;");
@@ -2703,13 +2703,13 @@ test "rename: multiple export default expressions get unique _default names" {
     defer r.graph.deinit();
     defer r.cache.deinit();
 
-    // _default가 3개 모듈에서 충돌 → 2개가 _default$1, _default$2로 리네임
+    // x, y, z는 각각 다른 이름이므로 충돌 없음 → _default$ 리네임 0개
     var rename_count: u32 = 0;
     var cit = r.linker.canonical_names.valueIterator();
     while (cit.next()) |val| {
         if (std.mem.startsWith(u8, val.*, "_default$")) rename_count += 1;
     }
-    try std.testing.expectEqual(@as(u32, 2), rename_count);
+    try std.testing.expectEqual(@as(u32, 0), rename_count);
 }
 
 // ============================================================
@@ -2845,10 +2845,10 @@ test "re-export alias: default class declaration resolves to class name" {
 // _default collision edge cases
 // ============================================================
 
-test "rename: mixed function + expression defaults" {
+test "rename: mixed function + expression defaults — identifier collision" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    // function default는 함수명 유지, expression defaults는 _default$N
+    // rolldown 방식: export default val → local_name = "val" (두 모듈에서 충돌)
     try writeFile(tmp.dir, "entry.ts", "import a from './func';\nimport b from './expr1';\nimport c from './expr2';");
     try writeFile(tmp.dir, "func.ts", "export default function myFunc() { return 1; }");
     try writeFile(tmp.dir, "expr1.ts", "const val = 2;\nexport default val;");
@@ -2859,21 +2859,19 @@ test "rename: mixed function + expression defaults" {
     defer r.graph.deinit();
     defer r.cache.deinit();
 
-    // expression default 2개 + function default 1개 = 총 3개 default
-    // expression defaults가 _default를 사용하므로 충돌 해결이 발생
-    var default_count: u32 = 0;
+    // expr1, expr2 모두 val → 하나가 val$1로 리네임
+    var val_rename_count: u32 = 0;
     var cit = r.linker.canonical_names.valueIterator();
-    while (cit.next()) |val| {
-        if (std.mem.startsWith(u8, val.*, "_default")) default_count += 1;
+    while (cit.next()) |v| {
+        if (std.mem.startsWith(u8, v.*, "val$")) val_rename_count += 1;
     }
-    // _default가 여러 모듈에서 사용되면 충돌 해결이 발생
-    try std.testing.expect(default_count >= 1);
+    try std.testing.expectEqual(@as(u32, 1), val_rename_count);
 }
 
-test "rename: _default consumed via import default binding" {
+test "rename: default identifier reuses name — no _default collision" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    // 두 모듈의 expression default를 import default로 가져옴
+    // rolldown 방식: export default x → local_name="x", export default y → local_name="y" → 충돌 없음
     try writeFile(tmp.dir, "entry.ts", "import a from './a';\nimport b from './b';\nconsole.log(a, b);");
     try writeFile(tmp.dir, "a.ts", "const x = 10;\nexport default x;");
     try writeFile(tmp.dir, "b.ts", "const y = 20;\nexport default y;");
@@ -2883,13 +2881,13 @@ test "rename: _default consumed via import default binding" {
     defer r.graph.deinit();
     defer r.cache.deinit();
 
-    // 두 모듈 모두 _default → 하나는 _default$1로 리네임
+    // x, y는 다른 이름이므로 충돌 없음 → _default$ 리네임 0개
     var rename_count: u32 = 0;
     var cit = r.linker.canonical_names.valueIterator();
     while (cit.next()) |val| {
         if (std.mem.startsWith(u8, val.*, "_default$")) rename_count += 1;
     }
-    try std.testing.expectEqual(@as(u32, 1), rename_count);
+    try std.testing.expectEqual(@as(u32, 0), rename_count);
 }
 
 // ============================================================

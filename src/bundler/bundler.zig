@@ -10060,3 +10060,35 @@ test "TreeShaking: export-level DCE — var with ternary init removed" {
     // ternary 초기화 변수 제거
     try std.testing.expect(std.mem.indexOf(u8, result.output, "ternaryVar") == null);
 }
+
+test "TreeShaking: export default identifier — import preserved (yargs y18n pattern)" {
+    // yargs 패턴: export default someVar → import { x } → x가 번들에 포함
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import fn from './wrapper';
+        \\console.log(fn(42));
+    );
+    try writeFile(tmp.dir, "wrapper.ts",
+        \\import { impl } from './impl';
+        \\const wrapper = (x) => impl(x);
+        \\export default wrapper;
+    );
+    try writeFile(tmp.dir, "impl.ts",
+        \\export function impl(x) { return x + 1; }
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // impl 함수가 번들에 포함되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "impl") != null);
+    // wrapper도 포함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "wrapper") != null);
+}

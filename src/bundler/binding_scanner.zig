@@ -272,15 +272,16 @@ pub fn extractExportBindings(
                 }
             },
             .export_default_declaration => {
+                // rolldown 방식: export default의 inner가 선언/식별자이면 해당 이름을 재사용.
                 // export default function greet() → local_name = "greet"
                 // export default class Foo → local_name = "Foo"
+                // export default someVar → local_name = "someVar" (rolldown: 심볼 재사용)
                 // export default 42 → local_name = "_default"
                 const inner_idx = node.data.unary.operand;
                 var local_name: []const u8 = "_default";
                 if (!inner_idx.isNone()) {
                     const inner = ast.getNode(inner_idx);
                     if (inner.tag == .function_declaration or inner.tag == .class_declaration) {
-                        // extra = [name_idx, ...] — 이름 노드 추출
                         const e = inner.data.extra;
                         if (e < ast.extra_data.items.len) {
                             const name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
@@ -289,6 +290,10 @@ pub fn extractExportBindings(
                                 local_name = ast.source[name_node.data.string_ref.start..name_node.data.string_ref.end];
                             }
                         }
+                    } else if (inner.tag == .identifier_reference) {
+                        // export default someVar → 해당 변수의 심볼을 default export로 재사용
+                        const name = ast.getText(inner.span);
+                        if (name.len > 0) local_name = name;
                     }
                 }
                 try bindings.append(allocator, .{

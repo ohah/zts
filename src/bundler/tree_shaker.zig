@@ -268,26 +268,6 @@ pub const TreeShaker = struct {
                     if (self.isExportUsed(mod_idx, eb.exported_name)) {
                         if (top_scope.get(eb.local_name)) |sym_idx| {
                             used_sym_buf.append(self.allocator, @intCast(sym_idx)) catch continue;
-                        } else if (std.mem.eql(u8, eb.exported_name, "default") and
-                            std.mem.eql(u8, eb.local_name, "_default"))
-                        {
-                            // export default identifier: _default가 scope_maps에 없으면
-                            // export_default_declaration의 inner identifier 이름으로 재시도
-                            if (m.ast) |a| {
-                                for (a.nodes.items) |n| {
-                                    if (n.tag != .export_default_declaration) continue;
-                                    const inner_idx = n.data.unary.operand;
-                                    if (inner_idx.isNone() or @intFromEnum(inner_idx) >= a.nodes.items.len) break;
-                                    const inner = a.nodes.items[@intFromEnum(inner_idx)];
-                                    if (inner.tag == .identifier_reference) {
-                                        const name = a.getText(inner.span);
-                                        if (top_scope.get(name)) |sym_idx| {
-                                            used_sym_buf.append(self.allocator, @intCast(sym_idx)) catch {};
-                                        }
-                                    }
-                                    break;
-                                }
-                            }
                         }
                     }
                 }
