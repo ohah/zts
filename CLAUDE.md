@@ -236,12 +236,16 @@ Per-File Arena (단일 할당자, 파일 처리 후 한 번에 해제)
 | 4. 코드젠+CLI | 포맷팅, minify, 소스맵 V3, --ascii-only | ✅ |
 | 5. CLI 고급 | stdin, 에러 프레임, --outdir, tsconfig, --watch | ✅ |
 | 6a. 번들러 | resolver, 모듈 그래프, linker, tree-shaking, code splitting | ✅ |
+| 6a-ts | tree-shaker 2단계 — export 수준 DCE (purity.zig, tslib 95% 감소) | ✅ |
+| 6a-si | StmtInfo 기반 statement DCE (rolldown 방식, pathe ESM 77% 감소) | ✅ |
+| 6a-ex | exports 조건 해석 Node.js 스펙 준수 (tslib CJS→ESM 해결) | ✅ |
 | 6b. Dev server | HTTP+WS, Live Reload, HMR, React Fast Refresh, CSS 핫 리로드 | ✅ |
 | Test262 | 50,504건 100% 통과 | ✅ |
+| Smoke | 125개 패키지, avg 0.91x, ❌ 3개 (svelte/pathe/three) | ✅ |
 
 ### 🔜 다음 우선순위
-- **Tree-shaker 3단계**: 2차 fixpoint refinement로 더 공격적인 DCE (pathe --platform=node 등)
-- **resolver module 필드 우선 해석**: platform=node에서 ESM module 필드 우선 (tslib, pathe)
+- **Tree-shaker 3단계**: 2차 fixpoint refinement로 더 공격적인 DCE (pathe --platform=node 3.79x)
+- **smoke ❌ 개선**: svelte(15.69x), three(1.92x)
 
 ### ⏳ 진행 중 / 미완료
 - **ES 다운레벨링**: ES2022~ES2015 ✅ (--target=es5 지원)
@@ -363,7 +367,7 @@ cd packages/e2e && bun test             # Playwright E2E (dev server)
 
 ### 스모크 테스트 (실제 패키지 빌드)
 ```bash
-cd packages/benchmark && bun run smoke.ts  # 111개 패키지 빌드+실행 검증
+cd packages/benchmark && bun run smoke.ts  # 125개 패키지 빌드+실행 검증 (avg 0.91x)
 ```
 
 ## Development Workflow

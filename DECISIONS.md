@@ -765,5 +765,11 @@
 - **결과**: pathe 13.8KB → 3.2KB (ESM), fp-ts 11.3KB → 5.0KB, smoke ❌ 4→2개
 - **참고**: rolldown `StmtInfo` + `declared_stmts_by_symbol`, esbuild `Part` 시스템
 
+### D095: exports 조건 해석 Node.js 스펙 준수 (2026-03-27)
+- **결정**: `resolveConditions`에서 exports 객체의 key 순서로 탐색 (이전: conditions 배열 순서)
+- **이유**: tslib `import.node` → CJS wrapper로 오매칭. Node.js 스펙은 exports key 순서가 우선.
+- **결과**: tslib --platform=node 22KB FAIL → 1KB OK
+- **참고**: esbuild는 conditions를 set으로 처리 + exports key 순서 순회
+
 ### Phase 6 (Advanced) 미결정 사항
 - 개발 서버 고급 기능 (증분 재빌드, 프레임워크 통합)
