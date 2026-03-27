@@ -1559,7 +1559,13 @@ pub const Linker = struct {
     pub fn resolveToLocalName(self: *const Linker, ref: SymbolRef) []const u8 {
         const cmod: u32 = @intCast(@intFromEnum(ref.module_index));
         const local = self.getExportLocalName(cmod, ref.export_name) orelse ref.export_name;
-        return self.getCanonicalName(cmod, local) orelse local;
+        const canonical = self.getCanonicalName(cmod, local) orelse local;
+        // "default"는 JS 예약어 — 식별자로 사용 불가.
+        // codegen이 생성하는 합성 변수명(_default)의 canonical name으로 대체.
+        if (std.mem.eql(u8, canonical, "default")) {
+            return self.getCanonicalName(cmod, "_default") orelse "_default";
+        }
+        return canonical;
     }
 
     /// ESM namespace import를 위한 namespace 객체 preamble 생성.
@@ -1749,9 +1755,16 @@ pub const Linker = struct {
                 break :blk eb.local_name;
             } else self.getCanonicalName(@intCast(mod_i), eb.local_name) orelse eb.local_name;
 
+            // "default"는 JS 예약어 — 값 위치에 식별자로 사용 불가.
+            // codegen이 생성하는 합성 변수명(_default)의 canonical name으로 대체.
+            const safe_local = if (std.mem.eql(u8, actual_local, "default"))
+                self.getCanonicalName(@intCast(mod_i), "_default") orelse "_default"
+            else
+                actual_local;
+
             try exports.append(self.allocator, .{
                 .exported = eb.exported_name,
-                .local = actual_local,
+                .local = safe_local,
                 .owned = actual_local.len > 0 and actual_local[0] == '{',
             });
         }
