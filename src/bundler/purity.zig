@@ -153,6 +153,40 @@ pub fn isVarDeclPure(ast: *const Ast, node: Node) bool {
     return true;
 }
 
+/// top-level statement가 side effects를 가지는지 판정.
+/// tree_shaker, statement_shaker, stmt_info에서 공유.
+pub fn stmtHasSideEffects(ast: *const Ast, node: Node) bool {
+    return switch (node.tag) {
+        .function_declaration => false,
+        .class_declaration => classHasSideEffects(ast, node),
+        .variable_declaration => !isVarDeclPure(ast, node),
+        .export_named_declaration => {
+            const e = node.data.extra;
+            if (e + 3 < ast.extra_data.items.len) {
+                const decl_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
+                if (!decl_idx.isNone() and @intFromEnum(decl_idx) < ast.nodes.items.len) {
+                    return stmtHasSideEffects(ast, ast.nodes.items[@intFromEnum(decl_idx)]);
+                }
+                return false;
+            }
+            return true;
+        },
+        .export_default_declaration => {
+            const inner_idx = node.data.unary.operand;
+            if (inner_idx.isNone() or @intFromEnum(inner_idx) >= ast.nodes.items.len) return true;
+            const inner = ast.nodes.items[@intFromEnum(inner_idx)];
+            return switch (inner.tag) {
+                .function_declaration => false,
+                .class_declaration => classHasSideEffects(ast, inner),
+                else => !isNodePure(ast, inner),
+            };
+        },
+        .import_declaration, .empty_statement => false,
+        .export_all_declaration => true,
+        else => true,
+    };
+}
+
 /// class declaration/expression의 side effect 판정.
 /// extends 절이 없으면 순수 (esbuild보다 정밀, rolldown 동일).
 pub fn classHasSideEffects(ast: *const Ast, node: Node) bool {
