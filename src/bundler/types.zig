@@ -63,6 +63,43 @@ pub const WrapKind = enum {
     cjs,
 };
 
+/// CJS → ESM interop 모드 (Rolldown Interop).
+/// importer의 모듈 정의 형식에 따라 __toESM 호출 방식이 결정됨.
+pub const Interop = enum {
+    /// __toESM(require_foo()) — __esModule 플래그 존중
+    babel,
+    /// __toESM(require_foo(), 1) — Node.js ESM 명세 호환 (항상 default: mod 설정)
+    node,
+};
+
+/// 모듈 정의 형식 (Rolldown ModuleDefFormat).
+/// 파일 확장자 또는 package.json "type" 필드로 결정.
+/// CJS → ESM interop 시 Node 모드 활성화 여부에 사용.
+pub const ModuleDefFormat = enum {
+    /// 형식 미확정
+    unknown,
+    /// .cjs 확장자
+    cjs,
+    /// .cts 확장자
+    cts,
+    /// package.json "type": "commonjs"
+    cjs_package_json,
+    /// .mjs 확장자
+    esm_mjs,
+    /// .mts 확장자
+    esm_mts,
+    /// package.json "type": "module"
+    esm_package_json,
+
+    pub fn isEsm(self: ModuleDefFormat) bool {
+        return self == .esm_mjs or self == .esm_mts or self == .esm_package_json;
+    }
+
+    pub fn isCommonjs(self: ModuleDefFormat) bool {
+        return self == .cjs or self == .cts or self == .cjs_package_json;
+    }
+};
+
 // ============================================================
 // 청크 인덱스 (Code Splitting)
 // ============================================================

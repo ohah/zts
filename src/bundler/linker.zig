@@ -816,7 +816,8 @@ pub const Linker = struct {
                 // CJS 모듈에서 import하는 경우: preamble에서 require_xxx() 호출 생성
                 if (canonical_mod < self.modules.len and self.modules[canonical_mod].wrap_kind == .cjs) {
                     const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, @intCast(canonical_mod));
-                    try appendCjsImportPreamble(&cjs_preamble_buf, self.allocator, ib.local_name, ib.imported_name, req_var, ib.kind == .namespace);
+                    const interop_mode: types.Interop = if (m.def_format.isEsm()) .node else .babel;
+                    try appendCjsImportPreamble(&cjs_preamble_buf, self.allocator, ib.local_name, ib.imported_name, req_var, ib.kind == .namespace, interop_mode);
                     continue;
                 }
 
@@ -849,7 +850,8 @@ pub const Linker = struct {
                     const cjs_mod: u32 = @intCast(@intFromEnum(rb.canonical.module_index));
                     if (cjs_mod < self.modules.len and self.modules[cjs_mod].wrap_kind == .cjs) {
                         const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, cjs_mod);
-                        try appendCjsImportPreamble(&cjs_preamble_buf, self.allocator, ib.local_name, ib.imported_name, req_var, false);
+                        const interop_mode2: types.Interop = if (m.def_format.isEsm()) .node else .babel;
+                        try appendCjsImportPreamble(&cjs_preamble_buf, self.allocator, ib.local_name, ib.imported_name, req_var, false, interop_mode2);
                         continue;
                     }
                 }
@@ -1952,18 +1954,22 @@ fn appendCjsImportPreamble(
     imported_name: []const u8,
     req_var: []const u8,
     is_namespace: bool,
+    interop: types.Interop,
 ) !void {
     try buf.appendSlice(allocator, "var ");
     try buf.appendSlice(allocator, local_name);
-    // isNodeMode=1: --platform=node에서 __esModule=true인 CJS도 default: mod를 설정 (esbuild 호환)
+    // Rolldown Interop: node → __toESM(req(), 1), babel → __toESM(req())
+    const toesm_suffix: []const u8 = if (interop == .node) "(), 1)" else "())";
     if (is_namespace) {
         try buf.appendSlice(allocator, " = __toESM(");
         try buf.appendSlice(allocator, req_var);
-        try buf.appendSlice(allocator, "(), 1);\n");
+        try buf.appendSlice(allocator, toesm_suffix);
+        try buf.appendSlice(allocator, ";\n");
     } else if (std.mem.eql(u8, imported_name, "default")) {
         try buf.appendSlice(allocator, " = __toESM(");
         try buf.appendSlice(allocator, req_var);
-        try buf.appendSlice(allocator, "(), 1).default;\n");
+        try buf.appendSlice(allocator, toesm_suffix);
+        try buf.appendSlice(allocator, ".default;\n");
     } else {
         try buf.appendSlice(allocator, " = ");
         try buf.appendSlice(allocator, req_var);

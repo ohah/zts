@@ -7961,7 +7961,8 @@ test "CJS: __toESM wraps default import from CJS" {
 
     try std.testing.expect(!result.hasErrors());
     // default import는 __toESM으로 래핑되어야 함
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_lib(), 1)") != null);
+    // .ts importer → Babel 모드 (isNodeMode 없음)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_lib())") != null);
 }
 
 test "CJS: __toESM not applied to named imports" {
@@ -7979,9 +7980,8 @@ test "CJS: __toESM not applied to named imports" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // named import의 preamble에는 __toESM이 적용되지 않음 (require_lib().value 형태)
-    // __toESM 런타임 헬퍼 자체는 존재하지만, preamble에서는 사용하지 않음
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_lib(), 1)") == null);
+    // named import에는 __toESM 미적용 (require_lib().value 형태)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_lib())") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require_lib().value") != null);
 }
 
@@ -8154,8 +8154,8 @@ test "CJS: namespace import from CJS uses __toESM" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // namespace import도 __toESM으로 래핑
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_lib(), 1)") != null);
+    // namespace import도 __toESM으로 래핑 (.ts → Babel 모드)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_lib())") != null);
 }
 
 test "CJS: multiple ESM modules importing same CJS module" {

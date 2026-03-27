@@ -275,13 +275,29 @@ pub const ModuleGraph = struct {
         };
 
         var parser = Parser.init(arena_alloc, &scanner);
-        parser.configureForBundler(std.fs.path.extension(module.path));
+        const ext = std.fs.path.extension(module.path);
+        parser.configureForBundler(ext);
+
+        // 모듈 정의 형식 결정 (Rolldown ModuleDefFormat)
+        module.def_format = if (std.mem.eql(u8, ext, ".mjs"))
+            .esm_mjs
+        else if (std.mem.eql(u8, ext, ".mts"))
+            .esm_mts
+        else if (std.mem.eql(u8, ext, ".cjs"))
+            .cjs
+        else if (std.mem.eql(u8, ext, ".cts"))
+            .cts
+        else if (module.is_module_field or self.isPackageTypeModule(module.path))
+            .esm_package_json
+        else
+            .unknown;
+
         // .js/.jsx: package.json "type" 또는 Unambiguous 모드로 module/script 결정
         // .mjs/.mts/.ts/.tsx: 이미 확정 module, 변경 없음
         if (!parser.is_module) {
             parser.is_module = true;
             scanner.is_module = true;
-            if (!module.is_module_field and !self.isPackageTypeModule(module.path)) {
+            if (module.def_format == .unknown) {
                 parser.is_unambiguous = true;
             }
         }
@@ -636,18 +652,16 @@ pub const ModuleGraph = struct {
 
     /// node_modules 내 .js 파일이 ESM/CJS 신호 없으면 CJS로 간주.
     /// Node.js 규칙: package.json "type": "module"이 없으면 .js는 CJS.
-    fn isImplicitCjs(self: *ModuleGraph, module: *const Module) bool {
+    fn isImplicitCjs(_: *ModuleGraph, module: *const Module) bool {
         // node_modules 밖이면 ESM으로 간주 (사용자 코드)
         const nm = "node_modules" ++ std.fs.path.sep_str;
         if (std.mem.indexOf(u8, module.path, nm) == null) return false;
-        const ext = std.fs.path.extension(module.path);
-        // .cjs/.cts는 항상 CJS (type 필드 무관)
-        if (std.mem.eql(u8, ext, ".cjs") or std.mem.eql(u8, ext, ".cts")) return true;
-        // .mjs/.mts는 항상 ESM
-        if (std.mem.eql(u8, ext, ".mjs") or std.mem.eql(u8, ext, ".mts")) return false;
-        // package.json "type": "module"이면 ESM
-        if (self.isPackageTypeModule(module.path)) return false;
-        return true;
+        // def_format이 파싱 시점에 이미 결정됨 — 디스크 I/O 불필요
+        return switch (module.def_format) {
+            .cjs, .cts, .cjs_package_json => true,
+            .esm_mjs, .esm_mts, .esm_package_json => false,
+            .unknown => true, // node_modules 내 .js는 기본 CJS
+        };
     }
 
     /// 모듈 경로에서 가장 가까운 package.json의 "type" 필드가 "module"인지 확인.
