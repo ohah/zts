@@ -10063,6 +10063,105 @@ test "TreeShaking: export-level DCE — var with ternary init removed" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "ternaryVar") == null);
 }
 
+test "TreeShaking: class extends identifier — unused child removed (three.js pattern)" {
+    // three.js 핵심 패턴: Object3D → Light → AmbientLight 상속 체인.
+    // Vector3만 사용하면 AmbientLight 등 미사용 클래스는 제거되어야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { B } from './classes';
+        \\console.log(new B());
+    );
+    try writeFile(tmp.dir, "classes.ts",
+        \\export class Base {}
+        \\export class A extends Base {}
+        \\export class B extends Base {}
+        \\export class C extends A {}
+        \\Base.DEFAULT_UP = 123;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // B와 Base는 포함, Base.DEFAULT_UP도 포함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "class Base") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "class B ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "DEFAULT_UP") != null);
+    // A와 C는 미사용이므로 제거
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "class A ") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "class C ") == null);
+}
+
+test "TreeShaking: class extends call expr — kept as side-effect" {
+    // extends fn()은 side-effect → 미사용이어도 보존
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { used } from './classes';
+        \\console.log(used);
+    );
+    try writeFile(tmp.dir, "classes.ts",
+        \\export const used = 1;
+        \\function mixin() { return class {}; }
+        \\export class X extends mixin() {}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // extends mixin()은 side-effect이므로 X가 보존되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "mixin") != null);
+}
+
+test "TreeShaking: re-export chain — only used export included (three.module.js pattern)" {
+    // three.module.js 패턴: core에서 많은 심볼을 import, 일부만 re-export
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { Vector3 } from './facade';
+        \\console.log(new Vector3());
+    );
+    try writeFile(tmp.dir, "facade.ts",
+        \\export { Vector3, AmbientLight, Scene } from './core';
+    );
+    try writeFile(tmp.dir, "core.ts",
+        \\export class EventDispatcher {}
+        \\export class Object3D extends EventDispatcher {}
+        \\export class Vector3 {}
+        \\export class Light extends Object3D {}
+        \\export class AmbientLight extends Light {}
+        \\export class Scene extends Object3D {}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // Vector3만 포함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Vector3") != null);
+    // AmbientLight, Light, Scene은 미사용이므로 제거
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "AmbientLight") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "class Light") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "class Scene") == null);
+}
+
 test "TreeShaking: export default identifier — import preserved (yargs y18n pattern)" {
     // yargs 패턴: export default someVar → import { x } → x가 번들에 포함
     var tmp = std.testing.tmpDir(.{});

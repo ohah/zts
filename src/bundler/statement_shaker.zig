@@ -646,7 +646,8 @@ test "statement shaker: export specifier-only is side-effect-free" {
     try std.testing.expect(skipped >= 1); // unused + export 문
 }
 
-test "statement shaker: class extends is side-effectful" {
+test "statement shaker: class extends identifier is removable" {
+    // esbuild/rolldown 동일: extends가 순수 식별자이면 side-effect 없음 → 미사용 시 제거
     const alloc = std.testing.allocator;
     var r = try parseAndGetRoot(alloc,
         \\class Derived extends Base {}
@@ -659,11 +660,11 @@ test "statement shaker: class extends is side-effectful" {
 
     try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
 
-    // class extends → side-effectful → 보존, unused만 제거
+    // class extends identifier → 순수 → Derived + unused 모두 제거
     var skipped: u32 = 0;
     var it = skip.iterator(.{});
     while (it.next()) |_| skipped += 1;
-    try std.testing.expectEqual(@as(u32, 1), skipped);
+    try std.testing.expectEqual(@as(u32, 2), skipped);
 }
 
 test "statement shaker: class without extends is removable" {
@@ -843,8 +844,8 @@ test "statement shaker: typeof binary is side-effect-free" {
     try std.testing.expectEqual(@as(u32, 1), skipped);
 }
 
-test "statement shaker: export default class extends is side-effectful" {
-    // extends 절 있는 class expression → side-effectful → 항상 보존
+test "statement shaker: export default class extends identifier is removable" {
+    // esbuild/rolldown 동일: extends가 순수 식별자이면 side-effect 없음
     const alloc = std.testing.allocator;
     var r = try parseAndGetRoot(alloc,
         \\export default class extends Base {}
@@ -857,8 +858,121 @@ test "statement shaker: export default class extends is side-effectful" {
 
     try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
 
-    // export default class extends Base → side-effectful → 보존
-    // unused만 제거
+    // export default class extends Base → 순수 식별자 → 미사용 시 제거 가능
+    // 둘 다 제거
+    var skipped: u32 = 0;
+    var it = skip.iterator(.{});
+    while (it.next()) |_| skipped += 1;
+    try std.testing.expectEqual(@as(u32, 2), skipped);
+}
+
+test "statement shaker: class extends call expression is side-effectful" {
+    // extends fn() → side-effect (함수 호출) → 보존
+    const alloc = std.testing.allocator;
+    var r = try parseAndGetRoot(alloc,
+        \\class X extends getBase() {}
+        \\function unused() { return 1; }
+    );
+    defer r.arena.deinit();
+
+    var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
+    defer skip.deinit();
+
+    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
+
+    // extends getBase() → 불순 → X 보존, unused만 제거
+    var skipped: u32 = 0;
+    var it = skip.iterator(.{});
+    while (it.next()) |_| skipped += 1;
+    try std.testing.expectEqual(@as(u32, 1), skipped);
+}
+
+test "statement shaker: class extends member expression is removable" {
+    // extends a.b → member expression은 순수 (esbuild 동일) → 미사용 시 제거
+    const alloc = std.testing.allocator;
+    var r = try parseAndGetRoot(alloc,
+        \\class X extends ns.Base {}
+        \\function unused() { return 1; }
+    );
+    defer r.arena.deinit();
+
+    var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
+    defer skip.deinit();
+
+    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
+
+    // extends ns.Base → 순수 member expression → X + unused 모두 제거
+    var skipped: u32 = 0;
+    var it = skip.iterator(.{});
+    while (it.next()) |_| skipped += 1;
+    try std.testing.expectEqual(@as(u32, 2), skipped);
+}
+
+test "statement shaker: class inheritance chain — unused children removable" {
+    // three.js 패턴: Object3D → Light → AmbientLight 상속 체인.
+    // AmbientLight가 미사용이면 extends가 있어도 제거되어야 함.
+    const alloc = std.testing.allocator;
+    var r = try parseAndGetRoot(alloc,
+        \\class Base {}
+        \\class Child extends Base {}
+        \\class Unused extends Base {}
+        \\class GrandChild extends Child {}
+    );
+    defer r.arena.deinit();
+
+    var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
+    defer skip.deinit();
+
+    const names: [1][]const u8 = .{"Child"};
+    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip);
+
+    // Child → used, Base → Child의 의존. Unused, GrandChild → 미사용 → 제거
+    var skipped: u32 = 0;
+    var it = skip.iterator(.{});
+    while (it.next()) |_| skipped += 1;
+    try std.testing.expectEqual(@as(u32, 2), skipped);
+}
+
+test "statement shaker: used class with extends preserves parent" {
+    // 사용되는 클래스의 extends 대상(부모)은 의존성으로 보존되어야 함
+    const alloc = std.testing.allocator;
+    var r = try parseAndGetRoot(alloc,
+        \\class Parent {}
+        \\class Used extends Parent {}
+        \\class Unused extends Parent {}
+    );
+    defer r.arena.deinit();
+
+    var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
+    defer skip.deinit();
+
+    const names: [1][]const u8 = .{"Used"};
+    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip);
+
+    // Parent → Used의 의존으로 보존, Used → used, Unused → 미사용 → 제거
+    var skipped: u32 = 0;
+    var it = skip.iterator(.{});
+    while (it.next()) |_| skipped += 1;
+    try std.testing.expectEqual(@as(u32, 1), skipped);
+}
+
+test "statement shaker: side-effect on class symbol preserved" {
+    // Base.DEFAULT_UP = ... (side-effect) — Base가 used이면 보존되어야 함
+    const alloc = std.testing.allocator;
+    var r = try parseAndGetRoot(alloc,
+        \\class Base {}
+        \\Base.DEFAULT_UP = 123;
+        \\class Unused extends Base {}
+    );
+    defer r.arena.deinit();
+
+    var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
+    defer skip.deinit();
+
+    const names: [1][]const u8 = .{"Base"};
+    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip);
+
+    // Base → used, Base.DEFAULT_UP → side-effect → 보존, Unused → 미사용 → 제거
     var skipped: u32 = 0;
     var it = skip.iterator(.{});
     while (it.next()) |_| skipped += 1;
