@@ -500,13 +500,25 @@ pub const Linker = struct {
             }
         }
 
+        // import binding 이름도 보존 — scope hoisting 후 linker가 target 이름으로
+        // 치환하므로, mangling하면 preamble 선언과 참조가 불일치한다.
+        var import_locals = std.StringHashMap(void).init(self.allocator);
+        defer import_locals.deinit();
+        for (self.modules) |m| {
+            for (m.import_bindings) |ib| {
+                try import_locals.put(ib.local_name, {});
+            }
+        }
+
         var ait = all_names.iterator();
         while (ait.next()) |entry| {
             const orig_name = entry.key_ptr.*;
 
             // export된 이름은 mangling 제외
             if (exported.contains(orig_name)) continue;
-            // import 바인딩, default, 1글자는 제외
+            // import binding 이름은 mangling 제외 — linker가 별도 처리
+            if (import_locals.contains(orig_name)) continue;
+            // default, 1글자는 제외
             if (orig_name.len <= 1) continue;
             if (std.mem.eql(u8, orig_name, "default")) continue;
             if (std.mem.eql(u8, orig_name, "arguments")) continue;
@@ -800,8 +812,11 @@ pub const Linker = struct {
                 // ESM 번들도 import 구문 없이 출력되므로 Node가 CJS로 파싱 (esbuild 동일).
                 if (rec.resolved.isNone()) {
                     if (rec.kind == .static_import or rec.kind == .side_effect or rec.kind == .re_export) {
+                        // minify 시 computeMangling이 이름을 축약하므로, preamble 변수 선언도
+                        // canonical name을 사용해야 코드 참조와 일치한다.
+                        const preamble_name = self.getCanonicalName(module_index, ib.local_name) orelse ib.local_name;
                         try cjs_preamble_buf.appendSlice(self.allocator, "var ");
-                        try cjs_preamble_buf.appendSlice(self.allocator, ib.local_name);
+                        try cjs_preamble_buf.appendSlice(self.allocator, preamble_name);
                         try cjs_preamble_buf.appendSlice(self.allocator, " = require(\"");
                         try cjs_preamble_buf.appendSlice(self.allocator, rec.specifier);
                         try cjs_preamble_buf.appendSlice(self.allocator, "\")");
@@ -819,9 +834,10 @@ pub const Linker = struct {
 
                 // CJS 모듈에서 import하는 경우: preamble에서 require_xxx() 호출 생성
                 if (canonical_mod < self.modules.len and self.modules[canonical_mod].wrap_kind == .cjs) {
+                    const preamble_name = self.getCanonicalName(module_index, ib.local_name) orelse ib.local_name;
                     const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, @intCast(canonical_mod));
                     const interop_mode: types.Interop = if (m.def_format.isEsm()) .node else .babel;
-                    try appendCjsImportPreamble(&cjs_preamble_buf, self.allocator, ib.local_name, ib.imported_name, req_var, ib.kind == .namespace, interop_mode);
+                    try appendCjsImportPreamble(&cjs_preamble_buf, self.allocator, preamble_name, ib.imported_name, req_var, ib.kind == .namespace, interop_mode);
                     continue;
                 }
 
@@ -853,9 +869,10 @@ pub const Linker = struct {
                 if (resolved) |rb| {
                     const cjs_mod: u32 = @intCast(@intFromEnum(rb.canonical.module_index));
                     if (cjs_mod < self.modules.len and self.modules[cjs_mod].wrap_kind == .cjs) {
+                        const preamble_name2 = self.getCanonicalName(module_index, ib.local_name) orelse ib.local_name;
                         const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, cjs_mod);
                         const interop_mode2: types.Interop = if (m.def_format.isEsm()) .node else .babel;
-                        try appendCjsImportPreamble(&cjs_preamble_buf, self.allocator, ib.local_name, ib.imported_name, req_var, false, interop_mode2);
+                        try appendCjsImportPreamble(&cjs_preamble_buf, self.allocator, preamble_name2, ib.imported_name, req_var, false, interop_mode2);
                         continue;
                     }
                 }
@@ -931,7 +948,7 @@ pub const Linker = struct {
                 }
             }
 
-            // 자체 top-level 심볼 리네임 (이름 충돌)
+            // 자체 top-level 심볼 리네임 (이름 충돌 + mangling)
             var sit = module_scope.iterator();
             while (sit.next()) |scope_entry| {
                 const sym_name = scope_entry.key_ptr.*;
