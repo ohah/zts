@@ -490,7 +490,7 @@ pub const Linker = struct {
 
         var name_gen = Mangler.NameGenerator{};
 
-        // export된 이름은 보존해야 하므로 먼저 수집
+        // export/import binding 이름은 보존 — mangling하면 linker rename과 불일치
         var exported = std.StringHashMap(void).init(self.allocator);
         defer exported.deinit();
         for (self.modules) |m| {
@@ -498,15 +498,8 @@ pub const Linker = struct {
                 try exported.put(eb.exported_name, {});
                 try exported.put(eb.local_name, {});
             }
-        }
-
-        // import binding 이름도 보존 — scope hoisting 후 linker가 target 이름으로
-        // 치환하므로, mangling하면 preamble 선언과 참조가 불일치한다.
-        var import_locals = std.StringHashMap(void).init(self.allocator);
-        defer import_locals.deinit();
-        for (self.modules) |m| {
             for (m.import_bindings) |ib| {
-                try import_locals.put(ib.local_name, {});
+                try exported.put(ib.local_name, {});
             }
         }
 
@@ -514,10 +507,8 @@ pub const Linker = struct {
         while (ait.next()) |entry| {
             const orig_name = entry.key_ptr.*;
 
-            // export된 이름은 mangling 제외
+            // export/import binding 이름은 mangling 제외
             if (exported.contains(orig_name)) continue;
-            // import binding 이름은 mangling 제외 — linker가 별도 처리
-            if (import_locals.contains(orig_name)) continue;
             // default, 1글자는 제외
             if (orig_name.len <= 1) continue;
             if (std.mem.eql(u8, orig_name, "default")) continue;
@@ -869,10 +860,10 @@ pub const Linker = struct {
                 if (resolved) |rb| {
                     const cjs_mod: u32 = @intCast(@intFromEnum(rb.canonical.module_index));
                     if (cjs_mod < self.modules.len and self.modules[cjs_mod].wrap_kind == .cjs) {
-                        const preamble_name2 = self.getCanonicalName(module_index, ib.local_name) orelse ib.local_name;
+                        const preamble_name = self.getCanonicalName(module_index, ib.local_name) orelse ib.local_name;
                         const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, cjs_mod);
                         const interop_mode2: types.Interop = if (m.def_format.isEsm()) .node else .babel;
-                        try appendCjsImportPreamble(&cjs_preamble_buf, self.allocator, preamble_name2, ib.imported_name, req_var, false, interop_mode2);
+                        try appendCjsImportPreamble(&cjs_preamble_buf, self.allocator, preamble_name, ib.imported_name, req_var, false, interop_mode2);
                         continue;
                     }
                 }
