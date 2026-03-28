@@ -54,6 +54,8 @@ pub const LinkingMetadata = struct {
     /// symbol_id → ConstValue. 크로스-모듈 상수 인라인용.
     /// import symbol이 canonical export의 const_value를 가지면 codegen이 리터럴로 대체.
     const_values: std.AutoHashMapUnmanaged(u32, @import("../semantic/symbol.zig").ConstValue) = .{},
+    /// nested mangling에서 소유권을 이전받은 문자열. deinit에서 해제.
+    owned_rename_values: std.ArrayListUnmanaged([]const u8) = .empty,
     allocator: std.mem.Allocator,
 
     pub const NsMemberRewrites = struct {
@@ -94,6 +96,9 @@ pub const LinkingMetadata = struct {
 
     pub fn deinit(self: *LinkingMetadata) void {
         self.skip_nodes.deinit();
+        // nested mangling에서 소유권을 이전받은 문자열 해제
+        for (self.owned_rename_values.items) |v| self.allocator.free(v);
+        self.owned_rename_values.deinit(self.allocator);
         self.renames.deinit();
         if (self.final_exports) |fe| self.allocator.free(fe);
         if (self.cjs_import_preamble) |p| self.allocator.free(p);
@@ -785,6 +790,13 @@ pub const Linker = struct {
         var renames = std.AutoHashMap(u32, []const u8).init(self.allocator);
         errdefer renames.deinit();
 
+        // nested mangling에서 소유권을 이전받은 문자열 추적 (deinit에서 해제)
+        var owned_nested_renames: std.ArrayListUnmanaged([]const u8) = .empty;
+        errdefer {
+            for (owned_nested_renames.items) |v| self.allocator.free(v);
+            owned_nested_renames.deinit(self.allocator);
+        }
+
         // 2. import 바인딩 리네임 (모듈의 semantic 기반)
         const sem = m.semantic orelse return .{
             .skip_nodes = skip_nodes,
@@ -1013,16 +1025,22 @@ pub const Linker = struct {
                     m.source,
                     skip_syms,
                 );
-                defer nested_result.deinit();
 
-                // nested renames를 기존 renames에 merge
+                // nested renames를 기존 renames에 merge (소유권 이전)
                 var nit = nested_result.renames.iterator();
                 while (nit.next()) |n_entry| {
                     // top-level에서 이미 rename된 심볼은 건너뜀
                     if (!renames.contains(n_entry.key_ptr.*)) {
-                        try renames.put(n_entry.key_ptr.*, try self.allocator.dupe(u8, n_entry.value_ptr.*));
+                        // 소유권 이전: renames가 문자열을 참조, owned_rename_values가 해제 책임
+                        try renames.put(n_entry.key_ptr.*, n_entry.value_ptr.*);
+                        try owned_nested_renames.append(self.allocator, n_entry.value_ptr.*);
+                    } else {
+                        // 사용하지 않는 문자열은 즉시 해제
+                        self.allocator.free(n_entry.value_ptr.*);
                     }
                 }
+                // 값의 소유권이 이전되었으므로 HashMap만 해제 (값은 해제하지 않음)
+                nested_result.renames.deinit();
             }
         }
 
@@ -1142,6 +1160,7 @@ pub const Linker = struct {
             .ns_member_rewrites = ns_rewrites,
             .ns_inline_objects = ns_inlines,
             .const_values = const_values,
+            .owned_rename_values = owned_nested_renames,
             .allocator = self.allocator,
         };
     }
