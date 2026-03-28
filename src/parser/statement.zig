@@ -194,25 +194,14 @@ pub fn parseStatement(self: *Parser) ParseError2!NodeIndex {
                 {
                     break :blk self.parseTsTypeAliasDeclaration();
                 }
-            } else if (std.mem.eql(u8, text, "namespace")) {
-                // namespace\nfoo → 'namespace' expression statement + foo (ASI)
-                // namespace Foo { } → TS module declaration
+            } else if (std.mem.eql(u8, text, "namespace") or std.mem.eql(u8, text, "module")) {
+                // namespace/module Foo { } → TS module declaration
+                // namespace/module "name" { } → TS ambient module declaration
+                // module.exports, module["exports"], module() → expression statement (CJS)
+                // 줄바꿈 없이 identifier/{/string이 올 때만 TS declaration으로 판별
                 const next_ns = try self.peekNext();
                 if (!next_ns.has_newline_before and
                     (next_ns.kind == .identifier or next_ns.kind == .l_curly or next_ns.kind == .string_literal))
-                {
-                    break :blk self.parseTsModuleDeclaration();
-                }
-            } else if (std.mem.eql(u8, text, "module")) {
-                // module.exports = ... (CJS) → expression statement
-                // module["exports"] = ... (CJS) → expression statement
-                // module(...) → expression statement
-                // module Foo { } (TS namespace) → TS module declaration
-                // module "name" { } (TS ambient) → TS module declaration
-                // namespace와 동일 판별: 줄바꿈 없이 identifier/{/string이 올 때만
-                const next_mod = try self.peekNext();
-                if (!next_mod.has_newline_before and
-                    (next_mod.kind == .identifier or next_mod.kind == .l_curly or next_mod.kind == .string_literal))
                 {
                     break :blk self.parseTsModuleDeclaration();
                 }
