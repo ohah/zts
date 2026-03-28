@@ -461,10 +461,12 @@ pub const Linker = struct {
 
         for (self.modules) |m| {
             const sem = m.semantic orelse continue;
-            if (sem.scope_maps.len == 0) continue;
-            var sit = sem.scope_maps[0].iterator();
-            while (sit.next()) |entry| {
-                try all_names.put(entry.key_ptr.*, {});
+            // 모든 scope의 이름을 수집 — nested scope 변수와의 충돌 방지
+            for (sem.scope_maps) |scope_map| {
+                var sit = scope_map.iterator();
+                while (sit.next()) |entry| {
+                    try all_names.put(entry.key_ptr.*, {});
+                }
             }
         }
 
