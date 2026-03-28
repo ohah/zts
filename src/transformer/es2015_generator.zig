@@ -244,11 +244,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                                 .span = stmt.span,
                                 .data = .{ .binary = .{ .left = new_left, .right = sent_call, .flags = 0 } },
                             });
-                            const assign_stmt = try self.new_ast.addNode(.{
-                                .tag = .expression_statement,
-                                .span = stmt.span,
-                                .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
-                            });
+                            const assign_stmt = try es_helpers.makeExprStmt(self, assign, stmt.span);
                             try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
                         } else {
                             const new_stmt = try self.visitNode(stmt_idx);
@@ -414,11 +410,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 } else {
                     const new_init = try self.visitNode(init_idx);
                     if (!new_init.isNone()) {
-                        const init_stmt = try self.new_ast.addNode(.{
-                            .tag = .expression_statement,
-                            .span = stmt.span,
-                            .data = .{ .unary = .{ .operand = new_init, .flags = 0 } },
-                        });
+                        const init_stmt = try es_helpers.makeExprStmt(self, new_init, stmt.span);
                         try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = init_stmt } });
                     }
                 }
@@ -452,11 +444,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             if (!update_idx.isNone()) {
                 const new_update = try self.visitNode(update_idx);
                 if (!new_update.isNone()) {
-                    const update_stmt = try self.new_ast.addNode(.{
-                        .tag = .expression_statement,
-                        .span = stmt.span,
-                        .data = .{ .unary = .{ .operand = new_update, .flags = 0 } },
-                    });
+                    const update_stmt = try es_helpers.makeExprStmt(self, new_update, stmt.span);
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = update_stmt } });
                 }
             }
@@ -805,11 +793,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         .span = stmt.span,
                         .data = .{ .binary = .{ .left = new_param, .right = sent, .flags = 0 } },
                     });
-                    const assign_stmt = try self.new_ast.addNode(.{
-                        .tag = .expression_statement,
-                        .span = stmt.span,
-                        .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
-                    });
+                    const assign_stmt = try es_helpers.makeExprStmt(self, assign, stmt.span);
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
                 }
 
@@ -873,12 +857,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             // _state.trys.push([...])
             const call = try es_helpers.makeCallExpr(self, push_member, &.{arr}, span);
-
-            return self.new_ast.addNode(.{
-                .tag = .expression_statement,
-                .span = span,
-                .data = .{ .unary = .{ .operand = call, .flags = 0 } },
-            });
+            return es_helpers.makeExprStmt(self, call, span);
         }
 
         /// generator body에서 모든 var 선언의 binding name을 수집 (호이스팅).
@@ -985,11 +964,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         .span = stmt.span,
                         .data = .{ .binary = .{ .left = new_binding, .right = sent_call, .flags = 0 } },
                     });
-                    const assign_stmt = try self.new_ast.addNode(.{
-                        .tag = .expression_statement,
-                        .span = stmt.span,
-                        .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
-                    });
+                    const assign_stmt = try es_helpers.makeExprStmt(self, assign, stmt.span);
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
                 } else {
                     // var x = expr (no yield) → x = expr
@@ -1000,11 +975,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         .span = stmt.span,
                         .data = .{ .binary = .{ .left = new_binding, .right = new_init, .flags = 0 } },
                     });
-                    const assign_stmt = try self.new_ast.addNode(.{
-                        .tag = .expression_statement,
-                        .span = stmt.span,
-                        .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
-                    });
+                    const assign_stmt = try es_helpers.makeExprStmt(self, assign, stmt.span);
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
                 }
             }
@@ -1381,11 +1352,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// yield resume 시 throw된 에러를 발생시키기 위해 필요.
         fn buildSentExprStmt(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
             const sent = try buildSentCall(self, span);
-            return self.new_ast.addNode(.{
-                .tag = .expression_statement,
-                .span = span,
-                .data = .{ .unary = .{ .operand = sent, .flags = 0 } },
-            });
+            return es_helpers.makeExprStmt(self, sent, span);
         }
 
         /// _state identifier reference 생성.

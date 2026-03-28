@@ -142,3 +142,12 @@ pub fn makeEqNull(self: anytype, base: NodeIndex, span: Span) !NodeIndex {
         } },
     });
 }
+
+/// expression을 expression_statement로 감싸기.
+pub fn makeExprStmt(self: anytype, expr: NodeIndex, span: Span) !NodeIndex {
+    return self.new_ast.addNode(.{
+        .tag = .expression_statement,
+        .span = span,
+        .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
+    });
+}
