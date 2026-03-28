@@ -58,8 +58,13 @@ function fileSize(path: string): number {
 const emptyResult: BundlerResult = { build: false, size: 0, time: 0, stdout: "" };
 
 /** 단일 번들러로 빌드 + 실행하고 결과 반환 */
-function bundleAndRun(bin: string, buildArgs: string[], outFile: string): BundlerResult {
-  const build = exec(bin, buildArgs);
+function bundleAndRun(
+  bin: string,
+  buildArgs: string[],
+  outFile: string,
+  cwd?: string,
+): BundlerResult {
+  const build = exec(bin, buildArgs, cwd);
   if (!build.ok) {
     return { build: false, size: 0, time: build.time, stdout: "" };
   }
@@ -94,27 +99,15 @@ function testProject(p: ProjectConfig): SmokeResult {
     errors: [],
   };
 
+  // entry 파일을 프로젝트 루트에 작성 (hoisted node_modules resolve 위해)
+  const entryFile = join(ROOT, `_smoke_entry_${p.name}.ts`);
   try {
-    // npm install
-    writeFileSync(
-      join(dir, "package.json"),
-      JSON.stringify({ name: `smoke-${p.name}`, private: true }),
-    );
-    const install = spawnSync("npm", ["install", ...p.pkg.split(/\s+/), "--save"], {
-      cwd: dir,
-      stdio: "pipe",
-      timeout: 120000,
-    });
-    if (install.status !== 0) {
-      result.errors.push(`npm install failed: ${install.stderr?.toString().slice(0, 200)}`);
-      return result;
-    }
-
-    writeFileSync(join(dir, "index.ts"), p.entry);
+    writeFileSync(entryFile, p.entry);
 
     // tsconfig.json 생성 (decorator 등 옵션이 필요한 경우)
+    const tsconfigFile = join(ROOT, `_smoke_tsconfig_${p.name}.json`);
     if (p.tsconfig) {
-      writeFileSync(join(dir, "tsconfig.json"), JSON.stringify({ compilerOptions: p.tsconfig }));
+      writeFileSync(tsconfigFile, JSON.stringify({ compilerOptions: p.tsconfig }));
     }
 
     const ztsOut = join(dir, "dist-zts.js");
@@ -127,13 +120,13 @@ function testProject(p: ProjectConfig): SmokeResult {
     // ZTS
     const ztsExternalArgs = ext.flatMap((e) => ["--external", e]);
     const ztsFormatArgs = format === "cjs" ? ["--format=cjs"] : [];
-    const ztsTsconfigArgs = p.tsconfig ? ["-p", join(dir, "tsconfig.json")] : [];
+    const ztsTsconfigArgs = p.tsconfig ? ["-p", tsconfigFile] : [];
     const ztsTargetArgs = p.target ? [`--target=${p.target}`] : [];
     result.zts = bundleAndRun(
       ZTS_BIN,
       [
         "--bundle",
-        join(dir, "index.ts"),
+        entryFile,
         "-o",
         ztsOut,
         `--platform=${platform}`,
@@ -151,19 +144,22 @@ function testProject(p: ProjectConfig): SmokeResult {
     // esbuild
     if (existsSync(ESBUILD_BIN)) {
       const esExternalArgs = ext.flatMap((e) => [`--external:${e}`]);
-      const esFormatArgs = format !== "esm" ? [] : [`--format=esm`];
+      const esFormatArgs = format === "esm" ? [`--format=esm`] : [];
+      const esTargetArgs = p.target ? [`--target=${p.target}`] : [];
       result.esbuild = bundleAndRun(
         ESBUILD_BIN,
         [
-          join(dir, "index.ts"),
+          entryFile,
           "--bundle",
           `--outfile=${esOut}`,
           "--loader:.ts=ts",
           `--platform=${platform}`,
           ...esExternalArgs,
           ...esFormatArgs,
+          ...esTargetArgs,
         ],
         esOut,
+        __dirname,
       );
       if (!result.esbuild.build) {
         result.errors.push(`esbuild: build or run failed`);
@@ -175,17 +171,9 @@ function testProject(p: ProjectConfig): SmokeResult {
       const rdExternalArgs = ext.flatMap((e) => ["--external", e]);
       result.rolldown = bundleAndRun(
         ROLLDOWN_BIN,
-        [
-          join(dir, "index.ts"),
-          "-o",
-          rdOut,
-          "--format",
-          "cjs",
-          "--platform",
-          platform,
-          ...rdExternalArgs,
-        ],
+        [entryFile, "-o", rdOut, "--format", "cjs", "--platform", platform, ...rdExternalArgs],
         rdOut,
+        __dirname,
       );
       if (!result.rolldown.build) {
         result.errors.push(`rolldown: build or run failed`);
@@ -211,6 +199,12 @@ function testProject(p: ProjectConfig): SmokeResult {
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
+    try {
+      rmSync(entryFile);
+    } catch {}
+    try {
+      rmSync(tsconfigFile);
+    } catch {}
   }
 
   return result;
@@ -416,7 +410,7 @@ const projects: ProjectConfig[] = [
   },
   {
     name: "react-dom",
-    pkg: "react-dom@18 react@18",
+    pkg: "react-dom react",
     entry: `import { renderToString } from 'react-dom/server';\nimport { createElement } from 'react';\nconsole.log(renderToString(createElement('div', null, 'Hello')));`,
   },
   {
@@ -452,7 +446,7 @@ const projects: ProjectConfig[] = [
   {
     name: "neverthrow",
     pkg: "neverthrow",
-    entry: `import { ok, err } from 'neverthrow';\nconst r = ok(42).map(n => n + 1);\nconsole.log(r.isOk(), r._unsafeUnwrap());`,
+    entry: `import { ok, err } from 'neverthrow';\nconst r = ok(42).map((n: number) => n + 1);\nconsole.log(r.isOk(), r.isOk() ? r.value : null);`,
   },
   {
     name: "drizzle-orm",
