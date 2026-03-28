@@ -241,14 +241,14 @@ Per-File Arena (단일 할당자, 파일 처리 후 한 번에 해제)
 | 6a-ex | exports 조건 해석 Node.js 스펙 준수 (tslib CJS→ESM 해결) | ✅ |
 | 6b. Dev server | HTTP+WS, Live Reload, HMR, React Fast Refresh, CSS 핫 리로드 | ✅ |
 | Test262 | 50,504건 100% 통과 | ✅ |
-| Smoke | 125개 패키지, avg 0.74x, ❌ 1개 (three) | ✅ |
+| Smoke | 125개 패키지, avg 0.74x, ❌ 0개 | ✅ |
 
 ### 🔜 다음 우선순위
-- **smoke ❌ 개선**: three(1.90x)
+- smoke 전체 통과 — 다음 목표 결정 필요
 
 ### ⏳ 진행 중 / 미완료
 - **ES 다운레벨링**: ES2022~ES2015 ✅ (--target=es5 지원)
-  - ES2015 generator: try/catch/finally 안의 yield는 추후 구현 (_state.trys 스택 필요)
+  - ES2015 generator: try/catch/finally + yield ✅, __generator 런타임 헬퍼 주입은 미구현 (tslib 사용)
 - **.d.ts 생성** (isolatedDeclarations) — 후순위, 당분간 tsc에 위임
 - **프로파일링 → SIMD → 미니파이어** — 번들러 완료 후
 - **WASM 공개 AST API** — AST 안정화 후
