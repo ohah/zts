@@ -1506,14 +1506,8 @@ pub const Linker = struct {
                                     .export_name = name,
                                 };
                             }
-                            if (self.resolveExportChain(source_mod, entry.binding.local_name, depth + 1)) |result| {
+                            if (self.resolveOrCjsFallback(source_mod, entry.binding.local_name, depth + 1)) |result| {
                                 return result;
-                            }
-                            // CJS 모듈은 정적 export가 없어 resolveExportChain이 null.
-                            // CJS 모듈 자체를 반환 — 소비자가 require_xxx()로 접근.
-                            const src_idx = @intFromEnum(source_mod);
-                            if (src_idx < self.modules.len and self.modules[src_idx].wrap_kind == .cjs) {
-                                return .{ .module_index = source_mod, .export_name = entry.binding.local_name };
                             }
                         }
                     }
@@ -1556,21 +1550,25 @@ pub const Linker = struct {
                 if (rec_idx < m.import_records.len) {
                     const source_mod = m.import_records[rec_idx].resolved;
                     if (!source_mod.isNone()) {
-                        if (self.resolveExportChain(source_mod, name, depth + 1)) |result| {
+                        if (self.resolveOrCjsFallback(source_mod, name, depth + 1)) |result| {
                             return result;
-                        }
-                        // CJS 모듈은 정적 export가 없으므로 resolveExportChain이 null을 반환한다.
-                        // 이 경우 CJS 모듈 자체를 반환하여, 소비자 측에서 require_xxx().name 형태의
-                        // CJS preamble을 생성하도록 한다. (esbuild의 __reExport 패턴과 동일한 효과)
-                        const src_idx = @intFromEnum(source_mod);
-                        if (src_idx < self.modules.len and self.modules[src_idx].wrap_kind == .cjs) {
-                            return .{ .module_index = source_mod, .export_name = name };
                         }
                     }
                 }
             }
         }
 
+        return null;
+    }
+
+    /// resolveExportChain + CJS fallback. CJS 모듈은 정적 export가 없으므로
+    /// resolve 실패 시 CJS 모듈 자체를 반환하여 소비자가 require_xxx()로 접근.
+    fn resolveOrCjsFallback(self: *const Linker, source_mod: ModuleIndex, name: []const u8, depth: u32) ?SymbolRef {
+        if (self.resolveExportChain(source_mod, name, depth)) |result| return result;
+        const src_idx = @intFromEnum(source_mod);
+        if (src_idx < self.modules.len and self.modules[src_idx].wrap_kind == .cjs) {
+            return .{ .module_index = source_mod, .export_name = name };
+        }
         return null;
     }
 

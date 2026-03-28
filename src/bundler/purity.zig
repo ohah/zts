@@ -219,46 +219,38 @@ pub fn classHasSideEffects(ast: *const Ast, node: Node) bool {
         const member = ast.nodes.items[@intFromEnum(mi)];
 
         switch (member.tag) {
-            .static_block => return true, // static block은 항상 side-effect
+            .static_block => return true,
             .property_definition, .accessor_property => {
                 const me = member.data.extra;
                 if (me + 4 >= ast.extra_data.items.len) return true;
-                // computed key가 불순이면 side-effect
-                const key_idx: NodeIndex = @enumFromInt(ast.extra_data.items[me]);
-                if (!key_idx.isNone() and @intFromEnum(key_idx) < ast.nodes.items.len) {
-                    const key_node = ast.nodes.items[@intFromEnum(key_idx)];
-                    if (key_node.tag == .computed_property_key) {
-                        if (!isExprPure(ast, key_node.data.unary.operand)) return true;
-                    }
-                }
+                if (computedKeyHasSideEffects(ast, me)) return true;
                 // static field의 불순 초기화: static flag (bit 0)
-                const flags = ast.extra_data.items[me + 2];
-                const is_static = (flags & 1) != 0;
-                if (is_static) {
+                if ((ast.extra_data.items[me + 2] & 1) != 0) {
                     const init_idx: NodeIndex = @enumFromInt(ast.extra_data.items[me + 1]);
                     if (!isExprPure(ast, init_idx)) return true;
                 }
-                // member decorator
-                const m_deco_len = ast.extra_data.items[me + 4];
-                if (m_deco_len > 0) return true;
+                if (ast.extra_data.items[me + 4] > 0) return true; // decorator
             },
             .method_definition => {
                 const me = member.data.extra;
                 if (me + 6 >= ast.extra_data.items.len) return true;
-                // computed key 검사
-                const key_idx: NodeIndex = @enumFromInt(ast.extra_data.items[me]);
-                if (!key_idx.isNone() and @intFromEnum(key_idx) < ast.nodes.items.len) {
-                    const key_node = ast.nodes.items[@intFromEnum(key_idx)];
-                    if (key_node.tag == .computed_property_key) {
-                        if (!isExprPure(ast, key_node.data.unary.operand)) return true;
-                    }
-                }
-                // method decorator
-                const m_deco_len = ast.extra_data.items[me + 6];
-                if (m_deco_len > 0) return true;
+                if (computedKeyHasSideEffects(ast, me)) return true;
+                if (ast.extra_data.items[me + 6] > 0) return true; // decorator
             },
             else => {},
         }
+    }
+    return false;
+}
+
+/// class member의 computed key가 불순인지 검사. extra_data[extra_offset]에서 key NodeIndex를 읽는다.
+fn computedKeyHasSideEffects(ast: *const Ast, extra_offset: u32) bool {
+    if (extra_offset >= ast.extra_data.items.len) return true;
+    const key_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra_offset]);
+    if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
+    const key_node = ast.nodes.items[@intFromEnum(key_idx)];
+    if (key_node.tag == .computed_property_key) {
+        return !isExprPure(ast, key_node.data.unary.operand);
     }
     return false;
 }

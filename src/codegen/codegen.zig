@@ -767,20 +767,20 @@ pub const Codegen = struct {
     /// else 분기의 if_statement가 상수 조건 DCE로 아무것도 출력하지 않는지 재귀 확인.
     /// `else if (false) { ... }` → dead, `else if (false) { ... } else if (false) { ... }` → dead
     fn isDeadIfNode(self: *Codegen, node_idx: NodeIndex) bool {
+        return self.isDeadIfNodeDepth(node_idx, 0);
+    }
+
+    fn isDeadIfNodeDepth(self: *Codegen, node_idx: NodeIndex, depth: u32) bool {
+        if (depth >= 128) return false;
         if (self.options.linking_metadata == null) return false;
         if (node_idx.isNone() or @intFromEnum(node_idx) >= self.ast.nodes.items.len) return false;
         const n = self.ast.getNode(node_idx);
         if (n.tag != .if_statement) return false;
         const t = n.data.ternary;
         const known = self.evalBooleanCondition(t.a) orelse return false;
-        if (known) {
-            // if (true) → then 분기를 출력하므로 dead가 아님
-            return false;
-        }
-        // if (false) { ... } → else 분기가 없으면 dead
+        if (known) return false;
         if (t.c.isNone()) return true;
-        // if (false) { ... } else <alt> → alt도 dead인지 재귀 확인
-        return self.isDeadIfNode(t.c);
+        return self.isDeadIfNodeDepth(t.c, depth + 1);
     }
 
     /// 조건 노드가 컴파일 타임 boolean으로 확정되면 값을 반환한다.
