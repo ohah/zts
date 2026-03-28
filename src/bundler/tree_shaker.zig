@@ -42,10 +42,10 @@ pub const TreeShaker = struct {
     module_stmt_infos: []?StmtInfos = &.{},
     /// 모듈별 도달성 bitset 캐시. fixpoint 수렴 후 계산.
     reachable_stmts: []?std.DynamicBitSet = &.{},
-    /// 수렴 루프에서 새 엔트리 추가 여부 추적.
-    exports_changed: bool = false,
     /// 모듈별 sym_idx → import_binding_index 맵. 크로스-모듈 BFS에서 사용.
     sym_to_ib: []?[]?u32 = &.{},
+    /// seedOpaqueModule 재진입 방지용 visited bitset. crossModuleBFS에서 초기화.
+    opaque_visited: ?std.DynamicBitSet = null,
 
     const max_fixpoint_iterations: u32 = 100;
 
@@ -400,8 +400,9 @@ pub const TreeShaker = struct {
         var queue: std.ArrayListUnmanaged(BfsItem) = .empty;
         defer queue.deinit(self.allocator);
 
-        // Phase 1의 used_exports 유지 — BFS에서 추가 마킹만 수행
-        // (clearUsedExports 하지 않음 — CJS/side-effect 모듈의 export 보호)
+        var ov = try std.DynamicBitSet.initEmpty(self.allocator, self.modules.len);
+        defer ov.deinit();
+        self.opaque_visited = ov;
 
         // 시드 1: entry module의 export 선언 statement + side-effect statement
         for (self.modules, 0..) |m, i| {
@@ -558,13 +559,7 @@ pub const TreeShaker = struct {
             const mid_module = self.modules[target_mod];
             if (mid_module.semantic) |mid_sem| {
                 if (mid_sem.scope_maps.len > 0) {
-                    var mid_local = imported_name;
-                    for (mid_module.export_bindings) |eb| {
-                        if (std.mem.eql(u8, eb.exported_name, imported_name)) {
-                            mid_local = eb.local_name;
-                            break;
-                        }
-                    }
+                    const mid_local = self.linker.getExportLocalName(@intCast(target_mod), imported_name) orelse imported_name;
                     if (mid_sem.scope_maps[0].get(mid_local)) |mid_sym| {
                         if (module_stmt_infos[target_mod]) |mid_infos| {
                             if (mid_infos.declaredStmtBySymbol(@intCast(mid_sym))) |mid_stmt| {
@@ -586,14 +581,7 @@ pub const TreeShaker = struct {
         };
         if (target_sem.scope_maps.len == 0) return;
 
-        var local_name = canonical.export_name;
-        for (target_module.export_bindings) |eb| {
-            if (std.mem.eql(u8, eb.exported_name, canonical.export_name)) {
-                local_name = eb.local_name;
-                break;
-            }
-        }
-
+        const local_name = self.linker.getExportLocalName(@intCast(canon_mod), canonical.export_name) orelse canonical.export_name;
         const sym_idx = target_sem.scope_maps[0].get(local_name) orelse return;
         const target_infos = module_stmt_infos[canon_mod] orelse {
             try self.seedOpaqueModule(@intCast(canon_mod), queue, module_stmt_infos, reachable_stmts);
@@ -625,9 +613,10 @@ pub const TreeShaker = struct {
         reachable_stmts: []?std.DynamicBitSet,
     ) std.mem.Allocator.Error!void {
         if (mod_idx >= self.modules.len) return;
-        // 재진입 방지
-        if (reachable_stmts[mod_idx] != null) return;
-        reachable_stmts[mod_idx] = try std.DynamicBitSet.initEmpty(self.allocator, 0);
+        if (self.opaque_visited) |ov| {
+            if (ov.isSet(mod_idx)) return;
+        }
+        if (self.opaque_visited) |*ov| ov.set(mod_idx);
 
         const m = self.modules[mod_idx];
         for (m.import_bindings) |ib| {
@@ -810,7 +799,6 @@ pub const TreeShaker = struct {
 
         const key = try types.makeModuleKey(self.allocator, module_index, export_name);
         try self.used_exports.put(key, {});
-        self.exports_changed = true;
     }
 
     fn markAllExportsUsed(self: *TreeShaker, module_index: u32) !void {
