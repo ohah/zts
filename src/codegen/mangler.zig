@@ -1,29 +1,32 @@
-//! ZTS Identifier Mangler (MVP)
+//! ZTS Identifier Mangler — Liveness-based Slot Reuse (oxc 방식)
 //!
-//! 스코프 분석을 기반으로 로컬 변수 이름을 짧은 이름으로 교체한다.
+//! 스코프 분석 + liveness BitSet를 기반으로 로컬 변수 이름을 짧은 이름으로 교체한다.
 //! 번들 크기를 ~70% 절감하는 핵심 최적화.
 //!
-//! MVP 전략: 스코프별 순차 이름 배정 (a, b, c, ..., z, A, ..., Z, aa, ab, ...)
-//! 후속: oxc 방식 빈도 기반 + 슬롯 재사용 + Base54
+//! 알고리즘 (oxc/esbuild 기반, 그래프 컬러링):
+//!   1. parent 배열에서 children 역산 (O(n), 2-pass)
+//!   2. ref_scope_pairs로 per-symbol liveness BitSet 계산
+//!   3. DFS로 scope tree 순회, alive하지 않은 slot 재사용 (그래프 컬러링)
+//!   4. 빈도순 이름 할당 (Base54, 고빈도 심볼이 짧은 이름)
 //!
 //! 규칙:
 //!   - export된 심볼은 mangling 하지 않음
 //!   - import 바인딩은 mangling 하지 않음 (번들러가 처리)
 //!   - 예약어/글로벌 이름은 건너뜀
 //!   - 함수 파라미터도 mangling 대상
-//!   - 스코프 내 기존 1글자 이름과 충돌 방지 (부모 체인 포함)
 //!
-//! 미구현 (후속):
-//!   - eval 포함 스코프 mangling 스킵
-//!   - 빈도 기반 이름 배정 (oxc Base54)
+//! 참고:
+//!   - oxc: crates/oxc_mangler/src/lib.rs (liveness + graph coloring)
+//!   - esbuild: internal/renamer/renamer.go (DFS slot assignment)
 
 const std = @import("std");
 const Scope = @import("../semantic/scope.zig").Scope;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const Symbol = @import("../semantic/symbol.zig").Symbol;
+const RefScopePair = @import("../semantic/symbol.zig").RefScopePair;
 
 pub const ManglerResult = struct {
-    /// symbol_id → 새 이름. codegen의 linking_metadata.renames에 주입.
+    /// symbol_id -> 새 이름. codegen의 linking_metadata.renames에 주입.
     renames: std.AutoHashMap(u32, []const u8),
     allocator: std.mem.Allocator,
 
@@ -34,13 +37,222 @@ pub const ManglerResult = struct {
     }
 };
 
-/// 스코프/심볼 데이터를 받아 mangling rename 맵을 생성한다.
+/// Liveness 기반 mangling. 기존 mangle()을 대체.
+///
+/// - scopes, symbols, scope_maps: semantic analyzer 결과
+/// - ref_scope_pairs: 참조 발생 (symbol_idx, scope_id) 쌍
+/// - source: 소스 코드 (심볼 이름 읽기용)
+/// - skip_symbols: 번들 모드에서 mangling 제외할 symbol indices (null이면 없음)
 pub fn mangle(
     allocator: std.mem.Allocator,
     scopes: []const Scope,
     symbols: []const Symbol,
     scope_maps: []const std.StringHashMap(usize),
+    ref_scope_pairs: []const RefScopePair,
+    source: []const u8,
+    skip_symbols: ?std.DynamicBitSet,
 ) !ManglerResult {
+    const scope_count = scopes.len;
+    const symbol_count = symbols.len;
+
+    if (scope_count == 0 or symbol_count == 0) {
+        return .{
+            .renames = std.AutoHashMap(u32, []const u8).init(allocator),
+            .allocator = allocator,
+        };
+    }
+
+    // ================================================================
+    // Phase 1: children 역산 (parent 배열 -> children adjacency list)
+    // ================================================================
+    const children = try buildChildrenList(allocator, scopes);
+    defer allocator.free(children.offsets);
+    defer allocator.free(children.list);
+
+    // ================================================================
+    // Phase 2: per-symbol liveness BitSet 계산
+    // ================================================================
+    // 각 symbol이 어느 scope에서 alive한지 추적.
+    // alive = 선언 scope에서 참조 scope까지의 ancestor 경로 전체.
+    var symbol_liveness = try allocator.alloc(std.DynamicBitSet, symbol_count);
+    defer {
+        for (symbol_liveness) |*bs| bs.deinit();
+        allocator.free(symbol_liveness);
+    }
+    for (symbol_liveness) |*bs| {
+        bs.* = try std.DynamicBitSet.initEmpty(allocator, scope_count);
+    }
+
+    // 선언 scope 자체를 alive로 표시
+    for (symbols, 0..) |sym, i| {
+        if (!sym.scope_id.isNone() and sym.scope_id.toIndex() < scope_count) {
+            symbol_liveness[i].set(sym.scope_id.toIndex());
+        }
+    }
+
+    // ref_scope_pairs: 참조 scope에서 선언 scope까지 ancestor 경로를 모두 set
+    for (ref_scope_pairs) |pair| {
+        if (pair.symbol_idx >= symbol_count) continue;
+        const sym = symbols[pair.symbol_idx];
+        const decl_scope = sym.scope_id;
+        if (decl_scope.isNone()) continue;
+        markAncestorPath(&symbol_liveness[pair.symbol_idx], scopes, pair.scope_id, decl_scope);
+    }
+
+    // ================================================================
+    // Phase 3: Slot 할당 (DFS + 그래프 컬러링)
+    // ================================================================
+    const Slot = struct {
+        liveness: std.DynamicBitSet,
+        total_refs: u32,
+    };
+
+    var slots: std.ArrayListUnmanaged(Slot) = .empty;
+    defer {
+        for (slots.items) |*s| s.liveness.deinit();
+        slots.deinit(allocator);
+    }
+
+    // symbol_idx -> slot_id (null이면 미할당)
+    var symbol_to_slot = try allocator.alloc(?u32, symbol_count);
+    defer allocator.free(symbol_to_slot);
+    @memset(symbol_to_slot, null);
+
+    // scope별 bindings를 symbol_idx 기준으로 정렬하기 위한 임시 버퍼
+    var binding_buf: std.ArrayListUnmanaged(SymBinding) = .empty;
+    defer binding_buf.deinit(allocator);
+
+    // DFS로 scope tree 순회
+    var dfs_stack: std.ArrayListUnmanaged(u32) = .empty;
+    defer dfs_stack.deinit(allocator);
+    try dfs_stack.append(allocator, 0); // root scope
+
+    while (dfs_stack.items.len > 0) {
+        const scope_idx = dfs_stack.pop().?;
+
+        // 이 scope의 bindings 수집 (결정론적 순서를 위해 symbol_idx 정렬)
+        binding_buf.items.len = 0;
+        if (scope_idx < scope_maps.len) {
+            var sit = scope_maps[@intCast(scope_idx)].iterator();
+            while (sit.next()) |entry| {
+                const sym_idx: u32 = @intCast(entry.value_ptr.*);
+                if (sym_idx >= symbol_count) continue;
+
+                const sym = symbols[sym_idx];
+                const name = entry.key_ptr.*;
+
+                // skip 판정
+                if (shouldSkip(sym, name)) continue;
+                if (skip_symbols) |ss| {
+                    if (sym_idx < ss.capacity() and ss.isSet(sym_idx)) continue;
+                }
+
+                try binding_buf.append(allocator, .{ .sym_idx = sym_idx, .name = name });
+            }
+        }
+
+        // 결정론적 순서: symbol_idx 오름차순
+        std.mem.sortUnstable(SymBinding, binding_buf.items, {}, struct {
+            fn cmp(_: void, a: SymBinding, b: SymBinding) bool {
+                return a.sym_idx < b.sym_idx;
+            }
+        }.cmp);
+
+        // 각 binding에 slot 할당
+        for (binding_buf.items) |binding| {
+            const sym_idx = binding.sym_idx;
+            if (symbol_to_slot[sym_idx] != null) continue; // 이미 할당됨 (var 호이스팅 등)
+
+            // 기존 slot 중 재사용 가능한 것 찾기:
+            // slot의 liveness가 이 symbol의 liveness와 겹치지 않으면 재사용 가능
+            var reused_slot: ?u32 = null;
+            for (slots.items, 0..) |*slot, slot_idx| {
+                // slot.liveness와 symbol_liveness[sym_idx]가 교집합이 없으면 재사용 가능
+                if (!bitsetIntersects(slot.liveness, symbol_liveness[sym_idx])) {
+                    reused_slot = @intCast(slot_idx);
+                    break;
+                }
+            }
+
+            if (reused_slot) |slot_id| {
+                symbol_to_slot[sym_idx] = slot_id;
+                // slot의 liveness 확장 (합집합)
+                bitwiseOr(&slots.items[slot_id].liveness, symbol_liveness[sym_idx]);
+                slots.items[slot_id].total_refs += symbols[sym_idx].reference_count;
+            } else {
+                // 새 slot 생성
+                const new_slot_id: u32 = @intCast(slots.items.len);
+                var new_liveness = try std.DynamicBitSet.initEmpty(allocator, scope_count);
+                bitwiseOr(&new_liveness, symbol_liveness[sym_idx]);
+                try slots.append(allocator, .{
+                    .liveness = new_liveness,
+                    .total_refs = symbols[sym_idx].reference_count,
+                });
+                symbol_to_slot[sym_idx] = new_slot_id;
+            }
+        }
+
+        // children을 DFS stack에 push (역순으로 넣어서 작은 인덱스부터 처리)
+        const start = children.offsets[scope_idx];
+        const end = if (scope_idx + 1 < children.offsets.len) children.offsets[scope_idx + 1] else @as(u32, @intCast(children.list.len));
+        var ci = end;
+        while (ci > start) {
+            ci -= 1;
+            try dfs_stack.append(allocator, children.list[ci]);
+        }
+    }
+
+    // ================================================================
+    // Phase 4: 빈도순 이름 할당 (Base54)
+    // ================================================================
+    const slot_count = slots.items.len;
+    if (slot_count == 0) {
+        return .{
+            .renames = std.AutoHashMap(u32, []const u8).init(allocator),
+            .allocator = allocator,
+        };
+    }
+
+    // slot 정렬: total_refs 내림차순, 동률이면 slot_id 오름차순
+    const sorted_slots = try allocator.alloc(SlotSortEntry, slot_count);
+    defer allocator.free(sorted_slots);
+    for (sorted_slots, 0..) |*entry, i| {
+        entry.* = .{
+            .slot_id = @intCast(i),
+            .total_refs = slots.items[i].total_refs,
+        };
+    }
+    std.mem.sortUnstable(SlotSortEntry, sorted_slots, {}, struct {
+        fn cmp(_: void, a: SlotSortEntry, b: SlotSortEntry) bool {
+            if (a.total_refs != b.total_refs) return a.total_refs > b.total_refs;
+            return a.slot_id < b.slot_id;
+        }
+    }.cmp);
+
+    // slot_id -> base54 이름 할당
+    var slot_names = try allocator.alloc(?[]const u8, slot_count);
+    defer {
+        // slot_names 자체만 해제 (이름 문자열은 renames가 소유)
+        allocator.free(slot_names);
+    }
+    @memset(slot_names, null);
+
+    var name_counter: u32 = 0;
+    var name_buf: [8]u8 = undefined;
+    for (sorted_slots) |entry| {
+        // 예약어 충돌 건너뜀
+        var name = base54(name_counter, &name_buf);
+        name_counter += 1;
+        while (isReservedOrGlobal(name)) {
+            name = base54(name_counter, &name_buf);
+            name_counter += 1;
+        }
+        slot_names[entry.slot_id] = try allocator.dupe(u8, name);
+    }
+
+    // ================================================================
+    // Phase 5: renames 맵 생성
+    // ================================================================
     var renames = std.AutoHashMap(u32, []const u8).init(allocator);
     errdefer {
         var it = renames.valueIterator();
@@ -48,89 +260,221 @@ pub fn mangle(
         renames.deinit();
     }
 
-    // 스코프별로 순회하며 mangling 대상 심볼에 짧은 이름 배정.
-    // 각 스코프에서 이름 생성기를 리셋하여 스코프 간 이름 재사용.
-    for (scope_maps, 0..) |scope_map, scope_idx| {
-        if (scope_idx >= scopes.len) break;
-        const scope = scopes[scope_idx];
+    for (symbol_to_slot, 0..) |maybe_slot, sym_idx| {
+        const slot_id = maybe_slot orelse continue;
+        const new_name = slot_names[slot_id] orelse continue;
+        const sym = symbols[sym_idx];
+        const orig_name = source[sym.name.start..sym.name.end];
 
-        // 스코프 내 기존 이름 수집 (mangling 안 되는 이름 = 점유 이름)
-        // 생성된 이름이 이들과 충돌하면 건너뜀
-        var occupied = std.StringHashMap(void).init(allocator);
-        defer occupied.deinit();
+        if (std.mem.eql(u8, orig_name, new_name)) continue;
 
-        // 현재 스코프의 mangling 제외 이름
-        var sit1 = scope_map.iterator();
-        while (sit1.next()) |entry| {
-            const sym_name = entry.key_ptr.*;
-            const sym_idx = entry.value_ptr.*;
-            if (sym_idx < symbols.len and shouldSkip(symbols[sym_idx], sym_name)) {
-                try occupied.put(sym_name, {});
-            }
-        }
+        // 이미 이름이 할당된 slot에서 왔으므로 dupe 필요 (여러 symbol이 같은 slot 공유)
+        try renames.put(@intCast(sym_idx), try allocator.dupe(u8, new_name));
+    }
 
-        // 부모 스코프 체인의 모든 이름도 점유 (shadowing 방지)
-        var parent_id = scope.parent;
-        while (!parent_id.isNone()) {
-            const pi = parent_id.toIndex();
-            if (pi < scope_maps.len) {
-                var pit = scope_maps[pi].iterator();
-                while (pit.next()) |entry| {
-                    // 부모 스코프에서 mangling 안 되는 이름만 점유
-                    const pname = entry.key_ptr.*;
-                    const pidx = entry.value_ptr.*;
-                    if (pidx < symbols.len and shouldSkip(symbols[pidx], pname)) {
-                        try occupied.put(pname, {});
-                    }
-                }
-            }
-            if (pi < scopes.len) {
-                parent_id = scopes[pi].parent;
-            } else break;
-        }
-
-        var name_gen = NameGenerator{};
-
-        var sit = scope_map.iterator();
-        while (sit.next()) |entry| {
-            const sym_name = entry.key_ptr.*;
-            const sym_idx = entry.value_ptr.*;
-
-            if (sym_idx >= symbols.len) continue;
-            const sym = symbols[sym_idx];
-
-            if (shouldSkip(sym, sym_name)) continue;
-
-            // 짧은 이름 생성 (예약어 + 점유 이름 충돌 방지)
-            var new_name = name_gen.next();
-            while (isReservedOrGlobal(new_name) or occupied.contains(new_name)) {
-                new_name = name_gen.next();
-            }
-
-            if (std.mem.eql(u8, sym_name, new_name)) continue;
-
-            try renames.put(@intCast(sym_idx), try allocator.dupe(u8, new_name));
+    // slot_names에서 renames로 복사되지 않은 이름 해제
+    for (slot_names) |maybe_name| {
+        if (maybe_name) |name_str| {
+            // renames에 들어간 이름인지 확인하지 않고, 항상 원본을 해제.
+            // renames에는 dupe된 복사본이 들어가므로 원본 해제가 안전.
+            allocator.free(name_str);
         }
     }
 
     return .{ .renames = renames, .allocator = allocator };
 }
 
-/// mangling 제외 여부 판단
+// ============================================================
+// Liveness 헬퍼
+// ============================================================
+
+/// ref_scope에서 decl_scope까지 ancestor 경로의 모든 scope를 liveness에 set.
+fn markAncestorPath(
+    liveness: *std.DynamicBitSet,
+    scopes: []const Scope,
+    ref_scope: ScopeId,
+    decl_scope: ScopeId,
+) void {
+    var cur = ref_scope;
+    while (!cur.isNone()) {
+        const idx = cur.toIndex();
+        if (idx >= scopes.len) break;
+        liveness.set(idx);
+        if (cur.toIndex() == decl_scope.toIndex()) break;
+        cur = scopes[idx].parent;
+    }
+}
+
+/// 두 BitSet이 교집합을 가지는지 검사 (하나라도 겹치면 true).
+fn bitsetIntersects(a: std.DynamicBitSet, b: std.DynamicBitSet) bool {
+    const num_masks = @min(numMasks(a), numMasks(b));
+    for (a.unmanaged.masks[0..num_masks], b.unmanaged.masks[0..num_masks]) |ma, mb| {
+        if (ma & mb != 0) return true;
+    }
+    return false;
+}
+
+/// dest |= src (bitwise OR).
+fn bitwiseOr(dest: *std.DynamicBitSet, src: std.DynamicBitSet) void {
+    const num = @min(numMasks(dest.*), numMasks(src));
+    for (dest.unmanaged.masks[0..num], src.unmanaged.masks[0..num]) |*d, s| {
+        d.* |= s;
+    }
+}
+
+fn numMasks(bs: std.DynamicBitSet) usize {
+    const MaskInt = std.DynamicBitSetUnmanaged.MaskInt;
+    return (bs.unmanaged.bit_length + @bitSizeOf(MaskInt) - 1) / @bitSizeOf(MaskInt);
+}
+
+// ============================================================
+// Children 역산 (parent -> children adjacency list)
+// ============================================================
+
+const ChildrenList = struct {
+    /// offsets[scope_id] = children_list 내 시작 인덱스. 길이 = scope_count + 1.
+    offsets: []u32,
+    /// flat children 배열.
+    list: []u32,
+};
+
+fn buildChildrenList(allocator: std.mem.Allocator, scopes: []const Scope) !ChildrenList {
+    const n = scopes.len;
+
+    // Pass 1: 각 scope의 children 수 카운트
+    var counts = try allocator.alloc(u32, n);
+    defer allocator.free(counts);
+    @memset(counts, 0);
+    for (scopes[1..]) |s| {
+        if (!s.parent.isNone() and s.parent.toIndex() < n) {
+            counts[s.parent.toIndex()] += 1;
+        }
+    }
+
+    // Pass 2: prefix sum -> offsets
+    var offsets = try allocator.alloc(u32, n + 1);
+    offsets[0] = 0;
+    for (0..n) |i| {
+        offsets[i + 1] = offsets[i] + counts[i];
+    }
+    const total_children = offsets[n];
+
+    // Pass 3: 채우기
+    var list = try allocator.alloc(u32, total_children);
+    // counts를 write pointer로 재사용
+    @memset(counts, 0);
+    for (scopes[1..], 1..) |s, i| {
+        if (!s.parent.isNone() and s.parent.toIndex() < n) {
+            const pi = s.parent.toIndex();
+            list[offsets[pi] + counts[pi]] = @intCast(i);
+            counts[pi] += 1;
+        }
+    }
+
+    return .{ .offsets = offsets, .list = list };
+}
+
+// ============================================================
+// Base54 이름 생성 (oxc 호환 문자 순서)
+// ============================================================
+
+/// Base54 문자열. gzip 최적화를 위해 빈도 높은 문자가 앞에 배치.
+/// oxc: crates/oxc_mangler/src/base54.rs
+const BASE54_CHARS = "etnriaoscludfpmhg_vybxSCwTEDOkAjMNPFILRzBVHUWGKqJYXZQ$0123456789";
+
+/// 숫자 n을 Base54 식별자로 인코딩.
+/// 첫 글자: 54개 (숫자 제외, JS IdentifierStart)
+/// 후속 글자: 64개 (숫자 포함, JS IdentifierPart)
+fn base54(n: u32, buf: *[8]u8) []const u8 {
+    const FIRST_BASE: u32 = 54;
+    const REST_BASE: u32 = 64;
+
+    var num = n;
+    var len: usize = 0;
+
+    // 첫 글자
+    buf[len] = BASE54_CHARS[num % FIRST_BASE];
+    len += 1;
+    num /= FIRST_BASE;
+
+    // 나머지 글자
+    while (num > 0) {
+        num -= 1;
+        buf[len] = BASE54_CHARS[num % REST_BASE];
+        len += 1;
+        num /= REST_BASE;
+    }
+
+    return buf[0..len];
+}
+
+// ============================================================
+// 내부 타입
+// ============================================================
+
+const SymBinding = struct {
+    sym_idx: u32,
+    name: []const u8,
+};
+
+const SlotSortEntry = struct {
+    slot_id: u32,
+    total_refs: u32,
+};
+
+// ============================================================
+// mangling 제외 판정
+// ============================================================
+
 fn shouldSkip(sym: Symbol, name: []const u8) bool {
-    // export된 심볼
     if (sym.decl_flags.is_exported or sym.decl_flags.is_default_export) return true;
-    // import 바인딩
     if (sym.decl_flags.is_import) return true;
-    // "arguments" 특수 이름
     if (std.mem.eql(u8, name, "arguments")) return true;
-    // 이미 1문자면 mangling 불필요
     if (name.len <= 1) return true;
     return false;
 }
 
 // ============================================================
-// 이름 생성기 (순차: a, b, ..., z, A, ..., Z, aa, ab, ...)
+// 예약어/글로벌 체크
+// ============================================================
+
+pub fn isReservedOrGlobal(name: []const u8) bool {
+    const reserved = [_][]const u8{
+        "do",  "if",  "in",  "as",  "is",
+        "for", "let", "new", "try", "var",
+        "NaN",
+    };
+    for (reserved) |r| {
+        if (std.mem.eql(u8, name, r)) return true;
+    }
+    return false;
+}
+
+// ============================================================
+// 번들 모드 전용: top-level 빈도순 이름 생성기
+// ============================================================
+
+/// 번들 모드에서 top-level 심볼에 빈도순으로 이름을 할당한다.
+/// computeMangling에서 사용.
+pub const TopLevelEntry = struct {
+    name: []const u8,
+    total_refs: u32,
+    module_indices: std.ArrayList(struct { module_idx: u32, sym_idx: u32 }),
+};
+
+/// Base54 이름을 하나 생성 (외부에서 카운터 관리).
+pub fn nextBase54Name(counter: *u32, buf: *[8]u8) []const u8 {
+    var name = base54(counter.*, buf);
+    counter.* += 1;
+    while (isReservedOrGlobal(name)) {
+        name = base54(counter.*, buf);
+        counter.* += 1;
+    }
+    return name;
+}
+
+// ============================================================
+// Legacy NameGenerator (하위 호환 — linker.computeMangling에서 아직 사용)
 // ============================================================
 
 pub const NameGenerator = struct {
@@ -138,34 +482,29 @@ pub const NameGenerator = struct {
     buf: [8]u8 = undefined,
 
     pub fn next(self: *NameGenerator) []const u8 {
-        const result = encode(self.counter, &self.buf);
+        const result = legacyEncode(self.counter, &self.buf);
         self.counter += 1;
         return result;
     }
 
-    /// 숫자를 짧은 식별자로 인코딩.
-    /// 0→"a", 25→"z", 26→"A", 51→"Z", 52→"_", 53→"$", 54→"aa", 55→"ab", ...
-    fn encode(n: u32, buf: []u8) []const u8 {
+    fn legacyEncode(n: u32, buf: []u8) []const u8 {
         const first_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_$";
         const all_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_$0123456789";
-        const first_len: u32 = @intCast(first_chars.len); // 54
-        const all_len: u32 = @intCast(all_chars.len); // 64
+        const first_len: u32 = @intCast(first_chars.len);
+        const all_len: u32 = @intCast(all_chars.len);
 
         if (n < first_len) {
             buf[0] = first_chars[n];
             return buf[0..1];
         }
 
-        // 2글자 이상: first_char + all_chars*
         var remaining = n - first_len;
         var len: usize = 0;
 
-        // 첫 글자 (IdentifierStart)
         buf[len] = first_chars[@intCast(remaining % first_len)];
         len += 1;
         remaining /= first_len;
 
-        // 두 번째 글자부터 (IdentifierPart, 숫자 포함)
         buf[len] = all_chars[@intCast(remaining % all_len)];
         len += 1;
         remaining /= all_len;
@@ -181,54 +520,52 @@ pub const NameGenerator = struct {
 };
 
 // ============================================================
-// 예약어/글로벌 체크
-// ============================================================
-
-pub fn isReservedOrGlobal(name: []const u8) bool {
-    // JS 예약어 (2~3글자만 체크 — 1글자와 4글자+는 충돌 없음)
-    const reserved = [_][]const u8{
-        "do",  "if",  "in",  "as",  "is",
-        "for", "let", "new", "try", "var",
-        "NaN",
-    };
-    for (reserved) |r| {
-        if (std.mem.eql(u8, name, r)) return true;
-    }
-
-    // 글로벌 객체 (1~2글자)
-    // undefined, window, console 등은 3글자+ 이므로 충돌 안 함
-    return false;
-}
-
-// ============================================================
 // Tests
 // ============================================================
 
-test "NameGenerator: sequential encoding" {
+test "base54: basic encoding" {
+    var buf: [8]u8 = undefined;
+    // 0 -> "e" (첫 번째 BASE54_CHARS 문자)
+    try std.testing.expectEqualStrings("e", base54(0, &buf));
+    // 1 -> "t"
+    try std.testing.expectEqualStrings("t", base54(1, &buf));
+    // 53 -> "$" (마지막 1글자)
+    try std.testing.expectEqualStrings("$", base54(53, &buf));
+    // 54 -> "ee" (2글자 시작)
+    const two = base54(54, &buf);
+    try std.testing.expect(two.len == 2);
+    try std.testing.expect(two[0] == 'e');
+}
+
+test "base54: no reserved words in first batch" {
+    var buf: [8]u8 = undefined;
+    // 처음 54개 이름 중 예약어가 없는지 확인
+    for (0..54) |i| {
+        const name = base54(@intCast(i), &buf);
+        try std.testing.expect(!isReservedOrGlobal(name));
+    }
+}
+
+test "isReservedOrGlobal" {
+    try std.testing.expect(isReservedOrGlobal("do"));
+    try std.testing.expect(isReservedOrGlobal("if"));
+    try std.testing.expect(isReservedOrGlobal("in"));
+    try std.testing.expect(isReservedOrGlobal("for"));
+    try std.testing.expect(isReservedOrGlobal("var"));
+    try std.testing.expect(!isReservedOrGlobal("a"));
+    try std.testing.expect(!isReservedOrGlobal("foo"));
+}
+
+test "NameGenerator: legacy sequential encoding" {
     var gen = NameGenerator{};
     try std.testing.expectEqualStrings("a", gen.next());
     try std.testing.expectEqualStrings("b", gen.next());
 
-    // 26번째: z
     gen.counter = 25;
     try std.testing.expectEqualStrings("z", gen.next());
-
-    // 27번째: A
     try std.testing.expectEqualStrings("A", gen.next());
 
-    // 54번째(인덱스 54)부터 2글자
     gen.counter = 54;
     const two_char = gen.next();
     try std.testing.expect(two_char.len == 2);
-}
-
-test "NameGenerator: skips reserved words" {
-    // "do" = encode(?) 이 나오면 건너뛰는지 확인
-    const gen = NameGenerator{};
-    _ = gen;
-    try std.testing.expect(isReservedOrGlobal("do"));
-    try std.testing.expect(isReservedOrGlobal("if"));
-    try std.testing.expect(isReservedOrGlobal("in"));
-    try std.testing.expect(!isReservedOrGlobal("a"));
-    try std.testing.expect(!isReservedOrGlobal("foo"));
 }

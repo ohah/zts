@@ -113,6 +113,9 @@ fn transpileFile(
                 analyzer.scopes.items,
                 analyzer.symbols.items,
                 analyzer.scope_maps.items,
+                analyzer.ref_scope_pairs.items,
+                source,
+                null,
             ) catch null;
         }
     }

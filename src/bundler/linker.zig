@@ -167,6 +167,9 @@ pub const Linker = struct {
     /// Rolldown 방식: 하드코딩 목록 대신 실제 사용된 글로벌만 예약.
     reserved_globals: std.StringHashMap(void),
 
+    /// computeMangling 완료 후 true. buildMetadataForAst에서 nested mangling 수행 여부 결정.
+    nested_mangling_enabled: bool = false,
+
     const ExportEntry = struct {
         binding: ExportBinding,
         module_index: ModuleIndex,
@@ -455,44 +458,19 @@ pub const Linker = struct {
     pub fn computeMangling(self: *Linker) !void {
         const Mangler = @import("../codegen/mangler.zig");
 
-        // 1. 현재 사용 중인 모든 이름 수집 (canonical_names의 값 + 첫 번째 소유자의 원본 이름)
-        var all_names = std.StringHashMap(void).init(self.allocator);
-        defer all_names.deinit();
+        // ================================================================
+        // Top-level 심볼을 빈도순 Base54로 mangling (cross-module)
+        // ================================================================
 
-        for (self.modules) |m| {
-            const sem = m.semantic orelse continue;
-            // 모든 scope의 이름을 수집 — nested scope 변수와의 충돌 방지
-            for (sem.scope_maps) |scope_map| {
-                var sit = scope_map.iterator();
-                while (sit.next()) |entry| {
-                    try all_names.put(entry.key_ptr.*, {});
-                }
-            }
-        }
+        // 1. 모든 모듈의 top-level 심볼의 reference_count 합산
+        const NameEntry = struct {
+            name: []const u8,
+            total_refs: u32,
+        };
+        var name_refs = std.StringHashMap(u32).init(self.allocator);
+        defer name_refs.deinit();
 
-        // canonical_names의 rename된 이름도 수집
-        var cit = self.canonical_names.valueIterator();
-        while (cit.next()) |v| {
-            try all_names.put(v.*, {});
-        }
-
-        // 2. 이름 생성기로 모든 top-level 이름을 짧은 이름으로 매핑
-        // name_map: 원본 이름 → mangled 이름 (duped).
-        // canonical_names에 넣을 때 다시 dupe하므로 name_map 값은 항상 해제.
-        var name_map = std.StringHashMap([]const u8).init(self.allocator);
-        defer {
-            var vit = name_map.valueIterator();
-            while (vit.next()) |v| self.allocator.free(v.*);
-            name_map.deinit();
-        }
-
-        // mangling 결과로 사용된 이름 추적 (중복 방지)
-        var used_names = std.StringHashMap(void).init(self.allocator);
-        defer used_names.deinit();
-
-        var name_gen = Mangler.NameGenerator{};
-
-        // export/import binding 이름은 보존 — mangling하면 linker rename과 불일치
+        // export/import binding 이름 수집 (mangling 제외 대상)
         var exported = std.StringHashMap(void).init(self.allocator);
         defer exported.deinit();
         for (self.modules) |m| {
@@ -505,35 +483,92 @@ pub const Linker = struct {
             }
         }
 
-        var ait = all_names.iterator();
-        while (ait.next()) |entry| {
-            const orig_name = entry.key_ptr.*;
+        // top-level scope(scope_maps[0])의 심볼 reference_count를 이름별로 합산
+        for (self.modules) |m| {
+            const sem = m.semantic orelse continue;
+            if (sem.scope_maps.len == 0) continue;
+            var sit = sem.scope_maps[0].iterator();
+            while (sit.next()) |entry| {
+                const sym_name = entry.key_ptr.*;
+                const sym_idx = entry.value_ptr.*;
 
-            // export/import binding 이름은 mangling 제외
-            if (exported.contains(orig_name)) continue;
-            // default, 1글자는 제외
-            if (orig_name.len <= 1) continue;
-            if (std.mem.eql(u8, orig_name, "default")) continue;
-            if (std.mem.eql(u8, orig_name, "arguments")) continue;
+                // mangling 제외 대상
+                if (exported.contains(sym_name)) continue;
+                if (sym_name.len <= 1) continue;
+                if (std.mem.eql(u8, sym_name, "default")) continue;
+                if (std.mem.eql(u8, sym_name, "arguments")) continue;
 
-            // 짧은 이름 생성 (예약어 + 기존/사용된 이름 충돌 방지)
-            var new_name = name_gen.next();
-            while (Mangler.isReservedOrGlobal(new_name) or
-                all_names.contains(new_name) or
+                const ref_count: u32 = if (sym_idx < sem.symbols.len) sem.symbols[sym_idx].reference_count else 0;
+                const prev = name_refs.get(sym_name) orelse 0;
+                try name_refs.put(sym_name, prev + ref_count);
+            }
+        }
+
+        // 2. 빈도순 정렬
+        var entries: std.ArrayListUnmanaged(NameEntry) = .empty;
+        defer entries.deinit(self.allocator);
+        {
+            var it = name_refs.iterator();
+            while (it.next()) |entry| {
+                try entries.append(self.allocator, .{
+                    .name = entry.key_ptr.*,
+                    .total_refs = entry.value_ptr.*,
+                });
+            }
+        }
+        std.mem.sortUnstable(NameEntry, entries.items, {}, struct {
+            fn cmp(_: void, a: NameEntry, b: NameEntry) bool {
+                if (a.total_refs != b.total_refs) return a.total_refs > b.total_refs;
+                return std.mem.lessThan(u8, a.name, b.name);
+            }
+        }.cmp);
+
+        // 3. 빈도순으로 Base54 이름 할당
+        // 기존에 사용 중인 이름 수집 (충돌 방지)
+        var all_names = std.StringHashMap(void).init(self.allocator);
+        defer all_names.deinit();
+        for (self.modules) |m| {
+            const sem = m.semantic orelse continue;
+            for (sem.scope_maps) |scope_map| {
+                var sit = scope_map.iterator();
+                while (sit.next()) |entry| {
+                    try all_names.put(entry.key_ptr.*, {});
+                }
+            }
+        }
+        var cit = self.canonical_names.valueIterator();
+        while (cit.next()) |v| {
+            try all_names.put(v.*, {});
+        }
+
+        var name_map = std.StringHashMap([]const u8).init(self.allocator);
+        defer {
+            var vit = name_map.valueIterator();
+            while (vit.next()) |v| self.allocator.free(v.*);
+            name_map.deinit();
+        }
+        var used_names = std.StringHashMap(void).init(self.allocator);
+        defer used_names.deinit();
+
+        var name_counter: u32 = 0;
+        var name_buf: [8]u8 = undefined;
+        for (entries.items) |entry| {
+            var new_name = Mangler.nextBase54Name(&name_counter, &name_buf);
+            while (all_names.contains(new_name) or
                 used_names.contains(new_name) or
                 exported.contains(new_name))
             {
-                new_name = name_gen.next();
+                new_name = Mangler.nextBase54Name(&name_counter, &name_buf);
             }
 
-            if (!std.mem.eql(u8, orig_name, new_name)) {
+            if (!std.mem.eql(u8, entry.name, new_name)) {
                 const duped = try self.allocator.dupe(u8, new_name);
-                try name_map.put(orig_name, duped);
+                try name_map.put(entry.name, duped);
                 try used_names.put(duped, {});
             }
         }
 
-        // 3. canonical_names 업데이트 — 기존 rename된 이름도 mangling
+        // 4. canonical_names 업데이트 — 기존 rename된 이름도 mangling
         var update_list: std.ArrayList(struct { key: []const u8, val: []const u8 }) = .empty;
         defer update_list.deinit(self.allocator);
 
@@ -554,7 +589,7 @@ pub const Linker = struct {
             }
         }
 
-        // 4. 아직 canonical_names에 없는 이름도 추가 (충돌 없던 이름)
+        // 5. 아직 canonical_names에 없는 이름도 추가 (충돌 없던 이름)
         for (self.modules, 0..) |m, i| {
             const sem = m.semantic orelse continue;
             if (sem.scope_maps.len == 0) continue;
@@ -573,6 +608,8 @@ pub const Linker = struct {
                 }
             }
         }
+
+        self.nested_mangling_enabled = true;
     }
 
     /// 다른 모듈의 리네임 대상으로 이미 할당된 이름인지 O(1) 확인.
@@ -948,6 +985,43 @@ pub const Linker = struct {
                 if (self.getCanonicalName(module_index, sym_name)) |renamed| {
                     const sym_idx = scope_entry.value_ptr.*;
                     try renames.put(@intCast(sym_idx), renamed);
+                }
+            }
+
+            // nested scope mangling (liveness 기반)
+            // top-level은 computeMangling에서 처리됨 → nested만 수행
+            if (self.nested_mangling_enabled and sem.symbols.len > 0) {
+                const Mangler = @import("../codegen/mangler.zig");
+
+                // top-level scope + export/import 심볼은 skip
+                var skip_syms = try std.DynamicBitSet.initEmpty(self.allocator, sem.symbols.len);
+                defer skip_syms.deinit();
+
+                // scope_maps[0] (module scope)의 모든 심볼을 skip
+                var skip_it = module_scope.iterator();
+                while (skip_it.next()) |skip_entry| {
+                    const sym_i = skip_entry.value_ptr.*;
+                    if (sym_i < sem.symbols.len) skip_syms.set(sym_i);
+                }
+
+                var nested_result = try Mangler.mangle(
+                    self.allocator,
+                    sem.scopes,
+                    sem.symbols,
+                    sem.scope_maps,
+                    sem.ref_scope_pairs,
+                    m.source,
+                    skip_syms,
+                );
+                defer nested_result.deinit();
+
+                // nested renames를 기존 renames에 merge
+                var nit = nested_result.renames.iterator();
+                while (nit.next()) |n_entry| {
+                    // top-level에서 이미 rename된 심볼은 건너뜀
+                    if (!renames.contains(n_entry.key_ptr.*)) {
+                        try renames.put(n_entry.key_ptr.*, try self.allocator.dupe(u8, n_entry.value_ptr.*));
+                    }
                 }
             }
         }
