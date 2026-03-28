@@ -62,21 +62,8 @@ jobs:
           submodules: recursive
       - uses: ./.github/actions/setup-zts
 
-      - name: Debug node_modules
-        run: |
-          echo "=== Root node_modules ==="
-          ls node_modules/lodash-es/package.json 2>&1 || echo "NOT FOUND at root"
-          ls node_modules/.bin/esbuild 2>&1 || echo "esbuild NOT FOUND at root"
-          echo "=== Benchmark node_modules ==="
-          ls packages/benchmark/node_modules/.bin/esbuild 2>&1 || echo "esbuild NOT FOUND at benchmark"
-          ls packages/benchmark/node_modules/lodash-es/package.json 2>&1 || echo "NOT FOUND at benchmark"
-          echo "=== ZTS binary ==="
-          ls -la zig-out/bin/zts 2>&1 || echo "ZTS NOT FOUND"
-          echo "=== Quick test ==="
-          echo 'import { groupBy } from "lodash-es"; console.log(typeof groupBy);' > _smoke_test.ts
-          ./zig-out/bin/zts --bundle _smoke_test.ts --platform=node -o /tmp/smoke_test.js 2>&1 || true
-          node /tmp/smoke_test.js 2>&1 || true
-          rm -f _smoke_test.ts
+      - name: Install smoke dependencies
+        run: cd packages/benchmark && bun install
 
       - name: Run smoke tests
         run: bun run packages/benchmark/smoke.ts 2>&1 | tee smoke-output.txt
