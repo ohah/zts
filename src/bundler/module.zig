@@ -16,6 +16,7 @@ const ImportRecord = types.ImportRecord;
 const Ast = @import("../parser/ast.zig").Ast;
 const Span = @import("../lexer/token.zig").Span;
 const Symbol = @import("../semantic/symbol.zig").Symbol;
+const RefScopePair = @import("../semantic/symbol.zig").RefScopePair;
 const Scope = @import("../semantic/scope.zig").Scope;
 const binding_scanner = @import("binding_scanner.zig");
 pub const ImportBinding = binding_scanner.ImportBinding;
@@ -35,6 +36,8 @@ pub const ModuleSemanticData = struct {
     /// 미해결 참조 (unresolved references). 스코프 체인에서 선언을 찾지 못한 이름.
     /// 번들러 linker가 scope hoisting 시 이 이름들을 예약하여 shadowing 방지.
     unresolved_references: std.StringHashMap(void),
+    /// mangler용 참조 scope 페어. liveness BitSet 계산에 사용.
+    ref_scope_pairs: []const RefScopePair = &.{},
 };
 
 pub const Module = struct {

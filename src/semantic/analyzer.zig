@@ -115,6 +115,10 @@ pub const SemanticAnalyzer = struct {
     /// resolveIdentifier/declareSymbol에서 채워진다.
     symbol_ids: std.ArrayList(?u32),
 
+    /// mangler용 참조 scope 페어. resolveIdentifier에서 심볼을 찾을 때마다 기록.
+    /// (symbol_index, reference_scope_id) — liveness BitSet 계산에 사용.
+    ref_scope_pairs: std.ArrayList(symbol_mod.RefScopePair),
+
     /// Annex B: if/else/labeled body에서 function declaration을 만나면
     /// var hoisting conflict check를 건너뛴다.
     /// sloppy mode에서 `if (true) function f() {}` 같은 구문이 let/const와 충돌하지 않도록 한다.
@@ -160,6 +164,7 @@ pub const SemanticAnalyzer = struct {
             .scope_maps = .empty,
             .unresolved_references = std.StringHashMap(void).init(allocator),
             .symbol_ids = .empty,
+            .ref_scope_pairs = .empty,
             .errors = .empty,
             .allocator = allocator,
         };
@@ -184,6 +189,7 @@ pub const SemanticAnalyzer = struct {
         self.resolved_names.deinit(self.allocator);
         self.errors.deinit(self.allocator);
         self.symbol_ids.deinit(self.allocator);
+        self.ref_scope_pairs.deinit(self.allocator);
         for (self.class_private_declared.items) |*map| map.deinit();
         self.class_private_declared.deinit(self.allocator);
         for (self.class_private_refs.items) |*list| list.deinit(self.allocator);
@@ -667,6 +673,11 @@ pub const SemanticAnalyzer = struct {
             if (self.scope_maps.items[idx].get(name)) |sym_idx| {
                 // 심볼을 찾음 — reference_count 증가
                 self.symbols.items[sym_idx].reference_count += 1;
+                // mangler용 참조 scope 기록 (liveness 계산에 사용)
+                self.ref_scope_pairs.append(self.allocator, .{
+                    .symbol_idx = @intCast(sym_idx),
+                    .scope_id = self.current_scope,
+                }) catch {};
                 // symbol_ids에 기록: 이 노드가 어떤 심볼을 참조하는지
                 if (node_idx) |ni| {
                     if (ni < self.symbol_ids.items.len) {
