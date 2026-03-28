@@ -420,10 +420,13 @@ pub const TreeShaker = struct {
                 reachable_stmts[i] = try std.DynamicBitSet.initEmpty(self.allocator, infos.stmts.len);
             }
 
-            // 포함된 모듈의 side-effect statement는 항상 시드
-            for (infos.stmts, 0..) |stmt, si| {
-                if (stmt.has_side_effects) {
-                    try self.enqueue(@intCast(i), @intCast(si), reachable_stmts, &queue);
+            // side_effects=true 모듈: side-effect statement 즉시 시드 (fixpoint에서 포함됨)
+            // side_effects=false 모듈: enqueue의 lazy 시드로 처리 (모듈 사용 시에만)
+            if (m.side_effects) {
+                for (infos.stmts, 0..) |stmt, si| {
+                    if (stmt.has_side_effects) {
+                        try self.enqueue(@intCast(i), @intCast(si), reachable_stmts, &queue);
+                    }
                 }
             }
 
@@ -495,6 +498,29 @@ pub const TreeShaker = struct {
         if (reachable[mod].?.isSet(stmt)) return;
         reachable[mod].?.set(stmt);
         try queue.append(self.allocator, .{ .mod = mod, .stmt = stmt });
+
+        // 새 심볼이 reachable이 되면, 같은 모듈의 side-effect statement 중
+        // 해당 심볼을 참조하는 것을 lazy 시드.
+        // 예: Object3D가 reachable → Object3D.DEFAULT_UP = ... 도 시드
+        if (mod < self.module_stmt_infos.len) {
+            if (self.module_stmt_infos[mod]) |infos| {
+                if (stmt < infos.stmts.len) {
+                    for (infos.stmts[stmt].declared_symbols) |declared_sym| {
+                        for (infos.stmts, 0..) |s, si| {
+                            if (!s.has_side_effects) continue;
+                            if (reachable[mod].?.isSet(si)) continue;
+                            for (s.referenced_symbols) |ref_sym| {
+                                if (ref_sym == declared_sym) {
+                                    reachable[mod].?.set(si);
+                                    try queue.append(self.allocator, .{ .mod = @intCast(mod), .stmt = @intCast(si) });
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// import binding을 따라 타겟 모듈의 export statement를 시드.
@@ -592,13 +618,7 @@ pub const TreeShaker = struct {
         }
         try self.enqueue(@intCast(canon_mod), target_stmt, reachable_stmts, queue);
 
-        // 포함된 모듈의 side-effect statement는 항상 시드.
-        // sideEffects=false는 "모듈 포함 불필요"이지 "포함 후 side-effect 무시"가 아님.
-        for (target_infos.stmts, 0..) |stmt, si| {
-            if (stmt.has_side_effects) {
-                try self.enqueue(@intCast(canon_mod), @intCast(si), reachable_stmts, queue);
-            }
-        }
+        // side-effect statement는 enqueueStmt에서 lazy 시드됨
     }
 
     /// StmtInfo 없는 모듈 (entry, CJS 등)의 import를 BFS로 전파.
