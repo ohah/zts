@@ -660,7 +660,7 @@ const projects: ProjectConfig[] = [
   {
     name: "cookie",
     pkg: "cookie",
-    entry: `import cookie from 'cookie';\nconsole.log(cookie.serialize('a', 'b'));`,
+    entry: `import { serialize } from 'cookie';\nconsole.log(serialize('a', 'b'));`,
   },
   {
     name: "on-finished",
