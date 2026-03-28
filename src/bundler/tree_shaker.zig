@@ -576,6 +576,26 @@ pub const TreeShaker = struct {
 
         try self.markExportUsed(@intCast(canon_mod), canonical.export_name);
         self.included.set(canon_mod);
+
+        // namespace barrel re-export: canonical이 namespace import를 가리키면
+        // 소스 모듈의 모든 export를 시드해야 함 (import * as z; export { z } 패턴)
+        if (canon_mod < self.modules.len) {
+            const canon_local = self.linker.getExportLocalName(@intCast(canon_mod), canonical.export_name) orelse canonical.export_name;
+            for (self.modules[canon_mod].import_bindings) |cib| {
+                if (cib.kind == .namespace and std.mem.eql(u8, cib.local_name, canon_local)) {
+                    if (cib.import_record_index < self.modules[canon_mod].import_records.len) {
+                        const ns_src = @intFromEnum(self.modules[canon_mod].import_records[cib.import_record_index].resolved);
+                        if (ns_src < self.modules.len) {
+                            try self.markAllExportsUsed(@intCast(ns_src));
+                            self.included.set(ns_src);
+                            try self.seedAllStmts(@intCast(ns_src), queue, module_stmt_infos, reachable_stmts);
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
         if (canon_mod != target_mod and target_mod < self.modules.len) {
             try self.markExportUsed(@intCast(target_mod), imported_name);
             self.included.set(target_mod);
