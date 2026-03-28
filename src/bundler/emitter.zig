@@ -1279,21 +1279,30 @@ pub fn emitModule(
                     else
                         sem.symbol_ids;
 
-                    // 크로스-모듈 BFS 결과 사용: tree-shaker의 reachable_stmts로 skip_nodes 설정
+                    // 크로스-모듈 BFS 결과: tree-shaker의 reachable_stmts로 skip_nodes 설정
                     const mod_idx: u32 = @intFromEnum(module.index);
                     if (shaker) |s| {
-                        if (s.getModuleStmtInfos(mod_idx)) |infos| {
-                            for (infos.stmts, 0..) |stmt, si| {
-                                if (!s.isStmtReachable(mod_idx, @intCast(si))) {
-                                    // span 기반 매칭: 원본 AST의 unreachable stmt의 span으로
-                                    // 변환 후 AST에서 대응 노드를 찾아 skip
-                                    for (transformer.new_ast.nodes.items, 0..) |new_node, ni| {
-                                        if (new_node.span.start == stmt.span.start and
-                                            new_node.span.end == stmt.span.end and
-                                            ni < md.skip_nodes.capacity())
-                                        {
-                                            md.skip_nodes.set(ni);
-                                            break;
+                        if (s.getModuleStmtInfos(mod_idx)) |ts_infos| {
+                            // 변환 후 AST의 program statement list에서 span 매칭
+                            const new_root = transformer.new_ast.nodes.items[transformer.new_ast.nodes.items.len - 1];
+                            if (new_root.tag == .program and new_root.data.list.len > 0) {
+                                const new_list = new_root.data.list;
+                                if (new_list.start + new_list.len <= transformer.new_ast.extra_data.items.len) {
+                                    const new_stmt_indices = transformer.new_ast.extra_data.items[new_list.start .. new_list.start + new_list.len];
+                                    for (ts_infos.stmts, 0..) |ts_stmt, si| {
+                                        if (s.isStmtReachable(mod_idx, @intCast(si))) continue;
+                                        // 변환 후 top-level statement만 스캔 (O(stmts) not O(nodes))
+                                        for (new_stmt_indices) |raw_ni| {
+                                            const ni = @as(usize, raw_ni);
+                                            if (ni >= transformer.new_ast.nodes.items.len) continue;
+                                            const new_node = transformer.new_ast.nodes.items[ni];
+                                            if (new_node.span.start == ts_stmt.span.start and
+                                                new_node.span.end == ts_stmt.span.end and
+                                                ni < md.skip_nodes.capacity())
+                                            {
+                                                md.skip_nodes.set(ni);
+                                                break;
+                                            }
                                         }
                                     }
                                 }
