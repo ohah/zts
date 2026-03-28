@@ -199,6 +199,7 @@ function testProject(p: ProjectConfig): SmokeResult {
         output: { path: ${JSON.stringify(rsOut)}, filename: "main.js" },
         target: ${JSON.stringify(platform === "node" ? "node" : "web")},
         mode: "production",
+        optimization: { minimize: false },
         module: { rules: [{ test: /\\.ts$/, use: { loader: "builtin:swc-loader", options: { jsc: { parser: { syntax: "typescript" } } } } }] },
         ${ext.length > 0 ? `externals: ${JSON.stringify(ext)},` : ""}
       };`;
