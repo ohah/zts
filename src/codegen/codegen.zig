@@ -4791,3 +4791,27 @@ test "ternary with arrow function — d3 cumsum pattern" {
     _ = try parser.parse();
     try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
 }
+
+// ============================================================
+// #491: for 루프 body 내 변수 선언 세미콜론 (minify)
+// ============================================================
+
+test "Minify: for-loop body var has semicolon" {
+    // for (var i=0;...) { var x=1; console.log(x); } → "var x=1;" 세미콜론 필수
+    var r = try e2eWithOptions(std.testing.allocator, "for (var i = 0; i < 3; i++) { var x = i; console.log(x); }", .{ .minify = true });
+    defer r.deinit();
+    // "var x=i;" 다음에 세미콜론이 있어야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var x=i;") != null);
+}
+
+test "Minify: for-loop body let has semicolon" {
+    var r = try e2eWithOptions(std.testing.allocator, "for (let i = 0; i < 3; i++) { let y = i * 2; console.log(y); }", .{ .minify = true });
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "let y=i*2;") != null);
+}
+
+test "Minify: for-of body var has semicolon" {
+    var r = try e2eWithOptions(std.testing.allocator, "for (const x of [1,2,3]) { var y = x; console.log(y); }", .{ .minify = true });
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var y=x;") != null);
+}

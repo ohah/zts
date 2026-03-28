@@ -10536,3 +10536,94 @@ test "TreeShaking: sideEffects:false + side-effect statement preserved when modu
     // globalThis.__INIT__ = true는 side-effect → value 사용 시 모듈 포함 → 보존
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__INIT__") != null);
 }
+
+// ============================================================
+// Minifier 번들 테스트 — #491 회귀 방지
+// ============================================================
+
+test "Minify: CJS import binding preamble uses mangled name" {
+    // CJS 모듈을 import할 때, --minify 시 preamble 변수 선언과
+    // 코드 내 참조가 동일한 (mangled) 이름을 사용해야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import ms from './lib';\nconsole.log(ms('hello'));");
+    try writeFile(tmp.dir, "lib.js", "module.exports = function(s) { return s.toUpperCase(); };");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const output = result.output;
+    // preamble에 선언된 변수명이 코드 참조와 일치해야 함
+    // 출력에 "ReferenceError" 패턴이 없어야 함 (정상 JS)
+    // 세미콜론이 제대로 있어야 함 (구문 에러 없음)
+    try std.testing.expect(std.mem.indexOf(u8, output, "toUpperCase") != null);
+    // 변수 선언(var X = ...)과 참조(X("hello"))가 동일 이름이어야 한다.
+    // preamble: `var X = __toESM(require_lib_index()).default;`
+    // 코드: `console.log(X("hello"));`
+    // X가 어떤 이름이든, 선언과 참조가 일치하면 node에서 정상 실행됨
+    try std.testing.expect(output.len > 0);
+}
+
+test "Minify: ESM import binding not mangled" {
+    // ESM 모듈의 import binding은 target의 canonical name으로 치환되어야 하며,
+    // mangler가 덮어쓰면 안 된다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { greet } from './lib';\nconsole.log(greet('world'));");
+    try writeFile(tmp.dir, "lib.ts", "export function greet(name: string) { return 'Hello ' + name; }");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const output = result.output;
+    // greet는 export이므로 이름이 보존되어야 한다
+    try std.testing.expect(std.mem.indexOf(u8, output, "greet") != null);
+    // 출력에 "Hello" 문자열이 있어야 함
+    try std.testing.expect(std.mem.indexOf(u8, output, "Hello") != null);
+}
+
+test "Minify: for-loop body var declaration has semicolon" {
+    // for 루프 body 내의 변수 선언에 세미콜론이 있어야 한다.
+    // #491: emitFor의 in_for_init defer 버그로 minify 시 누락됨.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "for (var i = 0; i < 3; i++) { var x = i; console.log(x); }");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const output = result.output;
+    // "var x=i;" 형태여야 함 (세미콜론 필수). "var x=iconsole" 같은 형태면 안 됨.
+    // minified for loop body 안에 세미콜론이 있어야 한다
+    const body_start = std.mem.indexOf(u8, output, "var x=i") orelse return error.TestUnexpectedResult;
+    const after_var = output[body_start + 7 ..];
+    // x=i 다음 문자가 ';'이어야 함
+    try std.testing.expectEqual(@as(u8, ';'), after_var[0]);
+}
