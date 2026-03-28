@@ -362,20 +362,13 @@ pub const Resolver = struct {
     }
 
     fn makeResult(self: *Resolver, path: []const u8) ResolveError!?ResolveResult {
-        // 심볼릭 링크를 해석하여 실제 경로를 저장.
-        // bun workspace는 node_modules 패키지를 .bun/ 내부로의 symlink로 설치하므로,
-        // realpath를 사용해야 중첩 node_modules 해석이 올바르게 동작한다.
-        const real = std.fs.cwd().realpathAlloc(self.allocator, path) catch {
-            // realpath 실패 시 원본 경로 사용
-            const ext = std.fs.path.extension(path);
-            return .{
-                .path = self.allocator.dupe(u8, path) catch return error.OutOfMemory,
-                .module_type = ModuleType.fromExtension(ext),
-            };
-        };
-        const ext = std.fs.path.extension(real);
+        // bun(.bun/)과 pnpm(.pnpm/)은 node_modules를 symlink로 설치하므로,
+        // realpath로 해석해야 중첩 node_modules 탐색이 올바른 계층에서 동작한다.
+        const resolved = std.fs.cwd().realpathAlloc(self.allocator, path) catch
+            self.allocator.dupe(u8, path) catch return error.OutOfMemory;
+        const ext = std.fs.path.extension(resolved);
         return .{
-            .path = real,
+            .path = resolved,
             .module_type = ModuleType.fromExtension(ext),
         };
     }
