@@ -748,6 +748,8 @@ pub const Codegen = struct {
         try self.writeByte(')');
         try self.emitNode(t.b);
         if (!t.c.isNone()) {
+            // else 분기가 DCE로 완전히 제거되는 if문이면 else 키워드 자체를 생략
+            if (self.isDeadIfNode(t.c)) return;
             if (self.options.minify) {
                 const next_node = self.ast.getNode(t.c);
                 if (next_node.tag == .block_statement) {
@@ -760,6 +762,25 @@ pub const Codegen = struct {
             }
             try self.emitNode(t.c);
         }
+    }
+
+    /// else 분기의 if_statement가 상수 조건 DCE로 아무것도 출력하지 않는지 재귀 확인.
+    /// `else if (false) { ... }` → dead, `else if (false) { ... } else if (false) { ... }` → dead
+    fn isDeadIfNode(self: *Codegen, node_idx: NodeIndex) bool {
+        if (self.options.linking_metadata == null) return false;
+        if (node_idx.isNone() or @intFromEnum(node_idx) >= self.ast.nodes.items.len) return false;
+        const n = self.ast.getNode(node_idx);
+        if (n.tag != .if_statement) return false;
+        const t = n.data.ternary;
+        const known = self.evalBooleanCondition(t.a) orelse return false;
+        if (known) {
+            // if (true) → then 분기를 출력하므로 dead가 아님
+            return false;
+        }
+        // if (false) { ... } → else 분기가 없으면 dead
+        if (t.c.isNone()) return true;
+        // if (false) { ... } else <alt> → alt도 dead인지 재귀 확인
+        return self.isDeadIfNode(t.c);
     }
 
     /// 조건 노드가 컴파일 타임 boolean으로 확정되면 값을 반환한다.
@@ -800,12 +821,14 @@ pub const Codegen = struct {
                 return null;
             },
             .unary_expression => {
-                const operand_idx = cond.data.unary.operand;
-                if (!operand_idx.isNone() and @intFromEnum(operand_idx) < self.ast.nodes.items.len) {
-                    const op_text = self.ast.source[cond.span.start..cond.span.end];
-                    if (op_text.len > 0 and op_text[0] == '!') {
-                        if (self.evalBooleanConditionDepth(operand_idx, depth + 1)) |v| return !v;
-                    }
+                // unary_expression은 extra 저장: extra_data[e] = operand, extra_data[e+1] = operator
+                const e = cond.data.extra;
+                const extras = self.ast.extra_data.items;
+                if (e + 1 >= extras.len) return null;
+                const operand_idx: NodeIndex = @enumFromInt(extras[e]);
+                const op: Kind = @enumFromInt(@as(u8, @truncate(extras[e + 1])));
+                if (op == .bang) {
+                    if (self.evalBooleanConditionDepth(operand_idx, depth + 1)) |v| return !v;
                 }
                 return null;
             },

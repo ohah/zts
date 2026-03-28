@@ -696,6 +696,9 @@ pub const TreeShaker = struct {
     }
 
     /// 모듈의 모든 statement를 BFS 큐에 추가.
+    /// export * / export { x } from 're-export 대상 모듈도 재귀적으로 시드한다.
+    /// (namespace escape 등으로 모듈 전체가 live인 경우, re-export 체인의
+    ///  하위 모듈 statement도 reachable이어야 DCE에서 살아남는다.)
     fn seedAllStmts(
         self: *TreeShaker,
         mod_idx: u32,
@@ -704,12 +707,35 @@ pub const TreeShaker = struct {
         reachable_stmts: []?std.DynamicBitSet,
     ) std.mem.Allocator.Error!void {
         if (mod_idx >= module_stmt_infos.len) return;
+        // 순환 export * 방지: opaque_visited로 이미 처리한 모듈 skip
+        if (self.opaque_visited) |ov| {
+            if (ov.isSet(mod_idx)) return;
+        }
+        if (self.opaque_visited) |*ov| ov.set(mod_idx);
+
         const infos = module_stmt_infos[mod_idx] orelse return;
         if (reachable_stmts[mod_idx] == null) {
             reachable_stmts[mod_idx] = try std.DynamicBitSet.initEmpty(self.allocator, infos.stmts.len);
         }
         for (infos.stmts, 0..) |_, si| {
             try self.enqueue(mod_idx, @intCast(si), reachable_stmts, queue);
+        }
+
+        // re-export 체인 전파: export * / named re-export 대상 모듈도 시드.
+        if (mod_idx >= self.modules.len) return;
+        const m = self.modules[mod_idx];
+        for (m.export_bindings) |eb| {
+            if (eb.kind != .re_export and eb.kind != .re_export_all) continue;
+            const rec_idx = eb.import_record_index orelse continue;
+            if (rec_idx >= m.import_records.len) continue;
+            const src = @intFromEnum(m.import_records[rec_idx].resolved);
+            if (src >= self.modules.len) continue;
+            if (eb.kind == .re_export_all) {
+                self.included.set(src);
+                try self.seedAllStmts(@intCast(src), queue, module_stmt_infos, reachable_stmts);
+            } else {
+                try self.seedExport(src, eb.local_name, queue, module_stmt_infos, reachable_stmts);
+            }
         }
     }
 
