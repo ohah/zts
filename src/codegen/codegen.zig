@@ -1462,8 +1462,9 @@ pub const Codegen = struct {
     /// template literal을 child node 단위로 emit.
     /// rename/mangling이 적용되려면 expression을 개별 emitNode로 처리해야 한다.
     fn emitTemplateLiteral(self: *Codegen, node: Node) !void {
-        // substitution 없는 단순 template: raw span 출력
-        if (node.data.list.len == 0) {
+        // substitution 없는 단순 template은 data.none=0 (list가 아님).
+        // extern union이므로 list.start로 읽으면 none 값과 동일 — 0이면 raw span.
+        if (node.data.none == 0) {
             try self.writeNodeSpan(node);
             return;
         }
