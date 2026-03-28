@@ -188,10 +188,14 @@ pub fn stmtHasSideEffects(ast: *const Ast, node: Node) bool {
 }
 
 /// class declaration/expression의 side effect 판정.
-/// extends 절이 없으면 순수 (esbuild보다 정밀, rolldown 동일).
+/// esbuild/rolldown 동일: extends 절이 순수 표현식이면 side-effect 없음.
+/// 미사용 class는 extends가 있어도 제거 가능 — 실제 사용 시 referenced_symbols로
+/// extends 대상이 자연스럽게 포함됨.
 pub fn classHasSideEffects(ast: *const Ast, node: Node) bool {
     const e = node.data.extra;
     if (e + 1 >= ast.extra_data.items.len) return true;
     const super_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e + 1]);
-    return !super_idx.isNone();
+    // extends 절이 없거나 순수 표현식이면 side-effect 없음
+    // identifier, member expression, conditional 등 모두 처리 (esbuild 동일)
+    return !isExprPure(ast, super_idx);
 }
