@@ -188,14 +188,77 @@ pub fn stmtHasSideEffects(ast: *const Ast, node: Node) bool {
 }
 
 /// class declaration/expression의 side effect 판정.
-/// esbuild/rolldown 동일: extends 절이 순수 표현식이면 side-effect 없음.
-/// 미사용 class는 extends가 있어도 제거 가능 — 실제 사용 시 referenced_symbols로
-/// extends 대상이 자연스럽게 포함됨.
+/// esbuild ClassCanBeRemovedIfUnused 동일: extends + body 멤버 전체 검사.
+/// 미사용 class는 순수하면 제거 가능 — 실제 사용 시 referenced_symbols로 포함됨.
 pub fn classHasSideEffects(ast: *const Ast, node: Node) bool {
     const e = node.data.extra;
-    if (e + 1 >= ast.extra_data.items.len) return true;
+    if (e + 7 >= ast.extra_data.items.len) return true;
+
+    // extends 절이 불순이면 side-effect
     const super_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e + 1]);
-    // extends 절이 없거나 순수 표현식이면 side-effect 없음
-    // identifier, member expression, conditional 등 모두 처리 (esbuild 동일)
-    return !isExprPure(ast, super_idx);
+    if (!isExprPure(ast, super_idx)) return true;
+
+    // decorator가 있으면 side-effect
+    const deco_len = ast.extra_data.items[e + 7];
+    if (deco_len > 0) return true;
+
+    // class body 멤버 순회
+    const body_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e + 2]);
+    if (body_idx.isNone()) return false;
+    if (@intFromEnum(body_idx) >= ast.nodes.items.len) return true;
+
+    const body_node = ast.nodes.items[@intFromEnum(body_idx)];
+    if (body_node.tag != .class_body) return true;
+
+    const members = body_node.data.list;
+    if (members.start + members.len > ast.extra_data.items.len) return true;
+
+    for (ast.extra_data.items[members.start .. members.start + members.len]) |raw_idx| {
+        const mi: NodeIndex = @enumFromInt(raw_idx);
+        if (mi.isNone() or @intFromEnum(mi) >= ast.nodes.items.len) continue;
+        const member = ast.nodes.items[@intFromEnum(mi)];
+
+        switch (member.tag) {
+            .static_block => return true, // static block은 항상 side-effect
+            .property_definition, .accessor_property => {
+                const me = member.data.extra;
+                if (me + 4 >= ast.extra_data.items.len) return true;
+                // computed key가 불순이면 side-effect
+                const key_idx: NodeIndex = @enumFromInt(ast.extra_data.items[me]);
+                if (!key_idx.isNone() and @intFromEnum(key_idx) < ast.nodes.items.len) {
+                    const key_node = ast.nodes.items[@intFromEnum(key_idx)];
+                    if (key_node.tag == .computed_property_key) {
+                        if (!isExprPure(ast, key_node.data.unary.operand)) return true;
+                    }
+                }
+                // static field의 불순 초기화: static flag (bit 0)
+                const flags = ast.extra_data.items[me + 2];
+                const is_static = (flags & 1) != 0;
+                if (is_static) {
+                    const init_idx: NodeIndex = @enumFromInt(ast.extra_data.items[me + 1]);
+                    if (!isExprPure(ast, init_idx)) return true;
+                }
+                // member decorator
+                const m_deco_len = ast.extra_data.items[me + 4];
+                if (m_deco_len > 0) return true;
+            },
+            .method_definition => {
+                const me = member.data.extra;
+                if (me + 6 >= ast.extra_data.items.len) return true;
+                // computed key 검사
+                const key_idx: NodeIndex = @enumFromInt(ast.extra_data.items[me]);
+                if (!key_idx.isNone() and @intFromEnum(key_idx) < ast.nodes.items.len) {
+                    const key_node = ast.nodes.items[@intFromEnum(key_idx)];
+                    if (key_node.tag == .computed_property_key) {
+                        if (!isExprPure(ast, key_node.data.unary.operand)) return true;
+                    }
+                }
+                // method decorator
+                const m_deco_len = ast.extra_data.items[me + 6];
+                if (m_deco_len > 0) return true;
+            },
+            else => {},
+        }
+    }
+    return false;
 }
