@@ -10562,20 +10562,13 @@ test "Minify: CJS import binding preamble uses mangled name" {
 
     try std.testing.expect(!result.hasErrors());
     const output = result.output;
-    // preamble에 선언된 변수명이 코드 참조와 일치해야 함
-    // 출력에 "ReferenceError" 패턴이 없어야 함 (정상 JS)
-    // 세미콜론이 제대로 있어야 함 (구문 에러 없음)
     try std.testing.expect(std.mem.indexOf(u8, output, "toUpperCase") != null);
-    // 변수 선언(var X = ...)과 참조(X("hello"))가 동일 이름이어야 한다.
-    // preamble: `var X = __toESM(require_lib_index()).default;`
-    // 코드: `console.log(X("hello"));`
-    // X가 어떤 이름이든, 선언과 참조가 일치하면 node에서 정상 실행됨
-    try std.testing.expect(output.len > 0);
+    // preamble 변수 선언과 console.log 참조가 모두 출력에 있어야 함
+    try std.testing.expect(std.mem.indexOf(u8, output, "console.log") != null);
 }
 
 test "Minify: ESM import binding not mangled" {
-    // ESM 모듈의 import binding은 target의 canonical name으로 치환되어야 하며,
-    // mangler가 덮어쓰면 안 된다.
+    // ESM export 함수의 import binding은 mangler가 덮어쓰면 안 된다.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import { greet } from './lib';\nconsole.log(greet('world'));");
@@ -10594,15 +10587,12 @@ test "Minify: ESM import binding not mangled" {
 
     try std.testing.expect(!result.hasErrors());
     const output = result.output;
-    // greet는 export이므로 이름이 보존되어야 한다
     try std.testing.expect(std.mem.indexOf(u8, output, "greet") != null);
-    // 출력에 "Hello" 문자열이 있어야 함
     try std.testing.expect(std.mem.indexOf(u8, output, "Hello") != null);
 }
 
 test "Minify: for-loop body var declaration has semicolon" {
-    // for 루프 body 내의 변수 선언에 세미콜론이 있어야 한다.
-    // #491: emitFor의 in_for_init defer 버그로 minify 시 누락됨.
+    // #491: emitFor의 in_for_init defer 버그로 minify 시 세미콜론 누락됨.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "for (var i = 0; i < 3; i++) { var x = i; console.log(x); }");
@@ -10620,10 +10610,6 @@ test "Minify: for-loop body var declaration has semicolon" {
 
     try std.testing.expect(!result.hasErrors());
     const output = result.output;
-    // "var x=i;" 형태여야 함 (세미콜론 필수). "var x=iconsole" 같은 형태면 안 됨.
-    // minified for loop body 안에 세미콜론이 있어야 한다
     const body_start = std.mem.indexOf(u8, output, "var x=i") orelse return error.TestUnexpectedResult;
-    const after_var = output[body_start + 7 ..];
-    // x=i 다음 문자가 ';'이어야 함
-    try std.testing.expectEqual(@as(u8, ';'), after_var[0]);
+    try std.testing.expectEqual(@as(u8, ';'), output[body_start + 7]);
 }
