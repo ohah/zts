@@ -35,6 +35,14 @@ pub const ManglerResult = struct {
         while (it.next()) |v| self.allocator.free(v.*);
         self.renames.deinit();
     }
+
+    /// renames의 소유권을 이전하고, 이 결과를 안전하게 해제 가능한 상태로 만든다.
+    /// 호출 후 renames의 값 문자열은 호출자가 해제 책임을 진다.
+    pub fn takeRenames(self: *ManglerResult) std.AutoHashMap(u32, []const u8) {
+        const taken = self.renames;
+        self.renames = std.AutoHashMap(u32, []const u8).init(self.allocator);
+        return taken;
+    }
 };
 
 /// Liveness 기반 mangling. 기존 mangle()을 대체.
@@ -177,13 +185,13 @@ pub fn mangle(
             if (reused_slot) |slot_id| {
                 symbol_to_slot[sym_idx] = slot_id;
                 // slot의 liveness 확장 (합집합)
-                bitwiseOr(&slots.items[slot_id].liveness, symbol_liveness[sym_idx]);
+                slots.items[slot_id].liveness.setUnion(symbol_liveness[sym_idx]);
                 slots.items[slot_id].total_refs += symbols[sym_idx].reference_count;
             } else {
                 // 새 slot 생성
                 const new_slot_id: u32 = @intCast(slots.items.len);
                 var new_liveness = try std.DynamicBitSet.initEmpty(allocator, scope_count);
-                bitwiseOr(&new_liveness, symbol_liveness[sym_idx]);
+                new_liveness.setUnion(symbol_liveness[sym_idx]);
                 try slots.append(allocator, .{
                     .liveness = new_liveness,
                     .total_refs = symbols[sym_idx].reference_count,
@@ -306,25 +314,17 @@ fn markAncestorPath(
 }
 
 /// 두 BitSet이 교집합을 가지는지 검사 (하나라도 겹치면 true).
+/// std.DynamicBitSet에는 non-destructive 교집합 검사가 없으므로 직접 구현.
 fn bitsetIntersects(a: std.DynamicBitSet, b: std.DynamicBitSet) bool {
-    const num_masks = @min(numMasks(a), numMasks(b));
-    for (a.unmanaged.masks[0..num_masks], b.unmanaged.masks[0..num_masks]) |ma, mb| {
+    const MaskInt = std.DynamicBitSetUnmanaged.MaskInt;
+    const bits_per_mask = @bitSizeOf(MaskInt);
+    const na = (a.unmanaged.bit_length + bits_per_mask - 1) / bits_per_mask;
+    const nb = (b.unmanaged.bit_length + bits_per_mask - 1) / bits_per_mask;
+    const len = @min(na, nb);
+    for (a.unmanaged.masks[0..len], b.unmanaged.masks[0..len]) |ma, mb| {
         if (ma & mb != 0) return true;
     }
     return false;
-}
-
-/// dest |= src (bitwise OR).
-fn bitwiseOr(dest: *std.DynamicBitSet, src: std.DynamicBitSet) void {
-    const num = @min(numMasks(dest.*), numMasks(src));
-    for (dest.unmanaged.masks[0..num], src.unmanaged.masks[0..num]) |*d, s| {
-        d.* |= s;
-    }
-}
-
-fn numMasks(bs: std.DynamicBitSet) usize {
-    const MaskInt = std.DynamicBitSetUnmanaged.MaskInt;
-    return (bs.unmanaged.bit_length + @bitSizeOf(MaskInt) - 1) / @bitSizeOf(MaskInt);
 }
 
 // ============================================================
@@ -439,10 +439,24 @@ fn shouldSkip(sym: Symbol, name: []const u8) bool {
 // ============================================================
 
 pub fn isReservedOrGlobal(name: []const u8) bool {
+    // JS 예약어 + 리터럴 + 글로벌 (길이 2~6만 체크 — 1글자는 충돌 없고 7글자+는 base54에서 도달 어려움)
     const reserved = [_][]const u8{
-        "do",  "if",  "in",  "as",  "is",
-        "for", "let", "new", "try", "var",
-        "NaN",
+        // 2글자
+        "do",     "if",     "in",     "of",
+        // 3글자
+        "for",    "let",    "new",    "try",
+        "var",    "NaN",
+        // 4글자
+           "case",   "else",
+        "enum",   "null",   "this",   "true",
+        "void",   "with",
+        // 5글자
+          "await",  "break",
+        "catch",  "class",  "const",  "false",
+        "super",  "throw",  "while",  "yield",
+        // 6글자
+        "delete", "export", "import", "return",
+        "switch", "typeof",
     };
     for (reserved) |r| {
         if (std.mem.eql(u8, name, r)) return true;
@@ -451,18 +465,10 @@ pub fn isReservedOrGlobal(name: []const u8) bool {
 }
 
 // ============================================================
-// 번들 모드 전용: top-level 빈도순 이름 생성기
+// 번들 모드 전용: Base54 이름 생성 (예약어 자동 스킵)
 // ============================================================
 
-/// 번들 모드에서 top-level 심볼에 빈도순으로 이름을 할당한다.
-/// computeMangling에서 사용.
-pub const TopLevelEntry = struct {
-    name: []const u8,
-    total_refs: u32,
-    module_indices: std.ArrayList(struct { module_idx: u32, sym_idx: u32 }),
-};
-
-/// Base54 이름을 하나 생성 (외부에서 카운터 관리).
+/// Base54 이름을 하나 생성 (외부에서 카운터 관리). 예약어는 자동 스킵.
 pub fn nextBase54Name(counter: *u32, buf: *[8]u8) []const u8 {
     var name = base54(counter.*, buf);
     counter.* += 1;
@@ -472,52 +478,6 @@ pub fn nextBase54Name(counter: *u32, buf: *[8]u8) []const u8 {
     }
     return name;
 }
-
-// ============================================================
-// Legacy NameGenerator (하위 호환 — linker.computeMangling에서 아직 사용)
-// ============================================================
-
-pub const NameGenerator = struct {
-    counter: u32 = 0,
-    buf: [8]u8 = undefined,
-
-    pub fn next(self: *NameGenerator) []const u8 {
-        const result = legacyEncode(self.counter, &self.buf);
-        self.counter += 1;
-        return result;
-    }
-
-    fn legacyEncode(n: u32, buf: []u8) []const u8 {
-        const first_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_$";
-        const all_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_$0123456789";
-        const first_len: u32 = @intCast(first_chars.len);
-        const all_len: u32 = @intCast(all_chars.len);
-
-        if (n < first_len) {
-            buf[0] = first_chars[n];
-            return buf[0..1];
-        }
-
-        var remaining = n - first_len;
-        var len: usize = 0;
-
-        buf[len] = first_chars[@intCast(remaining % first_len)];
-        len += 1;
-        remaining /= first_len;
-
-        buf[len] = all_chars[@intCast(remaining % all_len)];
-        len += 1;
-        remaining /= all_len;
-
-        while (remaining > 0 and len < buf.len - 1) {
-            buf[len] = all_chars[@intCast(remaining % all_len)];
-            len += 1;
-            remaining /= all_len;
-        }
-
-        return buf[0..len];
-    }
-};
 
 // ============================================================
 // Tests
@@ -552,20 +512,13 @@ test "isReservedOrGlobal" {
     try std.testing.expect(isReservedOrGlobal("in"));
     try std.testing.expect(isReservedOrGlobal("for"));
     try std.testing.expect(isReservedOrGlobal("var"));
+    try std.testing.expect(isReservedOrGlobal("null"));
+    try std.testing.expect(isReservedOrGlobal("true"));
+    try std.testing.expect(isReservedOrGlobal("false"));
+    try std.testing.expect(isReservedOrGlobal("this"));
+    try std.testing.expect(isReservedOrGlobal("void"));
+    try std.testing.expect(isReservedOrGlobal("class"));
+    try std.testing.expect(isReservedOrGlobal("return"));
     try std.testing.expect(!isReservedOrGlobal("a"));
     try std.testing.expect(!isReservedOrGlobal("foo"));
-}
-
-test "NameGenerator: legacy sequential encoding" {
-    var gen = NameGenerator{};
-    try std.testing.expectEqualStrings("a", gen.next());
-    try std.testing.expectEqualStrings("b", gen.next());
-
-    gen.counter = 25;
-    try std.testing.expectEqualStrings("z", gen.next());
-    try std.testing.expectEqualStrings("A", gen.next());
-
-    gen.counter = 54;
-    const two_char = gen.next();
-    try std.testing.expect(two_char.len == 2);
 }
