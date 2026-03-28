@@ -222,6 +222,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         try ops.append(self.allocator, .{ .code = opcode, .arg = .{ .node = new_value } });
                         next_label.* += 1;
                         try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+                        // _state.sent() — resume 시 throw된 에러를 발생시키기 위해 필수
+                        const sent_stmt = try buildSentExprStmt(self, stmt.span);
+                        try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = sent_stmt } });
                     } else if (expr.tag == .assignment_expression) {
                         // x = yield value 패턴 감지
                         const right_idx = expr.data.binary.right;
@@ -770,31 +773,32 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 return;
             }
 
-            // label 할당
-            const try_label = next_label.*;
-            _ = try_label;
-            const catch_label = next_label.* + 1;
-            const finally_label = if (!finally_body.isNone()) next_label.* + 2 else catch_label;
-            const end_label = if (!finally_body.isNone()) next_label.* + 3 else next_label.* + 2;
-            next_label.* = end_label + 1;
+            // try_label = 현재 case 번호 (ops 안의 nop 개수)
+            var try_label: u32 = 0;
+            for (ops.items) |op| {
+                if (op.code == .nop) try_label += 1;
+            }
 
-            // _state.trys.push([try_label, catch_label, finally_label, end_label])
-            const trys_push = try buildTrysPush(self, catch_label, if (!finally_body.isNone()) finally_label else end_label, end_label, stmt.span);
-            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = trys_push } });
+            // trys.push placeholder — body 처리 후 실제 label로 교체
+            const trys_push_slot = ops.items.len;
+            try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = .none } });
 
             // try body
             try collectBodyOperations(self, try_body, ops, next_label);
 
-            // goto end (or finally)
-            try ops.append(self.allocator, .{
-                .code = .break_op,
-                .arg = .{ .label = if (!finally_body.isNone()) finally_label else end_label },
-            });
+            // catch label (try body 처리 후 동적 할당)
+            const catch_label = next_label.*;
+            next_label.* += 1;
 
-            // catch label
+            // goto catch 다음 블록 (finally 또는 end — 아직 모름, break_op slot 예약)
+            const try_break_slot = ops.items.len;
+            try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = 0 } }); // placeholder
+
+            // catch nop
+            try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+
+            // catch body
             if (!catch_clause.isNone()) {
-                try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
-
                 const catch_node = self.old_ast.getNode(catch_clause);
                 const catch_param = catch_node.data.binary.left;
                 const catch_body_idx = catch_node.data.binary.right;
@@ -816,18 +820,18 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
                 }
 
-                // catch body
                 try collectBodyOperations(self, catch_body_idx, ops, next_label);
-
-                // goto end (or finally)
-                try ops.append(self.allocator, .{
-                    .code = .break_op,
-                    .arg = .{ .label = if (!finally_body.isNone()) finally_label else end_label },
-                });
             }
 
-            // finally label
+            // catch body 끝 → finally 또는 end로 점프 (placeholder)
+            const catch_break_slot = ops.items.len;
+            try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = 0 } }); // placeholder
+
+            // finally
+            var finally_label: u32 = undefined;
             if (!finally_body.isNone()) {
+                finally_label = next_label.*;
+                next_label.* += 1;
                 try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
 
                 try collectBodyOperations(self, finally_body, ops, next_label);
@@ -838,11 +842,25 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             }
 
             // end label
+            const end_label = next_label.*;
+            next_label.* += 1;
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+
+            // fixup: try/catch body 끝 break → 항상 end_label로.
+            // finally가 있으면 __generator 런타임이 _.label < t[2] 체크로
+            // finally로 자동 우회 + _.ops.push(op)로 원래 목적지 보존.
+            // endfinally에서 _.ops.pop()으로 복원하여 end_label로 이동.
+            ops.items[try_break_slot] = .{ .code = .break_op, .arg = .{ .label = end_label } };
+            ops.items[catch_break_slot] = .{ .code = .break_op, .arg = .{ .label = end_label } };
+
+            // fixup: trys.push with actual labels
+            const actual_finally = if (!finally_body.isNone()) finally_label else end_label;
+            const trys_push = try buildTrysPush(self, try_label, catch_label, actual_finally, end_label, stmt.span);
+            ops.items[trys_push_slot] = .{ .code = .statement, .arg = .{ .node = trys_push } };
         }
 
-        /// _state.trys.push([catch_label, finally_label, end_label]) expression_statement 생성.
-        fn buildTrysPush(self: *Transformer, catch_label: u32, finally_label: u32, end_label: u32, span: Span) Transformer.Error!NodeIndex {
+        /// _state.trys.push([try_label, catch_label, finally_label, end_label]) expression_statement 생성.
+        fn buildTrysPush(self: *Transformer, try_label: u32, catch_label: u32, finally_label: u32, end_label: u32, span: Span) Transformer.Error!NodeIndex {
             const state_ref = try es_helpers.makeIdentifierRef(self, "_state");
 
             // _state.trys
@@ -853,11 +871,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const push_prop = try es_helpers.makeIdentifierRef(self, "push");
             const push_member = try es_helpers.makeStaticMember(self, trys_member, push_prop, span);
 
-            // [catch_label, finally_label, end_label] 배열
+            // [try_label, catch_label, finally_label, end_label] 배열 (TypeScript __generator 스펙)
+            const n0 = try es_helpers.makeNumericLiteral(self, try_label);
             const n1 = try es_helpers.makeNumericLiteral(self, catch_label);
             const n2 = try es_helpers.makeNumericLiteral(self, finally_label);
             const n3 = try es_helpers.makeNumericLiteral(self, end_label);
-            const arr_list = try self.new_ast.addNodeList(&.{ n1, n2, n3 });
+            const arr_list = try self.new_ast.addNodeList(&.{ n0, n1, n2, n3 });
             const arr = try self.new_ast.addNode(.{
                 .tag = .array_expression,
                 .span = span,
@@ -1052,7 +1071,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .if_statement,
                 .for_in_statement,
                 .for_of_statement,
+                .try_statement,
                 => containsYield(self, node.data.ternary.a) or containsYield(self, node.data.ternary.b) or containsYield(self, node.data.ternary.c),
+                .catch_clause,
                 .while_statement,
                 .do_while_statement,
                 .labeled_statement,
@@ -1366,6 +1387,17 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const sent_prop = try es_helpers.makeIdentifierRef(self, "sent");
             const sent_member = try es_helpers.makeStaticMember(self, state_ref, sent_prop, span);
             return es_helpers.makeCallExpr(self, sent_member, &.{}, span);
+        }
+
+        /// _state.sent(); expression_statement 생성.
+        /// yield resume 시 throw된 에러를 발생시키기 위해 필요.
+        fn buildSentExprStmt(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
+            const sent = try buildSentCall(self, span);
+            return self.new_ast.addNode(.{
+                .tag = .expression_statement,
+                .span = span,
+                .data = .{ .unary = .{ .operand = sent, .flags = 0 } },
+            });
         }
 
         /// _state identifier reference 생성.
