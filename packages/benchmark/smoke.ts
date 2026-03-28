@@ -193,12 +193,13 @@ function testProject(p: ProjectConfig): SmokeResult {
     // rspack (config 파일 생성 — CLI만으로는 target/externals 설정 불가)
     if (existsSync(RSPACK_BIN) && !p.target) {
       const rsOut = join(dir, "dist-rspack");
-      const rsConfigPath = join(dir, "rspack.config.cjs");
+      const rsConfigPath = join(__dirname, `_rspack_config_${p.name}.cjs`);
       const rsConfig = `module.exports = {
         entry: ${JSON.stringify(entryFile)},
         output: { path: ${JSON.stringify(rsOut)}, filename: "main.js" },
         target: ${JSON.stringify(platform === "node" ? "node" : "web")},
         mode: "production",
+        module: { rules: [{ test: /\\.ts$/, use: { loader: "builtin:swc-loader", options: { jsc: { parser: { syntax: "typescript" } } } } }] },
         ${ext.length > 0 ? `externals: ${JSON.stringify(ext)},` : ""}
       };`;
       writeFileSync(rsConfigPath, rsConfig);
@@ -208,6 +209,9 @@ function testProject(p: ProjectConfig): SmokeResult {
         join(rsOut, "main.js"),
         __dirname,
       );
+      try {
+        rmSync(rsConfigPath);
+      } catch {}
       if (!result.rspack.build) {
         result.errors.push(`rspack: build or run failed`);
       }
