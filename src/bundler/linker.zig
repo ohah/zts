@@ -1016,15 +1016,14 @@ pub const Linker = struct {
                     if (sym_i < sem.symbols.len) skip_syms.set(sym_i);
                 }
 
-                var nested_result = try Mangler.mangle(
-                    self.allocator,
-                    sem.scopes,
-                    sem.symbols,
-                    sem.scope_maps,
-                    sem.ref_scope_pairs,
-                    m.source,
-                    skip_syms,
-                );
+                var nested_result = try Mangler.mangle(self.allocator, .{
+                    .scopes = sem.scopes,
+                    .symbols = sem.symbols,
+                    .scope_maps = sem.scope_maps,
+                    .ref_scope_pairs = sem.ref_scope_pairs,
+                    .source = m.source,
+                    .skip_symbols = skip_syms,
+                });
 
                 // nested renames를 기존 renames에 merge (소유권 이전)
                 var taken = nested_result.takeRenames();

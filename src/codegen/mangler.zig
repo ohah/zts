@@ -45,21 +45,26 @@ pub const ManglerResult = struct {
     }
 };
 
-/// Liveness 기반 mangling. 기존 mangle()을 대체.
-///
-/// - scopes, symbols, scope_maps: semantic analyzer 결과
-/// - ref_scope_pairs: 참조 발생 (symbol_idx, scope_id) 쌍
-/// - source: 소스 코드 (심볼 이름 읽기용)
-/// - skip_symbols: 번들 모드에서 mangling 제외할 symbol indices (null이면 없음)
-pub fn mangle(
-    allocator: std.mem.Allocator,
+/// mangle() 입력 데이터.
+pub const MangleInput = struct {
     scopes: []const Scope,
     symbols: []const Symbol,
     scope_maps: []const std.StringHashMap(usize),
     ref_scope_pairs: []const RefScopePair,
     source: []const u8,
-    skip_symbols: ?std.DynamicBitSet,
-) !ManglerResult {
+    /// 번들 모드에서 mangling 제외할 symbol indices (null이면 없음)
+    skip_symbols: ?std.DynamicBitSet = null,
+};
+
+/// Liveness 기반 mangling.
+pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
+    const scopes = input.scopes;
+    const symbols = input.symbols;
+    const scope_maps = input.scope_maps;
+    const ref_scope_pairs = input.ref_scope_pairs;
+    const source = input.source;
+    const skip_symbols = input.skip_symbols;
+
     const scope_count = scopes.len;
     const symbol_count = symbols.len;
 
@@ -82,13 +87,26 @@ pub fn mangle(
     // ================================================================
     // 각 symbol이 어느 scope에서 alive한지 추적.
     // alive = 선언 scope에서 참조 scope까지의 ancestor 경로 전체.
+    //
+    // 벌크 할당: symbol_count개의 mask 배열을 단일 버퍼로 할당하여
+    // 개별 DynamicBitSet.initEmpty 대신 O(1) 할당.
+    const MaskInt = std.DynamicBitSetUnmanaged.MaskInt;
+    const masks_per_symbol = (scope_count + @bitSizeOf(MaskInt) - 1) / @bitSizeOf(MaskInt);
+    const all_masks = try allocator.alloc(MaskInt, symbol_count * masks_per_symbol);
+    defer allocator.free(all_masks);
+    @memset(all_masks, 0);
+
     var symbol_liveness = try allocator.alloc(std.DynamicBitSet, symbol_count);
-    defer {
-        for (symbol_liveness) |*bs| bs.deinit();
-        allocator.free(symbol_liveness);
-    }
-    for (symbol_liveness) |*bs| {
-        bs.* = try std.DynamicBitSet.initEmpty(allocator, scope_count);
+    defer allocator.free(symbol_liveness);
+    for (symbol_liveness, 0..) |*bs, i| {
+        const start = i * masks_per_symbol;
+        bs.* = .{
+            .unmanaged = .{
+                .masks = @ptrCast(all_masks[start..].ptr),
+                .bit_length = scope_count,
+            },
+            .allocator = allocator,
+        };
     }
 
     // 선언 scope 자체를 alive로 표시
