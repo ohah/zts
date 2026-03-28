@@ -420,12 +420,10 @@ pub const TreeShaker = struct {
                 reachable_stmts[i] = try std.DynamicBitSet.initEmpty(self.allocator, infos.stmts.len);
             }
 
-            // side-effect statement 시드
-            if (m.side_effects) {
-                for (infos.stmts, 0..) |stmt, si| {
-                    if (stmt.has_side_effects) {
-                        try self.enqueue(@intCast(i), @intCast(si), reachable_stmts, &queue);
-                    }
+            // 포함된 모듈의 side-effect statement는 항상 시드
+            for (infos.stmts, 0..) |stmt, si| {
+                if (stmt.has_side_effects) {
+                    try self.enqueue(@intCast(i), @intCast(si), reachable_stmts, &queue);
                 }
             }
 
@@ -594,12 +592,11 @@ pub const TreeShaker = struct {
         }
         try self.enqueue(@intCast(canon_mod), target_stmt, reachable_stmts, queue);
 
-        // side-effect statement도 포함 (포함된 모듈의 부작용 코드 보호)
-        if (target_module.side_effects) {
-            for (target_infos.stmts, 0..) |stmt, si| {
-                if (stmt.has_side_effects) {
-                    try self.enqueue(@intCast(canon_mod), @intCast(si), reachable_stmts, queue);
-                }
+        // 포함된 모듈의 side-effect statement는 항상 시드.
+        // sideEffects=false는 "모듈 포함 불필요"이지 "포함 후 side-effect 무시"가 아님.
+        for (target_infos.stmts, 0..) |stmt, si| {
+            if (stmt.has_side_effects) {
+                try self.enqueue(@intCast(canon_mod), @intCast(si), reachable_stmts, queue);
             }
         }
     }
