@@ -254,7 +254,6 @@ const projects: ProjectConfig[] = [
     name: "toolkit",
     pkg: "@reduxjs/toolkit react redux",
     entry: `import { configureStore, createSlice } from '@reduxjs/toolkit';\nconst slice = createSlice({ name: 'test', initialState: 0, reducers: { inc: s => s + 1 } });\nconsole.log(slice.name, typeof slice.reducer);`,
-    external: ["react", "redux"],
   },
   {
     name: "rxjs",
