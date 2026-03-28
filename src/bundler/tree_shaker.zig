@@ -447,6 +447,33 @@ pub const TreeShaker = struct {
             }
         }
 
+        // 시드 2: sideEffects:false 모듈의 namespace import used_properties를 타겟에 직접 시드.
+        // sideEffects:false 모듈은 side-effect statement가 시드되지 않아 BFS가 followImport에
+        // 도달하지 못함. namespace_used_properties를 여기서 직접 시드.
+        // sideEffects:true 모듈은 side-effect statement에서 BFS가 시작되므로 불필요.
+        for (self.modules, 0..) |m, i| {
+            if (!self.included.isSet(i)) continue;
+            if (m.side_effects or self.entry_set.isSet(i)) continue;
+            for (m.import_bindings) |ib| {
+                if (ib.kind != .namespace) continue;
+                if (ib.import_record_index >= m.import_records.len) continue;
+                const rec = m.import_records[ib.import_record_index];
+                if (rec.resolved.isNone()) continue;
+                const target = @intFromEnum(rec.resolved);
+                if (target >= self.modules.len) continue;
+                if (!self.included.isSet(target)) continue;
+                if (ib.namespace_used_properties) |props| {
+                    if (props.len == 0) {
+                        try self.seedAllStmts(@intCast(target), &queue, module_stmt_infos, reachable_stmts);
+                    } else {
+                        for (props) |prop_name| {
+                            try self.seedExport(target, prop_name, &queue, module_stmt_infos, reachable_stmts);
+                        }
+                    }
+                }
+            }
+        }
+
         // BFS 루프
         var head: u32 = 0;
         while (head < queue.items.len) : (head += 1) {
