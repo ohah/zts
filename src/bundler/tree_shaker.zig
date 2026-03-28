@@ -400,11 +400,8 @@ pub const TreeShaker = struct {
         var queue: std.ArrayListUnmanaged(BfsItem) = .empty;
         defer queue.deinit(self.allocator);
 
-        // used_exports 초기화
-        self.clearUsedExports();
-        for (self.modules, 0..) |_, i| {
-            if (self.entry_set.isSet(i)) try self.markAllExportsUsed(@intCast(i));
-        }
+        // Phase 1의 used_exports 유지 — BFS에서 추가 마킹만 수행
+        // (clearUsedExports 하지 않음 — CJS/side-effect 모듈의 export 보호)
 
         // 시드 1: entry module의 export 선언 statement + side-effect statement
         for (self.modules, 0..) |m, i| {
@@ -474,11 +471,8 @@ pub const TreeShaker = struct {
             }
         }
 
-        // BFS 후: used_exports 재도출 (reachable statement의 export만)
-        self.clearUsedExports();
-        for (self.modules, 0..) |_, i| {
-            if (self.entry_set.isSet(i)) try self.markAllExportsUsed(@intCast(i));
-        }
+        // BFS 후: reachable statement 기반 used_exports 추가 마킹
+        // BFS 중 markExportUsed로 마킹된 것은 유지 (clearUsedExports 하지 않음)
         for (self.modules, 0..) |m, i| {
             const infos = module_stmt_infos[i] orelse continue;
             const sem = m.semantic orelse continue;
