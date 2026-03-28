@@ -22,6 +22,9 @@ const ESBUILD_BIN = existsSync(join(__dirname, "node_modules/.bin/esbuild"))
 const ROLLDOWN_BIN = existsSync(join(__dirname, "node_modules/.bin/rolldown"))
   ? join(__dirname, "node_modules/.bin/rolldown")
   : join(ROOT, "node_modules/.bin/rolldown");
+const RSPACK_BIN = existsSync(join(__dirname, "node_modules/.bin/rspack"))
+  ? join(__dirname, "node_modules/.bin/rspack")
+  : join(ROOT, "node_modules/.bin/rspack");
 
 interface BundlerResult {
   build: boolean;
@@ -35,6 +38,7 @@ interface SmokeResult {
   zts: BundlerResult;
   esbuild: BundlerResult;
   rolldown: BundlerResult;
+  rspack: BundlerResult;
   outputMatch: boolean;
   errors: string[];
 }
@@ -100,6 +104,7 @@ function testProject(p: ProjectConfig): SmokeResult {
     zts: { ...emptyResult },
     esbuild: { ...emptyResult },
     rolldown: { ...emptyResult },
+    rspack: { ...emptyResult },
     outputMatch: false,
     errors: [],
   };
@@ -182,6 +187,29 @@ function testProject(p: ProjectConfig): SmokeResult {
       );
       if (!result.rolldown.build) {
         result.errors.push(`rolldown: build or run failed`);
+      }
+    }
+
+    // rspack (config 파일 생성 — CLI만으로는 target/externals 설정 불가)
+    if (existsSync(RSPACK_BIN) && !p.target) {
+      const rsOut = join(dir, "dist-rspack");
+      const rsConfigPath = join(dir, "rspack.config.cjs");
+      const rsConfig = `module.exports = {
+        entry: ${JSON.stringify(entryFile)},
+        output: { path: ${JSON.stringify(rsOut)}, filename: "main.js" },
+        target: ${JSON.stringify(platform === "node" ? "node" : "web")},
+        mode: "production",
+        ${ext.length > 0 ? `externals: ${JSON.stringify(ext)},` : ""}
+      };`;
+      writeFileSync(rsConfigPath, rsConfig);
+      result.rspack = bundleAndRun(
+        RSPACK_BIN,
+        ["build", "-c", rsConfigPath],
+        join(rsOut, "main.js"),
+        __dirname,
+      );
+      if (!result.rspack.build) {
+        result.errors.push(`rspack: build or run failed`);
       }
     }
 
@@ -959,10 +987,10 @@ function fmtStatus(build: boolean): string {
 
 console.log("\n### Smoke Test Results\n");
 console.log(
-  "| Project | ZTS | Size | Time | esbuild | Size | Time | rolldown | Size | Time | Output |",
+  "| Project | ZTS | Size | Time | esbuild | Size | Time | rolldown | Size | Time | rspack | Size | Time | Output |",
 );
 console.log(
-  "|---------|-----|------|------|---------|------|------|----------|------|------|--------|",
+  "|---------|-----|------|------|---------|------|------|----------|------|------|--------|------|------|--------|",
 );
 for (const r of results) {
   const match =
@@ -972,7 +1000,7 @@ for (const r of results) {
         ? "MATCH"
         : "DIFF";
   console.log(
-    `| ${r.project} | ${fmtStatus(r.zts.build)} | ${fmtSize(r.zts.size)} | ${r.zts.time}ms | ${fmtStatus(r.esbuild.build)} | ${fmtSize(r.esbuild.size)} | ${r.esbuild.time}ms | ${fmtStatus(r.rolldown.build)} | ${fmtSize(r.rolldown.size)} | ${r.rolldown.time}ms | ${match} |`,
+    `| ${r.project} | ${fmtStatus(r.zts.build)} | ${fmtSize(r.zts.size)} | ${r.zts.time}ms | ${fmtStatus(r.esbuild.build)} | ${fmtSize(r.esbuild.size)} | ${r.esbuild.time}ms | ${fmtStatus(r.rolldown.build)} | ${fmtSize(r.rolldown.size)} | ${r.rolldown.time}ms | ${fmtStatus(r.rspack.build)} | ${fmtSize(r.rspack.size)} | ${r.rspack.time}ms | ${match} |`,
   );
 }
 
@@ -998,12 +1026,13 @@ const sizeComparisons = results
 
 if (sizeComparisons.length > 0) {
   console.log("\n### Size Comparison (ZTS vs esbuild)\n");
-  console.log("| Project | ZTS | esbuild | Ratio | Status |");
-  console.log("|---------|-----|---------|-------|--------|");
+  console.log("| Project | ZTS | esbuild | rolldown | rspack | Ratio | Status |");
+  console.log("|---------|-----|---------|----------|--------|-------|--------|");
   for (const c of sizeComparisons) {
+    const r = results.find((r) => r.project === c.name)!;
     const status = c.ratio <= 1.1 ? "✅" : c.ratio <= 1.5 ? "⚠️" : "❌";
     console.log(
-      `| ${c.name} | ${fmtSize(c.zts)} | ${fmtSize(c.esbuild)} | ${c.ratio.toFixed(2)}x | ${status} |`,
+      `| ${c.name} | ${fmtSize(c.zts)} | ${fmtSize(c.esbuild)} | ${fmtSize(r.rolldown.size)} | ${fmtSize(r.rspack.size)} | ${c.ratio.toFixed(2)}x | ${status} |`,
     );
   }
   const avgRatio = sizeComparisons.reduce((s, c) => s + c.ratio, 0) / sizeComparisons.length;
