@@ -104,13 +104,13 @@ function testProject(p: ProjectConfig): SmokeResult {
     errors: [],
   };
 
-  // entry 파일을 프로젝트 루트에 작성 (hoisted node_modules resolve 위해)
-  const entryFile = join(ROOT, `_smoke_entry_${p.name}.ts`);
+  // entry 파일을 benchmark 디렉토리에 작성 (node_modules resolve를 위해)
+  const entryFile = join(__dirname, `_smoke_entry_${p.name}.ts`);
   try {
     writeFileSync(entryFile, p.entry);
 
     // tsconfig.json 생성 (decorator 등 옵션이 필요한 경우)
-    const tsconfigFile = join(ROOT, `_smoke_tsconfig_${p.name}.json`);
+    const tsconfigFile = join(__dirname, `_smoke_tsconfig_${p.name}.json`);
     if (p.tsconfig) {
       writeFileSync(tsconfigFile, JSON.stringify({ compilerOptions: p.tsconfig }));
     }
