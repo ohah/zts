@@ -430,20 +430,25 @@ pub const TreeShaker = struct {
                 }
             }
 
-            // entry의 export 선언 statement 시드
-            if (self.entry_set.isSet(i)) {
+            // used export 선언 statement 시드 (rolldown include_symbol 동등).
+            // entry: 모든 export. sideEffects:false: fixpoint에서 used인 export만.
+            // sideEffects:true non-entry: BFS가 side-effect statement에서 시작하므로 불필요.
+            if (self.entry_set.isSet(i) or !m.side_effects) {
                 const sem = m.semantic orelse continue;
                 if (sem.scope_maps.len == 0) continue;
+                const mi: u32 = @intCast(i);
                 for (m.export_bindings) |eb| {
                     if (eb.kind == .re_export_all) continue;
+                    if (!self.entry_set.isSet(i) and !self.isExportUsed(mi, eb.exported_name)) continue;
                     if (sem.scope_maps[0].get(eb.local_name)) |sym_idx| {
                         if (infos.declaredStmtBySymbol(@intCast(sym_idx))) |stmt_idx| {
                             try self.enqueue(@intCast(i), stmt_idx, reachable_stmts, &queue);
                         }
                     }
                 }
-                // entry의 import도 직접 시드 (entry의 모든 used import는 live)
-                try self.seedOpaqueModule(@intCast(i), &queue, module_stmt_infos, reachable_stmts);
+                if (self.entry_set.isSet(i)) {
+                    try self.seedOpaqueModule(@intCast(i), &queue, module_stmt_infos, reachable_stmts);
+                }
             }
         }
 
