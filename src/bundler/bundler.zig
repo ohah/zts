@@ -10162,6 +10162,83 @@ test "TreeShaking: re-export chain — only used export included (three.module.j
     try std.testing.expect(std.mem.indexOf(u8, result.output, "class Scene") == null);
 }
 
+test "TreeShaking: class with static block preserved — side-effect in body" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { used } from './classes';
+        \\console.log(used);
+    );
+    try writeFile(tmp.dir, "classes.ts",
+        \\export class X { static { console.log("init"); } }
+        \\export const used = 1;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // static block이 있으므로 X가 보존되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "class X") != null);
+}
+
+test "TreeShaking: class with impure static field preserved" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { used } from './classes';
+        \\console.log(used);
+    );
+    try writeFile(tmp.dir, "classes.ts",
+        \\export class X { static foo = init(); }
+        \\function init() { return 1; }
+        \\export const used = 1;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // static foo = init() → impure → X 보존
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "class X") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "init") != null);
+}
+
+test "TreeShaking: class with pure static field removed" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { used } from './classes';
+        \\console.log(used);
+    );
+    try writeFile(tmp.dir, "classes.ts",
+        \\export class X { static foo = 42; }
+        \\export const used = 1;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // static foo = 42 → pure → X 제거
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "class X") == null);
+}
+
 test "TreeShaking: export default identifier — import preserved (yargs y18n pattern)" {
     // yargs 패턴: export default someVar → import { x } → x가 번들에 포함
     var tmp = std.testing.tmpDir(.{});

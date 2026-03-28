@@ -979,6 +979,87 @@ test "statement shaker: side-effect on class symbol preserved" {
     try std.testing.expectEqual(@as(u32, 1), skipped);
 }
 
+test "statement shaker: class with static block is side-effectful" {
+    const alloc = std.testing.allocator;
+    var r = try parseAndGetRoot(alloc,
+        \\class X { static { console.log("effect"); } }
+        \\function unused() { return 1; }
+    );
+    defer r.arena.deinit();
+
+    var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
+    defer skip.deinit();
+
+    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
+
+    // static block → side-effect → X 보존, unused만 제거
+    var skipped: u32 = 0;
+    var it = skip.iterator(.{});
+    while (it.next()) |_| skipped += 1;
+    try std.testing.expectEqual(@as(u32, 1), skipped);
+}
+
+test "statement shaker: class with computed key call is side-effectful" {
+    const alloc = std.testing.allocator;
+    var r = try parseAndGetRoot(alloc,
+        \\function key() { return "foo"; }
+        \\class X { static [key()] = 1; }
+        \\function unused() { return 1; }
+    );
+    defer r.arena.deinit();
+
+    var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
+    defer skip.deinit();
+
+    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
+
+    // computed key fn() → side-effect → X와 key 보존, unused만 제거
+    var skipped: u32 = 0;
+    var it = skip.iterator(.{});
+    while (it.next()) |_| skipped += 1;
+    try std.testing.expectEqual(@as(u32, 1), skipped);
+}
+
+test "statement shaker: class with impure static field is side-effectful" {
+    const alloc = std.testing.allocator;
+    var r = try parseAndGetRoot(alloc,
+        \\class X { static foo = init(); }
+        \\function unused() { return 1; }
+    );
+    defer r.arena.deinit();
+
+    var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
+    defer skip.deinit();
+
+    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
+
+    // static foo = init() → side-effect → X 보존, unused만 제거
+    var skipped: u32 = 0;
+    var it = skip.iterator(.{});
+    while (it.next()) |_| skipped += 1;
+    try std.testing.expectEqual(@as(u32, 1), skipped);
+}
+
+test "statement shaker: class with pure static field is removable" {
+    const alloc = std.testing.allocator;
+    var r = try parseAndGetRoot(alloc,
+        \\class X { static foo = 42; }
+        \\function unused() { return 1; }
+    );
+    defer r.arena.deinit();
+
+    var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
+    defer skip.deinit();
+
+    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip);
+
+    // static foo = 42 → 순수 리터럴 → X + unused 모두 제거
+    var skipped: u32 = 0;
+    var it = skip.iterator(.{});
+    while (it.next()) |_| skipped += 1;
+    try std.testing.expectEqual(@as(u32, 2), skipped);
+}
+
 test "statement shaker module compiles" {
     _ = @import("statement_shaker.zig");
 }
