@@ -205,9 +205,15 @@ pub fn parseStatement(self: *Parser) ParseError2!NodeIndex {
                 }
             } else if (std.mem.eql(u8, text, "module")) {
                 // module.exports = ... (CJS) → expression statement
+                // module["exports"] = ... (CJS) → expression statement
+                // module(...) → expression statement
                 // module Foo { } (TS namespace) → TS module declaration
-                const next = try self.peekNextKind();
-                if (next != .dot) {
+                // module "name" { } (TS ambient) → TS module declaration
+                // namespace와 동일 판별: 줄바꿈 없이 identifier/{/string이 올 때만
+                const next_mod = try self.peekNext();
+                if (!next_mod.has_newline_before and
+                    (next_mod.kind == .identifier or next_mod.kind == .l_curly or next_mod.kind == .string_literal))
+                {
                     break :blk self.parseTsModuleDeclaration();
                 }
             } else if (std.mem.eql(u8, text, "declare")) {
