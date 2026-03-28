@@ -397,7 +397,7 @@ pub fn emitWithTreeShaking(
             break :blk names_buf.items;
         } else null;
 
-        const code = try emitModule(allocator, m, options, linker, is_entry, used_names) orelse continue;
+        const code = try emitModule(allocator, m, options, linker, is_entry, used_names, shaker) orelse continue;
         defer allocator.free(code);
 
         if (!options.minify) {
@@ -987,7 +987,7 @@ pub fn emitChunks(
             const m = &modules[mi];
 
             const is_entry = if (entry_mod_idx) |ei| mi == ei else false;
-            const raw_code = try emitModule(allocator, m, options, linker, is_entry, null) orelse continue;
+            const raw_code = try emitModule(allocator, m, options, linker, is_entry, null, null) orelse continue;
             defer allocator.free(raw_code);
 
             // 동적 import 경로 리라이트: import('./page') → import('./page.js')
@@ -1190,6 +1190,7 @@ pub fn emitModule(
     linker: ?*const Linker,
     is_entry: bool,
     used_export_names: ?[]const []const u8,
+    shaker: ?*const TreeShaker,
 ) !?[]const u8 {
     // JSON 모듈: 내용을 module.exports = <JSON>으로 래핑
     if (module.module_type == .json) {
@@ -1264,39 +1265,58 @@ pub fn emitModule(
                     else
                         sem.symbol_ids;
 
-                    if (stmt_info_mod.build(arena_alloc, &transformer.new_ast, sem.symbols, sym_ids)) |maybe_infos| {
-                        if (maybe_infos) |infos| {
-                            // used export names → symbol indices 변환
-                            var used_sym_buf: std.ArrayListUnmanaged(u32) = .empty;
-                            defer used_sym_buf.deinit(arena_alloc);
-                            if (sem.scope_maps.len > 0) {
-                                for (names) |name| {
-                                    if (sem.scope_maps[0].get(name)) |sym_idx| {
-                                        used_sym_buf.append(arena_alloc, @intCast(sym_idx)) catch continue;
-                                    } else {
-                                        // export_bindings에서 local_name으로 scope_maps 재시도
-                                        // (facade 심볼 _default가 scope_maps[0]에 등록되어 있어
-                                        //  export default의 local_name으로 찾을 수 있다)
-                                        for (module.export_bindings) |eb| {
-                                            if (std.mem.eql(u8, eb.exported_name, name)) {
-                                                if (sem.scope_maps[0].get(eb.local_name)) |sym_idx| {
-                                                    used_sym_buf.append(arena_alloc, @intCast(sym_idx)) catch {};
-                                                }
-                                                break;
-                                            }
+                    // 크로스-모듈 BFS 결과 사용: tree-shaker의 reachable_stmts로 skip_nodes 설정
+                    const mod_idx: u32 = @intFromEnum(module.index);
+                    if (shaker) |s| {
+                        if (s.getModuleStmtInfos(mod_idx)) |infos| {
+                            for (infos.stmts, 0..) |stmt, si| {
+                                if (!s.isStmtReachable(mod_idx, @intCast(si))) {
+                                    // span 기반 매칭: 원본 AST의 unreachable stmt의 span으로
+                                    // 변환 후 AST에서 대응 노드를 찾아 skip
+                                    for (transformer.new_ast.nodes.items, 0..) |new_node, ni| {
+                                        if (new_node.span.start == stmt.span.start and
+                                            new_node.span.end == stmt.span.end and
+                                            ni < md.skip_nodes.capacity())
+                                        {
+                                            md.skip_nodes.set(ni);
+                                            break;
                                         }
                                     }
                                 }
                             }
-                            if (infos.computeReachable(arena_alloc, used_sym_buf.items)) |reachable| {
-                                for (infos.stmts, 0..) |stmt, si| {
-                                    if (!reachable.isSet(si) and stmt.node_idx < md.skip_nodes.capacity()) {
-                                        md.skip_nodes.set(stmt.node_idx);
+                        }
+                    } else {
+                        // tree-shaker 없으면 기존 방식 (모듈 내부 computeReachable)
+                        if (stmt_info_mod.build(arena_alloc, &transformer.new_ast, sem.symbols, sym_ids)) |maybe_infos| {
+                            if (maybe_infos) |infos| {
+                                var used_sym_buf: std.ArrayListUnmanaged(u32) = .empty;
+                                defer used_sym_buf.deinit(arena_alloc);
+                                if (sem.scope_maps.len > 0) {
+                                    for (names) |name| {
+                                        if (sem.scope_maps[0].get(name)) |sym_idx| {
+                                            used_sym_buf.append(arena_alloc, @intCast(sym_idx)) catch continue;
+                                        } else {
+                                            for (module.export_bindings) |eb| {
+                                                if (std.mem.eql(u8, eb.exported_name, name)) {
+                                                    if (sem.scope_maps[0].get(eb.local_name)) |sym_idx| {
+                                                        used_sym_buf.append(arena_alloc, @intCast(sym_idx)) catch {};
+                                                    }
+                                                    break;
+                                                }
+                                            }
+                                        }
                                     }
                                 }
-                            } else |_| {}
-                        }
-                    } else |_| {}
+                                if (infos.computeReachable(arena_alloc, used_sym_buf.items)) |reachable| {
+                                    for (infos.stmts, 0..) |stmt, si| {
+                                        if (!reachable.isSet(si) and stmt.node_idx < md.skip_nodes.capacity()) {
+                                            md.skip_nodes.set(stmt.node_idx);
+                                        }
+                                    }
+                                } else |_| {}
+                            }
+                        } else |_| {}
+                    }
                 }
             }
         }

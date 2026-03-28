@@ -44,6 +44,8 @@ pub const TreeShaker = struct {
     reachable_stmts: []?std.DynamicBitSet = &.{},
     /// 수렴 루프에서 새 엔트리 추가 여부 추적.
     exports_changed: bool = false,
+    /// 모듈별 sym_idx → import_binding_index 맵. 크로스-모듈 BFS에서 사용.
+    sym_to_ib: []?[]?u32 = &.{},
 
     const max_fixpoint_iterations: u32 = 100;
 
@@ -80,6 +82,12 @@ pub const TreeShaker = struct {
                 if (rs.*) |*bs| bs.deinit();
             }
             self.allocator.free(self.reachable_stmts);
+        }
+        if (self.sym_to_ib.len > 0) {
+            for (self.sym_to_ib) |s| {
+                if (s) |arr| self.allocator.free(arr);
+            }
+            self.allocator.free(self.sym_to_ib);
         }
     }
 
@@ -206,11 +214,11 @@ pub const TreeShaker = struct {
         for (module_stmt_infos) |*si| si.* = null;
         self.module_stmt_infos = module_stmt_infos;
 
-        var reachable_stmts = try self.allocator.alloc(?std.DynamicBitSet, self.modules.len);
+        const reachable_stmts = try self.allocator.alloc(?std.DynamicBitSet, self.modules.len);
         for (reachable_stmts) |*rs| rs.* = null;
         self.reachable_stmts = reachable_stmts;
 
-        // StmtInfo 구축 (한 번만 — AST 기반이라 변하지 않음)
+        // StmtInfo 구축 (entry, CJS 제외)
         for (self.modules, 0..) |m, i| {
             if (!self.included.isSet(i)) continue;
             if (self.entry_set.isSet(i) or m.wrap_kind == .cjs) continue;
@@ -224,75 +232,9 @@ pub const TreeShaker = struct {
             ) catch null;
         }
 
-        // 수렴 루프 시작: fixpoint의 used_exports를 entry 직접 import만으로 교체
-        // 이후 reachable_stmts ↔ used_exports를 상호 정제하며 수렴.
-        {
-            self.clearUsedExports();
-            for (self.modules, 0..) |_, i| {
-                if (self.entry_set.isSet(i)) try self.markAllExportsUsed(@intCast(i));
-            }
-            // entry의 직접 import만 처리 (fixpoint 없이)
-            for (self.modules, 0..) |m, i| {
-                if (!self.entry_set.isSet(i)) continue;
-                // entry는 StmtInfo가 없으므로 모든 import binding을 live로 처리
-                _ = try self.processModuleImportsInner(m, @intCast(i));
-            }
-            _ = try self.includeReExportSources(false);
-        }
-
-        var refine_iter: u32 = 0;
-        while (refine_iter < 10) : (refine_iter += 1) {
-            // (A) reachable_stmts 계산: 현재 used_exports 기반
-            for (self.modules, 0..) |m, i| {
-                const infos = module_stmt_infos[i] orelse continue;
-                const sem = m.semantic orelse continue;
-                if (sem.scope_maps.len == 0) continue;
-                const top_scope = sem.scope_maps[0];
-
-                var used_sym_buf: std.ArrayListUnmanaged(u32) = .empty;
-                defer used_sym_buf.deinit(self.allocator);
-                const mod_idx: u32 = @intCast(i);
-
-                if (self.isExportUsed(mod_idx, "*")) {
-                    for (m.export_bindings) |eb| {
-                        if (eb.kind == .re_export_all) continue;
-                        if (top_scope.get(eb.local_name)) |sym_idx| {
-                            used_sym_buf.append(self.allocator, @intCast(sym_idx)) catch continue;
-                        }
-                    }
-                } else {
-                    for (m.export_bindings) |eb| {
-                        if (eb.kind == .re_export_all) continue;
-                        if (self.isExportUsed(mod_idx, eb.exported_name)) {
-                            if (top_scope.get(eb.local_name)) |sym_idx| {
-                                used_sym_buf.append(self.allocator, @intCast(sym_idx)) catch continue;
-                            }
-                        }
-                    }
-                }
-
-                if (reachable_stmts[i]) |*rs| rs.deinit();
-                reachable_stmts[i] = infos.computeReachable(
-                    self.allocator,
-                    used_sym_buf.items,
-                ) catch null;
-            }
-
-            // (B) used_exports 재계산: reachable_stmts 기반 live import만 추적
-            self.clearUsedExports();
-            self.exports_changed = false;
-
-            for (self.modules, 0..) |_, i| {
-                if (self.entry_set.isSet(i)) try self.markAllExportsUsed(@intCast(i));
-            }
-            for (self.modules, 0..) |m, i| {
-                if (!self.included.isSet(i)) continue;
-                _ = try self.processModuleImportsInner(m, @intCast(i));
-            }
-            _ = try self.includeReExportSources(true);
-
-            if (!self.exports_changed and refine_iter > 0) break;
-        }
+        // 크로스-모듈 BFS: rolldown 방식 — import binding을 따라 모듈 횡단
+        try self.buildSymToIbMaps();
+        try self.crossModuleBFS(module_stmt_infos, reachable_stmts);
 
         // 미사용 sideEffects=false 모듈 제거
         for (self.modules, 0..) |m, i| {
@@ -302,6 +244,17 @@ pub const TreeShaker = struct {
                 self.included.unset(i);
             }
         }
+    }
+
+    pub fn isStmtReachable(self: *const TreeShaker, module_index: u32, stmt_idx: u32) bool {
+        if (module_index >= self.reachable_stmts.len) return true;
+        const reachable = self.reachable_stmts[module_index] orelse return true;
+        return reachable.isSet(stmt_idx);
+    }
+
+    pub fn getModuleStmtInfos(self: *const TreeShaker, module_index: u32) ?StmtInfos {
+        if (module_index >= self.module_stmt_infos.len) return null;
+        return self.module_stmt_infos[module_index];
     }
 
     pub fn isIncluded(self: *const TreeShaker, module_index: u32) bool {
@@ -416,6 +369,330 @@ pub const TreeShaker = struct {
     /// 포함된 모듈의 re-export 소스를 포함시키고 export를 마킹한다.
     /// check_used=true이면 해당 export가 used인 경우만 처리 (fixpoint/수렴 루프).
     /// check_used=false이면 모든 re-export 소스를 무조건 포함 (초기 entry 시딩).
+    /// sym_idx → import_binding_index 맵 구축 (크로스-모듈 BFS용).
+    fn buildSymToIbMaps(self: *TreeShaker) !void {
+        var maps = try self.allocator.alloc(?[]?u32, self.modules.len);
+        for (maps) |*m| m.* = null;
+        for (self.modules, 0..) |mod, i| {
+            if (!self.included.isSet(i)) continue;
+            const sem = mod.semantic orelse continue;
+            if (sem.scope_maps.len == 0 or mod.import_bindings.len == 0) continue;
+            var arr = try self.allocator.alloc(?u32, sem.symbols.len);
+            for (arr) |*a| a.* = null;
+            for (mod.import_bindings, 0..) |ib, ib_idx| {
+                if (sem.scope_maps[0].get(ib.local_name)) |sym_idx| {
+                    if (sym_idx < arr.len) arr[sym_idx] = @intCast(ib_idx);
+                }
+            }
+            maps[i] = arr;
+        }
+        self.sym_to_ib = maps;
+    }
+
+    const BfsItem = struct { mod: u32, stmt: u32 };
+
+    /// 크로스-모듈 BFS: import binding → resolveExportChain → 타겟 statement로 점프.
+    fn crossModuleBFS(
+        self: *TreeShaker,
+        module_stmt_infos: []?StmtInfos,
+        reachable_stmts: []?std.DynamicBitSet,
+    ) std.mem.Allocator.Error!void {
+        var queue: std.ArrayListUnmanaged(BfsItem) = .empty;
+        defer queue.deinit(self.allocator);
+
+        // used_exports 초기화
+        self.clearUsedExports();
+        for (self.modules, 0..) |_, i| {
+            if (self.entry_set.isSet(i)) try self.markAllExportsUsed(@intCast(i));
+        }
+
+        // 시드 1: entry module의 export 선언 statement + side-effect statement
+        for (self.modules, 0..) |m, i| {
+            const infos = module_stmt_infos[i] orelse {
+                // StmtInfo 없는 포함 모듈 (entry, CJS): import를 직접 시드
+                if (self.included.isSet(i) and (self.entry_set.isSet(i) or m.wrap_kind == .cjs)) {
+                    try self.seedOpaqueModule(@intCast(i), &queue, module_stmt_infos, reachable_stmts);
+                }
+                continue;
+            };
+            if (!self.included.isSet(i)) continue;
+
+            // reachable bitset 초기화
+            if (reachable_stmts[i] == null) {
+                reachable_stmts[i] = try std.DynamicBitSet.initEmpty(self.allocator, infos.stmts.len);
+            }
+
+            // side-effect statement 시드
+            if (m.side_effects) {
+                for (infos.stmts, 0..) |stmt, si| {
+                    if (stmt.has_side_effects) {
+                        try self.enqueue(@intCast(i), @intCast(si), reachable_stmts, &queue);
+                    }
+                }
+            }
+
+            // entry의 export 선언 statement 시드
+            if (self.entry_set.isSet(i)) {
+                const sem = m.semantic orelse continue;
+                if (sem.scope_maps.len == 0) continue;
+                for (m.export_bindings) |eb| {
+                    if (eb.kind == .re_export_all) continue;
+                    if (sem.scope_maps[0].get(eb.local_name)) |sym_idx| {
+                        if (infos.declaredStmtBySymbol(@intCast(sym_idx))) |stmt_idx| {
+                            try self.enqueue(@intCast(i), stmt_idx, reachable_stmts, &queue);
+                        }
+                    }
+                }
+                // entry의 import도 직접 시드 (entry의 모든 used import는 live)
+                try self.seedOpaqueModule(@intCast(i), &queue, module_stmt_infos, reachable_stmts);
+            }
+        }
+
+        // BFS 루프
+        var head: u32 = 0;
+        while (head < queue.items.len) : (head += 1) {
+            const item = queue.items[head];
+            const infos = module_stmt_infos[item.mod] orelse continue;
+            if (item.stmt >= infos.stmts.len) continue;
+
+            for (infos.stmts[item.stmt].referenced_symbols) |ref_sym| {
+                // (1) 로컬 심볼: 같은 모듈의 종속 statement
+                if (infos.declaredStmtBySymbol(ref_sym)) |dep_stmt| {
+                    try self.enqueue(item.mod, dep_stmt, reachable_stmts, &queue);
+                }
+
+                // (2) import binding: 타겟 모듈로 점프
+                if (item.mod < self.sym_to_ib.len) {
+                    if (self.sym_to_ib[item.mod]) |sym_map| {
+                        if (ref_sym < sym_map.len) {
+                            if (sym_map[ref_sym]) |ib_idx| {
+                                try self.followImport(item.mod, ib_idx, &queue, module_stmt_infos, reachable_stmts);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // BFS 후: used_exports 재도출 (reachable statement의 export만)
+        self.clearUsedExports();
+        for (self.modules, 0..) |_, i| {
+            if (self.entry_set.isSet(i)) try self.markAllExportsUsed(@intCast(i));
+        }
+        for (self.modules, 0..) |m, i| {
+            const infos = module_stmt_infos[i] orelse continue;
+            const sem = m.semantic orelse continue;
+            if (sem.scope_maps.len == 0) continue;
+            for (m.export_bindings) |eb| {
+                if (eb.kind == .re_export_all) continue;
+                if (sem.scope_maps[0].get(eb.local_name)) |sym_idx| {
+                    if (infos.declaredStmtBySymbol(@intCast(sym_idx))) |stmt_idx| {
+                        if (reachable_stmts[i] != null and reachable_stmts[i].?.isSet(stmt_idx)) {
+                            try self.markExportUsed(@intCast(i), eb.exported_name);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn enqueue(self: *TreeShaker, mod: u32, stmt: u32, reachable: []?std.DynamicBitSet, queue: *std.ArrayListUnmanaged(BfsItem)) std.mem.Allocator.Error!void {
+        if (mod >= reachable.len) return;
+        if (reachable[mod] == null) return;
+        if (reachable[mod].?.isSet(stmt)) return;
+        reachable[mod].?.set(stmt);
+        try queue.append(self.allocator, .{ .mod = mod, .stmt = stmt });
+    }
+
+    /// import binding을 따라 타겟 모듈의 export statement를 시드.
+    fn followImport(
+        self: *TreeShaker,
+        mod_idx: u32,
+        ib_idx: u32,
+        queue: *std.ArrayListUnmanaged(BfsItem),
+        module_stmt_infos: []?StmtInfos,
+        reachable_stmts: []?std.DynamicBitSet,
+    ) std.mem.Allocator.Error!void {
+        if (mod_idx >= self.modules.len) return;
+        const m = self.modules[mod_idx];
+        if (ib_idx >= m.import_bindings.len) return;
+        const ib = m.import_bindings[ib_idx];
+        if (ib.import_record_index >= m.import_records.len) return;
+        const rec = m.import_records[ib.import_record_index];
+        if (rec.resolved.isNone()) return;
+        const target = @intFromEnum(rec.resolved);
+        if (target >= self.modules.len) return;
+
+        if (ib.kind == .namespace) {
+            if (ib.namespace_used_properties) |props| {
+                for (props) |prop_name| {
+                    try self.seedExport(target, prop_name, queue, module_stmt_infos, reachable_stmts);
+                }
+            } else {
+                try self.markAllExportsUsed(@intCast(target));
+                self.included.set(target);
+                try self.seedAllStmts(@intCast(target), queue, module_stmt_infos, reachable_stmts);
+            }
+            return;
+        }
+        try self.seedExport(target, ib.imported_name, queue, module_stmt_infos, reachable_stmts);
+    }
+
+    /// canonical export의 선언 statement를 BFS 큐에 추가.
+    fn seedExport(
+        self: *TreeShaker,
+        target_mod: usize,
+        imported_name: []const u8,
+        queue: *std.ArrayListUnmanaged(BfsItem),
+        module_stmt_infos: []?StmtInfos,
+        reachable_stmts: []?std.DynamicBitSet,
+    ) std.mem.Allocator.Error!void {
+        const canonical = self.linker.resolveExportChain(@enumFromInt(@as(u32, @intCast(target_mod))), imported_name, 0) orelse {
+            // 해석 실패: 전체 포함
+            if (target_mod < self.modules.len) self.included.set(target_mod);
+            return;
+        };
+        const canon_mod = @intFromEnum(canonical.module_index);
+        if (canon_mod >= self.modules.len) return;
+
+        try self.markExportUsed(@intCast(canon_mod), canonical.export_name);
+        self.included.set(canon_mod);
+        if (canon_mod != target_mod and target_mod < self.modules.len) {
+            try self.markExportUsed(@intCast(target_mod), imported_name);
+            self.included.set(target_mod);
+            // 중간 모듈의 export 선언 statement도 reachable로 마킹
+            const mid_module = self.modules[target_mod];
+            if (mid_module.semantic) |mid_sem| {
+                if (mid_sem.scope_maps.len > 0) {
+                    var mid_local = imported_name;
+                    for (mid_module.export_bindings) |eb| {
+                        if (std.mem.eql(u8, eb.exported_name, imported_name)) {
+                            mid_local = eb.local_name;
+                            break;
+                        }
+                    }
+                    if (mid_sem.scope_maps[0].get(mid_local)) |mid_sym| {
+                        if (module_stmt_infos[target_mod]) |mid_infos| {
+                            if (mid_infos.declaredStmtBySymbol(@intCast(mid_sym))) |mid_stmt| {
+                                if (reachable_stmts[target_mod] == null) {
+                                    reachable_stmts[target_mod] = try std.DynamicBitSet.initEmpty(self.allocator, mid_infos.stmts.len);
+                                }
+                                try self.enqueue(@intCast(target_mod), mid_stmt, reachable_stmts, queue);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        const target_module = self.modules[canon_mod];
+        const target_sem = target_module.semantic orelse {
+            try self.seedOpaqueModule(@intCast(canon_mod), queue, module_stmt_infos, reachable_stmts);
+            return;
+        };
+        if (target_sem.scope_maps.len == 0) return;
+
+        var local_name = canonical.export_name;
+        for (target_module.export_bindings) |eb| {
+            if (std.mem.eql(u8, eb.exported_name, canonical.export_name)) {
+                local_name = eb.local_name;
+                break;
+            }
+        }
+
+        const sym_idx = target_sem.scope_maps[0].get(local_name) orelse return;
+        const target_infos = module_stmt_infos[canon_mod] orelse {
+            try self.seedOpaqueModule(@intCast(canon_mod), queue, module_stmt_infos, reachable_stmts);
+            return;
+        };
+        const target_stmt = target_infos.declaredStmtBySymbol(@intCast(sym_idx)) orelse return;
+
+        if (reachable_stmts[canon_mod] == null) {
+            reachable_stmts[canon_mod] = try std.DynamicBitSet.initEmpty(self.allocator, target_infos.stmts.len);
+        }
+        try self.enqueue(@intCast(canon_mod), target_stmt, reachable_stmts, queue);
+
+        // side-effect statement도 포함 (포함된 모듈의 부작용 코드 보호)
+        if (target_module.side_effects) {
+            for (target_infos.stmts, 0..) |stmt, si| {
+                if (stmt.has_side_effects) {
+                    try self.enqueue(@intCast(canon_mod), @intCast(si), reachable_stmts, queue);
+                }
+            }
+        }
+    }
+
+    /// StmtInfo 없는 모듈 (entry, CJS 등)의 import를 BFS로 전파.
+    fn seedOpaqueModule(
+        self: *TreeShaker,
+        mod_idx: u32,
+        queue: *std.ArrayListUnmanaged(BfsItem),
+        module_stmt_infos: []?StmtInfos,
+        reachable_stmts: []?std.DynamicBitSet,
+    ) std.mem.Allocator.Error!void {
+        if (mod_idx >= self.modules.len) return;
+        // 재진입 방지
+        if (reachable_stmts[mod_idx] != null) return;
+        reachable_stmts[mod_idx] = try std.DynamicBitSet.initEmpty(self.allocator, 0);
+
+        const m = self.modules[mod_idx];
+        for (m.import_bindings) |ib| {
+            if (!self.isImportBindingUsed(m, ib)) continue;
+            if (ib.import_record_index >= m.import_records.len) continue;
+            const rec = m.import_records[ib.import_record_index];
+            if (rec.resolved.isNone()) continue;
+            const target = @intFromEnum(rec.resolved);
+            if (target >= self.modules.len) continue;
+
+            if (ib.kind == .namespace) {
+                if (ib.namespace_used_properties) |props| {
+                    for (props) |p| try self.seedExport(target, p, queue, module_stmt_infos, reachable_stmts);
+                } else {
+                    try self.markAllExportsUsed(@intCast(target));
+                    self.included.set(target);
+                    try self.seedAllStmts(@intCast(target), queue, module_stmt_infos, reachable_stmts);
+                }
+            } else {
+                try self.seedExport(target, ib.imported_name, queue, module_stmt_infos, reachable_stmts);
+            }
+        }
+        // re-export 처리
+        for (m.export_bindings) |eb| {
+            if (eb.kind != .re_export and eb.kind != .re_export_all) continue;
+            if (eb.import_record_index) |rec_idx| {
+                if (rec_idx < m.import_records.len) {
+                    const src = @intFromEnum(m.import_records[rec_idx].resolved);
+                    if (src >= self.modules.len) continue;
+                    if (eb.kind == .re_export_all) {
+                        try self.markAllExportsUsed(@intCast(src));
+                        self.included.set(src);
+                        try self.seedAllStmts(@intCast(src), queue, module_stmt_infos, reachable_stmts);
+                    } else {
+                        try self.seedExport(src, eb.local_name, queue, module_stmt_infos, reachable_stmts);
+                    }
+                }
+            }
+        }
+    }
+
+    /// 모듈의 모든 statement를 BFS 큐에 추가.
+    fn seedAllStmts(
+        self: *TreeShaker,
+        mod_idx: u32,
+        queue: *std.ArrayListUnmanaged(BfsItem),
+        module_stmt_infos: []?StmtInfos,
+        reachable_stmts: []?std.DynamicBitSet,
+    ) std.mem.Allocator.Error!void {
+        if (mod_idx >= module_stmt_infos.len) return;
+        const infos = module_stmt_infos[mod_idx] orelse return;
+        if (reachable_stmts[mod_idx] == null) {
+            reachable_stmts[mod_idx] = try std.DynamicBitSet.initEmpty(self.allocator, infos.stmts.len);
+        }
+        for (infos.stmts, 0..) |_, si| {
+            try self.enqueue(mod_idx, @intCast(si), reachable_stmts, queue);
+        }
+    }
+
     fn includeReExportSources(self: *TreeShaker, check_used: bool) !bool {
         var changed = false;
         for (self.modules, 0..) |m, i| {
