@@ -322,11 +322,25 @@ pub fn emitWithTreeShaking(
         defer names_buf.deinit(allocator);
         const used_names: ?[]const []const u8 = if (shaker) |s| blk: {
             const mod_idx: u32 = @intFromEnum(m.index);
-            if (s.isExportUsed(mod_idx, "*")) break :blk null;
-            // used export + cross-module import로 참조되는 모든 export
+            // "*" 마킹이 있어도 BFS reachable_stmts로 정밀 필터링 가능하면 사용
+            if (s.isExportUsed(mod_idx, "*") and s.getModuleStmtInfos(mod_idx) == null)
+                break :blk null;
             for (m.export_bindings) |eb| {
                 if (eb.kind == .re_export_all) continue;
                 if (!s.isExportUsed(mod_idx, eb.exported_name)) continue;
+
+                // 크로스-모듈 BFS 도달성: export의 선언 statement가 unreachable이면 제외
+                if (s.getModuleStmtInfos(mod_idx)) |ts_infos| {
+                    if (m.semantic) |sem| {
+                        if (sem.scope_maps.len > 0) {
+                            if (sem.scope_maps[0].get(eb.local_name)) |sym_idx| {
+                                if (ts_infos.declaredStmtBySymbol(@intCast(sym_idx))) |stmt_idx| {
+                                    if (!s.isStmtReachable(mod_idx, stmt_idx)) continue;
+                                }
+                            }
+                        }
+                    }
+                }
 
                 // StmtInfo 도달성: 모든 importer에서 이 export의 import가 dead이면 제외.
                 if (eb.kind == .local and m.importers.items.len > 0) {
