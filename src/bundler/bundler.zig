@@ -10428,3 +10428,111 @@ test "TreeShaking: seedAllStmts propagates export * chain — cheerio pattern" {
     // getText가 export * 체인을 통해 포함
     try std.testing.expect(std.mem.indexOf(u8, result.output, "getText") != null);
 }
+
+test "TreeShaking: sideEffects:false + namespace import — symbol-based BFS seed (effect pattern)" {
+    // effect 패턴: sideEffects:false 모듈에서 import * as X 후 X.prop 접근.
+    // BFS가 sideEffects:false 모듈의 used export 선언 statement를 시드해야
+    // followImport → namespace target의 심볼이 reachable됨.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { TypeId } from './Either';
+        \\console.log(typeof TypeId);
+    );
+    try writeFile(tmp.dir, "Either.ts",
+        \\import * as either from './internal-either';
+        \\export const TypeId = either.TypeId;
+        \\export const right = either.right;
+    );
+    try writeFile(tmp.dir, "internal-either.ts",
+        \\export const TypeId = Symbol.for("effect/Either");
+        \\export function right(a: any) { return { tag: "Right", right: a }; }
+        \\export function left(a: any) { return { tag: "Left", left: a }; }
+    );
+    // sideEffects:false 시뮬레이션
+    try writeFile(tmp.dir, "package.json",
+        \\{"name": "test", "sideEffects": false}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // TypeId가 번들에 포함 (namespace import를 통한 참조)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Symbol.for") != null);
+    // left는 미사용이므로 제거 (tree-shaking 정밀도)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function left") == null);
+}
+
+test "TreeShaking: sideEffects:false deep re-export chain — symbol reachability" {
+    // sideEffects:false barrel re-export 체인에서 모든 단계가 reachable
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { greet } from './index';
+        \\console.log(greet("world"));
+    );
+    try writeFile(tmp.dir, "index.ts",
+        \\export { greet } from './lib';
+    );
+    try writeFile(tmp.dir, "lib.ts",
+        \\export { greet } from './impl';
+        \\export function unused() { return "no"; }
+    );
+    try writeFile(tmp.dir, "impl.ts",
+        \\export function greet(name: string) { return "hello " + name; }
+        \\export function farewell(name: string) { return "bye " + name; }
+    );
+    try writeFile(tmp.dir, "package.json",
+        \\{"name": "test", "sideEffects": false}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "greet") != null);
+    // unused, farewell은 미사용 → 제거
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "unused") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "farewell") == null);
+}
+
+test "TreeShaking: sideEffects:false + side-effect statement preserved when module included" {
+    // sideEffects:false 모듈이 포함되면 side-effect statement도 보존되어야 함
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { value } from './lib';
+        \\console.log(value);
+    );
+    try writeFile(tmp.dir, "lib.ts",
+        \\export const value = 42;
+        \\globalThis.__INIT__ = true;
+    );
+    try writeFile(tmp.dir, "package.json",
+        \\{"name": "test", "sideEffects": false}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "42") != null);
+    // globalThis.__INIT__ = true는 side-effect → value 사용 시 모듈 포함 → 보존
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__INIT__") != null);
+}
