@@ -108,15 +108,13 @@ fn transpileFile(
 
     if (options.minify) {
         if (analyzer.symbols.items.len > 0 and analyzer.scope_maps.items.len > 0) {
-            mangle_result = Mangler.mangle(
-                arena_alloc,
-                analyzer.scopes.items,
-                analyzer.symbols.items,
-                analyzer.scope_maps.items,
-                analyzer.ref_scope_pairs.items,
-                source,
-                null,
-            ) catch null;
+            mangle_result = Mangler.mangle(arena_alloc, .{
+                .scopes = analyzer.scopes.items,
+                .symbols = analyzer.symbols.items,
+                .scope_maps = analyzer.scope_maps.items,
+                .ref_scope_pairs = analyzer.ref_scope_pairs.items,
+                .source = source,
+            }) catch null;
         }
     }
 
