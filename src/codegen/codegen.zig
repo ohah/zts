@@ -595,7 +595,7 @@ pub const Codegen = struct {
             .private_field_expression => try self.emitStaticMember(node),
             .call_expression => try self.emitCall(node),
             .new_expression => try self.emitNew(node),
-            .template_literal => try self.writeNodeSpan(node),
+            .template_literal => try self.emitTemplateLiteral(node),
             .template_element => try self.writeNodeSpan(node),
             .tagged_template_expression => try self.emitTaggedTemplate(node),
             .import_expression => try self.emitImportExpr(node),
@@ -1457,6 +1457,26 @@ pub const Codegen = struct {
         try self.writeByte('(');
         try self.emitNodeList(args_start, args_len, if (self.options.minify) "," else ", ");
         try self.writeByte(')');
+    }
+
+    /// template literal을 child node 단위로 emit.
+    /// rename/mangling이 적용되려면 expression을 개별 emitNode로 처리해야 한다.
+    fn emitTemplateLiteral(self: *Codegen, node: Node) !void {
+        // substitution 없는 단순 template: raw span 출력
+        if (node.data.list.len == 0) {
+            try self.writeNodeSpan(node);
+            return;
+        }
+        const items = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+        for (items) |item_idx| {
+            const child: NodeIndex = @enumFromInt(item_idx);
+            const child_node = self.ast.nodes.items[@intFromEnum(child)];
+            if (child_node.tag == .template_element) {
+                try self.writeNodeSpan(child_node);
+            } else {
+                try self.emitNode(child);
+            }
+        }
     }
 
     fn emitTaggedTemplate(self: *Codegen, node: Node) !void {
@@ -4814,4 +4834,29 @@ test "Minify: for-of body var has semicolon" {
     var r = try e2eWithOptions(std.testing.allocator, "for (const x of [1,2,3]) { var y = x; console.log(y); }", .{ .minify = true });
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var y=x;") != null);
+}
+
+// ============================================================
+// #493: template literal 내 식별자 rename
+// ============================================================
+
+test "Minify: template literal preserves identifier references" {
+    // template literal 내 ${expr} 식별자가 정상 출력되어야 한다.
+    var r = try e2eWithOptions(std.testing.allocator, "const x = 1; const s = `val=${x}`;", .{ .minify = true });
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "`val=${x}`") != null);
+}
+
+test "Minify: template literal with multiple expressions" {
+    var r = try e2eWithOptions(std.testing.allocator, "const a = 1; const b = 2; const s = `${a}+${b}`;", .{ .minify = true });
+    defer r.deinit();
+    // 표현식이 올바르게 emit됨 (backtick + interpolation 구조 유지)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "${a}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "${b}") != null);
+}
+
+test "Minify: simple template literal without substitution" {
+    var r = try e2eWithOptions(std.testing.allocator, "const s = `hello world`;", .{ .minify = true });
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "`hello world`") != null);
 }

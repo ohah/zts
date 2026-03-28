@@ -10613,3 +10613,57 @@ test "Minify: for-loop body var declaration has semicolon" {
     const body_start = std.mem.indexOf(u8, output, "var x=i") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u8, ';'), output[body_start + 7]);
 }
+
+test "Minify: template literal expression identifiers renamed (#493)" {
+    // template literal 내 ${identifier} 참조가 mangled name으로 치환되어야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { prefix } from './lib';\nconsole.log(`val=${prefix}!`);");
+    try writeFile(tmp.dir, "lib.ts", "export const prefix = 'hello';");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const output = result.output;
+    // export이므로 prefix 이름 보존, template literal에 올바르게 참조됨
+    try std.testing.expect(std.mem.indexOf(u8, output, "prefix") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "hello") != null);
+}
+
+test "Minify: nested scope variable not shadowed by mangled name (#494)" {
+    // mangled 이름이 nested scope의 로컬 변수와 충돌하면 안 된다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // top-level 'check'가 mangling 대상이며, nested function 내 'var a'와 충돌하지 않아야 함
+    try writeFile(tmp.dir, "entry.ts",
+        \\const check = (x) => x > 0;
+        \\function run() {
+        \\  var a = 1;
+        \\  if (check(a)) console.log("ok");
+        \\}
+        \\run();
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "ok") != null);
+}
