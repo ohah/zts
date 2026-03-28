@@ -773,37 +773,30 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 return;
             }
 
-            // try_label = 현재 case 번호 (ops 안의 nop 개수)
-            var try_label: u32 = 0;
-            for (ops.items) |op| {
-                if (op.code == .nop) try_label += 1;
-            }
+            // try_label = 현재 case 번호. next_label은 1에서 시작하고
+            // 각 nop append 직전에 +1되므로, next_label - 1 == 현재 case 번호.
+            const try_label = next_label.* - 1;
 
             // trys.push placeholder — body 처리 후 실제 label로 교체
             const trys_push_slot = ops.items.len;
             try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = .none } });
 
-            // try body
             try collectBodyOperations(self, try_body, ops, next_label);
 
-            // catch label (try body 처리 후 동적 할당)
             const catch_label = next_label.*;
             next_label.* += 1;
 
-            // goto catch 다음 블록 (finally 또는 end — 아직 모름, break_op slot 예약)
+            // try body 끝 break placeholder
             const try_break_slot = ops.items.len;
-            try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = 0 } }); // placeholder
+            try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = 0 } });
 
-            // catch nop
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
 
-            // catch body
             if (!catch_clause.isNone()) {
                 const catch_node = self.old_ast.getNode(catch_clause);
                 const catch_param = catch_node.data.binary.left;
                 const catch_body_idx = catch_node.data.binary.right;
 
-                // catch param = _state.sent()
                 if (!catch_param.isNone()) {
                     const new_param = try self.visitNode(catch_param);
                     const sent = try buildSentCall(self, stmt.span);
@@ -823,12 +816,11 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 try collectBodyOperations(self, catch_body_idx, ops, next_label);
             }
 
-            // catch body 끝 → finally 또는 end로 점프 (placeholder)
+            // catch body 끝 break placeholder
             const catch_break_slot = ops.items.len;
-            try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = 0 } }); // placeholder
+            try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = 0 } });
 
-            // finally
-            var finally_label: u32 = undefined;
+            var finally_label: ?u32 = null;
             if (!finally_body.isNone()) {
                 finally_label = next_label.*;
                 next_label.* += 1;
@@ -836,25 +828,21 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
                 try collectBodyOperations(self, finally_body, ops, next_label);
 
-                // return [7] (endfinally)
                 const endfinally_ret = try buildInstructionReturn(self, 7, .none, stmt.span);
                 try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = endfinally_ret } });
             }
 
-            // end label
             const end_label = next_label.*;
             next_label.* += 1;
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
 
-            // fixup: try/catch body 끝 break → 항상 end_label로.
+            // fixup: try/catch body 끝 → 항상 end_label로 break.
             // finally가 있으면 __generator 런타임이 _.label < t[2] 체크로
             // finally로 자동 우회 + _.ops.push(op)로 원래 목적지 보존.
-            // endfinally에서 _.ops.pop()으로 복원하여 end_label로 이동.
             ops.items[try_break_slot] = .{ .code = .break_op, .arg = .{ .label = end_label } };
             ops.items[catch_break_slot] = .{ .code = .break_op, .arg = .{ .label = end_label } };
 
-            // fixup: trys.push with actual labels
-            const actual_finally = if (!finally_body.isNone()) finally_label else end_label;
+            const actual_finally = finally_label orelse end_label;
             const trys_push = try buildTrysPush(self, try_label, catch_label, actual_finally, end_label, stmt.span);
             ops.items[trys_push_slot] = .{ .code = .statement, .arg = .{ .node = trys_push } };
         }
