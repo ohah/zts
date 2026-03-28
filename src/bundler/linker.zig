@@ -1027,20 +1027,18 @@ pub const Linker = struct {
                 );
 
                 // nested renames를 기존 renames에 merge (소유권 이전)
-                var nit = nested_result.renames.iterator();
+                var taken = nested_result.takeRenames();
+                defer taken.deinit(); // HashMap 자체만 해제 (값은 owned_nested_renames가 관리)
+                var nit = taken.iterator();
                 while (nit.next()) |n_entry| {
-                    // top-level에서 이미 rename된 심볼은 건너뜀
                     if (!renames.contains(n_entry.key_ptr.*)) {
-                        // 소유권 이전: renames가 문자열을 참조, owned_rename_values가 해제 책임
                         try renames.put(n_entry.key_ptr.*, n_entry.value_ptr.*);
                         try owned_nested_renames.append(self.allocator, n_entry.value_ptr.*);
                     } else {
-                        // 사용하지 않는 문자열은 즉시 해제
                         self.allocator.free(n_entry.value_ptr.*);
                     }
                 }
-                // 값의 소유권이 이전되었으므로 HashMap만 해제 (값은 해제하지 않음)
-                nested_result.renames.deinit();
+                nested_result.deinit(); // 빈 상태이므로 안전
             }
         }
 
