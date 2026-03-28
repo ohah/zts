@@ -296,11 +296,24 @@ pub fn extractExportBindings(
                         if (name.len > 0) local_name = name;
                     }
                 }
+                // export { X }와 동일: local_name이 import binding이면 re_export로 분류
+                // (export default EventEmitter where EventEmitter is imported)
+                var kind: ExportBinding.Kind = .local;
+                var final_rec_idx: ?u32 = null;
+                var final_local_name = local_name;
+                if (import_by_name.get(local_name)) |ib| {
+                    if (ib.kind != .namespace) {
+                        kind = .re_export;
+                        final_rec_idx = ib.import_record_index;
+                        final_local_name = ib.imported_name;
+                    }
+                }
                 try bindings.append(allocator, .{
                     .exported_name = "default",
-                    .local_name = local_name,
+                    .local_name = final_local_name,
                     .local_span = node.span,
-                    .kind = .local,
+                    .kind = kind,
+                    .import_record_index = final_rec_idx,
                 });
             },
             .export_all_declaration => {

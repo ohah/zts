@@ -1506,7 +1506,15 @@ pub const Linker = struct {
                                     .export_name = name,
                                 };
                             }
-                            return self.resolveExportChain(source_mod, entry.binding.local_name, depth + 1);
+                            if (self.resolveExportChain(source_mod, entry.binding.local_name, depth + 1)) |result| {
+                                return result;
+                            }
+                            // CJS 모듈은 정적 export가 없어 resolveExportChain이 null.
+                            // CJS 모듈 자체를 반환 — 소비자가 require_xxx()로 접근.
+                            const src_idx = @intFromEnum(source_mod);
+                            if (src_idx < self.modules.len and self.modules[src_idx].wrap_kind == .cjs) {
+                                return .{ .module_index = source_mod, .export_name = entry.binding.local_name };
+                            }
                         }
                     }
                 }
