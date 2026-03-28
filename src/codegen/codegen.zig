@@ -764,6 +764,11 @@ pub const Codegen = struct {
 
     /// 조건 노드가 컴파일 타임 boolean으로 확정되면 값을 반환한다.
     fn evalBooleanCondition(self: *Codegen, cond_idx: NodeIndex) ?bool {
+        return self.evalBooleanConditionDepth(cond_idx, 0);
+    }
+
+    fn evalBooleanConditionDepth(self: *Codegen, cond_idx: NodeIndex, depth: u8) ?bool {
+        if (depth >= 8) return null;
         if (cond_idx.isNone() or @intFromEnum(cond_idx) >= self.ast.nodes.items.len) return null;
         const cond = self.ast.getNode(cond_idx);
         return switch (cond.tag) {
@@ -787,21 +792,19 @@ pub const Codegen = struct {
                 const n = std.fmt.parseFloat(f64, text) catch return null;
                 return n != 0;
             },
-            // false && ... → false, true || ... → true
             .logical_expression => {
-                const left = self.evalBooleanCondition(cond.data.binary.left) orelse return null;
+                const left = self.evalBooleanConditionDepth(cond.data.binary.left, depth + 1) orelse return null;
                 const log_op: Kind = @enumFromInt(cond.data.binary.flags);
                 if (log_op == .amp2 and !left) return false;
                 if (log_op == .pipe2 and left) return true;
                 return null;
             },
-            // !false → true, !true → false
             .unary_expression => {
                 const operand_idx = cond.data.unary.operand;
                 if (!operand_idx.isNone() and @intFromEnum(operand_idx) < self.ast.nodes.items.len) {
                     const op_text = self.ast.source[cond.span.start..cond.span.end];
                     if (op_text.len > 0 and op_text[0] == '!') {
-                        if (self.evalBooleanCondition(operand_idx)) |v| return !v;
+                        if (self.evalBooleanConditionDepth(operand_idx, depth + 1)) |v| return !v;
                     }
                 }
                 return null;
