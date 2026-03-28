@@ -860,12 +860,12 @@ pub const Codegen = struct {
         const extras = self.ast.extra_data.items[e .. e + 4];
         if (self.options.minify) try self.write("for(") else try self.write("for (");
         self.in_for_init = true;
-        defer self.in_for_init = false;
         try self.emitNode(@enumFromInt(extras[0]));
         if (self.options.minify) try self.writeByte(';') else try self.write("; ");
         try self.emitNode(@enumFromInt(extras[1]));
         if (self.options.minify) try self.writeByte(';') else try self.write("; ");
         try self.emitNode(@enumFromInt(extras[2]));
+        self.in_for_init = false;
         try self.writeByte(')');
         try self.emitNode(@enumFromInt(extras[3]));
     }
@@ -874,8 +874,8 @@ pub const Codegen = struct {
         const t = node.data.ternary;
         if (self.options.minify) try self.write("for await(") else try self.write("for await (");
         self.in_for_init = true;
-        defer self.in_for_init = false;
         try self.emitNode(t.a);
+        self.in_for_init = false;
         try self.write(" of ");
         try self.emitNode(t.b);
         try self.writeByte(')');
