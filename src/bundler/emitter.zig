@@ -394,18 +394,24 @@ pub fn emitWithTreeShaking(
                 const imp_i = @intFromEnum(importer_idx);
                 if (imp_i >= graph.modules.items.len) continue;
                 const importer = &graph.modules.items[imp_i];
+                // export * as ns from './mod': 이 모듈의 모든 export를 사용
+                for (importer.export_bindings) |eb| {
+                    if (eb.kind == .re_export_all and !std.mem.eql(u8, eb.exported_name, "*")) {
+                        if (eb.import_record_index) |rec_idx| {
+                            if (rec_idx < importer.import_records.len and
+                                importer.import_records[rec_idx].resolved == m.index)
+                                break :blk null;
+                        }
+                    }
+                }
                 for (importer.import_bindings) |ib| {
                     if (ib.kind != .named) continue;
                     if (ib.import_record_index >= importer.import_records.len) continue;
-                    if (importer.import_records[ib.import_record_index].resolved == m.index) {
-                        // StmtInfo 도달성으로 dead import 필터링.
-                        if (shaker) |sk| {
-                            if (!sk.isImportLiveInModule(@intCast(imp_i), ib.local_name)) {
-                                continue;
-                            }
-                        }
-                        names_buf.append(allocator, ib.imported_name) catch break :blk null;
+                    if (importer.import_records[ib.import_record_index].resolved != m.index) continue;
+                    if (shaker) |sk| {
+                        if (!sk.isImportLiveInModule(@intCast(imp_i), ib.local_name)) continue;
                     }
+                    names_buf.append(allocator, ib.imported_name) catch break :blk null;
                 }
             }
             break :blk names_buf.items;
