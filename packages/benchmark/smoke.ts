@@ -15,8 +15,13 @@ import { join, resolve } from "node:path";
 
 const ROOT = resolve(__dirname, "../..");
 const ZTS_BIN = join(ROOT, "zig-out/bin/zts");
-const ESBUILD_BIN = join(__dirname, "node_modules/.bin/esbuild");
-const ROLLDOWN_BIN = join(__dirname, "node_modules/.bin/rolldown");
+// bun workspace hoisting: devDependencies가 루트 node_modules에 설치될 수 있음
+const ESBUILD_BIN = existsSync(join(__dirname, "node_modules/.bin/esbuild"))
+  ? join(__dirname, "node_modules/.bin/esbuild")
+  : join(ROOT, "node_modules/.bin/esbuild");
+const ROLLDOWN_BIN = existsSync(join(__dirname, "node_modules/.bin/rolldown"))
+  ? join(__dirname, "node_modules/.bin/rolldown")
+  : join(ROOT, "node_modules/.bin/rolldown");
 
 interface BundlerResult {
   build: boolean;
