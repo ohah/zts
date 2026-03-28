@@ -10270,3 +10270,161 @@ test "TreeShaking: export default identifier — import preserved (yargs y18n pa
     // wrapper도 포함
     try std.testing.expect(std.mem.indexOf(u8, result.output, "wrapper") != null);
 }
+
+test "TreeShaking: ESM→CJS re-export default — eventemitter3 pattern" {
+    // ESM wrapper(index.mjs) → CJS(index.js) 체인에서 default import 바인딩 생성
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import EE from './wrapper.mjs';
+        \\console.log(new EE());
+    );
+    try writeFile(tmp.dir, "wrapper.mjs",
+        \\import EventEmitter from './impl.js';
+        \\export default EventEmitter;
+    );
+    // CJS 모듈 시뮬레이션: module.exports 패턴
+    try writeFile(tmp.dir, "impl.js",
+        \\function EE() { this.x = 1; }
+        \\module.exports = EE;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // CJS interop preamble이 생성되어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM") != null or
+        std.mem.indexOf(u8, result.output, "__commonJS") != null);
+    // EE 함수 정의가 포함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function EE") != null);
+}
+
+test "TreeShaking: namespace barrel re-export — import * as z; export { z }" {
+    // namespace barrel re-export에서 소스 모듈 export가 포함되어야 함
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { z } from './pkg';
+        \\console.log(z.foo());
+    );
+    try writeFile(tmp.dir, "pkg.ts",
+        \\import * as z from './inner';
+        \\export { z };
+    );
+    try writeFile(tmp.dir, "inner.ts",
+        \\export function foo() { return "ok"; }
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // foo 함수 정의가 포함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function foo") != null);
+    // namespace 객체가 생성
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "foo:") != null or
+        std.mem.indexOf(u8, result.output, "foo: foo") != null);
+}
+
+test "Codegen: else if (false) chain — no syntax error" {
+    // --define로 조건이 false가 되면 else if 체인이 빈 문법 에러를 만들지 않아야 함
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\function test(x: number) {
+        \\  if (x > 0) {
+        \\    return "pos";
+        \\  } else if (process.env.NODE_ENV !== "production") {
+        \\    return "dev";
+        \\  }
+        \\  return "other";
+        \\}
+        \\console.log(test(1));
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .node,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // "} else }" 같은 문법 에러가 없어야 함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "else }") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "else\n}") == null);
+}
+
+test "Codegen: unary ! boolean eval — correct negation" {
+    // !(expr) 의 boolean 평가가 올바르게 동작해야 함 (unary_expression data 접근 버그 회귀 방지)
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\const flag = process.env.NODE_ENV !== "production";
+        \\if (!flag) {
+        \\  console.log("prod");
+        \\} else {
+        \\  console.log("dev");
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .node,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // platform=node에서 NODE_ENV="production" → flag=false → !flag=true → "prod" 출력
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "prod") != null);
+}
+
+test "TreeShaking: seedAllStmts propagates export * chain — cheerio pattern" {
+    // export * from './sub' 체인에서 sub 모듈의 함수 정의가 포함되어야 함
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import * as utils from './utils';
+        \\console.log(utils.getText("hi"));
+    );
+    try writeFile(tmp.dir, "utils.ts",
+        \\export * from './stringify';
+        \\export function parse(s: string) { return s; }
+    );
+    try writeFile(tmp.dir, "stringify.ts",
+        \\export function getText(s: string) { return s; }
+        \\export function getHTML(s: string) { return "<" + s + ">"; }
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // getText가 export * 체인을 통해 포함
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "getText") != null);
+}

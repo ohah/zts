@@ -735,6 +735,17 @@ pub const TreeShaker = struct {
                 try self.seedExport(src, eb.local_name, queue, module_stmt_infos, reachable_stmts);
             }
         }
+        // namespace import 전파: import * as X에서 X가 사용되면 소스 모듈도 시드
+        for (m.import_bindings) |ib| {
+            if (ib.kind != .namespace) continue;
+            if (ib.import_record_index >= m.import_records.len) continue;
+            const rec = m.import_records[ib.import_record_index];
+            if (rec.resolved.isNone()) continue;
+            const target = @intFromEnum(rec.resolved);
+            if (target >= self.modules.len) continue;
+            self.included.set(target);
+            try self.seedAllStmts(@intCast(target), queue, module_stmt_infos, reachable_stmts);
+        }
     }
 
     fn includeReExportSources(self: *TreeShaker, check_used: bool) !bool {
